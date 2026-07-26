@@ -44,6 +44,23 @@ restore_refuses_user_modified_options_test() ->
        {error, {launch_options_changed, <<"changed">>}},
        wfcli_companion_steam:restore(Content, <<"installed">>, <<>>)).
 
+symlinked_steam_roots_are_one_config_test() ->
+    Root = filename:join(
+             "/tmp",
+             "wfcli-steam-" ++ integer_to_list(erlang:unique_integer([positive]))),
+    RealRoot = filename:join(Root, "Steam"),
+    Config = filename:join([RealRoot, "userdata", "123", "config", "localconfig.vdf"]),
+    AliasRoot = filename:join(Root, "steam-alias"),
+    Alias = filename:join([AliasRoot, "userdata", "123", "config", "localconfig.vdf"]),
+    try
+        ok = filelib:ensure_dir(Config),
+        ok = file:write_file(Config, fixture(<<>>)),
+        ok = file:make_symlink(RealRoot, AliasRoot),
+        ?assertEqual([Config], wfcli_companion_steam:dedupe_configs([Config, Alias]))
+    after
+        file:del_dir_r(Root)
+    end.
+
 fixture(LaunchOptions) ->
     Escaped = binary:replace(LaunchOptions, <<"\"">>, <<"\\\"">>, [global]),
     <<"\"UserLocalConfigStore\"\n{\n\t\"Software\"\n\t{\n",

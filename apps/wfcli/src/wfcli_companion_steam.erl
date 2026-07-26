@@ -7,6 +7,10 @@
 
 -export([install/2, uninstall/1, plan/2, restore/3, steam_running/0]).
 
+-ifdef(TEST).
+-export([dedupe_configs/1]).
+-endif.
+
 -define(APP_ID, <<"230410">>).
 -define(STATE_FILE, "companion-steam.term").
 
@@ -137,10 +141,36 @@ find_configs() ->
         "" -> default_config_candidates();
         Path -> [filename:absname(Path)]
     end,
-    lists:usort(
+    dedupe_configs(
       [Path || Path <- Candidates,
                filelib:is_regular(Path),
                config_has_warframe(Path)]).
+
+dedupe_configs(Paths) ->
+    {_Identities, Configs} =
+        lists:foldl(
+          fun(Path, {Seen, Acc}) ->
+              Identity = config_identity(Path),
+              case sets:is_element(Identity, Seen) of
+                  true -> {Seen, Acc};
+                  false -> {sets:add_element(Identity, Seen), [Path | Acc]}
+              end
+          end,
+          {sets:new(), []},
+          lists:usort(Paths)),
+    lists:reverse(Configs).
+
+config_identity(Path) ->
+    case file:read_file_info(Path) of
+        {ok, #file_info{inode = Inode,
+                        major_device = Major,
+                        minor_device = Minor}} when Inode =/= 0 ->
+            {file, Major, Minor, Inode};
+        {ok, _Info} ->
+            {path, filename:absname(Path)};
+        {error, _Reason} ->
+            {path, filename:absname(Path)}
+    end.
 
 default_config_candidates() ->
     Home = case os:getenv("HOME") of false -> "."; Value -> Value end,
