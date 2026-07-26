@@ -57,7 +57,7 @@ item that references it.
   size, and last successful fetch.
 - Stale-on-error behavior and cache pruning.
 
-`wfcompanion` and a future desktop UI own:
+Native graphical clients own:
 
 - Decoding bytes into renderer-native images.
 - In-memory caches keyed by content digest and requested render size.
@@ -116,6 +116,7 @@ Relic recommendations should prefetch only the visible page plus a small look-ah
 or filter changes cancel obsolete low-priority requests. Keep card geometry stable while textures
 arrive.
 
-Decoded or resized images are renderer caches, separate from the daemon's encoded-file cache.
-Blend2D static-scene caching remains useful after decode: static card art can be rasterized once,
-while a changed price or selection invalidates only the affected scene region.
+Decoded images are renderer caches, separate from the daemon's encoded-file cache. Overlay scaling
+and shaped image fills stay in Blend2D; do not create resized Rust pixel buffers during scene
+drawing. Blend2D static-scene caching remains useful after decode: static card art can be
+rasterized once, while a changed price or selection invalidates only the affected scene region.

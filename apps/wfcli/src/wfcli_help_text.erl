@@ -358,6 +358,10 @@ companion_help() ->
         "USAGE:\n",
         "  wfcli companion <command>\n",
         "\n",
+        "PREFERRED STEAM LAUNCH OPTION:\n",
+        "  /absolute/path/to/wfcompanion launch -- %command%\n",
+        "  Set it in Warframe > Properties > General > Launch Options.\n",
+        "\n",
         "COMMANDS:\n",
         "  start              start detached standalone companion\n",
         "  stop               stop companion started by wfcli\n",
@@ -375,18 +379,19 @@ companion_help() ->
         "  preview --animate-all [DIR] update every animated preview\n",
         "  preview --list      list registered overlay previews\n",
         "  logs               show incident log path and recent entries\n",
-        "  install [--dry-run] install Steam launch wrapper\n",
-        "  uninstall [--dry-run] restore previous Steam launch options\n",
+        "  install [--dry-run] edit Steam launch options automatically\n",
+        "  uninstall [--dry-run] restore options saved by install\n",
         "\n",
         "CAPTURE OPTIONS:\n",
         "  --target TARGET    active (default) | screen\n",
         "\n",
         "NOTES:\n",
+        "  Steam launch mode is preferred and exits with Warframe.\n",
         "  hide suppresses automatic contextual overlays until show or restart.\n",
         "  Production starts with the HUD hidden; development starts with it shown.\n",
         "  screenshot defaults to the user cache when FILE is omitted.\n",
         "  preview output defaults to the ignored previews/ directory.\n",
-        "  Close Steam before install or uninstall. Steam wrapper exits with Warframe.\n"
+        "  Close Steam before install or uninstall.\n"
     ].
 
 update_help() ->

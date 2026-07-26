@@ -1,42 +1,45 @@
 # Contributor Documentation
 
-User-facing setup and usage start in `README.md` and the top-level guides under `docs/`.
-Documents in `docs/developer/` describe implementation ownership, protocols, data pipelines,
-tests, and upstream research.
+User-facing setup and usage start in [`README.md`](../README.md) and the top-level guides under
+`docs/`. This index is for contributors. Documents under `docs/developer/` describe current
+ownership and implementation unless their title explicitly identifies them as research or an
+audit.
 
 ## Architecture
 
-- `structure.md`: OTP applications, native companion, and ownership boundaries
-- `daemon.md`: lifecycle, supervision, queues, protocol compatibility, and hot updates
-- `entities.md`: normalized searchable entities and the daemon/CLI rendering boundary
-- `shared_utilities.md`: stable cross-application helpers and schemas
-- `centralization.md`: criteria for moving or splitting code
-- `cli.md`: command dispatch, option parsing, and terminal output
-- `companion.md`: native observer, local protocol, player data, market requests, and overlay
-- `player-data.md`: AlecaFrame inventory source, payload semantics, and collector boundary
-- `assets.md`: embedded and dynamic texture ownership, caching, and renderer boundaries
+- [`structure.md`](developer/structure.md): applications, native companion, and ownership
+  boundaries
+- [`daemon.md`](developer/daemon.md): lifecycle, supervision, queues, compatibility, and updates
+- [`entities.md`](developer/entities.md): normalized entities and the daemon/CLI rendering boundary
+- [`shared_utilities.md`](developer/shared_utilities.md): stable cross-application contracts
+- [`centralization.md`](developer/centralization.md): criteria for moving or splitting code
+- [`cli.md`](developer/cli.md): command dispatch, parsing, and terminal output
+- [`companion.md`](developer/companion.md): native observer, local protocol, player data, and overlay
+- [`player-data.md`](developer/player-data.md): account payload, collector, and indexing boundary
+- [`assets.md`](developer/assets.md): embedded and dynamic texture ownership
 
 ## Data And Queries
 
-- `worldstate.md`: fetching, indexing, translation, raw-source access, and watches
-- `exports.md`: official PublicExport files and catalog loading
-- `knowledge.md`: official Codex and optional WFCD catalog ownership
-- `query-language.md`: grammar, AST compilation, field schemas, and evaluator design
-- `table_layout.md`: terminal table layout rules
-- `forma_plan.md`: planner queue, model, search, and tests
-- `visualize.md`: Forma visualization entry points
+- [`worldstate.md`](developer/worldstate.md): fetching, indexing, translation, and watches
+- [`exports.md`](developer/exports.md): official PublicExport files and loading
+- [`knowledge.md`](developer/knowledge.md): official Codex and optional WFCD catalogs
+- [`query-language.md`](developer/query-language.md): grammar, AST, schemas, and evaluation
+- [`table_layout.md`](developer/table_layout.md): terminal table layout
+- [`forma_plan.md`](developer/forma_plan.md): planner queue, model, search, and tests
+- [`visualize.md`](developer/visualize.md): Forma visualization
 
 ## Development
 
-- `workflows.md`: build, test, fixture, and metadata routines
-- `adding_features.md`: checklist for new commands and data sources
-- `tools.md`: local inspection and benchmark helpers
+- [`workflows.md`](developer/workflows.md): build, test, fixture, and metadata routines
+- [`adding_features.md`](developer/adding_features.md): checklist for features and data sources
+- [`tools.md`](developer/tools.md): inspection and benchmark helpers
 
 ## Research And Audits
 
-- `wfcd-parser-audit.md`: known differences from reviewed WFCD parsers
-- `alecaframe-overlay-catalog.md`: upstream overlay feature catalog and local implementation status
-- `overwolf-alecaframe-overlay-research.md`: acquisition mechanisms, Wayland design, safety
-  boundary, and source evidence
+- [`wfcd-parser-audit.md`](developer/wfcd-parser-audit.md): differences from reviewed WFCD parsers
+- [`alecaframe-overlay-catalog.md`](developer/alecaframe-overlay-catalog.md): upstream overlay
+  catalog and local status
+- [`overwolf-alecaframe-overlay-research.md`](developer/overwolf-alecaframe-overlay-research.md):
+  acquisition mechanisms, Wayland design, safety boundary, and evidence
 
-MCP adapter behavior is documented in the user and integration guide at `docs/mcp.md`.
+MCP adapter behavior is documented in [`mcp.md`](mcp.md).

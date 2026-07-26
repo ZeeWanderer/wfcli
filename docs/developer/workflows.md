@@ -54,10 +54,9 @@ Native records and `compr_assign` remain experimental in OTP 29 and are not enab
 ## Packaging
 
 Treat `prod/` as an installation prefix. Packages must preserve `bin/`, `libexec/`, `BUILD_ID`,
-and `BUILD_FLAVOR` together. A Homebrew formula can install that tree under its Cellar prefix;
-runtime update discovery converts the versioned Cellar path to Homebrew's stable `opt/<formula>`
-link. An RPM can map the same tree to its chosen prefix without changing executable-relative
-lookup. Package runtime dependencies for `wfcompanion` separately rather than copying host tools
+and `BUILD_FLAVOR` together. Executables locate private files relative to that prefix. Package
+adapters may relocate the complete tree but must not split those files across unrelated roots.
+Declare `wfcompanion` runtime tools as package dependencies rather than copying host executables
 into `libexec/`.
 
 ## Fixtures

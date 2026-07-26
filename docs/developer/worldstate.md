@@ -81,7 +81,7 @@ daemon-backed calculated source routed through the same inventory/query/render p
 - `wfcli_worldstate_service.erl` accepts `source => teshin` without fetching worldstate.
 - `wfcli_worldstate:inventory_entries/3` exposes normalized `teshin_item` entities.
 - `wfcli teshin [query]` shows the current weekly item plus evergreen offerings.
-- Watch mode is intentionally unsupported; the command is a one-shot calculated inventory.
+- The command returns a one-shot calculated inventory and does not register a daemon watch.
 
 Upstream references used for the implementation:
 

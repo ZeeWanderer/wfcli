@@ -60,7 +60,10 @@ dropped frames do not change animation speed.
 The SHM buffer uses `wl_shm::Format::Argb8888`. On little-endian Linux its in-memory bytes are
 premultiplied BGRA, matching Blend2D `PRGB32`. `painter` wraps that memory directly through the
 Blend2D C API; no channel conversion sits between renderer and Wayland. Contexts remain synchronous
-so temporary fontdue A8 glyph masks and icon images may be borrowed per draw.
+so temporary fontdue A8 glyph masks and decoded icon buffers may be borrowed per draw.
+Aspect-contained images use Blend2D's native bilinear scaled blit. Circular component thumbnails
+use a transformed Blend2D image pattern to fill circle geometry. Rust computes layout rectangles
+but does not resize or mask overlay pixels.
 Convert CSS colors through `painter::css_rgba`; never pass copied `[red, green, blue, alpha]`
 arrays directly to painter functions.
 
@@ -85,6 +88,12 @@ small rasterized region for mostly static scenes. Re-rasterize the clipped scene
 performance or highly dynamic content makes that cheaper. Wayland frame callbacks control when to
 submit; `wl_buffer.release` controls when a particular SHM buffer may be modified; buffer damage
 controls what KWin must repaint. These are separate responsibilities.
+
+Blend2D's built-in multithreaded context is asynchronous. Do not enable it without extending every
+borrowed image and glyph-mask lifetime through `Painter::finish`. Current full 2560x1440 relic
+composition is below one 30 FPS frame budget and is cached; animation redraws only a small dirty
+rectangle. For this workload, synchronous JIT rendering avoids queue overhead and unsafe source
+lifetimes.
 Visibility requires both user-enabled state and positive Warframe window identity. Live KDE
 validation covered fullscreen Warframe plus an unrelated fullscreen application: overlay stayed
 above Warframe, unmapped elsewhere, and did not intercept pointer input. See
@@ -172,6 +181,10 @@ See [`player-data.md`](player-data.md) for the account payload, collector, and d
 inventory or mastery boundary.
 
 ## Lifecycle
+
+Steam launch mode is the normal companion lifecycle. It makes companion Warframe's ancestor for
+read-only inventory collection and exits companion with the game. Standalone mode is retained for
+diagnostics and overlay development.
 
 Companion invokes `wfcli daemon ensure` only when the socket is absent or protocol recovery is
 needed. `ensure` preserves current daemon idle policy. Each compatible `wfcompanion` connection

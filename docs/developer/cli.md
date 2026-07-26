@@ -15,7 +15,7 @@
 ## Parsing
 
 - `parse_args/2` accumulates a map of options and validates combinations.
-- Subcommand-specific help can be added (e.g., calendar).
+- Put command-specific detail in subcommand help rather than expanding top-level help.
 - Use layered help: summaries at top level, command/topic-specific detail in `help <topic>` or `<command> --help`.
 - Use `--no-suggest-prompt` to disable interactive correction prompts for mistyped commands/flags.
 - Watch specs use `watch_type_filter/1`; update both parse and watch paths for new commands.

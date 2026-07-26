@@ -16,8 +16,8 @@ Local implementation status:
 
 | Surface | `wfcompanion` status |
 | --- | --- |
-| Relic reward selection | Automatic trigger, local OCR, daemon item resolution, lowest online sell quote, and passive overlay |
-| Relic recommendation | Research reference |
+| Relic reward selection | Implemented: automatic trigger, local OCR, prices, ducats, ownership, crafted/vaulted state, set components, and assets |
+| Relic recommendation | Implemented: era OCR, owned-relic ranking, quote refresh, scrolling, and close interaction |
 | Chat Riven analysis | Research reference |
 | Riven reroll comparison | Research reference |
 | Trade-completion prompt | Research reference; requires authenticated Market workflows |
@@ -50,7 +50,7 @@ The packaged default window uses a 1000-pixel reward area plus a 420-pixel side 
 Its `main` margin, border, `.relicHolder` padding, 16% footer, and 400-pixel sidebar put cards at
 `(469, 654, 972, 256)`. Each card uses four stable rows: name; platinum/vaulted/favourite/ducats;
 crafted and owned/required state; then other set components and set platinum value. `wfcompanion`
-renders the full shell and leaves unavailable card, footer, and sidebar fields blank.
+uses the same structural rows and leaves only unavailable fields blank.
 
 Detection is not supplied by a semantic Overwolf event. `OCRHelper` receives Warframe's live
 `OutputDebugString` stream through the Windows DBWIN mapping/events and passes each message to
@@ -187,20 +187,29 @@ Current pipeline:
 3. Detect one to four reward cards from their bottom-border geometry.
 4. OCR only reward-name crops with local Tesseract.
 5. Clean OCR artifacts and batch candidate resolution through the daemon Market manifest.
-6. Batch resolved item quotes through the daemon-wide rate-limited Market queue.
-7. Render recognized names, lowest online sell prices, and highest-price highlighting in one
-   final card update.
+6. Resolve quotes, ducats, vault state, ownership, crafted state, set graph, account currencies,
+   and visible assets through daemon-owned services.
+7. Render complete cards in one final update, including highest-price highlighting.
 8. Hide on deadline, focus loss, or explicit companion hide.
 
 `lowest sell` is the lowest sampled online sell order, not a fixed item value. Missing or stale
 quotes retain their explicit state rather than being presented as authoritative prices.
 
-### Relic recommendation design
+### Relic recommendation overlay
 
-Visible-tile annotation can use OCR plus daemon-owned relic drops and quotes. Full recommendation
-also needs player inventory, void traces, favourites, mastery state, and refinement assumptions.
-Expected-value calculation belongs in `wfdaemon` so CLI, query, and native interfaces can reuse
-one typed result with quote timestamps and assumptions.
+Current pipeline:
+
+1. Detect the relic-selection open and close events from DBWIN or fallback `EE.log`.
+2. Capture and OCR only the era selector.
+3. Ask the daemon to rank owned relics using player inventory, WFCD reward tables, and cached
+   Market quotes.
+4. Render owned count, vaulted/favourite state, expected platinum, expected ducats, and traces.
+5. Refresh quotes without blocking initial display.
+6. Scroll through complete two-card rows in interaction mode; close explicitly or when the game
+   selection screen closes.
+
+The daemon owns expected-value calculation and source timestamps. Companion owns capture,
+interaction, paging state, and presentation.
 
 ### Riven analysis design
 

@@ -1,4 +1,4 @@
-# AlecaFrame layout reference
+# AlecaFrame Layout Reference
 
 Development-only renderer. It loads AlecaFrame's ignored research copy in a
 headless browser, stubs Overwolf APIs, and writes a transparent full-display

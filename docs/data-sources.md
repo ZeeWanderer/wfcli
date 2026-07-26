@@ -26,8 +26,8 @@ Targeted updates:
 
 ## Storage
 
-Worldstate, trader, Sol node, language, manifest, PublicExport, managed WFCD, player, and market caches live
-under `$XDG_CACHE_HOME/wfcli`, or `~/.cache/wfcli` when `XDG_CACHE_HOME` is unset.
+Worldstate, trader, Sol node, language, manifest, PublicExport, managed WFCD, player, and market
+caches live under `$XDG_CACHE_HOME/wfcli`, or `~/.cache/wfcli` when `XDG_CACHE_HOME` is unset.
 `--cache FILE` overrides the worldstate path. Files under `apps/wfdaemon/priv/` are bundled
 seeds/read-only fallbacks, not runtime update targets. Item names are resolved from official
 hashed PublicExport manifests.

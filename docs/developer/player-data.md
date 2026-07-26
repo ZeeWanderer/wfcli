@@ -90,13 +90,13 @@ Collector process:
 - Parses known fields while preserving the raw map.
 - Joins account records to daemon-owned item and recipe catalogs.
 - Produces inventory, equipment, mastery, collection, foundry, and summary entities.
-- Publishes one revision so CLI, overlay, and future desktop UI see the same state.
+- Publishes one revision so every local client sees the same state.
 
 Consumers:
 
 - `wfcli` formats and queries player entities.
 - `wfcompanion` uses only fields needed by contextual overlays.
-- A future desktop UI owns navigation and view state, not account persistence or derivation.
+- Graphical clients own navigation and view state, not account persistence or derivation.
 
 Raw account data must stay on the local authenticated socket. Do not send it over Erlang
 distribution, include it in incident logs, or upload it without explicit informed opt-in.
@@ -112,5 +112,5 @@ remain queryable under `raw`.
 query entities expose profile, inventory, mastery, recipe, mission, and raw rows. Relic reward
 context joins Market set metadata to stack/equipment counts and account platinum or ducats.
 
-Next catalog work should derive broader collection completion and mastery summaries from this
-same snapshot. Do not add another inventory parser or persistence owner.
+Broad collection-completion and mastery summaries are not yet derived. Add them from this same
+snapshot and catalog join; do not create another inventory parser or persistence owner.

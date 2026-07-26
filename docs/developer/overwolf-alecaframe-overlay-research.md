@@ -127,11 +127,10 @@ Required behavior:
   so panel reservations cannot leave an uncovered screen-edge strip. Pointer leave also resets
   interaction state so a later activation cannot inherit stale capture state. Do not use an X11
   key grab.
-- Relic recommendation interaction is currently limited to close-button hover/click.
-  Recommendation paging is deferred; the daemon currently returns four items. Live KDE/Proton
-  validation confirmed wheel input is delivered to the interactive Wayland surface and no longer
-  reaches Warframe, so later paging needs no separate interception mechanism. Recommendation cards
-  and reward cards do not imply actions.
+- Relic recommendation interaction supports close-button hover/click and wheel scrolling through
+  complete two-card rows. Live KDE/Proton validation confirmed wheel input reaches the interactive
+  Wayland surface without reaching Warframe. Recommendation and reward cards do not imply game
+  actions.
 - Render only after state changes. Avoid a continuous repaint loop. Preserve buffer
   damage so static overlays do not redraw the whole output every frame.
 - Hide scene pixels as soon as Warframe loses focus. The implementation keeps the layer role
@@ -168,9 +167,10 @@ Implemented data flow:
 2. Capture the active Warframe window through Spectacle after UI stabilization.
 3. Detect squad reward count and crop resolution-specific reward-name regions.
 4. Run Tesseract locally and clean common OCR artifacts.
-5. Resolve noisy labels against daemon-owned Market item metadata.
-6. Send one batched quote request through the daemon market service.
-7. Render names and lowest online sell prices on a passive Wayland surface.
+5. Resolve noisy labels against daemon-owned item metadata.
+6. Resolve quotes, ducats, player ownership, set metadata, and visible assets through daemon
+   services.
+7. Render complete cards on a passive Wayland surface.
 8. Hide on timeout, Warframe focus loss, or explicit companion hide.
 
 An XDG ScreenCast/PipeWire window session remains a possible capture backend when it provides a
@@ -205,8 +205,8 @@ AlecaFrame 2.6.90 positions its reward window from game logical dimensions in
 
 At 1920x1080 and DPI 1 default window bounds are `(445, 630, 1420, 355)`. After 15-pixel `main`
 margin, 2-pixel border, 7-pixel holder padding, 16% footer, and 400-pixel sidebar, card-row bounds
-are `(469, 654, 972, 256)`. `wfcompanion` renders this rounded shell and reserves empty footer and
-sidebar regions for later metadata. It uses one full-output, click-through layer surface for
+are `(469, 654, 972, 256)`. `wfcompanion` renders this rounded shell, account currency in the
+footer, and available set metadata in reward cards. It uses one full-output layer surface for
 contextual scenes; completed scenes use static SHM content, while relic loading has a bounded
 30 FPS animation. Renderer caches one complete static frame per scene and copies it into the next
 SHM buffer; loading frames redraw only the pulse. Scene, output size, or scale changes replace the
@@ -261,9 +261,10 @@ Game UI scaling affects OCR crops separately from overlay DPI. AlecaFrame reads 
 `csharp/.../OCRHelper.cs::getOCRsettings` scales crop tops/bottoms around normalized screen center
 (`0.5 + scale * (coordinate - 0.5)`) and scales crop width/separation directly. Legacy UI above
 1080 pixels forces scale `0.74`; failed player-count recognition retries the alternate legacy/full
-profile. Port this config reader and crop transform when custom game UI scale support is added.
+profile. Custom game UI scale is not implemented; support requires the same config reader and crop
+transform.
 
-Daemon market service should own:
+Daemon market service owns:
 
 - Warframe Market item-slug mapping.
 - Deduplicated concurrent fetches and bounded request queue.
@@ -281,8 +282,8 @@ public limit is three requests per second and no documented batch quote endpoint
 so requests must pass through one daemon queue with coalescing and caching. Do not derive
 AlecaFrame's historical `volume` field until a supported public source is documented.
 
-Inventory, mastery, relic planning, order management, and history belong in a separate desktop
-interface using the same daemon services. They must not be embedded in overlay rendering code.
+Inventory, mastery, relic planning, order management, and history belong in graphical clients
+using the same daemon services. They must not be embedded in overlay rendering code.
 
 ## Safety Boundary
 
@@ -312,9 +313,8 @@ This deliberately does not reproduce Overwolf's injection mechanism. Wayland lay
 meets game-only, fullscreen, and performance requirements without entering Warframe's
 process or graphics stack.
 
-Existing DBWIN and `EE.log` events identify relic-selection and reward-screen lifecycle without
-OCR. A future screen-state collector could read a separately reviewed stable UI object, but no
-such memory surface is currently mapped or permitted; visual labels still require local capture
+DBWIN and `EE.log` events identify relic-selection and reward-screen lifecycle without OCR. No
+screen-state memory collector is part of the allowed boundary; visual labels use local capture
 and OCR.
 
 ## Local Evidence Map

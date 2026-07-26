@@ -1,8 +1,8 @@
 # wfcli
 
-`wfcli` is a Warframe data toolkit built around a persistent Erlang/OTP daemon. One daemon owns
-network access, caching, parsing, queries, watches, market requests, local player observations,
-and Forma planning. The command-line client, MCP server, and Linux companion reuse that state.
+`wfcli` is a Warframe data toolkit for the terminal, MCP clients, and a Linux/Proton in-game
+companion. A shared Erlang/OTP daemon owns network access, caches, queries, watches, Warframe
+Market requests, local player observations, and Forma planning.
 
 ## Components
 
@@ -13,9 +13,9 @@ and Forma planning. The command-line client, MCP server, and Linux companion reu
 | [`wfcompanion`](docs/companion.md) | Native Linux/Proton observer and Wayland overlay. It publishes local player observations and displays contextual data such as relic prices. |
 | [`wfcore`](docs/developer/shared_utilities.md) | Process-free OTP library containing shared protocols, schemas, paths, and value helpers. |
 
-Clients start `wfdaemon` on demand. Concurrent clients reuse its parsed snapshots and serialized
-network work. An implicitly started daemon stops after an idle timeout; an explicitly started or
-login-managed daemon remains active according to its configured policy.
+Clients start `wfdaemon` when needed. Concurrent clients reuse its parsed data and rate-limited
+network work. The daemon normally stops after becoming idle; explicit start and login autostart
+can keep it running.
 
 ## Requirements
 
@@ -40,7 +40,7 @@ Companion runtime:
 FFmpeg with `libvpx-vp9` is required only for animated overlay previews. `zip` is required by
 `make package`.
 
-## Build
+## Build From Source
 
 Build both development and production trees:
 
@@ -62,7 +62,7 @@ relx daemon release:
 make prod
 ```
 
-Generated files use three roots:
+Generated files use these roots:
 
 ```text
 _build/   Rebar3 and Cargo compiler output
@@ -96,9 +96,8 @@ make package
 bridge, and the MinGW debug-output helper. Tracked VSCode settings use that database and the root
 Cargo workspace automatically.
 
-`make package` writes `.tar.gz` and `.zip` archives under `releases/`. The production tree uses a
-stable installation layout with executables under `bin/` and private runtime files under
-`libexec/`.
+`make package` writes `.tar.gz` and `.zip` archives under `releases/`. Production executables
+live under `prod/bin/`; private runtime files live under `prod/libexec/`.
 
 `wfcompaniond` displays a small diagnostics HUD while Warframe is active. It reports daemon,
 game-observer, debug-output, and relic-scene state. Production `wfcompanion` does not display this
@@ -168,21 +167,21 @@ See [Daemon lifecycle and updates](docs/daemon.md).
 
 ### Linux Companion
 
-```bash
-wfcli companion start
-wfcli companion status
-wfcli companion show
-wfcli companion hud show
-wfcli companion stop
+Steam launch mode is preferred because it starts and stops the companion with Warframe and gives
+the read-only player-data collector the required process relationship. In Steam, open
+**Warframe > Properties > General > Launch Options** and set:
 
-wfcli companion install --dry-run
-wfcli companion install
-wfcli companion uninstall
+```bash
+/absolute/path/to/wfcli/prod/bin/wfcompanion launch -- %command%
 ```
 
-Diagnostics and overlay previews:
+Use `wfcli companion start` only for standalone operation. Lifecycle, visibility, diagnostics,
+and overlay previews remain available through the CLI:
 
 ```bash
+wfcli companion status
+wfcli companion show
+wfcli companion hide
 wfcli companion probe
 wfcli companion screenshot ./capture.png
 wfcli companion relic-ocr ./capture.png
@@ -190,10 +189,8 @@ wfcli companion preview relic-rewards
 wfcli companion preview --all
 ```
 
-The companion receives Warframe debug output through a small Wine DBWIN helper, uses `EE.log` as
-a fallback, captures reward screens only when needed, and renders a native Wayland overlay that is
-click-through outside its focus-scoped interaction mode. See
-[Linux/Proton companion](docs/companion.md).
+See [Linux/Proton companion](docs/companion.md) for launch options, runtime dependencies,
+interaction controls, player data, and troubleshooting.
 
 ### MCP
 
