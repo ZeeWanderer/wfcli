@@ -1,0 +1,1 @@
+-record(ws, {raw, index=[], opts=#{}}).

@@ -1,0 +1,22 @@
+item:
+  name: "Unslotted Frame"
+  type: warframe
+  capacity: 30
+  reactor: false
+  slots: [null, null]
+
+builds:
+  - name: "Primary"
+    mods:
+      - name: "Madurai One"
+        polarity: "V"
+        cost: 16
+      - name: "Vazarin One"
+        polarity: "D"
+        cost: 16
+
+constraints:
+  allow_omni: false
+  allow_umbral_forma: false
+  prefer_omni: false
+  max_forma: 10

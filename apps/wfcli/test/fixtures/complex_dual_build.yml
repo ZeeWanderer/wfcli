@@ -1,0 +1,84 @@
+item:
+  name: "Dual Build Tight Capacity"
+  type: warframe
+  capacity: 30
+  reactor: false
+  aura_slot: "V"
+  exilus_slot: null
+  slots: ["V", "D", null, null, null, null]
+
+builds:
+  - name: "Build A"
+    mods:
+      - name: "Madurai Heavy"
+        polarity: "V"
+        cost: 16
+        slot: 1
+      - name: "Vazarin Guard"
+        polarity: "D"
+        cost: 14
+        slot: 2
+      - name: "Madurai Core"
+        polarity: "V"
+        cost: 16
+        slot: 3
+      - name: "Vazarin Core"
+        polarity: "D"
+        cost: 16
+        slot: 4
+      - name: "Madurai Strike"
+        polarity: "V"
+        cost: 10
+        slot: 5
+      - name: "Vazarin Shroud"
+        polarity: "D"
+        cost: 10
+        slot: 6
+      - name: "Aura V"
+        polarity: "V"
+        cost: 14
+        slot: aura
+      - name: "Exilus Dash"
+        polarity: "-"
+        cost: 6
+        slot: exilus
+  - name: "Build B"
+    mods:
+      - name: "Madurai Strike B"
+        polarity: "V"
+        cost: 14
+        slot: 1
+      - name: "Vazarin Ward B"
+        polarity: "D"
+        cost: 12
+        slot: 2
+      - name: "Vazarin Wave"
+        polarity: "D"
+        cost: 14
+        slot: 3
+      - name: "Zenirik Flow B"
+        polarity: "="
+        cost: 12
+        slot: 4
+      - name: "Dash Speed"
+        polarity: "-"
+        cost: 10
+        slot: 5
+      - name: "Zenirik Core"
+        polarity: "="
+        cost: 12
+        slot: 6
+      - name: "Aura V"
+        polarity: "V"
+        cost: 14
+        slot: aura
+      - name: "Exilus Zen"
+        polarity: "="
+        cost: 6
+        slot: exilus
+
+constraints:
+  allow_omni: true
+  allow_umbral_forma: false
+  prefer_omni: false
+  max_forma: 8

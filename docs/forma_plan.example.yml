@@ -1,0 +1,38 @@
+# Forma-plan YAML example
+item:
+  name: "Example Frame"
+  type: warframe            # warframe | weapon | companion | melee | necramech
+  capacity: 30              # base capacity (max rank)
+  reactor: true             # reactor/catalyst installed doubles capacity
+  aura_slot: "V"            # optional current aura/stance polarity
+  exilus_slot: "D"          # optional current exilus polarity
+  slots: ["V", "D", "O", null, null, null, null, null] # current polarities by index; "O" means Omni Forma
+  # polarity symbols: "V" Madurai, "D" Vazarin, "-" Naramon dash, "=" Zenurik, "U" Umbral, "O" Omni, "P" Penjaga, null for none
+
+builds:
+  - name: "Tank"
+    arcanes:
+      - name: "Arcane Energize"
+        rank: 5
+      - "Arcane Guardian"
+    mods:
+      - name: "Umbral Vitality"
+        polarity: "U"       # Umbral
+        cost: 16
+        slot: 1
+      - name: "Stretch"
+        polarity: "-"
+        cost: 9
+        slot: 2
+  - name: "Range"
+    mods:
+      - name: "Overextended"
+        polarity: "-"
+        cost: 11
+        slot: 3
+
+constraints:
+  allow_omni: false         # Omni Forma usable; counts as 4 Forma + recipe
+  allow_umbral_forma: false # Umbral Forma usable; rare, disallowed by default
+  prefer_omni: false        # bias toward Omni for flexibility
+  max_forma: 6              # optional budget

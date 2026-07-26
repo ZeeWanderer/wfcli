@@ -1,0 +1,5 @@
+[build]
+target-dir = "_build/cargo"
+
+[env]
+CCACHE_DIR = { value = ".cache/ccache", relative = true }

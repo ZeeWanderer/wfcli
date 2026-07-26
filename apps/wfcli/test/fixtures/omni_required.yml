@@ -1,0 +1,26 @@
+item:
+  name: "Conflict Build"
+  type: warframe
+  capacity: 8
+  reactor: false
+  slots: [null]
+
+builds:
+  - name: "Madurai Build"
+    mods:
+      - name: "Madurai Mod"
+        polarity: "V"
+        cost: 10
+        slot: 1
+  - name: "Vazarin Build"
+    mods:
+      - name: "Vazarin Mod"
+        polarity: "D"
+        cost: 10
+        slot: 1
+
+constraints:
+  allow_omni: true
+  allow_umbral_forma: false
+  prefer_omni: false
+  max_forma: 10

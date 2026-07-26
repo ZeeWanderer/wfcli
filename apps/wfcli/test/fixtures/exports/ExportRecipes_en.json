@@ -1,0 +1,17 @@
+{
+  "ExportRecipes": [
+    {
+      "uniqueName": "/Lotus/Types/Items/Test/Recipe",
+      "resultType": "/Lotus/Weapons/Test/TestGun",
+      "buildPrice": 15000,
+      "buildTime": 3600,
+      "skipBuildTimePrice": 20,
+      "ingredients": [
+        {"ItemType": "/Lotus/Resources/Test/Alloy", "ItemCount": 5}
+      ],
+      "secretIngredients": [],
+      "num": 1,
+      "consumeOnUse": false
+    }
+  ]
+}

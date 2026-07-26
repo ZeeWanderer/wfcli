@@ -1,0 +1,22 @@
+{
+  "ExportWeapons": [
+    {
+      "uniqueName": "/Lotus/Weapons/Test/TestGun",
+      "name": "Test Gun",
+      "description": "A test weapon.",
+      "productCategory": "Pistols",
+      "masteryReq": 9,
+      "totalDamage": 40,
+      "criticalChance": 0.1,
+      "criticalMultiplier": 2.0,
+      "procChance": 0.2,
+      "trigger": "SEMI",
+      "fireRate": 2.5,
+      "magazineSize": 10,
+      "reloadTime": 1.2,
+      "accuracy": 25.0,
+      "noise": "ALARMING",
+      "damagePerShot": 40
+    }
+  ]
+}

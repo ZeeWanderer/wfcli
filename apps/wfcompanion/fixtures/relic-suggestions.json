@@ -1,0 +1,37 @@
+{
+  "trace_count": 1842,
+  "items": [
+    {
+      "name": "Axi A18",
+      "amount_owned": 7,
+      "vaulted": false,
+      "favorite": true,
+      "expected_platinum": 18,
+      "expected_ducats": 31
+    },
+    {
+      "name": "Axi G15",
+      "amount_owned": 3,
+      "vaulted": true,
+      "favorite": false,
+      "expected_platinum": 16,
+      "expected_ducats": 42
+    },
+    {
+      "name": "Axi L7",
+      "amount_owned": 12,
+      "vaulted": false,
+      "favorite": false,
+      "expected_platinum": 14,
+      "expected_ducats": 36
+    },
+    {
+      "name": "Axi S17",
+      "amount_owned": 2,
+      "vaulted": true,
+      "favorite": true,
+      "expected_platinum": 13,
+      "expected_ducats": 48
+    }
+  ]
+}

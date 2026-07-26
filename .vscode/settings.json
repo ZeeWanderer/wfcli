@@ -1,0 +1,12 @@
+{
+  "rust-analyzer.linkedProjects": [
+    "Cargo.toml"
+  ],
+  "rust-analyzer.cargo.targetDir": "_build/rust-analyzer",
+  "clangd.arguments": [
+    "--background-index",
+    "--compile-commands-dir=${workspaceFolder}/_build/native/clangd",
+    "--query-driver=**/x86_64-w64-mingw32-*"
+  ],
+  "C_Cpp.intelliSenseEngine": "disabled"
+}

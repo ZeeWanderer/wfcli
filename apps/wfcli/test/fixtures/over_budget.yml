@@ -1,0 +1,20 @@
+item:
+  name: "Budget Tight"
+  type: warframe
+  capacity: 10
+  reactor: false
+  slots: [null]
+
+builds:
+  - name: "Costly"
+    mods:
+      - name: "Big Mod"
+        polarity: "V"
+        cost: 20
+        slot: 1
+
+constraints:
+  allow_omni: false
+  allow_umbral_forma: false
+  prefer_omni: false
+  max_forma: 0

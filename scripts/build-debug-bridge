@@ -1,0 +1,16 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+source_file="$root/apps/wfcompanion/debug-bridge/debug_output.c"
+output="${1:-$root/_build/native/wfcompanion-debug-output.exe}"
+compiler="${WFCOMPANION_MINGW_CC:-$(command -v x86_64-w64-mingw32-gcc || true)}"
+
+if [[ -z "$compiler" ]]; then
+    printf '%s\n' 'x86_64-w64-mingw32-gcc not found; install mingw-w64' >&2
+    exit 1
+fi
+
+mkdir -p "$(dirname "$output")"
+"$compiler" -std=c11 -Os -Wall -Wextra -Werror -s "$source_file" -o "$output"
+printf '%s\n' "$output"

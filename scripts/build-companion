@@ -1,0 +1,38 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+mode="${1:-dev}"
+manifest="$root/apps/wfcompanion/Cargo.toml"
+target_dir="${CARGO_TARGET_DIR:-$root/_build/cargo}"
+stage="$root/$mode"
+debug_bridge="$stage/libexec/wfcompanion-debug-output.exe"
+escript_bin="$(command -v escript || true)"
+spectacle_bin="$(command -v spectacle || true)"
+tesseract_bin="$(command -v tesseract || true)"
+
+case "$mode" in
+    dev)
+        cargo_profile=debug
+        cargo_args=()
+        ;;
+    prod)
+        cargo_profile=release
+        cargo_args=(--release)
+        ;;
+    *)
+        printf 'usage: %s dev|prod\n' "$0" >&2
+        exit 2
+        ;;
+esac
+
+mkdir -p "$stage/bin" "$stage/libexec"
+"$root/scripts/build-debug-bridge" "$debug_bridge"
+WFCOMPANION_BUILD_ESCRIPT="$escript_bin" \
+    WFCOMPANION_BUILD_DEBUG_BRIDGE="$debug_bridge" \
+    WFCOMPANION_BUILD_SPECTACLE="$spectacle_bin" \
+    WFCOMPANION_BUILD_TESSERACT="$tesseract_bin" \
+    CARGO_TARGET_DIR="$target_dir" \
+    cargo build "${cargo_args[@]}" --locked --manifest-path "$manifest"
+install -m 0755 "$target_dir/$cargo_profile/wfcompanion" "$stage/bin/wfcompanion"
+printf '%s\n' "$stage/bin/wfcompanion"

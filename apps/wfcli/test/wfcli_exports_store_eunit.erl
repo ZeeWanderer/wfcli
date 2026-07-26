@@ -1,0 +1,169 @@
+%%%-------------------------------------------------------------------
+%% EUnit tests for persistent export query store.
+%%%-------------------------------------------------------------------
+-module(wfcli_exports_store_eunit).
+
+-include_lib("eunit/include/eunit.hrl").
+
+queued_query_reuses_parsed_dataset_test() ->
+    Started = setup_stores(),
+    try
+        Request = catalog_request("mods",
+          ["--exports-dir", fixture_exports(), "--limit", "5"]),
+        Result1 = submit_and_wait(Request),
+        Results1 = maps:get(results, Result1),
+        ?assert(maps:get(shown, Results1) > 0),
+        ?assert(length(maps:get(slice, Results1)) > 0),
+        ?assertEqual(1, maps:get(cached_datasets, wfcli_exports_store:status())),
+        Result2 = submit_and_wait(Request),
+        ?assertEqual(maps:get(results, Result1), maps:get(results, Result2)),
+        ?assertEqual(1, maps:get(cached_datasets, wfcli_exports_store:status()))
+    after
+        cleanup_stores(Started)
+    end.
+
+queued_catalogs_cache_built_entities_test() ->
+    Started = setup_stores(),
+    try
+        ItemRequest = catalog_request("items",
+          ["--exports-dir", fixture_exports(),
+           "--file", "ExportFlavour_en.json", "visible"]),
+        ItemResult = submit_and_wait(ItemRequest),
+        ?assertEqual(1, maps:get(total, maps:get(results, ItemResult))),
+        EnemyRequest = catalog_request("enemies",
+          ["--knowledge-dir", fixture_knowledge(), "lancer"]),
+        EnemyResult1 = submit_and_wait(EnemyRequest),
+        EnemyResult2 = submit_and_wait(EnemyRequest),
+        ?assertEqual(maps:get(results, EnemyResult1), maps:get(results, EnemyResult2)),
+        Status = wfcli_exports_store:status(),
+        ?assertEqual(2, maps:get(cached_catalogs, Status)),
+        ?assertEqual(2, maps:get(cached_datasets, Status))
+    after
+        cleanup_stores(Started)
+    end.
+
+code_change_discards_obsolete_cache_shapes_test() ->
+    CurrentKey = {4, entities, mods, undefined, false},
+    OldKey = {entities, mods, undefined, false},
+    State = #{cache => #{CurrentKey => current, OldKey => old}},
+    {ok, Updated} = wfcli_exports_store:code_change(undefined, State, undefined),
+    ?assertEqual(#{CurrentKey => current}, maps:get(cache, Updated)).
+
+malformed_typed_query_does_not_crash_store_test() ->
+    Started = setup_stores(),
+    try
+        Request = #{source => exports, command => "mods", query => malformed,
+                    cwd => filename:absname(".")},
+        {error, {catalog_query_failed, error, {badmap, malformed}}} = submit_and_wait_reply(Request),
+        ?assert(is_map(wfcli_exports_store:status()))
+    after
+        cleanup_stores(Started)
+    end.
+
+query_client_exit_cancels_running_catalog_work_test() ->
+    Started = setup_stores(),
+    QueryStarted = start_query_service(),
+    TestPid = self(),
+    ExecuteFun = fun(_Request, State) ->
+        TestPid ! {catalog_worker_started, self()},
+        receive continue -> {{ok, ignored}, State} end
+    end,
+    application:set_env(wfdaemon, daemon_catalog_execute_fun, ExecuteFun),
+    Client = spawn(fun() -> receive stop -> ok end end),
+    try
+        {ok, _Ref} = wfcli_query_service:submit(
+                       Client, #{query_tokens => ["dataset=mods", "test"]}),
+        Worker = receive
+            {catalog_worker_started, Pid} -> Pid
+        after 1000 ->
+            ?assert(false)
+        end,
+        WorkerMonitor = erlang:monitor(process, Worker),
+        exit(Client, kill),
+        receive
+            {'DOWN', WorkerMonitor, process, Worker, killed} -> ok
+        after 1000 ->
+            ?assert(false)
+        end,
+        wait_until_idle(wfcli_query_service, 100),
+        wait_until_idle(wfcli_exports_store, 100)
+    after
+        case is_process_alive(Client) of true -> exit(Client, kill); false -> ok end,
+        application:unset_env(wfdaemon, daemon_catalog_execute_fun),
+        cleanup_query_service(QueryStarted),
+        cleanup_stores(Started)
+    end.
+
+submit_and_wait(Request) ->
+    {ok, Result} = submit_and_wait_reply(Request),
+    Result.
+
+submit_and_wait_reply(Request) ->
+    {ok, Ref} = wfcli_exports_store:submit(self(), Request),
+    receive
+        {wfcli_daemon, Ref, Reply} -> Reply
+    after 5000 ->
+        ?assert(false)
+    end.
+
+catalog_request(Command, Args) when Command =:= "mods"; Command =:= "items" ->
+    {ok, Query} = wfcli_exports_cli:parse_request(Command, Args),
+    #{source => exports, command => Command, query => Query, cwd => filename:absname(".")};
+catalog_request(Command, Args) ->
+    {ok, Query} = wfcli_knowledge_cli:parse_request(Command, Args),
+    #{source => exports, command => Command, query => Query, cwd => filename:absname(".")}.
+
+fixture_exports() ->
+    filename:join(["apps", "wfcli", "test", "fixtures", "exports"]).
+
+fixture_knowledge() ->
+    filename:join(["apps", "wfcli", "test", "fixtures", "knowledge"]).
+
+setup_stores() ->
+    application:set_env(wfdaemon, daemon_idle_shutdown, false),
+    WorldstateStarted = case whereis(wfcli_worldstate_service) of
+        undefined -> {ok, _} = wfcli_worldstate_service:start_link(), true;
+        _ -> false
+    end,
+    ExportStarted = case whereis(wfcli_exports_store) of
+        undefined -> {ok, _} = wfcli_exports_store:start_link(), true;
+        _ -> false
+    end,
+    SourceStarted = case whereis(wfcli_source_manager) of
+        undefined -> {ok, _} = wfcli_source_manager:start_link(), true;
+        _ -> false
+    end,
+    {WorldstateStarted, ExportStarted, SourceStarted}.
+
+cleanup_stores({WorldstateStarted, ExportStarted, SourceStarted}) ->
+    case SourceStarted of
+        true -> gen_server:stop(wfcli_source_manager);
+        false -> ok
+    end,
+    case ExportStarted of
+        true -> gen_server:stop(wfcli_exports_store);
+        false -> ok
+    end,
+    case WorldstateStarted of
+        true -> gen_server:stop(wfcli_worldstate_service);
+        false -> ok
+    end.
+
+start_query_service() ->
+    case whereis(wfcli_query_service) of
+        undefined -> {ok, _Pid} = wfcli_query_service:start_link(), true;
+        _Pid -> false
+    end.
+
+cleanup_query_service(true) -> gen_server:stop(wfcli_query_service);
+cleanup_query_service(false) -> ok.
+
+wait_until_idle(_Module, 0) ->
+    ?assert(false);
+wait_until_idle(Module, Attempts) ->
+    case Module:status() of
+        #{processing := false, queued := 0} -> ok;
+        _ ->
+            timer:sleep(10),
+            wait_until_idle(Module, Attempts - 1)
+    end.

@@ -1,0 +1,25 @@
+# AGENTS
+
+Agent-only notes. User-facing docs start in `README.md` and continue in the linked
+guides under `docs/`.
+
+## Workflow
+- Use `$caveman`. Preserve full technical meaning while removing token waste.
+  Keep code, exact errors, commit messages, and user-facing documentation in their
+  normal forms.
+- Keep tests in sync with expected outputs; CT suite lives under `apps/wfcli/test`.
+- Run tests after code, fixture, build, or behavior changes (at minimum
+  `./scripts/test-quiet ct`). Documentation-only edits do not require tests.
+- Use `./scripts/test-quiet eunit` for EUnit. It suppresses passing noise and keeps
+  a full `/tmp` log only on failure; use direct `rebar3` only when debugging.
+- Run `make dev-erlang` before testing `./wfclid`; run `make prod-erlang` before
+  testing `./wfcli`. Both commands refresh the escript and relx daemon release.
+- Run `make dev-companion` or `make prod-companion` after companion code, native
+  bridge, asset, or build metadata changes.
+- After tests pass, manually exercise updated CLI commands yourself (not just via tests).
+- Add new tests whenever new functionality is added; update fixtures alongside expected outputs.
+- `rebar3 ct` emits a warning about `-compile(export_all)` in `apps/wfcli/test/wfcli_forma_plan_SUITE.erl`; tests still pass.
+
+## Reference
+- See `README.md` for the command overview and its linked user guides for detailed
+  usage, configuration, query, data-source, and daemon notes.

@@ -1,0 +1,224 @@
+# wfcli
+
+`wfcli` is a Warframe data toolkit built around a persistent Erlang/OTP daemon. One daemon owns
+network access, caching, parsing, queries, watches, market requests, local player observations,
+and Forma planning. The command-line client, MCP server, and Linux companion reuse that state.
+
+## Components
+
+| Component | Role |
+| --- | --- |
+| [`wfcli`](#command-line-client) | Terminal client and stdio MCP server. It parses arguments and formats data returned by the daemon. |
+| [`wfdaemon`](docs/daemon.md) | Supervised OTP service for data, persistence, queries, watches, market access, player state, and planning. |
+| [`wfcompanion`](docs/companion.md) | Native Linux/Proton observer and Wayland overlay. It publishes local player observations and displays contextual data such as relic prices. |
+| [`wfcore`](docs/developer/shared_utilities.md) | Process-free OTP library containing shared protocols, schemas, paths, and value helpers. |
+
+Clients start `wfdaemon` on demand. Concurrent clients reuse its parsed snapshots and serialized
+network work. An implicitly started daemon stops after an idle timeout; an explicitly started or
+login-managed daemon remains active according to its configured policy.
+
+## Requirements
+
+CLI and daemon:
+
+- Erlang/OTP 29
+- Rebar3
+- GNU Make
+
+Companion build:
+
+- Rust and Cargo
+- Git, CMake, a C/C++ compiler, and `jq`
+- MinGW-w64 for the Proton debug-output helper
+- `ccache` is optional
+
+Companion runtime:
+
+- KDE Plasma on Wayland, KScreen, and Spectacle
+- Tesseract 5 with English `eng.traineddata`
+
+FFmpeg with `libvpx-vp9` is required only for animated overlay previews. `zip` is required by
+`make package`.
+
+## Build
+
+Build both development and production trees:
+
+```bash
+git submodule update --init
+make build
+```
+
+Development build with debug information and host Erlang runtime:
+
+```bash
+make dev
+```
+
+Production build with optimized Rust, stripped Erlang debug information, and a self-contained
+relx daemon release:
+
+```bash
+make prod
+```
+
+Generated files use three roots:
+
+```text
+_build/   Rebar3 and Cargo compiler output
+.cache/   Rebar3 downloads and ccache data
+dev/      staged development executables and release
+prod/     staged production executables and release
+```
+
+Root links make both environments directly usable when the repository is on `PATH`:
+
+| Development | Production |
+| --- | --- |
+| `wfclid` | `wfcli` |
+| `wfdaemond` | `wfdaemon` |
+| `wfcompaniond` | `wfcompanion` |
+
+Useful targets:
+
+```bash
+make dev-erlang
+make prod-erlang
+make dev-companion
+make prod-companion
+make native-compile-commands
+make test
+make check
+make package
+```
+
+`make native-compile-commands` prepares clangd metadata for Blend2D, AsmJit, the native renderer
+bridge, and the MinGW debug-output helper. Tracked VSCode settings use that database and the root
+Cargo workspace automatically.
+
+`make package` writes `.tar.gz` and `.zip` archives under `releases/`. The production tree uses a
+stable installation layout with executables under `bin/` and private runtime files under
+`libexec/`.
+
+`wfcompaniond` displays a small diagnostics HUD while Warframe is active. It reports daemon,
+game-observer, debug-output, and relic-scene state. Production `wfcompanion` does not display this
+HUD.
+
+## Command-Line Client
+
+Focused commands provide common views without requiring query syntax:
+
+```bash
+wfcli fissures
+wfcli alerts --watch
+wfcli baro --inventory
+wfcli teshin
+wfcli archimedea
+wfcli market 'saryn prime set'
+```
+
+Use built-in help for the complete command surface:
+
+```bash
+wfcli --help
+wfcli help commands
+wfcli fissures --help
+```
+
+### Queries And Watches
+
+The query language searches worldstate, official exports, optional WFCD data, market metadata,
+and local player observations:
+
+```bash
+wfcli query 'dataset=worldstate type=fissure hard=true'
+wfcli query 'dataset=codex toxin OR heat'
+wfcli query 'dataset=market lowest_sell<50'
+wfcli watch 'dataset=worldstate type=alert'
+```
+
+See [Query language and watches](docs/query.md) for grammar, datasets, paging, raw source access,
+and watch behavior.
+
+### Forma Planning
+
+```bash
+wfcli forma-plan --config ./wisp.yml --visualize
+wfcli visualize --plan ./wisp.plan.yml
+```
+
+Generated files default to the config directory. See
+[Forma planner and visualization](docs/forma-plan.md).
+
+### Daemon Control
+
+Ordinary commands start the daemon automatically. Explicit controls support persistent operation,
+diagnostics, updates, and login startup:
+
+```bash
+wfcli daemon status
+wfcli daemon start
+wfcli daemon start --idle-shutdown
+wfcli daemon autostart enable
+wfcli daemon update
+wfcli daemon stop
+```
+
+See [Daemon lifecycle and updates](docs/daemon.md).
+
+### Linux Companion
+
+```bash
+wfcli companion start
+wfcli companion status
+wfcli companion show
+wfcli companion hud show
+wfcli companion stop
+
+wfcli companion install --dry-run
+wfcli companion install
+wfcli companion uninstall
+```
+
+Diagnostics and overlay previews:
+
+```bash
+wfcli companion probe
+wfcli companion screenshot ./capture.png
+wfcli companion relic-ocr ./capture.png
+wfcli companion preview relic-rewards
+wfcli companion preview --all
+```
+
+The companion receives Warframe debug output through a small Wine DBWIN helper, uses `EE.log` as
+a fallback, captures reward screens only when needed, and renders a native Wayland overlay that is
+click-through outside its focus-scoped interaction mode. See
+[Linux/Proton companion](docs/companion.md).
+
+### MCP
+
+`wfcli mcp` is a newline-delimited stdio MCP server. It starts or reuses `wfdaemon` and returns
+structured data without terminal formatting:
+
+```bash
+codex mcp add wfcli -- /absolute/path/to/wfcli/prod/bin/wfcli mcp
+```
+
+See [MCP server](docs/mcp.md) for tools, resources, and cancellation behavior.
+
+## Documentation
+
+- [`wfcli`](#command-line-client): [data sources](docs/data-sources.md),
+  [query language](docs/query.md), and [Forma planner](docs/forma-plan.md)
+- [`wfdaemon`](docs/daemon.md): lifecycle, idle policy, systemd, and updates
+- [`wfcompanion`](docs/companion.md): Proton observation, OCR, overlay, and diagnostics
+- [`wfcli mcp`](docs/mcp.md): MCP tools and resources
+- [Contributor documentation](docs/DEVELOPER.md): ownership, internals, and workflows
+
+## License
+
+Project code is licensed under Apache-2.0; see [LICENSE.md](LICENSE.md). That license does not grant
+rights to third-party components or Digital Extremes' Warframe assets. Those assets remain under
+the [Warframe Content Policy](https://www.warframe.com/en/contentpolicy). Provenance and license
+notes live beside relevant files under `apps/wfcompanion/vendor/` and
+`apps/wfcompanion/assets/`.

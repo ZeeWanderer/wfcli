@@ -1,0 +1,57 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+source_dir="$root/apps/wfcompanion/native"
+blend2d_dir="$root/apps/wfcompanion/vendor/blend2d"
+asmjit_dir="$root/apps/wfcompanion/vendor/asmjit"
+build_dir="${1:-$root/_build/native/clangd}"
+debug_source="$root/apps/wfcompanion/debug-bridge/debug_output.c"
+debug_compiler="${WFCOMPANION_MINGW_CC:-$(command -v x86_64-w64-mingw32-gcc || true)}"
+
+if [[ ! -f "$blend2d_dir/CMakeLists.txt" || ! -f "$asmjit_dir/CMakeLists.txt" ]]; then
+    printf '%s\n' 'native submodules missing; run git submodule update --init' >&2
+    exit 1
+fi
+if [[ -z "$debug_compiler" ]]; then
+    printf '%s\n' 'x86_64-w64-mingw32-gcc not found; install mingw-w64' >&2
+    exit 1
+fi
+if ! command -v jq >/dev/null; then
+    printf '%s\n' 'jq not found; install jq' >&2
+    exit 1
+fi
+
+cmake \
+    -S "$source_dir" \
+    -B "$build_dir" \
+    -DCMAKE_BUILD_TYPE=Release \
+    -DCMAKE_EXPORT_COMPILE_COMMANDS=ON \
+    -DBLEND2D_DIR="$blend2d_dir" \
+    -DASMJIT_DIR="$asmjit_dir"
+
+database="$build_dir/compile_commands.json"
+merged="$build_dir/compile_commands.merged.json"
+jq \
+    --arg directory "$root" \
+    --arg compiler "$debug_compiler" \
+    --arg source "$debug_source" \
+    --arg output "$build_dir/wfcompanion-debug-output.exe" \
+    '. + [{
+        directory: $directory,
+        file: $source,
+        arguments: [
+            $compiler,
+            "-std=c11",
+            "-Os",
+            "-Wall",
+            "-Wextra",
+            "-Werror",
+            $source,
+            "-o",
+            $output
+        ]
+    }]' \
+    "$database" > "$merged"
+mv "$merged" "$database"
+printf '%s\n' "$database"

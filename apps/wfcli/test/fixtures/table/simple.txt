@@ -1,0 +1,8 @@
+Name          Type      Effects                             
+------------  --------  ------------------------------------
+Vicious Bond  SENTINEL  Companion melee attacks strip 2.5%  
+                        of enemy armor; spreads to nearby   
+                        enemies within 1.5m.                
+Sepsis Claws  MELEE     +30% Toxin; +30% Status Chance;     
+                        Converts all elemental damage to    
+                        Toxin damage.                       

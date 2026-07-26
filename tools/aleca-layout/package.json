@@ -1,0 +1,11 @@
+{
+  "name": "wfcli-aleca-layout",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "render": "node index.mjs"
+  },
+  "devDependencies": {
+    "playwright-core": "1.57.0"
+  }
+}

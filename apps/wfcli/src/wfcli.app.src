@@ -1,0 +1,17 @@
+{application, wfcli, [
+    {description, "Warframe command-line interface"},
+    {vsn, {file, "../../VERSION"}},
+    {registered, []},
+    {applications, [
+        kernel,
+        stdlib,
+        wfcore,
+        crypto,
+        yamerl,
+        jsone
+    ]},
+    {env, []},
+    {modules, []},
+    {licenses, ["Apache-2.0"]},
+    {links, []}
+ ]}.

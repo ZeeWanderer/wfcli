@@ -1,0 +1,21 @@
+{
+  "ExportWarframes": [
+    {
+      "uniqueName": "/Lotus/Powersuits/Test/TestFrame",
+      "name": "Test Frame",
+      "description": "A test frame.",
+      "productCategory": "Suits",
+      "masteryReq": 5,
+      "armor": 100,
+      "health": 150,
+      "shield": 200,
+      "sprintSpeed": 1.1,
+      "power": 100,
+      "stamina": 150,
+      "abilities": [
+        {"name": "Test Ability"},
+        {"name": "Second Ability"}
+      ]
+    }
+  ]
+}

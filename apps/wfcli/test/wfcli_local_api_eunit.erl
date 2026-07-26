@@ -1,0 +1,182 @@
+%%%-------------------------------------------------------------------
+%% EUnit integration coverage for owner-only Unix socket handshake.
+%%%-------------------------------------------------------------------
+-module(wfcli_local_api_eunit).
+
+-include_lib("eunit/include/eunit.hrl").
+
+unix_socket_lifecycle_test_() ->
+    {setup, fun setup/0, fun cleanup/1,
+     fun(State) -> fun() -> lifecycle(State) end end}.
+
+setup() ->
+    Root = filename:join(
+             "/tmp", "wfcli-local-api-" ++ integer_to_list(erlang:unique_integer([positive]))),
+    SocketPath = filename:join(Root, "wfdaemon.sock"),
+    CachePath = filename:join(Root, "player.term"),
+    MarketCache = filename:join(Root, "market.term"),
+    application:set_env(wfdaemon, local_socket, SocketPath),
+    application:set_env(wfdaemon, player_cache, CachePath),
+    application:set_env(wfdaemon, market_cache, MarketCache),
+    application:set_env(wfdaemon, market_request_interval_ms, 0),
+    application:set_env(wfdaemon, market_http_fun, fun market_http/2),
+    application:set_env(wfdaemon, daemon_idle_shutdown, false),
+    {ok, _Worldstate} = wfcli_worldstate_service:start_link(),
+    {ok, _Player} = wfcli_player_service:start_link(),
+    {ok, _Market} = wfcli_market_service:start_link(),
+    {ok, _Api} = wfcli_local_api:start_link(),
+    #{root => Root, socket => SocketPath, cache => CachePath, market_cache => MarketCache}.
+
+cleanup(#{root := Root, socket := SocketPath, cache := CachePath,
+          market_cache := MarketCache}) ->
+    gen_server:stop(wfcli_local_api),
+    gen_server:stop(wfcli_market_service),
+    gen_server:stop(wfcli_player_service),
+    gen_server:stop(wfcli_worldstate_service),
+    application:unset_env(wfdaemon, local_socket),
+    application:unset_env(wfdaemon, player_cache),
+    application:unset_env(wfdaemon, market_cache),
+    application:unset_env(wfdaemon, market_request_interval_ms),
+    application:unset_env(wfdaemon, market_http_fun),
+    application:unset_env(wfdaemon, daemon_idle_shutdown),
+    _ = file:delete(SocketPath),
+    _ = file:delete(CachePath),
+    _ = file:delete(CachePath ++ ".tmp"),
+    _ = file:delete(MarketCache),
+    _ = file:delete(MarketCache ++ ".tmp"),
+    _ = file:del_dir(Root),
+    ok.
+
+lifecycle(#{socket := SocketPath}) ->
+    TestSocket = connect_client(SocketPath, <<"test">>, #{}),
+    ?assertMatch(#{external_activity := 0}, wfcli_worldstate_service:status()),
+    request_market_resolve(TestSocket),
+    reject_invalid_market_resolve(TestSocket),
+    request_market_quote(TestSocket),
+    ok = socket:close(TestSocket),
+
+    CompanionSocket1 = connect_client(
+                         SocketPath, <<"wfcompanion">>,
+                         #{<<"pid">> => 1001, <<"mode">> => <<"standalone">>}),
+    await_external_activity(1, 20),
+    publish_game_running(CompanionSocket1),
+    ?assertMatch(#{game_active := true}, wfcli_player_service:status()),
+    ?assertMatch(#{external_activity := 1}, wfcli_worldstate_service:status()),
+    CompanionSocket2 = connect_client(
+                         SocketPath, <<"wfcompanion">>,
+                         #{<<"pid">> => 1002, <<"mode">> => <<"launch">>}),
+    await_external_activity(2, 20),
+    #{companions := 2, companion_details := Details} = wfcli_local_api:status(),
+    ?assertEqual([<<"launch">>, <<"standalone">>],
+                 lists:sort([maps:get(mode, Detail) || Detail <- Details])),
+    ?assertEqual([1001, 1002], lists:sort([maps:get(os_pid, Detail) || Detail <- Details])),
+    ok = socket:close(CompanionSocket1),
+    await_external_activity(1, 20),
+    ok = socket:close(CompanionSocket2),
+    await_external_activity(0, 20).
+
+connect_client(SocketPath, Client, Extra) ->
+    {ok, Socket} = socket:open(local, stream, default),
+    ok = socket:connect(Socket, #{family => local, path => SocketPath}),
+    Hello = maps:merge(
+              #{<<"op">> => <<"hello">>, <<"id">> => 1,
+                <<"protocol">> => wfcli_local_protocol:protocol_version(),
+                <<"client">> => Client, <<"version">> => <<"test">>},
+              Extra),
+    ok = socket:send(Socket, wfcli_local_protocol:encode(Hello)),
+    {ok, ReplyLine} = socket:recv(Socket, 0, 5000),
+    {ok, Reply} = wfcli_local_protocol:decode(string:trim(ReplyLine)),
+    ?assertEqual(true, maps:get(<<"ok">>, Reply)),
+    ?assertEqual(1, maps:get(<<"id">>, Reply)),
+    ?assert(lists:member(<<"market.resolve">>, maps:get(<<"capabilities">>, Reply))),
+    ?assert(lists:member(<<"relic.recommendations">>,
+                         maps:get(<<"capabilities">>, Reply))),
+    ?assert(lists:member(<<"asset.resolve">>, maps:get(<<"capabilities">>, Reply))),
+    Socket.
+
+publish_game_running(Socket) ->
+    Request = #{<<"op">> => <<"publish">>, <<"id">> => 2,
+                <<"dataset">> => <<"player">>, <<"source">> => <<"game">>,
+                <<"data">> => #{<<"running">> => true}},
+    ok = socket:send(Socket, wfcli_local_protocol:encode(Request)),
+    {ok, ReplyLine} = socket:recv(Socket, 0, 5000),
+    {ok, Reply} = wfcli_local_protocol:decode(string:trim(ReplyLine)),
+    ?assertEqual(true, maps:get(<<"ok">>, Reply)),
+    ?assertEqual(2, maps:get(<<"id">>, Reply)).
+
+request_market_quote(Socket) ->
+    Request = #{<<"op">> => <<"market_quote">>, <<"id">> => 9,
+                <<"items">> => [<<"saryn_prime_set">>]},
+    ok = socket:send(Socket, wfcli_local_protocol:encode(Request)),
+    {ok, ReplyLine} = socket:recv(Socket, 0, 5000),
+    {ok, Reply} = wfcli_local_protocol:decode(string:trim(ReplyLine)),
+    ?assertEqual(true, maps:get(<<"ok">>, Reply)),
+    ?assertEqual(9, maps:get(<<"id">>, Reply)),
+    ?assertEqual(<<"market">>, maps:get(<<"dataset">>, Reply)),
+    Data = maps:get(<<"data">>, Reply),
+    [QuoteRow] = maps:get(<<"quotes">>, Data),
+    Quote = maps:get(<<"quote">>, QuoteRow),
+    ?assertEqual(42, maps:get(<<"lowest_sell">>, Quote)).
+
+request_market_resolve(Socket) ->
+    Request = #{<<"op">> => <<"market_resolve">>, <<"id">> => 8,
+                <<"labels">> => [<<"Saryn Prme Set">>], <<"limit">> => 1},
+    ok = socket:send(Socket, wfcli_local_protocol:encode(Request)),
+    {ok, ReplyLine} = socket:recv(Socket, 0, 5000),
+    {ok, Reply} = wfcli_local_protocol:decode(string:trim(ReplyLine)),
+    ?assertEqual(true, maps:get(<<"ok">>, Reply)),
+    ?assertEqual(8, maps:get(<<"id">>, Reply)),
+    ?assertEqual(<<"market">>, maps:get(<<"dataset">>, Reply)),
+    [Resolution] = maps:get(<<"resolutions">>, maps:get(<<"data">>, Reply)),
+    ?assertEqual(<<"Saryn Prme Set">>, maps:get(<<"label">>, Resolution)),
+    [Best] = maps:get(<<"matches">>, Resolution),
+    ?assertEqual(<<"Saryn Prime Set">>, maps:get(<<"name">>, Best)),
+    ?assertEqual(<<"saryn_prime_set">>, maps:get(<<"slug">>, Best)),
+    ?assertEqual(1, maps:get(<<"distance">>, Best)).
+
+reject_invalid_market_resolve(Socket) ->
+    TooMany = [<<"label">> || _ <- lists:seq(1, 21)],
+    Request1 = #{<<"op">> => <<"market_resolve">>, <<"id">> => 7,
+                 <<"labels">> => TooMany, <<"limit">> => 1},
+    ok = socket:send(Socket, wfcli_local_protocol:encode(Request1)),
+    {ok, ReplyLine1} = socket:recv(Socket, 0, 5000),
+    {ok, Reply1} = wfcli_local_protocol:decode(string:trim(ReplyLine1)),
+    ?assertEqual(false, maps:get(<<"ok">>, Reply1)),
+    ?assertEqual(<<"invalid_market_labels">>, maps:get(<<"error">>, Reply1)),
+
+    Request2 = #{<<"op">> => <<"market_resolve">>, <<"id">> => 6,
+                 <<"labels">> => [<<"Saryn">>], <<"limit">> => 0},
+    ok = socket:send(Socket, wfcli_local_protocol:encode(Request2)),
+    {ok, ReplyLine2} = socket:recv(Socket, 0, 5000),
+    {ok, Reply2} = wfcli_local_protocol:decode(string:trim(ReplyLine2)),
+    ?assertEqual(false, maps:get(<<"ok">>, Reply2)),
+    ?assertEqual(<<"invalid_market_limit">>, maps:get(<<"error">>, Reply2)).
+
+market_http(Url, _Headers) ->
+    Body = case lists:suffix("/v2/items", Url) of
+        true ->
+            #{<<"error">> => null,
+              <<"data">> => [#{<<"id">> => <<"saryn">>,
+                               <<"slug">> => <<"saryn_prime_set">>,
+                               <<"i18n">> => #{<<"en">> =>
+                                                   #{<<"name">> => <<"Saryn Prime Set">>}}},
+                             #{<<"id">> => <<"soma">>,
+                               <<"slug">> => <<"soma_prime_set">>,
+                               <<"i18n">> => #{<<"en">> =>
+                                                   #{<<"name">> => <<"Soma Prime Set">>}}}]};
+        false ->
+            #{<<"error">> => null,
+              <<"data">> => #{<<"sell">> => [#{<<"platinum">> => 42}],
+                                <<"buy">> => [#{<<"platinum">> => 35}]}}
+    end,
+    {ok, 200, jsone:encode(Body)}.
+
+await_external_activity(_Expected, 0) ->
+    ?assert(false);
+await_external_activity(Expected, Attempts) ->
+    case maps:get(external_activity, wfcli_worldstate_service:status()) of
+        Expected -> ok;
+        _ ->
+            timer:sleep(10),
+            await_external_activity(Expected, Attempts - 1)
+    end.

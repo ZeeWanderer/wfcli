@@ -1,0 +1,44 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+mode="${1:-}"
+
+case "$mode" in
+    dev) profile=default ;;
+    prod) profile=prod ;;
+    *)
+        printf 'usage: %s dev|prod\n' "$0" >&2
+        exit 2
+        ;;
+esac
+
+profile_dir="$root/_build/$profile"
+stage="$root/$mode"
+release="$profile_dir/rel/wfdaemon"
+core_ebin="$profile_dir/lib/wfcore/ebin"
+daemon_ebin="$profile_dir/lib/wfdaemon/ebin"
+
+if [[ ! -x "$profile_dir/bin/wfcli" || ! -x "$release/bin/wfdaemon" ]]; then
+    printf 'missing %s Erlang build; run make %s-erlang first\n' "$mode" "$mode" >&2
+    exit 1
+fi
+
+mkdir -p "$stage/bin" "$stage/libexec"
+rm -rf "$stage/libexec/wfdaemon"
+install -m 0755 "$profile_dir/bin/wfcli" "$stage/bin/wfcli"
+cp -a "$release" "$stage/libexec/wfdaemon"
+install -m 0755 "$root/scripts/wfdaemon-wrapper" "$stage/bin/wfdaemon"
+printf '%s\n' "$mode" > "$stage/BUILD_FLAVOR"
+
+identity="$(
+    WFCLI_CORE_EBIN="$core_ebin" WFCLI_DAEMON_EBIN="$daemon_ebin" \
+        erl -pa "$daemon_ebin" -noshell -eval '
+        Dirs = [os:getenv("WFCLI_CORE_EBIN"), os:getenv("WFCLI_DAEMON_EBIN")],
+        {ok, Bundles} = wfcli_hot_update:read_directories(Dirs),
+        {ok, Identity} = wfcli_hot_update:build_identity(Bundles),
+        io:put_chars(Identity),
+        halt().
+    '
+)"
+printf '%s\n' "$identity" > "$stage/BUILD_ID"

@@ -1,0 +1,48 @@
+.rebar3
+_build
+/dev/
+/prod/
+/releases/
+_checkouts
+_vendor
+.eunit
+*.o
+*.beam
+*.plt
+*.swp
+*.swo
+.erlang.cookie
+ebin
+log
+erl_crash.dump
+.rebar
+logs
+.idea
+*.iml
+rebar3.crashdump
+*~
+# IDE / editor
+.vscode/*
+!.vscode/extensions.json
+!.vscode/settings.json
+.DS_Store
+
+# Generated visuals
+*.plan.html
+*.plan.svg
+/previews/
+
+# Tool caches
+.cache/
+.backup/
+/tools/aleca-layout/node_modules/
+.elixir_ls/
+
+# Disposable upstream source used for implementation research
+research/
+
+# Direct Cargo output if project-level target configuration is bypassed
+apps/wfcompanion/target/
+
+# Local metadata (worldstate exports/nodes/languages)
+apps/wfcli/priv/

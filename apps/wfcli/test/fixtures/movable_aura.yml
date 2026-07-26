@@ -1,0 +1,29 @@
+item:
+  name: "Movable Aura"
+  type: warframe
+  capacity: 30
+  reactor: false
+  aura_slot: "V"
+  slots: [null, null]
+
+builds:
+  - name: "Aura Swap"
+    mods:
+      - name: "Aura D"
+        polarity: "D"
+        cost: 24
+        slot: aura
+      - name: "Madurai Main"
+        polarity: "V"
+        cost: 70
+        slot: 1
+      - name: "Extra Cost"
+        polarity: "V"
+        cost: 30
+        slot: 2
+
+constraints:
+  allow_omni: false
+  allow_umbral_forma: false
+  prefer_omni: false
+  max_forma: 5

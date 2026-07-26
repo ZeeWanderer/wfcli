@@ -1,0 +1,44 @@
+item:
+  name: "Wisp"
+  type: warframe
+  capacity: 30
+  reactor: true
+  aura_slot: "V"
+  exilus_slot: null
+  slots: ["V", "V", "-", "D", "-", "V", null, null]
+
+builds:
+  - name: "Cataclism Gate"
+    mods:
+      - name: "Growing Power"
+        slot: aura
+      - name: "Power Drift"
+        slot: exilus
+      - name: "Archon Intensify"
+      - name: "Primed Continuity"
+      - name: "Cataclysmic Gate"
+      - name: "Adaptation"
+      - name: "Augur Secrets"
+      - name: "Transient Fortitude"
+      - name: "Blind Rage"
+      - name: "Energy Conversion"
+  - name: "Flowers"
+    mods:
+      - name: "Growing Power"
+        slot: aura
+      - name: "Power Drift"
+        slot: exilus
+      - name: "Archon Stretch"
+      - name: "Archon Intensify"
+      - name: "Primed Continuity"
+      - name: "Archon Flow"
+      - name: "Augur Secrets"
+      - name: "Transient Fortitude"
+      - name: "Blind Rage"
+      - name: "Energy Conversion"
+
+constraints:
+  allow_omni: true
+  allow_umbral_forma: false
+  prefer_omni: false
+  max_forma: 16

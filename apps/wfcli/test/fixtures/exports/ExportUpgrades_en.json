@@ -1,0 +1,30 @@
+{
+  "ExportUpgrades": [
+    {
+      "uniqueName": "/Lotus/Upgrades/Mods/Test/PoisonMod",
+      "name": "Venom Strike",
+      "type": "MELEE",
+      "polarity": "AP_ATTACK",
+      "rarity": "RARE",
+      "baseDrain": 6,
+      "fusionLimit": 5,
+      "compatName": "Swords",
+      "description": ["+Toxin damage."],
+      "levelStats": [
+        {"stats": ["+15% <DT_POISON_COLOR>Toxin"]},
+        {"stats": ["+30% <DT_POISON_COLOR>Toxin"]}
+      ]
+    },
+    {
+      "uniqueName": "/Lotus/Upgrades/Mods/Test/ColdMod",
+      "name": "Frost Bite",
+      "type": "MELEE",
+      "polarity": "AP_DEFENSE",
+      "rarity": "UNCOMMON",
+      "baseDrain": 4,
+      "fusionLimit": 3,
+      "compatName": "Swords",
+      "description": ["+Cold damage."]
+    }
+  ]
+}

@@ -1,0 +1,22 @@
+item:
+  name: "Flexible Slots"
+  type: warframe
+  capacity: 30
+  reactor: false
+  slots: [null, null]
+
+builds:
+  - name: "Flexible Build"
+    mods:
+      - name: "Madurai"
+        polarity: "V"
+        cost: 16
+      - name: "Vazarin"
+        polarity: "D"
+        cost: 10
+
+constraints:
+  allow_omni: false
+  allow_umbral_forma: false
+  prefer_omni: false
+  max_forma: 0

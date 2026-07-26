@@ -1,0 +1,17 @@
+{
+  "ExportFlavour": [
+    {
+      "uniqueName": "/Lotus/Types/Lore/TestVisible",
+      "name": "Visible Codex Entry",
+      "description": "A visible test lore record.",
+      "codexSecret": true,
+      "excludeFromCodex": false
+    },
+    {
+      "uniqueName": "/Lotus/Types/Lore/TestExcluded",
+      "name": "Excluded Codex Entry",
+      "description": "A hidden implementation record.",
+      "excludeFromCodex": true
+    }
+  ]
+}

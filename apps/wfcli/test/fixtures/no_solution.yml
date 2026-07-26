@@ -1,0 +1,30 @@
+item:
+  name: "Impossible Fit"
+  type: warframe
+  capacity: 10
+  reactor: false
+  slots: [null, null]
+
+builds:
+  - name: "High Cost A"
+    mods:
+      - name: "Madurai Burst"
+        polarity: "V"
+        cost: 20
+      - name: "Vazarin Fortify"
+        polarity: "D"
+        cost: 18
+  - name: "High Cost B"
+    mods:
+      - name: "Dash Surge"
+        polarity: "-"
+        cost: 19
+      - name: "Zenirik Flux"
+        polarity: "="
+        cost: 17
+
+constraints:
+  allow_omni: false
+  allow_umbral_forma: false
+  prefer_omni: false
+  max_forma: 10

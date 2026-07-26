@@ -1,0 +1,49 @@
+{
+  "source": "WFCD fixture",
+  "version": "fixture-sha256",
+  "fetchedAt": 1784145600,
+  "entries": [
+    {
+      "name": "Test Lancer",
+      "uniqueName": "/Lotus/Types/Enemies/Grineer/TestLancer",
+      "description": "A fixture Grineer unit.",
+      "type": "Grineer",
+      "faction": null,
+      "health": 100,
+      "shield": 0,
+      "armor": 50,
+      "resistances": [{"type": "Slash"}, {"type": "Heat"}],
+      "drops": [
+        {"location": "Test Mod", "type": "Mod Locations", "rarity": "Rare", "chance": 0.125},
+        {"location": "Ignored Link", "type": "Enemy", "rarity": null, "chance": null}
+      ]
+    },
+    {
+      "name": "Test Drone",
+      "uniqueName": "/Lotus/Types/Enemies/Corpus/TestDrone",
+      "description": "A fixture Corpus unit.",
+      "faction": "Corpus",
+      "type": "Corpus",
+      "health": 60,
+      "shield": 120,
+      "armor": 5,
+      "drops": [
+        {"location": "Test Resource", "type": "Resource Drops", "rarity": "Common", "chance": 2.5}
+      ]
+    },
+    {
+      "name": "Test Lancer",
+      "uniqueName": "/Lotus/Types/Enemies/Grineer/TestLancerLeader",
+      "description": "A fixture Grineer unit.",
+      "type": "Grineer",
+      "health": 100,
+      "shield": 0,
+      "armor": 50,
+      "resistances": [{"type": "Slash"}, {"type": "Heat"}],
+      "drops": [
+        {"location": "Test Mod", "type": "Mod Locations", "rarity": "Rare", "chance": 0.125},
+        {"location": "Ignored Link", "type": "Enemy", "rarity": null, "chance": null}
+      ]
+    }
+  ]
+}

@@ -1,0 +1,11 @@
+item:
+  name: "Invalid Type"
+  type: invalid_type
+  capacity: 10
+  reactor: false
+  slots: []
+
+builds: []
+
+constraints:
+  allow_omni: false

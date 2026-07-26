@@ -1,0 +1,28 @@
+== Table 1 ==
+Type   Name            Effects                                      Notes       
+-----  --------------  -------------------------------------------  ------------
+Mod    Aerial Bond     Airborne kills decrease recovery time and    Companion   
+                       create a cold field; stacks with duration.               
+Mod    Momentous Bond  Killing Eximus grants bonus elemental        Companion   
+                       damage for 30s and reduces recovery time.                
+Event  Void Tide       Rotating missions with modifiers and         Limited time
+                       boosted rewards.                                         
+
+== Table 2 ==
+ID           Summary                   Window                   
+-----------  ------------------------  -------------------------
+EVT-2025-12  Cross-faction alerts      2025-12-28T04:00:00+02:00
+             with boosted void traces                           
+             and bonus drops across                             
+             the system.                                        
+EVT-2025-13  Limited-time bonus for    2025-12-28T06:00:00+02:00
+             archwing missions with                             
+             special modifiers                                  
+             enabled.                                           
+
+== Table 3 ==
+Category  Location      Details                                                           
+--------  ------------  ------------------------------------------------------------------
+Fissure   Tiwaz (Void)  DataPath:/Lotus/Types/Game/Projections/T4VoidProjectionEGold      
+Alert     Hepit (Void)  Reward pack includes credits and relics; expires soon.            
+Sortie    Phorid        Assassination target with boosted armor and elemental resistances.

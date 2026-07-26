@@ -1,0 +1,116 @@
+# Player Data Acquisition
+
+`wfdaemon` owns the canonical `player` dataset. `wfcompanion` collects the local account
+observation through a narrow read-only native collector, indexes stable fields, and publishes
+both the index and untouched raw payload.
+
+## AlecaFrame Finding
+
+AlecaFrame does not acquire Warframe inventory through its own C# code. Its background page asks
+Overwolf Game Events Provider (GEP) for `inventory` and `match_info`, receives
+`match_info.inventory`, and passes the JSON string to `SetWarframeData`.
+
+Evidence in the retained AlecaFrame 2.6.90 research copy:
+
+- `package/web/assets/js/background.js` registers the two GEP features and forwards
+  `info.info.match_info.inventory`.
+- `csharp/.../OverwolfWrapper.cs::SetWarframeData` validates, parses, and caches the payload.
+- `csharp/.../Data/DataHandler.cs::LoadWarframeData` unwraps `InventoryJSON` when present and
+  builds lookup tables.
+- `csharp/.../Data/Types/WarframeRootObject.cs` describes the observed account payload.
+
+The [official Overwolf Warframe event documentation](https://dev.overwolf.com/ow-electron/live-game-data-gep/supported-games/warframe/)
+confirms that `match_info.inventory` contains item types and amounts for the local player. The
+sample application only consumes GEP; it does not publish the Warframe-specific collector.
+
+The retained Overwolf `308.0.14` provider identifies the missing collector as
+`plugins/64/gep_warframeext.dll`. Its native code:
+
+- locates `Warframe.x64.exe` and opens it with access mask `0x410`, process query plus read-only
+  virtual-memory access;
+- walks game memory with `VirtualQueryEx` and `ReadProcessMemory`;
+- watches an in-memory HTTP-response structure, finds JSON containing `LastInventorySync`, and
+  publishes the enclosing value as `game_info.inventory`;
+- watches the in-memory debug log for
+  `ThemedDetailedPurchaseDialog.lua: PopulateInfo->` and publishes the parsed value as
+  `game_info.highlighted`.
+
+The provider imports no `WriteProcessMemory` or socket/HTTP APIs. This supports an external
+read-only memory scanner rather than packet interception. Reproducible decompiler output,
+hashes, and the untouched provider package are retained under `research/overwolf/`.
+
+`apps/wfcompanion/src/inventory.rs` reproduces only the inventory path from the Linux host. It
+opens `/proc/<game-pid>/mem` read-only, finds the HTTP manager through the same masked executable
+signature, and follows the bounded retained-response ring even after its active count reaches
+zero. It reads only valid Warframe string descriptors, rejects payloads without
+`LastInventorySync`, and caps payloads at `0x4e2000` bytes.
+
+Launch mode makes `wfcompanion` the game process's ancestor, satisfying normal Linux ptrace
+restrictions without debugger attachment or elevated privileges. The collector does not inject,
+write game memory, intercept networking, or collect Overwolf's separate highlighted-item event.
+It remains version-sensitive; failure must disable player enrichment without affecting
+worldstate, CLI, or overlay operation.
+
+## Payload Semantics
+
+The account payload contains more than stack counts. AlecaFrame derives its views by joining these
+records to its static item catalog by internal `ItemType` or unique name.
+
+- Owned equipment comes from arrays such as `Suits`, `LongGuns`, `Pistols`, `Melee`, companions,
+  Archwing equipment, modular equipment, and their equivalents.
+- Stack inventory comes mainly from `MiscItems`, `Recipes`, `RawUpgrades`, `Upgrades`, relics,
+  resources, and consumables. `ItemCount` is the owned quantity.
+- Mastery progress comes from `XPInfo`, equipment-specific XP, `PlayerLevel`, completed normal and
+  Steel Path nodes in `Missions`, junction completion, and Railjack or Duviri ranks in
+  `PlayerSkills`.
+- Foundry state comes from `PendingRecipes`; component ownership is derived by joining recipe
+  components to stack inventory.
+- Other useful state includes focus, affiliations, currencies, slots, challenges, quests,
+  scans, intrinsics, Archon shards, and account timestamps such as `LastInventorySync`.
+
+Owned and mastered are separate facts. An item can be absent from current inventory but remain
+mastered through `XPInfo`. Collection completion is likewise derived: enumerate supported catalog
+items, then join current ownership, historical mastery, pending builds, and component quantities.
+
+Unknown payload fields must survive ingestion. Warframe adds account fields independently of this
+application, so a strict decoder that drops unknown data would make the `player` query surface less
+useful and force updates for unrelated additions.
+
+## Ownership
+
+Collector process:
+
+- Acquires account payload with the read-only Overwolf-compatible native collector.
+- Publishes one versioned raw observation over the local companion socket.
+- Does not calculate collection percentages or persist the canonical snapshot.
+
+`wfdaemon`:
+
+- Stores the raw source namespace in `player.term` with owner-only permissions.
+- Parses known fields while preserving the raw map.
+- Joins account records to daemon-owned item and recipe catalogs.
+- Produces inventory, equipment, mastery, collection, foundry, and summary entities.
+- Publishes one revision so CLI, overlay, and future desktop UI see the same state.
+
+Consumers:
+
+- `wfcli` formats and queries player entities.
+- `wfcompanion` uses only fields needed by contextual overlays.
+- A future desktop UI owns navigation and view state, not account persistence or derivation.
+
+Raw account data must stay on the local authenticated socket. Do not send it over Erlang
+distribution, include it in incident logs, or upload it without explicit informed opt-in.
+
+## Current Contract
+
+The companion observation has schema `1`, collector `native_http_buffer`, collection time, game
+PID, sync value, profile, index, and raw payload. The typed index currently covers equipment,
+stack inventory, mastery records, pending recipes, missions, and player skills. Unknown fields
+remain queryable under `raw`.
+
+`wfdaemon` persists the latest observation in `player.term` with owner-only permissions. Player
+query entities expose profile, inventory, mastery, recipe, mission, and raw rows. Relic reward
+context joins Market set metadata to stack/equipment counts and account platinum or ducats.
+
+Next catalog work should derive broader collection completion and mastery summaries from this
+same snapshot. Do not add another inventory parser or persistence owner.

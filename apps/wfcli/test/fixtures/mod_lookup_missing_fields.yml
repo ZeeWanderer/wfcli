@@ -1,0 +1,18 @@
+item:
+  name: "Lookup Frame"
+  type: warframe
+  capacity: 30
+  reactor: false
+  slots: [null]
+
+builds:
+  - name: "Default"
+    mods:
+      - name: "Gale Kick"
+        slot: 1
+
+constraints:
+  allow_omni: false
+  allow_umbral_forma: false
+  prefer_omni: false
+  max_forma: 10
