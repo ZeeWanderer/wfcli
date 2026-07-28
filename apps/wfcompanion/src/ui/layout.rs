@@ -110,12 +110,7 @@ impl<K: Clone> UiTree<K> {
             )
             .map_err(layout_error)?;
         let mut nodes = Vec::new();
-        self.resolve(
-            root,
-            (origin.0 as f32, origin.1 as f32),
-            None,
-            &mut nodes,
-        )?;
+        self.resolve(root, (origin.0 as f32, origin.1 as f32), None, &mut nodes)?;
         Ok(UiLayout { nodes })
     }
 
@@ -164,15 +159,11 @@ impl<K: Clone> UiTree<K> {
             .tree
             .get_node_context(node)
             .ok_or_else(|| "UI node has no context".to_owned())?;
-        let left = (layout.border.left + layout.padding.left)
-            .round()
-            .max(0.0) as u32;
+        let left = (layout.border.left + layout.padding.left).round().max(0.0) as u32;
         let right = (layout.border.right + layout.padding.right)
             .round()
             .max(0.0) as u32;
-        let top = (layout.border.top + layout.padding.top)
-            .round()
-            .max(0.0) as u32;
+        let top = (layout.border.top + layout.padding.top).round().max(0.0) as u32;
         let bottom = (layout.border.bottom + layout.padding.bottom)
             .round()
             .max(0.0) as u32;

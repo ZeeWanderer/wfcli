@@ -134,14 +134,8 @@ fn build(screen_width: u32, screen_height: u32, item_count: usize) -> Result<Lay
                 width: length(gap as f32),
                 height: length(gap as f32),
             },
-            grid_template_columns: vec![
-                length(card_width as f32),
-                length(card_width as f32),
-            ],
-            grid_template_rows: vec![
-                length(card_height as f32),
-                length(card_height as f32),
-            ],
+            grid_template_columns: vec![length(card_width as f32), length(card_width as f32)],
+            grid_template_rows: vec![length(card_height as f32), length(card_height as f32)],
             ..Default::default()
         },
         &cards,

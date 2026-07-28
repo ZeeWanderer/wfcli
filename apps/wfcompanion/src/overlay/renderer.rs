@@ -65,11 +65,7 @@ impl Renderer {
         }
     }
 
-    pub(super) fn draw_status(
-        &self,
-        painter: &mut Painter<'_>,
-        view: screens::StatusView<'_>,
-    ) {
+    pub(super) fn draw_status(&self, painter: &mut Painter<'_>, view: screens::StatusView<'_>) {
         screens::draw_status(painter, &self.font, view);
     }
 }

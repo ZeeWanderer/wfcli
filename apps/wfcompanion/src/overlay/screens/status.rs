@@ -14,11 +14,7 @@ pub(in crate::overlay) struct View<'a> {
     pub(in crate::overlay) detail: &'a str,
 }
 
-pub(super) fn draw(
-    painter: &mut Painter<'_>,
-    font: &Font,
-    view: View<'_>,
-) {
+pub(super) fn draw(painter: &mut Painter<'_>, font: &Font, view: View<'_>) {
     let x = view.origin.0 * view.scale;
     let y = view.origin.1 * view.scale;
     painter.fill_rounded_rect(

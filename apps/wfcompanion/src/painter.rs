@@ -280,17 +280,16 @@ impl<'a> Painter<'a> {
         if width == 0 || height == 0 {
             return;
         }
-        self.context
-            .fill_a8_mask_rgba32(
-                blend2d::Mask {
-                    coverage,
-                    width,
-                    height,
-                },
-                x,
-                y,
-                blend2d_rgba32(color),
-            );
+        self.context.fill_a8_mask_rgba32(
+            blend2d::Mask {
+                coverage,
+                width,
+                height,
+            },
+            x,
+            y,
+            blend2d_rgba32(color),
+        );
     }
 }
 

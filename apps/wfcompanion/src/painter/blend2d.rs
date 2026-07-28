@@ -229,11 +229,7 @@ impl<'a> Context<'a> {
         self.record("circle stroke", result);
     }
 
-    pub(super) fn blit_scaled_prgb32(
-        &mut self,
-        source: Image<'_>,
-        target: Rect,
-    ) {
+    pub(super) fn blit_scaled_prgb32(&mut self, source: Image<'_>, target: Rect) {
         if self.failed() {
             return;
         }
@@ -279,12 +275,7 @@ impl<'a> Context<'a> {
         self.record("image blit", result);
     }
 
-    pub(super) fn fill_circle_prgb32(
-        &mut self,
-        source: Image<'_>,
-        target: Rect,
-        circle: Circle,
-    ) {
+    pub(super) fn fill_circle_prgb32(&mut self, source: Image<'_>, target: Rect, circle: Circle) {
         if self.failed() {
             return;
         }

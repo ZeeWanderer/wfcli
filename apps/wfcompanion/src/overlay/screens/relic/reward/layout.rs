@@ -235,12 +235,7 @@ pub(super) fn compute(
                 align_items: Some(AlignItems::CENTER),
                 flex_grow: 1.0,
                 grid_template_columns: vec![fr(1.0_f32), fr(1.0_f32)],
-                grid_template_rows: vec![
-                    fr(1.05_f32),
-                    fr(0.77_f32),
-                    fr(0.8_f32),
-                    fr(1.5_f32),
-                ],
+                grid_template_rows: vec![fr(1.05_f32), fr(0.77_f32), fr(0.8_f32), fr(1.5_f32)],
                 ..Default::default()
             },
             &[name, prices, ownership, components],
@@ -327,11 +322,7 @@ pub(super) fn compute(
         },
         &[shell],
     )?;
-    let layout = tree.compute(
-        root,
-        (window.x, window.y),
-        (window.width, window.height),
-    )?;
+    let layout = tree.compute(root, (window.x, window.y), (window.width, window.height))?;
 
     Ok(Layout {
         window,
@@ -348,9 +339,7 @@ pub(super) fn compute(
                 name: layout.bounds(Element::Name(index)),
                 prices: layout.bounds(Element::Prices(index)),
                 platinum: layout.bounds(Element::Platinum(index)),
-                vaulted: spec
-                    .vaulted
-                    .then(|| layout.bounds(Element::Vaulted(index))),
+                vaulted: spec.vaulted.then(|| layout.bounds(Element::Vaulted(index))),
                 ducats: layout.bounds(Element::Ducats(index)),
                 ownership: layout.bounds(Element::Ownership(index)),
                 components: layout.bounds(Element::Components(index)),

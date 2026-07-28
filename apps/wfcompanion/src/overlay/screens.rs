@@ -72,10 +72,6 @@ pub(super) fn draw_animation(
     }
 }
 
-pub(super) fn draw_status(
-    painter: &mut Painter<'_>,
-    font: &Font,
-    view: StatusView<'_>,
-) {
+pub(super) fn draw_status(painter: &mut Painter<'_>, font: &Font, view: StatusView<'_>) {
     status::draw(painter, font, view);
 }

@@ -398,11 +398,7 @@ struct PrimaryPrice<'a> {
     color: [u8; 4],
 }
 
-fn draw_primary_price(
-    painter: &mut Painter<'_>,
-    font: &Font,
-    view: PrimaryPrice<'_>,
-) {
+fn draw_primary_price(painter: &mut Painter<'_>, font: &Font, view: PrimaryPrice<'_>) {
     let value = view
         .price
         .map_or_else(|| "--".to_owned(), |value| value.to_string());
