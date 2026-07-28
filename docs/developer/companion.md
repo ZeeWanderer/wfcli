@@ -26,9 +26,18 @@ daemon data contracts.
 - `relic.rs`: reward trigger debounce, Aleca-derived crop geometry, local Tesseract OCR,
   catalog match scoring, and one daemon relic-context request.
 - `focus.rs`: active XWayland window identity and exact Warframe PID/class gate.
-- `overlay.rs`: Wayland layer-shell lifecycle, typed scene composition, and click-through input region.
-- `painter.rs`: lifetime-safe Blend2D wrapper over the borrowed Wayland SHM buffer.
-- `ui_layout.rs`: Taffy Flexbox/Grid tree and named rectangles consumed by the overlay painter.
+- `overlay/runtime.rs`: Wayland layer-shell, SHM buffers, focus, input, and damage submission.
+- `overlay/renderer.rs`: fonts, static frame cache, scene dispatch, and previews.
+- `overlay/scene.rs`: top-level scene key and presentation state.
+- `overlay/screens/relic.rs`: relic assets and shared scene resources.
+- `overlay/screens/relic/reward.rs`: reward, loading, and error painting.
+- `overlay/screens/relic/reward/layout.rs`: reward Taffy tree and named boxes.
+- `overlay/screens/relic/suggestion.rs`: relic selection painting and hit regions.
+- `overlay/screens/relic/suggestion/layout.rs`: relic selection geometry.
+- `overlay/screens/status.rs`: diagnostic/status panel.
+- `painter.rs`: text layout, image fitting, colors, and high-level drawing operations.
+- `painter/blend2d.rs`: safe lifetime and error boundary over the synchronous Blend2D C bridge.
+- `ui/geometry.rs`: shared rectangles and screen render metadata.
 - `preview.rs`: named mock-overlay registry plus still and optional animated renderers.
 
 Observer work runs off the UI thread. It publishes typed summaries, never raw log content.
@@ -58,9 +67,9 @@ loading alone redraws at no more than 30 FPS. Wayland frame callbacks prevent re
 compositor is not ready; monotonic elapsed time determines animation phase, so throttling and
 dropped frames do not change animation speed.
 The SHM buffer uses `wl_shm::Format::Argb8888`. On little-endian Linux its in-memory bytes are
-premultiplied BGRA, matching Blend2D `PRGB32`. `painter` wraps that memory directly through the
-Blend2D C API; no channel conversion sits between renderer and Wayland. Contexts remain synchronous
-so temporary fontdue A8 glyph masks and decoded icon buffers may be borrowed per draw.
+premultiplied BGRA, matching Blend2D `PRGB32`. `painter::blend2d` wraps that memory directly through
+the Blend2D C API; no channel conversion sits between renderer and Wayland. Contexts remain
+synchronous so temporary fontdue A8 glyph masks and decoded icon buffers may be borrowed per draw.
 Aspect-contained images use Blend2D's native bilinear scaled blit. Circular component thumbnails
 use a transformed Blend2D image pattern to fill circle geometry. Rust computes layout rectangles
 but does not resize or mask overlay pixels.
@@ -102,9 +111,15 @@ above Warframe, unmapped elsewhere, and did not intercept pointer input. See
 
 Contextual scenes temporarily use a full-output transparent layer surface so reward UI can occupy
 game-relative coordinates; status mode remains a small top-left surface. Relic preview/live paths
-share AlecaFrame 2.6.90's default shell and four-row structure. `ui_layout` mirrors its Flexbox/Grid
-tree with Taffy, including content-dependent `space-around` price/marker placement; `overlay` only
-paints returned boxes.
+share AlecaFrame 2.6.90's default shell and four-row structure. Reward layout mirrors its
+Flexbox/Grid tree with Taffy, including content-dependent `space-around` price/marker placement.
+Each screen owns its layout, painting, and semantic hit regions. Runtime routes input through the
+cached render result and does not know screen geometry.
+
+Taffy computes layout; Blend2D paints it. Keep exact screen visuals in the screen module. Add shared
+UI components only after a second screen needs the same element. A retained UI tree may combine
+Taffy nodes with common fill, text, image, clip, and hit payloads when more complex screens require
+it; do not add a separate textual layout language.
 
 `tools/aleca-layout` is a separate development oracle. It loads the ignored AlecaFrame HTML/CSS in
 headless Chromium with Overwolf stubs and writes a transparent reference PNG plus JSON containing

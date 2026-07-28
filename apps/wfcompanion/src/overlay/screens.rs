@@ -1,0 +1,85 @@
+mod relic;
+mod status;
+
+use std::time::Duration;
+
+use fontdue::Font;
+
+use super::scene::Scene;
+use crate::painter::Painter;
+use crate::ui::ScreenOutput;
+
+pub(super) use status::{HEIGHT as STATUS_HEIGHT, INSET as STATUS_INSET, WIDTH as STATUS_WIDTH};
+
+pub(super) struct Assets {
+    relic: relic::Assets,
+}
+
+impl Assets {
+    pub(super) fn load() -> Result<Self, Box<dyn std::error::Error>> {
+        Ok(Self {
+            relic: relic::Assets::load()?,
+        })
+    }
+
+    pub(super) fn cache_relic_scene(&mut self, scene: &crate::relic::Scene) {
+        self.relic.cache_scene(scene);
+    }
+}
+
+pub(super) fn mock_relic_scene() -> crate::relic::Scene {
+    relic::mock_relic_scene()
+}
+
+pub(super) fn draw_static(
+    painter: &mut Painter<'_>,
+    font: &Font,
+    assets: &Assets,
+    scene: &Scene,
+    scale: u32,
+) -> ScreenOutput {
+    match scene {
+        Scene::Relic { content, view } => relic::draw_static_relic_scene(
+            painter,
+            font,
+            &assets.relic,
+            content,
+            relic::View {
+                scale,
+                suggestion_offset: view.suggestion_offset,
+                interaction_active: view.interaction_active,
+                close_hovered: view.close_hovered,
+            },
+        ),
+    }
+}
+
+pub(super) fn draw_animation(
+    painter: &mut Painter<'_>,
+    scene: &Scene,
+    output: &ScreenOutput,
+    scale: u32,
+    elapsed: Duration,
+) {
+    match scene {
+        Scene::Relic { .. } => {
+            if let Some(bounds) = output.animation_bounds {
+                relic::draw_loading_pulse(painter, bounds, scale, elapsed);
+            }
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(super) fn draw_status(
+    painter: &mut Painter<'_>,
+    font: &Font,
+    scale: u32,
+    x: u32,
+    y: u32,
+    daemon: &str,
+    player: &str,
+    detail: &str,
+) {
+    status::draw(painter, font, scale, x, y, daemon, player, detail);
+}

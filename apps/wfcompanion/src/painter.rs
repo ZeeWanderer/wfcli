@@ -1,96 +1,20 @@
-use std::ffi::c_int;
-use std::fmt;
-use std::marker::PhantomData;
-use std::ptr::NonNull;
-
 use fontdue::layout::{
     CoordinateSystem, HorizontalAlign, Layout, LayoutSettings, TextStyle, VerticalAlign,
 };
 use fontdue::{Font, FontSettings};
 use image::RgbaImage;
 
-const BL_SUCCESS: u32 = 0;
-
-#[repr(C)]
-struct WfBlendPainter {
-    _private: [u8; 0],
-}
-
-unsafe extern "C" {
-    fn wf_bl_painter_create(
-        pixels: *mut u8,
-        width: c_int,
-        height: c_int,
-        stride: isize,
-        result_out: *mut u32,
-    ) -> *mut WfBlendPainter;
-    fn wf_bl_painter_destroy(painter: *mut WfBlendPainter) -> u32;
-    fn wf_bl_clear(painter: *mut WfBlendPainter) -> u32;
-    fn wf_bl_fill_round_rect(
-        painter: *mut WfBlendPainter,
-        x: f64,
-        y: f64,
-        width: f64,
-        height: f64,
-        radius: f64,
-        rgba32: u32,
-    ) -> u32;
-    fn wf_bl_stroke_circle(
-        painter: *mut WfBlendPainter,
-        center_x: f64,
-        center_y: f64,
-        radius: f64,
-        stroke_width: f64,
-        rgba32: u32,
-    ) -> u32;
-    fn wf_bl_blit_prgb32(
-        painter: *mut WfBlendPainter,
-        pixels: *const u8,
-        source_width: c_int,
-        source_height: c_int,
-        source_stride: isize,
-        target_x: c_int,
-        target_y: c_int,
-        target_width: c_int,
-        target_height: c_int,
-    ) -> u32;
-    fn wf_bl_fill_circle_prgb32(
-        painter: *mut WfBlendPainter,
-        pixels: *const u8,
-        source_width: c_int,
-        source_height: c_int,
-        source_stride: isize,
-        target_x: c_int,
-        target_y: c_int,
-        target_width: c_int,
-        target_height: c_int,
-        center_x: f64,
-        center_y: f64,
-        radius: f64,
-    ) -> u32;
-    fn wf_bl_fill_a8_mask(
-        painter: *mut WfBlendPainter,
-        coverage: *const u8,
-        width: c_int,
-        height: c_int,
-        stride: isize,
-        target_x: c_int,
-        target_y: c_int,
-        rgba32: u32,
-    ) -> u32;
-}
+mod blend2d;
 
 /// Blend2D painter borrowing a premultiplied BGRA Wayland SHM buffer.
 ///
 /// Blend2D runs synchronously here, so temporary icon and glyph-mask buffers only
 /// need to remain alive for their individual draw calls.
 pub(crate) struct Painter<'a> {
-    handle: Option<NonNull<WfBlendPainter>>,
-    width: u32,
-    height: u32,
-    error: Option<PainterError>,
-    _pixels: PhantomData<&'a mut [u8]>,
+    context: blend2d::Context<'a>,
 }
+
+pub(crate) use blend2d::Error as PainterError;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct TextBox {
@@ -105,92 +29,23 @@ impl TextBox {
     }
 }
 
-#[derive(Debug)]
-pub(crate) struct PainterError {
-    operation: &'static str,
-    code: Option<u32>,
-}
-
-impl PainterError {
-    fn invalid(operation: &'static str) -> Self {
-        Self {
-            operation,
-            code: None,
-        }
-    }
-
-    fn blend2d(operation: &'static str, code: u32) -> Self {
-        Self {
-            operation,
-            code: Some(code),
-        }
-    }
-}
-
-impl fmt::Display for PainterError {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self.code {
-            Some(code) => write!(
-                formatter,
-                "Blend2D {} failed with BLResult {code:#010x}",
-                self.operation
-            ),
-            None => write!(formatter, "invalid Blend2D {} arguments", self.operation),
-        }
-    }
-}
-
-impl std::error::Error for PainterError {}
-
 impl<'a> Painter<'a> {
     pub(crate) fn new(pixels: &'a mut [u8], width: u32, height: u32) -> Result<Self, PainterError> {
-        let width_i32 = i32::try_from(width).map_err(|_| PainterError::invalid("image width"))?;
-        let height_i32 =
-            i32::try_from(height).map_err(|_| PainterError::invalid("image height"))?;
-        let stride = width
-            .checked_mul(4)
-            .and_then(|value| isize::try_from(value).ok())
-            .ok_or_else(|| PainterError::invalid("image stride"))?;
-        let expected_len = usize::try_from(stride)
-            .ok()
-            .and_then(|stride| stride.checked_mul(height as usize))
-            .ok_or_else(|| PainterError::invalid("image dimensions"))?;
-        if pixels.len() < expected_len {
-            return Err(PainterError::invalid("image buffer"));
-        }
-
-        let mut result = BL_SUCCESS;
-        let handle = unsafe {
-            wf_bl_painter_create(
-                pixels.as_mut_ptr(),
-                width_i32,
-                height_i32,
-                stride,
-                &mut result,
-            )
-        };
-        let handle = NonNull::new(handle)
-            .ok_or_else(|| PainterError::blend2d("context creation", result))?;
         Ok(Self {
-            handle: Some(handle),
-            width,
-            height,
-            error: None,
-            _pixels: PhantomData,
+            context: blend2d::Context::new(pixels, width, height)?,
         })
     }
 
     pub(crate) fn width(&self) -> u32 {
-        self.width
+        self.context.width()
     }
 
     pub(crate) fn height(&self) -> u32 {
-        self.height
+        self.context.height()
     }
 
     pub(crate) fn clear(&mut self) {
-        let result = unsafe { wf_bl_clear(self.raw()) };
-        self.record("clear", result);
+        self.context.clear_all();
     }
 
     pub(crate) fn fill_rounded_rect(
@@ -202,27 +57,23 @@ impl<'a> Painter<'a> {
         radius: u32,
         color: [u8; 4],
     ) {
-        if width == 0 || height == 0 || self.error.is_some() {
+        if width == 0 || height == 0 {
             return;
         }
         let radius = radius.min(width / 2).min(height / 2);
-        let result = unsafe {
-            wf_bl_fill_round_rect(
-                self.raw(),
-                f64::from(x),
-                f64::from(y),
-                f64::from(width),
-                f64::from(height),
-                f64::from(radius),
-                blend2d_rgba32(color),
-            )
-        };
-        self.record("rounded rectangle", result);
+        self.context.fill_round_rect_rgba32(
+            f64::from(x),
+            f64::from(y),
+            f64::from(width),
+            f64::from(height),
+            f64::from(radius),
+            blend2d_rgba32(color),
+        );
     }
 
     #[cfg(test)]
     pub(crate) fn fill_panel(&mut self, radius: u32, color: [u8; 4]) {
-        self.fill_rounded_rect(0, 0, self.width, self.height, radius, color);
+        self.fill_rounded_rect(0, 0, self.width(), self.height(), radius, color);
     }
 
     pub(crate) fn draw_ring(
@@ -233,20 +84,16 @@ impl<'a> Painter<'a> {
         stroke: u32,
         color: [u8; 4],
     ) {
-        if stroke == 0 || self.error.is_some() {
+        if stroke == 0 {
             return;
         }
-        let result = unsafe {
-            wf_bl_stroke_circle(
-                self.raw(),
-                f64::from(center_x),
-                f64::from(center_y),
-                f64::from(radius),
-                f64::from(stroke),
-                blend2d_rgba32(color),
-            )
-        };
-        self.record("circle stroke", result);
+        self.context.stroke_circle_rgba32(
+            f64::from(center_x),
+            f64::from(center_y),
+            f64::from(radius),
+            f64::from(stroke),
+            blend2d_rgba32(color),
+        );
     }
 
     pub(crate) fn draw_image(
@@ -260,20 +107,15 @@ impl<'a> Painter<'a> {
         if width == 0 || height == 0 || image.width == 0 || image.height == 0 {
             return;
         }
-        let result = unsafe {
-            wf_bl_blit_prgb32(
-                self.raw(),
-                image.pixels.as_ptr(),
-                image.width as i32,
-                image.height as i32,
-                (image.width * 4) as isize,
-                x as i32,
-                y as i32,
-                width as i32,
-                height as i32,
-            )
-        };
-        self.record("image blit", result);
+        self.context.blit_scaled_prgb32(
+            &image.pixels,
+            image.width,
+            image.height,
+            x,
+            y,
+            width,
+            height,
+        );
     }
 
     pub(crate) fn draw_image_contained(
@@ -306,23 +148,18 @@ impl<'a> Painter<'a> {
         }
         let (draw_width, draw_height) =
             contained_size(image.width, image.height, diameter, diameter);
-        let result = unsafe {
-            wf_bl_fill_circle_prgb32(
-                self.raw(),
-                image.pixels.as_ptr(),
-                image.width as i32,
-                image.height as i32,
-                (image.width * 4) as isize,
-                (x + diameter.saturating_sub(draw_width) / 2) as i32,
-                (y + diameter.saturating_sub(draw_height) / 2) as i32,
-                draw_width as i32,
-                draw_height as i32,
-                f64::from(x) + f64::from(diameter) / 2.0,
-                f64::from(y) + f64::from(diameter) / 2.0,
-                f64::from(diameter) / 2.0,
-            )
-        };
-        self.record("circular image fill", result);
+        self.context.fill_circle_prgb32(
+            &image.pixels,
+            image.width,
+            image.height,
+            x + diameter.saturating_sub(draw_width) / 2,
+            y + diameter.saturating_sub(draw_height) / 2,
+            draw_width,
+            draw_height,
+            f64::from(x) + f64::from(diameter) / 2.0,
+            f64::from(y) + f64::from(diameter) / 2.0,
+            f64::from(diameter) / 2.0,
+        );
     }
 
     pub(crate) fn draw_text(
@@ -345,6 +182,7 @@ impl<'a> Painter<'a> {
         self.draw_glyphs(font, &layout, color);
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn draw_text_vertically_centered(
         &mut self,
         font: &Font,
@@ -389,21 +227,13 @@ impl<'a> Painter<'a> {
         self.draw_glyphs(font, &layout, color);
     }
 
-    pub(crate) fn finish(mut self) -> Result<(), PainterError> {
-        let handle = self.handle.take().expect("Blend2D painter handle");
-        let finish_result = unsafe { wf_bl_painter_destroy(handle.as_ptr()) };
-        if let Some(error) = self.error.take() {
-            return Err(error);
-        }
-        if finish_result != BL_SUCCESS {
-            return Err(PainterError::blend2d("context finish", finish_result));
-        }
-        Ok(())
+    pub(crate) fn finish(self) -> Result<(), PainterError> {
+        self.context.finish()
     }
 
     fn draw_glyphs(&mut self, font: &Font, layout: &Layout, color: [u8; 4]) {
         for glyph in layout.glyphs() {
-            if self.error.is_some() {
+            if self.context.failed() {
                 return;
             }
             let (_metrics, coverage) = font.rasterize_config(glyph.key);
@@ -427,42 +257,11 @@ impl<'a> Painter<'a> {
         y: i32,
         color: [u8; 4],
     ) {
-        if width == 0 || height == 0 || self.error.is_some() {
+        if width == 0 || height == 0 {
             return;
         }
-        let result = unsafe {
-            wf_bl_fill_a8_mask(
-                self.raw(),
-                coverage.as_ptr(),
-                width as i32,
-                height as i32,
-                width as isize,
-                x,
-                y,
-                blend2d_rgba32(color),
-            )
-        };
-        self.record("glyph mask", result);
-    }
-
-    fn raw(&self) -> *mut WfBlendPainter {
-        self.handle.expect("Blend2D painter handle").as_ptr()
-    }
-
-    fn record(&mut self, operation: &'static str, result: u32) {
-        if result != BL_SUCCESS && self.error.is_none() {
-            self.error = Some(PainterError::blend2d(operation, result));
-        }
-    }
-}
-
-impl Drop for Painter<'_> {
-    fn drop(&mut self) {
-        if let Some(handle) = self.handle.take() {
-            unsafe {
-                wf_bl_painter_destroy(handle.as_ptr());
-            }
-        }
+        self.context
+            .fill_a8_mask_rgba32(coverage, width, height, x, y, blend2d_rgba32(color));
     }
 }
 

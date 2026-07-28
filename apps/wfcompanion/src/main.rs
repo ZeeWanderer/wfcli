@@ -13,7 +13,7 @@ mod painter;
 mod preview;
 mod relic;
 mod shortcut;
-mod ui_layout;
+mod ui;
 
 use std::path::PathBuf;
 use std::process::{Command as ProcessCommand, ExitCode};

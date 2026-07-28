@@ -2,6 +2,8 @@ use taffy::TaffyError;
 use taffy::geometry::Rect as TaffyRect;
 use taffy::prelude::*;
 
+use crate::ui::Rect;
+
 const REFERENCE_HEIGHT: f64 = 1080.0;
 const REFERENCE_WIDTH: f64 = 1000.0;
 const REFERENCE_TOP: f64 = 630.0;
@@ -9,52 +11,15 @@ const WINDOW_HEIGHT: u32 = 355;
 const WINDOW_CHROME_WIDTH: u32 = 20;
 const WINDOW_OFFSET: f64 = 15.0;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) struct Rect {
-    pub(crate) x: u32,
-    pub(crate) y: u32,
-    pub(crate) width: u32,
-    pub(crate) height: u32,
-}
-
-impl Rect {
-    pub(crate) fn contains(self, x: f64, y: f64) -> bool {
-        x >= f64::from(self.x)
-            && y >= f64::from(self.y)
-            && x < f64::from(self.x + self.width)
-            && y < f64::from(self.y + self.height)
-    }
-
-    pub(crate) fn scaled(self, scale: u32) -> Self {
-        Self {
-            x: self.x * scale,
-            y: self.y * scale,
-            width: self.width * scale,
-            height: self.height * scale,
-        }
-    }
-
-    pub(crate) fn inset(self, inset: u32) -> Self {
-        let horizontal = inset.saturating_mul(2).min(self.width);
-        let vertical = inset.saturating_mul(2).min(self.height);
-        Self {
-            x: self.x + horizontal / 2,
-            y: self.y + vertical / 2,
-            width: self.width - horizontal,
-            height: self.height - vertical,
-        }
-    }
-}
-
 #[derive(Clone, Copy, Debug)]
-pub(crate) struct RelicCardSpec {
-    pub(crate) platinum_width: f32,
-    pub(crate) ducats_width: f32,
-    pub(crate) vaulted: bool,
-    pub(crate) favorite: bool,
+pub(super) struct CardSpec {
+    pub(super) platinum_width: f32,
+    pub(super) ducats_width: f32,
+    pub(super) vaulted: bool,
+    pub(super) favorite: bool,
 }
 
-impl Default for RelicCardSpec {
+impl Default for CardSpec {
     fn default() -> Self {
         Self {
             platinum_width: 42.0,
@@ -66,29 +31,29 @@ impl Default for RelicCardSpec {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) struct RelicCardLayout {
-    pub(crate) card: Rect,
-    pub(crate) name: Rect,
-    pub(crate) prices: Rect,
-    pub(crate) platinum: Rect,
-    pub(crate) vaulted: Option<Rect>,
-    pub(crate) ducats: Rect,
-    pub(crate) ownership: Rect,
-    pub(crate) components: Rect,
+pub(super) struct CardLayout {
+    pub(super) card: Rect,
+    pub(super) name: Rect,
+    pub(super) prices: Rect,
+    pub(super) platinum: Rect,
+    pub(super) vaulted: Option<Rect>,
+    pub(super) ducats: Rect,
+    pub(super) ownership: Rect,
+    pub(super) components: Rect,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct RelicLayout {
-    pub(crate) window: Rect,
-    pub(crate) shell: Rect,
-    pub(crate) holder: Rect,
-    pub(crate) cards: Rect,
-    pub(crate) footer: Rect,
-    pub(crate) reward_cards: Vec<RelicCardLayout>,
+pub(super) struct Layout {
+    pub(super) window: Rect,
+    pub(super) shell: Rect,
+    pub(super) holder: Rect,
+    pub(super) cards: Rect,
+    pub(super) footer: Rect,
+    pub(super) reward_cards: Vec<CardLayout>,
 }
 
-impl RelicLayout {
-    pub(crate) fn scaled(mut self, scale: u32) -> Self {
+impl Layout {
+    pub(super) fn scaled(mut self, scale: u32) -> Self {
         self.window = self.window.scaled(scale);
         self.shell = self.shell.scaled(scale);
         self.holder = self.holder.scaled(scale);
@@ -99,36 +64,11 @@ impl RelicLayout {
             card.name = card.name.scaled(scale);
             card.prices = card.prices.scaled(scale);
             card.platinum = card.platinum.scaled(scale);
+            card.vaulted = card.vaulted.map(|bounds| bounds.scaled(scale));
             card.ducats = card.ducats.scaled(scale);
             card.ownership = card.ownership.scaled(scale);
             card.components = card.components.scaled(scale);
         }
-        self
-    }
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct RelicSuggestionLayout {
-    pub(crate) shell: Rect,
-    pub(crate) header: Rect,
-    pub(crate) close: Rect,
-    pub(crate) grid: Rect,
-    pub(crate) cards: Vec<Rect>,
-    pub(crate) footer: Rect,
-}
-
-impl RelicSuggestionLayout {
-    pub(crate) fn scaled(mut self, scale: u32) -> Self {
-        self.shell = self.shell.scaled(scale);
-        self.header = self.header.scaled(scale);
-        self.close = self.close.scaled(scale);
-        self.grid = self.grid.scaled(scale);
-        self.footer = self.footer.scaled(scale);
-        self.cards = self
-            .cards
-            .into_iter()
-            .map(|card| card.scaled(scale))
-            .collect();
         self
     }
 }
@@ -144,11 +84,11 @@ struct CardNodes {
     components: NodeId,
 }
 
-pub(crate) fn relic_layout(
+pub(super) fn compute(
     screen_width: u32,
     screen_height: u32,
-    card_specs: &[RelicCardSpec],
-) -> Result<RelicLayout, String> {
+    card_specs: &[CardSpec],
+) -> Result<Layout, String> {
     let window = relic_overlay_bounds(screen_width, screen_height);
     let mut taffy: TaffyTree<()> = TaffyTree::new();
     taffy.disable_rounding();
@@ -432,7 +372,7 @@ pub(crate) fn relic_layout(
     for nodes in card_nodes {
         let card_origin = child_origin(&taffy, nodes.card, holder_origin)?;
         let prices_origin = child_origin(&taffy, nodes.prices, card_origin)?;
-        reward_cards.push(RelicCardLayout {
+        reward_cards.push(CardLayout {
             card: node_rect(&taffy, nodes.card, holder_origin)?,
             name: node_rect(&taffy, nodes.name, card_origin)?,
             prices: node_rect(&taffy, nodes.prices, card_origin)?,
@@ -447,7 +387,7 @@ pub(crate) fn relic_layout(
         });
     }
 
-    Ok(RelicLayout {
+    Ok(Layout {
         window,
         shell: node_rect(&taffy, shell, origin)?,
         holder: holder_rect,
@@ -455,77 +395,6 @@ pub(crate) fn relic_layout(
         footer: node_rect(&taffy, footer, relic_origin)?,
         reward_cards,
     })
-}
-
-pub(crate) fn relic_suggestion_layout(
-    screen_width: u32,
-    screen_height: u32,
-    item_count: usize,
-) -> RelicSuggestionLayout {
-    let margin = 20.min(screen_width / 2).min(screen_height / 2);
-    let width = 480.min(screen_width.saturating_sub(margin));
-    let height = 220.min(screen_height.saturating_sub(margin));
-    let shell = Rect {
-        x: screen_width.saturating_sub(width + margin),
-        y: margin,
-        width,
-        height,
-    };
-    let inner = shell.inset(2.min(width / 2).min(height / 2));
-    let header_height = 44.min(inner.height);
-    let footer_height = 31.min(inner.height.saturating_sub(header_height));
-    let header = Rect {
-        x: inner.x,
-        y: inner.y,
-        width: inner.width,
-        height: header_height,
-    };
-    let footer = Rect {
-        x: inner.x,
-        y: inner.y + inner.height.saturating_sub(footer_height),
-        width: inner.width,
-        height: footer_height,
-    };
-    let grid = Rect {
-        x: inner.x,
-        y: header.y + header.height,
-        width: inner.width,
-        height: inner.height.saturating_sub(header_height + footer_height),
-    };
-    let gap = 5;
-    let padding = 5.min(grid.width / 2).min(grid.height / 2);
-    let card_width = grid
-        .width
-        .saturating_sub(padding * 2 + gap)
-        .checked_div(2)
-        .unwrap_or(0);
-    let card_height = grid
-        .height
-        .saturating_sub(padding * 2 + gap)
-        .checked_div(2)
-        .unwrap_or(0);
-    let cards = (0..item_count.min(4))
-        .map(|index| Rect {
-            x: grid.x + padding + (index as u32 % 2) * (card_width + gap),
-            y: grid.y + padding + (index as u32 / 2) * (card_height + gap),
-            width: card_width,
-            height: card_height,
-        })
-        .collect();
-    let close = Rect {
-        x: header.x + header.width.saturating_sub(35),
-        y: header.y + 8,
-        width: 28,
-        height: 28,
-    };
-    RelicSuggestionLayout {
-        shell,
-        header,
-        close,
-        grid,
-        cards,
-        footer,
-    }
 }
 
 fn relic_overlay_bounds(screen_width: u32, screen_height: u32) -> Rect {
@@ -585,13 +454,13 @@ fn layout_error(error: TaffyError) -> String {
 mod tests {
     use super::*;
 
-    fn cards() -> [RelicCardSpec; 4] {
-        [RelicCardSpec::default(); 4]
+    fn cards() -> [CardSpec; 4] {
+        [CardSpec::default(); 4]
     }
 
     #[test]
     fn layout_matches_aleca_reference_at_1440p() {
-        let layout = relic_layout(2560, 1440, &cards()).unwrap();
+        let layout = compute(2560, 1440, &cards()).unwrap();
         assert_eq!(
             layout.window,
             Rect {
@@ -690,11 +559,11 @@ mod tests {
 
     #[test]
     fn price_children_reflow_when_badges_exist() {
-        let plain = relic_layout(2560, 1440, &cards()).unwrap();
+        let plain = compute(2560, 1440, &cards()).unwrap();
         let mut decorated = cards();
         decorated[0].vaulted = true;
         decorated[0].favorite = true;
-        let decorated = relic_layout(2560, 1440, &decorated).unwrap();
+        let decorated = compute(2560, 1440, &decorated).unwrap();
         assert!(decorated.reward_cards[0].platinum.x < plain.reward_cards[0].platinum.x);
         assert!(decorated.reward_cards[0].vaulted.is_some());
         assert!(decorated.reward_cards[0].ducats.x > plain.reward_cards[0].ducats.x);
@@ -704,7 +573,7 @@ mod tests {
     fn platinum_box_grows_for_three_digit_price() {
         let mut specs = cards();
         specs[0].platinum_width = 68.0;
-        let layout = relic_layout(2560, 1440, &specs).unwrap();
+        let layout = compute(2560, 1440, &specs).unwrap();
 
         assert_eq!(layout.reward_cards[0].platinum.width, 68);
         assert!(layout.reward_cards[0].platinum.x < layout.reward_cards[0].ducats.x);
@@ -713,8 +582,8 @@ mod tests {
     #[test]
     fn partial_squad_cards_are_centered_and_capped_at_quarter_width() {
         for count in 1..=3 {
-            let specs = vec![RelicCardSpec::default(); count];
-            let layout = relic_layout(2560, 1440, &specs).unwrap();
+            let specs = vec![CardSpec::default(); count];
+            let layout = compute(2560, 1440, &specs).unwrap();
             let first = layout.reward_cards.first().unwrap().card;
             let last = layout.reward_cards.last().unwrap().card;
             assert_eq!(first.width, layout.cards.width / 4);
@@ -725,34 +594,5 @@ mod tests {
                     <= 1
             );
         }
-    }
-
-    #[test]
-    fn suggestion_layout_matches_aleca_reference() {
-        let layout = relic_suggestion_layout(2560, 1440, 4);
-        assert_eq!(
-            layout.shell,
-            Rect {
-                x: 2060,
-                y: 20,
-                width: 480,
-                height: 220,
-            }
-        );
-        assert_eq!(layout.header.height, 44);
-        assert_eq!(
-            layout.close,
-            Rect {
-                x: 2503,
-                y: 30,
-                width: 28,
-                height: 28,
-            }
-        );
-        assert_eq!(layout.grid.height, 141);
-        assert_eq!(layout.cards.len(), 4);
-        assert_eq!(layout.cards[0].width, 230);
-        assert_eq!(layout.cards[0].height, 63);
-        assert_eq!(layout.footer.height, 31);
     }
 }
