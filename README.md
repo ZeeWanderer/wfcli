@@ -8,7 +8,7 @@ Market requests, local player observations, and Forma planning.
 
 | Component | Role |
 | --- | --- |
-| [`wfcli`](#command-line-client) | Terminal client and stdio MCP server. It parses arguments and formats data returned by the daemon. |
+| [`wfcli`](docs/cli.md) | Terminal client and stdio MCP server. It parses arguments and formats data returned by the daemon. |
 | [`wfdaemon`](docs/daemon.md) | Supervised OTP service for data, persistence, queries, watches, market access, player state, and planning. |
 | [`wfcompanion`](docs/companion.md) | Native Linux/Proton observer and Wayland overlay. It publishes local player observations and displays contextual data such as relic prices. |
 | [`wfcore`](docs/developer/shared_utilities.md) | Process-free OTP library containing shared protocols, schemas, paths, and value helpers. |
@@ -89,6 +89,8 @@ make prod-companion
 make native-compile-commands
 make test
 make check
+make previews
+make fix-executables
 make package
 ```
 
@@ -110,7 +112,7 @@ Focused commands provide common views without requiring query syntax:
 ```bash
 wfcli fissures
 wfcli alerts --watch
-wfcli baro --inventory
+wfcli baro inventory
 wfcli teshin
 wfcli archimedea
 wfcli market 'saryn prime set'
@@ -122,11 +124,15 @@ Use built-in help for the complete command surface:
 wfcli --help
 wfcli help commands
 wfcli fissures --help
+source <(wfcli completion bash)
 ```
+
+See [Command-line client](docs/cli.md) for help forms, completion, command
+semantics, and XDG path reporting.
 
 ### Queries And Watches
 
-The query language searches worldstate, official exports, optional WFCD data, market metadata,
+The query language searches worldstate, official exports, WFCD data, market metadata,
 and local player observations:
 
 ```bash
@@ -175,18 +181,14 @@ the read-only player-data collector the required process relationship. In Steam,
 /absolute/path/to/wfcli/prod/bin/wfcompanion launch -- %command%
 ```
 
-Use `wfcli companion start` only for standalone operation. Lifecycle, visibility, diagnostics,
-and overlay previews remain available through the CLI:
+Use `wfcli companion start` for standalone operation. Companion control and
+diagnostics remain available through the CLI:
 
 ```bash
 wfcli companion status
 wfcli companion show
-wfcli companion hide
 wfcli companion probe
-wfcli companion screenshot ./capture.png
-wfcli companion relic-ocr ./capture.png
-wfcli companion preview relic-rewards
-wfcli companion preview --all
+wfcli companion paths
 ```
 
 See [Linux/Proton companion](docs/companion.md) for launch options, runtime dependencies,
@@ -205,7 +207,7 @@ See [MCP server](docs/mcp.md) for tools, resources, and cancellation behavior.
 
 ## Documentation
 
-- [`wfcli`](#command-line-client): [data sources](docs/data-sources.md),
+- [`wfcli`](docs/cli.md): help, completion, paths, [data sources](docs/data-sources.md),
   [query language](docs/query.md), and [Forma planner](docs/forma-plan.md)
 - [`wfdaemon`](docs/daemon.md): lifecycle, idle policy, systemd, and updates
 - [`wfcompanion`](docs/companion.md): Proton observation, OCR, overlay, and diagnostics

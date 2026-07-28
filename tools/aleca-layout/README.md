@@ -5,7 +5,7 @@ writes transparent reference images plus measured DOM geometry.
 
 ```bash
 make aleca-layout-setup
-make reference-previews
+make previews PREVIEW_MEDIA=image PREVIEW_SETS=reference
 ```
 
 Setup queries Overwolf's official installer metadata, downloads the latest
@@ -19,6 +19,5 @@ For offline setup, pass an OPK or extracted extension:
 ./scripts/setup-aleca-layout /path/to/app.opk
 ```
 
-Outputs use ignored `previews/reference/`. Set
-`ALECA_LAYOUT_SIZE=1920x1080` and `ALECA_LAYOUT_DPI=1` to override display
-geometry.
+Outputs use ignored `previews/<resolution>/reference/`. Select resolutions with
+`PREVIEW_RESOLUTIONS`; `ALECA_LAYOUT_DPI=1` overrides display scale.

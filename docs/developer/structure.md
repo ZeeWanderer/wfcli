@@ -73,7 +73,7 @@ daemon and requests shared data from it.
 - Development stage: `dev/`
 - Production stage: `prod/`
 - Package archives: `releases/`
-- Managed user data: `$XDG_CACHE_HOME/wfcli`, `$XDG_STATE_HOME/wfcli`
+- Managed user data: inspect with `wfcli paths`
 - Tests and fixtures: `apps/wfcli/test/`, `apps/wfcompanion/tests/`
 - Disposable upstream research: ignored `research/`
 

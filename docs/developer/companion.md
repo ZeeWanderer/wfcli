@@ -151,26 +151,10 @@ No idle render loop runs.
 
 ## Development
 
-```bash
-make dev-companion
-make test-companion
-make previews
-make native-compile-commands
-```
-
-`make native-compile-commands` updates clangd metadata for Blend2D, AsmJit, the
-C bridge, and MinGW helper.
-
-AlecaFrame reference layouts:
-
-```bash
-make aleca-layout-setup
-make reference-previews
-```
-
-Setup downloads the latest official OPK and prepares headless Chromium.
-Reference PNG and DOM geometry files are written under ignored
-`previews/reference/`. See [`tools/aleca-layout/README.md`](../../tools/aleca-layout/README.md).
+Build and test commands live in [`workflows.md`](workflows.md). Preview commands
+live in the [user companion guide](../companion.md#previews). AlecaFrame
+reference setup is documented beside the
+[`aleca-layout` tool](../../tools/aleca-layout/README.md).
 
 Upstream behavior and safety evidence:
 

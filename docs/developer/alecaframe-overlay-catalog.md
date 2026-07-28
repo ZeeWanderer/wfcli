@@ -35,12 +35,8 @@ OCR, fuzzy-matches items, and batches item and set prices. Requiem rewards are
 skipped by this snapshot.
 
 The reference renderer records exact Flexbox/Grid structure, computed styles,
-and content-dependent element positions:
-
-```bash
-make aleca-layout-setup
-make reference-previews
-```
+and content-dependent element positions. Setup and rendering commands are in
+[`tools/aleca-layout/README.md`](../../tools/aleca-layout/README.md).
 
 ## Relic Recommendations
 

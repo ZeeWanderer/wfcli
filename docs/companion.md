@@ -103,6 +103,7 @@ cached player inventory, WFCD reward tables, and Market quotes.
 
 ```bash
 wfcli companion probe
+wfcli companion paths
 wfcli companion logs
 wfcli companion screenshot ./capture.png
 wfcli companion screenshot --target screen ./screen.png
@@ -129,19 +130,25 @@ removed after decoding.
 ## Previews
 
 ```bash
-wfcli companion preview --list
-wfcli companion preview relic-rewards
-wfcli companion preview --all
+wfcli companion preview list
+wfcli companion preview image relic-rewards
+wfcli companion preview video relic-loading
 make previews
 ```
 
-`make previews` defaults to 2560x1440. Set `PREVIEW_SIZE=WIDTHxHEIGHT` to
-change it. Animated previews require FFmpeg:
+`make previews` renders registered scenes at 1920x1080 and 2560x1440. Matching
+fixture screenshots are used as backgrounds; other outputs remain transparent.
+Select media, scene sets, scenes, or resolutions with Make variables:
 
 ```bash
-wfcli companion preview --animate relic-loading
-make preview-videos
+make previews PREVIEW_MEDIA=image
+make previews PREVIEW_MEDIA='image video' PREVIEW_SETS='companion reference'
+make previews PREVIEW_SCENES='relic-rewards relic-suggestions'
+make previews PREVIEW_RESOLUTIONS=2560x1440
 ```
+
+Animated previews require FFmpeg. Reference previews require
+[`make aleca-layout-setup`](../tools/aleca-layout/README.md).
 
 ## Player Dataset
 

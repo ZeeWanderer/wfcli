@@ -56,7 +56,9 @@ the same parsed snapshot. Fetch failure retains the last good snapshot and marks
 
 `wfcli_exports_store` serializes official export and Codex queries. Catalog keys include source
 directory, selected files, entity kind, modification time, and size. `wfcli_source_manager`
-prepares missing managed data. Explicit custom source directories are never modified.
+prepares missing managed data and queues periodic stale refreshes. Explicit custom source
+directories are never modified. Refresh writes use atomic rename; active readers retain complete
+old files and later catalog signatures rebuild cached entities.
 
 Query text reaches the daemon uncompiled. `wfcli_query_parse` builds the AST; entity modules expose
 typed fields and retain raw data paths where a parser has not added semantics.

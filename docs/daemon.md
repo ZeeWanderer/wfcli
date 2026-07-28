@@ -13,6 +13,7 @@ wfcli daemon start --idle-shutdown
 wfcli daemon start --idle-timeout 1800
 wfcli daemon stop
 wfcli daemon restart
+wfcli daemon paths
 ```
 
 An implicitly started daemon shuts down after ten idle minutes. Explicit `start` and `restart`
@@ -79,5 +80,9 @@ observation.
 
 Market requests use a separate serialized queue. Matching concurrent requests share cached work.
 When a client process disappears, process monitors cancel its queued or active operation.
+
+Managed knowledge is checked hourly and refreshed when older than 24 hours.
+Background and explicit refreshes share one source queue. See
+[Data sources and updates](data-sources.md).
 
 Implementation details live in [developer daemon notes](developer/daemon.md).

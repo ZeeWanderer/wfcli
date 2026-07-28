@@ -2,6 +2,9 @@
 
 ## Build
 
+See [README build instructions](../../README.md#build-from-source) for staged
+tree layout and dependencies. Contributor targets:
+
 ```bash
 make dev             # debug Erlang, relx dev release, debug companion
 make prod            # stripped Erlang, bundled ERTS, release companion
@@ -11,9 +14,6 @@ make dev-companion
 make prod-companion
 make package
 ```
-
-Rebar3 and Cargo write compiler output under `_build/`. Download and compiler caches live under
-`.cache/`. Staged executables live under `dev/` and `prod/`.
 
 Run `make dev-erlang` before direct `wfclid` tests and after daemon application metadata changes.
 Run `make prod-erlang` before direct `wfcli` tests. Run the matching companion target after Rust,
@@ -35,6 +35,18 @@ tests. Manually exercise changed CLI commands after automated tests pass.
 
 `rebar3 ct` emits an expected `-compile(export_all)` warning for
 `apps/wfcli/test/wfcli_forma_plan_SUITE.erl`.
+
+## Generated Files
+
+```bash
+make native-compile-commands
+make fix-executables
+make previews PREVIEW_MEDIA=image
+```
+
+`fix-executables` applies executable mode to every tracked shebang file.
+Preview variables and reference setup are documented in the
+[companion guide](../companion.md#previews).
 
 ## Erlang Tools
 

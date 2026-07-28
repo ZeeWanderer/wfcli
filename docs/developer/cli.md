@@ -11,10 +11,16 @@
 - Unified search is handled by `wfcli_query_cli.erl`.
 - Updates are centralized in `wfcli_update_cli.erl`.
 - Shared help text snippets live in `wfcli_help_text.erl`.
+- `wfcli_cli_args:help_path/1` resolves contextual `help`, `--help`, and `-h`.
+- `wfcli_completion.erl` derives Bash candidates from command registries and each
+  parser's `known_args/0`.
 
 ## Parsing
 
 - `parse_args/2` accumulates a map of options and validates combinations.
+- Use a subcommand when a token narrows the operation. Use an option when it
+  modifies and composes with the current operation. Support both forms only when
+  both improve direct shell use.
 - Put command-specific detail in subcommand help rather than expanding top-level help.
 - Use layered help: summaries at top level, command/topic-specific detail in `help <topic>` or `<command> --help`.
 - Use `--no-suggest-prompt` to disable interactive correction prompts for mistyped commands/flags.
@@ -58,11 +64,4 @@
 - `print_entries/4` and `table_row_map/2` keep output consistent.
 - Any command or subcommand that resolves translated names by default must accept `--raw` to keep identifiers/UTC timestamps.
 
-## Adding a command (worldstate-backed)
-
-1) Add `parse_args` clause to set `type_filter` or `command_defaults/1`.
-2) Add `watch_type_filter` entry if relevant.
-3) Add columns in `wfcli_worldstate_schema` and block fields in
-   `wfcli_worldstate_presentation` when needed.
-4) If it resolves translated names, wire `--raw` to bypass translations and document it.
-5) Update the README command map or linked user guide, plus `docs/developer/*` as needed.
+Feature wiring checklist: [`adding_features.md`](adding_features.md).

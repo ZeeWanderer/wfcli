@@ -22,7 +22,7 @@ audit.
 
 - [`worldstate.md`](developer/worldstate.md): fetching, indexing, translation, and watches
 - [`exports.md`](developer/exports.md): official PublicExport files and loading
-- [`knowledge.md`](developer/knowledge.md): official Codex and optional WFCD catalogs
+- [`knowledge.md`](developer/knowledge.md): official Codex and WFCD catalogs
 - [`query-language.md`](developer/query-language.md): grammar, AST, schemas, and evaluation
 - [`table_layout.md`](developer/table_layout.md): terminal table layout
 - [`forma_plan.md`](developer/forma_plan.md): planner queue, model, search, and tests

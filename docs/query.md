@@ -10,9 +10,10 @@ when you need field filters, boolean logic, sorting, or results from more than o
 wfcli query [options] <query...>
 ```
 
-By default, `query` searches `worldstate`, `mods`, `items`, and `codex`. Select one or
-more explicitly inside the query; `all` also includes optional WFCD enemies and drops,
-local companion-provided player data, and Warframe Market metadata:
+By default, `query` searches every public dataset: `worldstate`, `mods`,
+`items`, `codex`, `enemies`, and `drops`. Select one or more inside the query;
+`all` also includes local companion-provided player data and Warframe Market
+metadata:
 
 ```bash
 wfcli query 'dataset=worldstate fissure'
@@ -21,9 +22,9 @@ wfcli query 'dataset=player source=game data.phase=game'
 wfcli query 'dataset=market tag=prime lowest_sell<50'
 ```
 
-The daemon fetches optional `enemies` and `drops` data on first explicit use. `wfcli
-update --wfcd` refreshes it proactively. `player` is local-only and is empty until a
-companion or another owner-only local client publishes observations.
+The daemon manages and periodically refreshes `enemies` and `drops` data.
+`wfcli update --wfcd` requests an immediate refresh. `player` is local-only and
+is empty until a companion or another owner-only local client publishes observations.
 `market` loads the public item manifest and attaches quotes already present in daemon cache.
 Unified query never expands a broad catalog match into thousands of price requests. Use
 `wfcli market QUERY` for bounded live quotes.
@@ -96,8 +97,8 @@ Focused commands are convenience views over the same parser and query engine:
 - `mods`: mod type, polarity, rarity, compatibility, drain, and text.
 - `items`: official export names and fields, optionally restricted by export file.
 - `codex`: official PublicExport Codex-like records and categories.
-- `enemies`: optional WFCD enemy stats, faction, descriptions, and resistances.
-- `drops`: optional WFCD drops searchable from either the item or enemy direction.
+- `enemies`: WFCD enemy stats, faction, descriptions, and resistances.
+- `drops`: WFCD drops searchable from either the item or enemy direction.
 - `player`: local source namespaces published through the daemon companion socket.
 - `market`: public item metadata plus daemon-cached top-order quotes. `wfcli market` adds
   bounded live quote fetching and price-specific formatting.

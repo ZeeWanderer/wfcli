@@ -17,9 +17,10 @@ This is a checklist to avoid reinventing existing helpers.
 ## CLI features
 
 - Keep parsing centralized in `wfcli_worldstate_cli.erl`.
-- Prefer new flags over ad hoc parsing.
+- Use subcommands for scope and options for composable behavior.
 - If help is getting long, add subcommand help.
 - Reuse shared help text helpers in `wfcli_help_text.erl` where possible.
+- Update command registries, `known_args/0`, contextual help, and completion tests.
 
 ## New data sources
 
