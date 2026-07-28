@@ -5,10 +5,9 @@ use taffy::prelude::*;
 const REFERENCE_HEIGHT: f64 = 1080.0;
 const REFERENCE_WIDTH: f64 = 1000.0;
 const REFERENCE_TOP: f64 = 630.0;
-const PANEL_HEIGHT: u32 = 295;
+const WINDOW_HEIGHT: u32 = 355;
+const WINDOW_CHROME_WIDTH: u32 = 20;
 const WINDOW_OFFSET: f64 = 15.0;
-const AD_WIDTH: u32 = 420;
-const AD_HEIGHT: u32 = 60;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct Rect {
@@ -85,7 +84,6 @@ pub(crate) struct RelicLayout {
     pub(crate) holder: Rect,
     pub(crate) cards: Rect,
     pub(crate) footer: Rect,
-    pub(crate) sidebar: Rect,
     pub(crate) reward_cards: Vec<RelicCardLayout>,
 }
 
@@ -96,7 +94,6 @@ impl RelicLayout {
         self.holder = self.holder.scaled(scale);
         self.cards = self.cards.scaled(scale);
         self.footer = self.footer.scaled(scale);
-        self.sidebar = self.sidebar.scaled(scale);
         for card in &mut self.reward_cards {
             card.card = card.card.scaled(scale);
             card.name = card.name.scaled(scale);
@@ -370,20 +367,6 @@ pub(crate) fn relic_layout(
             &[holder, footer],
         )
         .map_err(layout_error)?;
-    let sidebar = taffy
-        .new_leaf(Style {
-            size: Size {
-                width: length(400.0_f32),
-                height: percent(1.0_f32),
-            },
-            min_size: Size {
-                width: length(400.0_f32),
-                height: length(300.0_f32),
-            },
-            flex_shrink: 0.0,
-            ..Default::default()
-        })
-        .map_err(layout_error)?;
     let shell = taffy
         .new_with_children(
             Style {
@@ -401,7 +384,7 @@ pub(crate) fn relic_layout(
                 },
                 ..Default::default()
             },
-            &[relic_part, sidebar],
+            &[relic_part],
         )
         .map_err(layout_error)?;
     let root = taffy
@@ -470,7 +453,6 @@ pub(crate) fn relic_layout(
         holder: holder_rect,
         cards,
         footer: node_rect(&taffy, footer, relic_origin)?,
-        sidebar: node_rect(&taffy, sidebar, shell_origin)?,
         reward_cards,
     })
 }
@@ -558,16 +540,16 @@ fn relic_overlay_bounds(screen_width: u32, screen_height: u32) -> Rect {
     let from_1080 = f64::from(screen_height) / REFERENCE_HEIGHT;
     let content_width = (REFERENCE_WIDTH * from_1080).round().max(1.0) as u32;
     let content_width = content_width.min(screen_width);
-    let width = content_width.saturating_add(AD_WIDTH).min(screen_width);
+    let width = content_width
+        .saturating_add(WINDOW_CHROME_WIDTH)
+        .min(screen_width);
     let offset = WINDOW_OFFSET.round() as u32;
     let x = ((screen_width - content_width) / 2)
         .saturating_sub(offset)
         .min(screen_width - width);
     let y = (REFERENCE_TOP * from_1080).round() as u32;
     let y = y.min(screen_height.saturating_sub(1));
-    let height = PANEL_HEIGHT
-        .saturating_add(AD_HEIGHT)
-        .min(screen_height - y);
+    let height = WINDOW_HEIGHT.min(screen_height - y);
     Rect {
         x,
         y,
@@ -615,7 +597,7 @@ mod tests {
             Rect {
                 x: 598,
                 y: 840,
-                width: 1753,
+                width: 1353,
                 height: 355,
             }
         );
@@ -624,7 +606,7 @@ mod tests {
             Rect {
                 x: 613,
                 y: 855,
-                width: 1723,
+                width: 1323,
                 height: 325,
             }
         );
@@ -653,15 +635,6 @@ mod tests {
                 y: 1127,
                 width: 1319,
                 height: 51,
-            }
-        );
-        assert_eq!(
-            layout.sidebar,
-            Rect {
-                x: 1934,
-                y: 857,
-                width: 400,
-                height: 321,
             }
         );
         assert_eq!(layout.reward_cards[0].card.x, 622);

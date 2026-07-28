@@ -205,13 +205,13 @@ AlecaFrame 2.6.90 positions its reward window from game logical dimensions in
 
 At 1920x1080 and DPI 1 default window bounds are `(445, 630, 1420, 355)`. After 15-pixel `main`
 margin, 2-pixel border, 7-pixel holder padding, 16% footer, and 400-pixel sidebar, card-row bounds
-are `(469, 654, 972, 256)`. `wfcompanion` renders this rounded shell, account currency in the
-footer, and available set metadata in reward cards. It uses one full-output layer surface for
-contextual scenes; completed scenes use static SHM content, while relic loading has a bounded
-30 FPS animation. Renderer caches one complete static frame per scene and copies it into the next
-SHM buffer; loading frames redraw only the pulse. Scene, output size, or scale changes replace the
-cache. Interaction state and recommendation scroll offset are also part of the static-frame cache
-key, so pointer movement redraws only when hover state changes.
+are `(469, 654, 972, 256)`. `wfcompanion` uses the reward and footer geometry in a content-sized
+shell. It uses one full-output layer surface for contextual scenes; completed scenes use static SHM
+content, while relic loading has a bounded 30 FPS animation. Renderer caches one complete static
+frame per scene and copies it into the next SHM buffer; loading frames redraw only the pulse. Scene,
+output size, or scale changes replace the cache. Interaction state and recommendation scroll offset
+are also part of the static-frame cache key, so pointer movement redraws only when hover state
+changes.
 
 Card markup lives in `package/web/relicOverlay.html`; row proportions live in
 `package/web/assets/css/relicOverlay/base.css` as `1.05fr 0.77fr 0.8fr 1.5fr`. Rows are name;

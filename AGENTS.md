@@ -18,6 +18,8 @@ guides under `docs/`.
   bridge, asset, or build metadata changes.
 - After tests pass, manually exercise updated CLI commands yourself (not just via tests).
 - Add new tests whenever new functionality is added; update fixtures alongside expected outputs.
+- Keep docs lean and standalone: current behavior/contracts, no conversation context or irrelevant
+  absences.
 - `rebar3 ct` emits a warning about `-compile(export_all)` in `apps/wfcli/test/wfcli_forma_plan_SUITE.erl`; tests still pass.
 
 ## Reference

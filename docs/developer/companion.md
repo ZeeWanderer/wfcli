@@ -104,7 +104,7 @@ Contextual scenes temporarily use a full-output transparent layer surface so rew
 game-relative coordinates; status mode remains a small top-left surface. Relic preview/live paths
 share AlecaFrame 2.6.90's default shell and four-row structure. `ui_layout` mirrors its Flexbox/Grid
 tree with Taffy, including content-dependent `space-around` price/marker placement; `overlay` only
-paints returned boxes. Only known fields render, but footer/sidebar regions and reserved rows remain.
+paints returned boxes.
 
 `tools/aleca-layout` is a separate development oracle. It loads the ignored AlecaFrame HTML/CSS in
 headless Chromium with Overwolf stubs and writes a transparent reference PNG plus JSON containing

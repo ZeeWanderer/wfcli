@@ -1569,7 +1569,7 @@ fn draw_static_relic_scene(
     draw_relic_shell(painter, &layout, scale);
     match scene {
         crate::relic::Scene::Reading => {
-            draw_loading_background(painter, layout.holder);
+            draw_loading_background(painter, layout.holder, scale);
             return Some(loading_pulse_bounds(layout.holder, scale));
         }
         crate::relic::Scene::Error(error) => {
@@ -1976,13 +1976,13 @@ fn draw_suggestion_price(
     painter.draw_image_contained(icon, x + value_width + 3 * scale, y, 20 * scale, 20 * scale);
 }
 
-fn draw_loading_background(painter: &mut Painter<'_>, bounds: Rect) {
+fn draw_loading_background(painter: &mut Painter<'_>, bounds: Rect, scale: u32) {
     painter.fill_rounded_rect(
         bounds.x,
         bounds.y,
         bounds.width,
         bounds.height,
-        0,
+        18 * scale,
         css_rgba(28, 31, 32, 56),
     );
 }
@@ -2036,29 +2036,15 @@ fn draw_relic_shell(painter: &mut Painter<'_>, layout: &RelicLayout, scale: u32)
         18 * scale,
         css_rgba(16, 22, 35, 255),
     );
-    fill_bottom_left_rounded(
+    fill_bottom_rounded(
         painter,
         layout.footer,
         18 * scale,
         css_rgba(23, 30, 48, 255),
     );
-    fill_right_rounded(
-        painter,
-        layout.sidebar,
-        18 * scale,
-        css_rgba(15, 19, 28, 255),
-    );
-    painter.fill_rounded_rect(
-        layout.sidebar.x,
-        layout.sidebar.y,
-        scale,
-        layout.sidebar.height,
-        0,
-        css_rgba(255, 255, 255, 150),
-    );
 }
 
-fn fill_bottom_left_rounded(painter: &mut Painter<'_>, bounds: Rect, radius: u32, color: [u8; 4]) {
+fn fill_bottom_rounded(painter: &mut Painter<'_>, bounds: Rect, radius: u32, color: [u8; 4]) {
     debug_assert_eq!(color[3], 255, "overlapping fills require an opaque color");
     let radius = radius.min(bounds.width / 2).min(bounds.height / 2);
     painter.fill_rounded_rect(
@@ -2074,14 +2060,6 @@ fn fill_bottom_left_rounded(painter: &mut Painter<'_>, bounds: Rect, radius: u32
         bounds.y,
         bounds.width,
         bounds.height.saturating_sub(radius),
-        0,
-        color,
-    );
-    painter.fill_rounded_rect(
-        bounds.x + bounds.width.saturating_sub(radius),
-        bounds.y,
-        radius,
-        bounds.height,
         0,
         color,
     );
@@ -2655,7 +2633,7 @@ mod tests {
             height: 60,
         };
         let mut painter = Painter::new(&mut canvas, 120, 80).unwrap();
-        draw_loading_background(&mut painter, bounds);
+        draw_loading_background(&mut painter, bounds, 1);
         draw_loading_pulse(
             &mut painter,
             loading_pulse_bounds(bounds, 1),
@@ -2668,6 +2646,8 @@ mod tests {
         assert!(pixel(&canvas, 120, 20, 40)[3] > 0);
         assert!(pixel(&canvas, 120, 60, 40)[3] > 0);
         assert_eq!(pixel(&canvas, 120, 100, 40), [0, 0, 0, 0]);
+        assert_eq!(pixel(&canvas, 120, 20, 10), [0, 0, 0, 0]);
+        assert_eq!(pixel(&canvas, 120, 99, 69), [0, 0, 0, 0]);
     }
 
     #[test]
@@ -2832,11 +2812,11 @@ mod tests {
     }
 
     #[test]
-    fn relic_sections_keep_only_outer_shell_corners_rounded() {
-        let mut canvas = vec![0; 220 * 80 * 4];
+    fn relic_footer_keeps_both_bottom_corners_inside_shell() {
+        let mut canvas = vec![0; 120 * 80 * 4];
         let color = css_rgba(23, 30, 48, 255);
-        let mut painter = Painter::new(&mut canvas, 220, 80).unwrap();
-        fill_bottom_left_rounded(
+        let mut painter = Painter::new(&mut canvas, 120, 80).unwrap();
+        fill_bottom_rounded(
             &mut painter,
             Rect {
                 x: 20,
@@ -2847,25 +2827,13 @@ mod tests {
             10,
             color,
         );
-        fill_right_rounded(
-            &mut painter,
-            Rect {
-                x: 120,
-                y: 20,
-                width: 80,
-                height: 40,
-            },
-            10,
-            color,
-        );
         painter.finish().unwrap();
 
-        assert!(pixel(&canvas, 220, 20, 59)[3] < 32);
-        assert_eq!(pixel(&canvas, 220, 20, 20), color);
-        assert_eq!(pixel(&canvas, 220, 99, 59), color);
-        assert!(pixel(&canvas, 220, 199, 20)[3] < 32);
-        assert_eq!(pixel(&canvas, 220, 120, 20), color);
-        assert_eq!(pixel(&canvas, 220, 120, 59), color);
+        assert_eq!(pixel(&canvas, 120, 20, 20), color);
+        assert_eq!(pixel(&canvas, 120, 99, 20), color);
+        assert!(pixel(&canvas, 120, 20, 59)[3] < 32);
+        assert!(pixel(&canvas, 120, 99, 59)[3] < 32);
+        assert_eq!(pixel(&canvas, 120, 60, 59), color);
     }
 
     #[test]
