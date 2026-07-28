@@ -3,7 +3,7 @@
 %%%-------------------------------------------------------------------
 -module(wfcli_companion_cli).
 
--export([run/1, help/0, known_commands/0]).
+-export([run/1, help/0, help/1, known_commands/0]).
 
 -ifdef(TEST).
 -export([preview_directory/1]).
@@ -24,6 +24,7 @@ run(Args) ->
         ["hud", "show"] -> set_visibility(<<"hud">>, "HUD", true);
         ["hud", "hide"] -> set_visibility(<<"hud">>, "HUD", false);
         ["probe"] -> diagnostic(["probe"]);
+        ["paths"] -> diagnostic(["paths"]);
         ["screenshot" | Rest] -> screenshot(Rest);
         ["relic-ocr" | Rest] -> diagnostic(["relic-ocr" | Rest]);
         ["preview" | Rest] -> preview(Rest);
@@ -40,11 +41,38 @@ run(Args) ->
 -spec help() -> ok.
 help() -> io:put_chars(wfcli_help_text:companion_help()).
 
+-spec help([string()]) -> ok.
+help([]) -> help();
+help(["preview" | _]) ->
+    io:put_chars(
+      "USAGE:\n"
+      "  wfcli companion preview list [--animated]\n"
+      "  wfcli companion preview image TYPE|all [PATH]\n"
+      "  wfcli companion preview video TYPE|all [PATH]\n");
+help(["screenshot" | _]) ->
+    io:put_chars(
+      "USAGE:\n"
+      "  wfcli companion screenshot [--target active|screen] [FILE]\n");
+help(["relic-ocr" | _]) ->
+    io:put_chars(
+      "USAGE:\n"
+      "  wfcli companion relic-ocr [--target active|screen] [IMAGE]\n");
+help(["hud" | _]) ->
+    io:put_chars("USAGE:\n  wfcli companion hud show|hide\n");
+help([Command | _]) when Command =:= "install"; Command =:= "uninstall" ->
+    io:format("USAGE:~n  wfcli companion ~s [--dry-run]~n", [Command]);
+help([Command | _]) ->
+    case lists:member(Command, known_commands()) of
+        true -> io:format("USAGE:~n  wfcli companion ~s~n", [Command]);
+        false -> help()
+    end.
+
 -doc "Known companion diagnostic subcommands.".
 -spec known_commands() -> [string()].
 known_commands() ->
     ["status", "start", "stop", "restart", "show", "hide", "hud", "probe",
-     "screenshot", "relic-ocr", "preview", "logs", "install", "uninstall", "--help", "-h"].
+     "screenshot", "relic-ocr", "preview", "logs", "paths", "install", "uninstall",
+     "help", "--help", "-h"].
 
 status() ->
     Managed = wfcli_companion_process:unit_active(),
@@ -178,22 +206,21 @@ screenshot(Args) ->
         {error, Message} -> fail(Message)
     end.
 
-preview(["--list"]) -> diagnostic(["preview", "--list"]);
-preview(["--all"]) -> preview(["--all", default_preview_directory()]);
-preview(["--all", Directory]) -> diagnostic(["preview", "--all", Directory]);
-preview(["--animate", Type]) ->
-    preview(["--animate", Type,
-             filename:join(default_preview_directory(), Type ++ ".webm")]);
-preview(["--animate", Type, Path]) ->
-    diagnostic(["preview", "--animate", Type, Path]);
-preview(["--animate-all"]) -> preview(["--animate-all", default_preview_directory()]);
-preview(["--animate-all", Directory]) ->
-    diagnostic(["preview", "--animate-all", Directory]);
-preview([Type]) -> preview([Type, filename:join(default_preview_directory(), Type ++ ".png")]);
-preview([Type, Path]) -> diagnostic(["preview", Type, Path]);
+preview(["list"]) -> diagnostic(["preview", "list"]);
+preview(["list", "--animated"]) -> diagnostic(["preview", "list", "--animated"]);
+preview(["image", "all"]) -> preview(["image", "all", default_preview_directory()]);
+preview(["image", "all", Directory]) -> diagnostic(["preview", "image", "all", Directory]);
+preview(["image", Type]) ->
+    preview(["image", Type, filename:join(default_preview_directory(), Type ++ ".png")]);
+preview(["image", Type, Path]) -> diagnostic(["preview", "image", Type, Path]);
+preview(["video", "all"]) -> preview(["video", "all", default_preview_directory()]);
+preview(["video", "all", Directory]) -> diagnostic(["preview", "video", "all", Directory]);
+preview(["video", Type]) ->
+    preview(["video", Type, filename:join(default_preview_directory(), Type ++ ".webm")]);
+preview(["video", Type, Path]) -> diagnostic(["preview", "video", Type, Path]);
 preview(_Args) ->
-    fail("preview requires --list, --all [DIR], --animate TYPE [FILE], "
-         "--animate-all [DIR], or TYPE [FILE]").
+    fail("preview requires list [--animated], image TYPE|all [PATH], "
+         "or video TYPE|all [PATH]").
 
 default_preview_directory() ->
     case wfcli_companion_process:binary() of

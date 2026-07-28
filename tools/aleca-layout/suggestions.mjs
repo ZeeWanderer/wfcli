@@ -12,7 +12,8 @@ const sourcePath = path.join(
   await resolveAlecaWebRoot(repositoryRoot),
   "relicRecommendation.html",
 );
-const outputDirectory = path.join(repositoryRoot, "previews/reference");
+const outputDirectory =
+  process.env.ALECA_LAYOUT_OUTPUT_DIR ?? path.join(repositoryRoot, "previews/reference");
 const screenshotPath = path.join(outputDirectory, "alecaframe-relic-suggestions.png");
 const geometryPath = path.join(outputDirectory, "alecaframe-relic-suggestions.json");
 const dimensions = displayDimensions();

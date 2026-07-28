@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$root"
+
+fixed=0
+while IFS= read -r -d '' file; do
+    chmod +x "$file"
+    printf '%s\n' "$file"
+    fixed=$((fixed + 1))
+done < <(git grep -Il -z '^#!')
+
+printf 'executable files: %d\n' "$fixed"

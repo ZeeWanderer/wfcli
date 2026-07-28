@@ -3,7 +3,7 @@
 %%%-------------------------------------------------------------------
 -module(wfcli_cli_args).
 
--export([expand_aliases/2, has_help_flag/1, strip_help_flags/1,
+-export([expand_aliases/2, has_help_flag/1, help_path/1, strip_help_flags/1,
          prompt_enabled/1, prompt_suggestions/2, strip_prompt_flag/1]).
 
 expand_aliases(Args, Aliases) ->
@@ -11,6 +11,16 @@ expand_aliases(Args, Aliases) ->
 
 has_help_flag(Args) ->
     lists:any(fun is_help_flag/1, Args).
+
+help_path(["completion", "candidates" | _]) ->
+    none;
+help_path(["help" | Rest]) ->
+    {help, scope_path(strip_help(Rest))};
+help_path(Args) ->
+    case has_help_flag(Args) orelse trailing_help(Args) of
+        true -> {help, scope_path(strip_help(Args))};
+        false -> none
+    end.
 
 strip_help_flags(Args) ->
     [A || A <- Args, not is_help_flag(A)].
@@ -66,6 +76,16 @@ safe_get_line() ->
 is_help_flag("-h") -> true;
 is_help_flag("--help") -> true;
 is_help_flag(_) -> false.
+
+trailing_help([]) -> false;
+trailing_help(Args) -> lists:last(Args) =:= "help".
+
+strip_help(Args) ->
+    [Arg || Arg <- Args, not is_help_flag(Arg) andalso Arg =/= "help"].
+
+scope_path([]) -> [];
+scope_path([[ $- | _ ] | _]) -> [];
+scope_path([Arg | Rest]) -> [Arg | scope_path(Rest)].
 
 is_flag([$- | _]) -> true;
 is_flag(_) -> false.

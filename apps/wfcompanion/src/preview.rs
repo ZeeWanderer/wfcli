@@ -49,8 +49,11 @@ const PREVIEWS: &[Preview] = &[
     },
 ];
 
-pub(crate) fn names() -> impl Iterator<Item = &'static str> {
-    PREVIEWS.iter().map(|preview| preview.name)
+pub(crate) fn names(animated_only: bool) -> impl Iterator<Item = &'static str> {
+    PREVIEWS
+        .iter()
+        .filter(move |preview| !animated_only || preview.animation.is_some())
+        .map(|preview| preview.name)
 }
 
 pub(crate) fn render(
@@ -58,10 +61,17 @@ pub(crate) fn render(
     dimensions: (u32, u32),
 ) -> Result<Vec<PathBuf>, String> {
     match request {
-        PreviewRequest::One { name, path } => {
+        PreviewRequest::One {
+            name,
+            path,
+            background,
+        } => {
             let preview = find(&name)?;
             ensure_parent(&path)?;
             (preview.render)(dimensions, &path)?;
+            if let Some(background) = background {
+                composite_file(&path, &background, dimensions)?;
+            }
             Ok(vec![path])
         }
         PreviewRequest::All { directory } => {
@@ -80,10 +90,18 @@ pub(crate) fn render(
                 })
                 .collect()
         }
-        PreviewRequest::Animate { name, path } => {
+        PreviewRequest::Animate {
+            name,
+            path,
+            background,
+        } => {
             let preview = find(&name)?;
             ensure_parent(&path)?;
-            render_animation(preview, dimensions, &path)?;
+            let background = background
+                .as_deref()
+                .map(|path| load_background(path, dimensions))
+                .transpose()?;
+            render_animation(preview, dimensions, background.as_ref(), &path)?;
             Ok(vec![path])
         }
         PreviewRequest::AnimateAll { directory } => {
@@ -98,16 +116,21 @@ pub(crate) fn render(
                 .filter(|preview| preview.animation.is_some())
                 .map(|preview| {
                     let path = directory.join(format!("{}.webm", preview.name));
-                    render_animation(preview, dimensions, &path)?;
+                    render_animation(preview, dimensions, None, &path)?;
                     Ok(path)
                 })
                 .collect()
         }
-        PreviewRequest::List => Ok(Vec::new()),
+        PreviewRequest::List { .. } => Ok(Vec::new()),
     }
 }
 
-fn render_animation(preview: &Preview, dimensions: (u32, u32), path: &Path) -> Result<(), String> {
+fn render_animation(
+    preview: &Preview,
+    dimensions: (u32, u32),
+    background: Option<&image::RgbaImage>,
+    path: &Path,
+) -> Result<(), String> {
     let animation = preview
         .animation
         .ok_or_else(|| format!("overlay preview has no animation: {}", preview.name))?;
@@ -161,7 +184,10 @@ fn render_animation(preview: &Preview, dimensions: (u32, u32), path: &Path) -> R
         let stdin = child.stdin.as_mut().expect("piped ffmpeg stdin");
         (0..frame_count).try_for_each(|frame| {
             let elapsed = Duration::from_secs_f64(f64::from(frame) / f64::from(animation.fps));
-            let image = (animation.render_frame)(dimensions, elapsed)?;
+            let mut image = (animation.render_frame)(dimensions, elapsed)?;
+            if let Some(background) = background {
+                image = composite(background, &image);
+            }
             stdin
                 .write_all(image.as_raw())
                 .map_err(|error| format!("could not stream preview frame to ffmpeg: {error}"))
@@ -176,6 +202,58 @@ fn render_animation(preview: &Preview, dimensions: (u32, u32), path: &Path) -> R
         return Err(format!("ffmpeg exited with {}: {detail}", output.status));
     }
     write_result
+}
+
+fn composite_file(
+    overlay_path: &Path,
+    background_path: &Path,
+    dimensions: (u32, u32),
+) -> Result<(), String> {
+    let background = load_background(background_path, dimensions)?;
+    let overlay = image::open(overlay_path)
+        .map_err(|error| format!("could not read preview {}: {error}", overlay_path.display()))?
+        .into_rgba8();
+    composite(&background, &overlay)
+        .save(overlay_path)
+        .map_err(|error| {
+            format!(
+                "could not write preview {}: {error}",
+                overlay_path.display()
+            )
+        })
+}
+
+fn load_background(path: &Path, dimensions: (u32, u32)) -> Result<image::RgbaImage, String> {
+    let image = image::open(path)
+        .map_err(|error| {
+            format!(
+                "could not read preview background {}: {error}",
+                path.display()
+            )
+        })?
+        .into_rgba8();
+    if image.dimensions() != dimensions {
+        return Err(format!(
+            "preview background {} is {}x{}, expected {}x{}",
+            path.display(),
+            image.width(),
+            image.height(),
+            dimensions.0,
+            dimensions.1
+        ));
+    }
+    Ok(image)
+}
+
+fn composite(background: &image::RgbaImage, overlay: &image::RgbaImage) -> image::RgbaImage {
+    let mut result = background.clone();
+    image::imageops::overlay(&mut result, overlay, 0, 0);
+    for (pixel, background) in result.pixels_mut().zip(background.pixels()) {
+        if background[3] == u8::MAX {
+            pixel[3] = u8::MAX;
+        }
+    }
+    result
 }
 
 pub(crate) fn current_dimensions() -> Result<(u32, u32), String> {
@@ -280,7 +358,7 @@ mod tests {
     #[test]
     fn registry_exposes_overlay_previews() {
         assert_eq!(
-            names().collect::<Vec<_>>(),
+            names(false).collect::<Vec<_>>(),
             [
                 "relic-loading",
                 "relic-rewards",
@@ -288,6 +366,7 @@ mod tests {
                 "notification"
             ]
         );
+        assert_eq!(names(true).collect::<Vec<_>>(), ["relic-loading"]);
         assert!(find("relic-loading").unwrap().animation.is_some());
         assert!(find("notification").unwrap().animation.is_none());
         assert!(find("missing").is_err());
@@ -304,5 +383,15 @@ mod tests {
             ]
         }"#;
         assert_eq!(dimensions_from_kscreen(json), Ok((2560, 1440)));
+    }
+
+    #[test]
+    fn composites_overlay_over_background() {
+        let background = image::RgbaImage::from_pixel(1, 1, image::Rgba([0, 0, 255, 255]));
+        let overlay = image::RgbaImage::from_pixel(1, 1, image::Rgba([255, 0, 0, 128]));
+
+        let result = composite(&background, &overlay);
+        assert_eq!(result.get_pixel(0, 0)[3], 255);
+        assert_ne!(result.get_pixel(0, 0), background.get_pixel(0, 0));
     }
 }

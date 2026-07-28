@@ -15,13 +15,7 @@ Categories=Game;Utility;
 ";
 
 pub(crate) fn ensure_identity() -> Result<PathBuf, String> {
-    let data_home = std::env::var_os("XDG_DATA_HOME")
-        .map(PathBuf::from)
-        .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".local/share")))
-        .ok_or_else(|| "HOME and XDG_DATA_HOME are unset".to_owned())?;
-    let path = data_home
-        .join("applications")
-        .join(format!("{APP_ID}.desktop"));
+    let path = identity_path()?;
     if fs::read_to_string(&path).is_ok_and(|current| current == DESKTOP_ENTRY) {
         return Ok(path);
     }
@@ -35,6 +29,16 @@ pub(crate) fn ensure_identity() -> Result<PathBuf, String> {
     fs::rename(&temporary, &path)
         .map_err(|error| format!("install {}: {error}", path.display()))?;
     Ok(path)
+}
+
+pub(crate) fn identity_path() -> Result<PathBuf, String> {
+    let data_home = std::env::var_os("XDG_DATA_HOME")
+        .map(PathBuf::from)
+        .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".local/share")))
+        .ok_or_else(|| "HOME and XDG_DATA_HOME are unset".to_owned())?;
+    Ok(data_home
+        .join("applications")
+        .join(format!("{APP_ID}.desktop")))
 }
 
 #[cfg(test)]

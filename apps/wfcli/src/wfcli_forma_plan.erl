@@ -4,7 +4,7 @@
 -module(wfcli_forma_plan).
 
 -export([run/1, plans_to_yaml/1, to_list/1, slot_mod_labels/1, slot_mod_labels/2,
-         build_arcane_entries/1]).
+         build_arcane_entries/1, known_args/0]).
 
 -type cli_args() :: [string()].
 -type config() :: map().
@@ -37,6 +37,8 @@ dispatch_args(Args) ->
             halt(1)
     end.
 
+-doc "Return argv tokens accepted by parser suggestions and shell completion.".
+-spec known_args() -> [string()].
 known_args() ->
     [
         "--config", "--allow-omni", "--allow-umbral-forma", "--prefer-omni", "--max-forma",

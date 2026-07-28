@@ -15,4 +15,7 @@ root="$(cd -P "$(dirname "$script")/.." && pwd)"
 flavor="$(tr -d '\r\n' < "$root/BUILD_FLAVOR")"
 export WFCLI_BUILD_FLAVOR="$flavor"
 export WFCLI_INSTALL_ROOT="$root"
+if [[ "${1:-}" == "paths" && "$#" -eq 1 ]]; then
+    exec "$root/bin/wfcli" paths wfdaemon
+fi
 exec "$root/libexec/wfdaemon/bin/wfdaemon" "$@"

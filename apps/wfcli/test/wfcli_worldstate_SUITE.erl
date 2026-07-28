@@ -426,7 +426,7 @@ extra_subcommands_table_output(_Config) ->
         "experiment-recommended",
         "featured-guilds",
         "hub-events",
-        "market",
+        "in-game-market",
         "library",
         "lite-sorties",
         "node-overrides",

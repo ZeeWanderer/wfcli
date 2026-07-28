@@ -90,8 +90,8 @@ worldstate_summary(CommandNames, DefaultCache) ->
         "\n",
         "SPECIAL MODES:\n",
         "  wfcli teshin                   list current Steel Path offerings\n",
-        "  wfcli baro --inventory         list the published Baro manifest\n",
-        "  wfcli prime-vault --inventory list Prime Vault manifest items\n",
+        "  wfcli baro inventory         list the published Baro manifest\n",
+        "  wfcli prime-vault inventory list Prime Vault manifest items\n",
         "  wfcli calendar --day N         select one calendar day\n",
         "  wfcli events --lang CODE       select event message language\n",
         "\n",
@@ -196,15 +196,17 @@ worldstate_subcommand(Sub, Type, Description, DefaultCache) ->
     ].
 
 inventory_usage(Sub, Type) when Type =:= baro; Type =:= prime_vault ->
-    io_lib:format("  wfcli ~s --inventory [options] [query]~n", [Sub]);
+    io_lib:format("  wfcli ~s inventory [options] [query]~n", [Sub]);
 inventory_usage(_Sub, _Type) -> [].
 
 command_options(baro) ->
     ["\nCOMMAND OPTIONS:\n",
-     "  --inventory        list offerings in the published Baro manifest\n"];
+     "  inventory          list offerings in the published Baro manifest\n",
+     "  --inventory        equivalent option form\n"];
 command_options(prime_vault) ->
     ["\nCOMMAND OPTIONS:\n",
-     "  --inventory        list Prime Vault manifest and evergreen items\n"];
+     "  inventory          list Prime Vault manifest and evergreen items\n",
+     "  --inventory        equivalent option form\n"];
 command_options(calendar) ->
     ["\nCOMMAND OPTIONS:\n",
      "  --day N            filter by calendar day number\n"];
@@ -213,8 +215,8 @@ command_options(event) ->
      "  --lang CODE        event message language (default: en)\n"];
 command_options(archimedea) ->
     ["\nCOMMAND OPTIONS:\n",
-     "  --deep             show only Deep Archimedea\n",
-     "  --temporal         show only Temporal Archimedea\n"];
+     "  deep, --deep       show only Deep Archimedea\n",
+     "  temporal, --temporal show only Temporal Archimedea\n"];
 command_options(_Type) -> [].
 
 command_output_option(archimedea) ->
@@ -224,7 +226,7 @@ command_output_option(_Type) ->
 
 command_notes(Type) when Type =:= baro; Type =:= prime_vault ->
     ["\nNOTES:\n",
-     "  --inventory cannot be combined with --watch.\n",
+     "  Inventory mode cannot be combined with --watch.\n",
      "  Inventory is empty when the current worldstate publishes no manifest.\n"];
 command_notes(archimedea) ->
     ["\nNOTES:\n",
@@ -236,11 +238,11 @@ command_notes(_Type) ->
 
 command_examples(_Sub, baro) ->
     ["  wfcli baro\n",
-     "  wfcli baro --inventory\n",
-     "  wfcli baro --inventory primed\n"];
+     "  wfcli baro inventory\n",
+     "  wfcli baro inventory primed\n"];
 command_examples(_Sub, prime_vault) ->
     ["  wfcli prime-vault\n",
-     "  wfcli prime-vault --inventory\n"];
+     "  wfcli prime-vault inventory\n"];
 command_examples(_Sub, calendar) ->
     ["  wfcli calendar --day 3\n",
      "  wfcli calendar --watch --always\n"];
@@ -249,8 +251,8 @@ command_examples(_Sub, event) ->
      "  wfcli events --lang fr\n"];
 command_examples(_Sub, archimedea) ->
     ["  wfcli archimedea\n",
-     "  wfcli archimedea --deep\n",
-     "  wfcli archimedea --temporal\n",
+     "  wfcli archimedea deep\n",
+     "  wfcli archimedea temporal\n",
      "  wfcli archimedea --search 'risk~regeneration'\n"];
 command_examples(Sub, _Type) ->
     [io_lib:format("  wfcli ~s~n", [Sub]),
@@ -286,14 +288,14 @@ query_command_help() ->
         "  --cache FILE       cache file path\n",
         "  --lang CODE        event language code (default: en)\n",
         "  --exports-dir DIR  override export file location\n",
-        "  --knowledge-dir DIR override optional WFCD cache location\n",
+        "  --knowledge-dir DIR override WFCD cache location\n",
         "  --limit N          limit matches per dataset (default: unlimited)\n",
         "  --offset N         skip matches per dataset (default 0)\n",
         "\n",
         "QUERY SYNTAX:\n",
         query_guide(),
         "  Dataset selector: dataset=default|worldstate|mods|items|codex|enemies|drops|player|market|all.\n",
-        "  Default searches official datasets; all also ensures optional WFCD data.\n",
+        "  Default searches all public datasets; all also includes local player and market data.\n",
         "  Data keys: name, id, type, projected fields, and data.<path>.\n",
         "  Full raw tree: type=raw_worldstate with absolute data.<path>.\n",
         "  Watch extracts: extract=data.<path>.\n",
@@ -373,12 +375,11 @@ companion_help() ->
         "  probe              print detected Warframe process state\n",
         "  screenshot [OPTIONS] [FILE] capture active window or full screen\n",
         "  relic-ocr [OPTIONS] [FILE] OCR saved image or a new capture\n",
-        "  preview TYPE [FILE] render mock overlay on a transparent image\n",
-        "  preview --all [DIR] update every registered overlay preview\n",
-        "  preview --animate TYPE [FILE] render an animated overlay preview\n",
-        "  preview --animate-all [DIR] update every animated preview\n",
-        "  preview --list      list registered overlay previews\n",
+        "  preview list        list registered overlay previews\n",
+        "  preview image TYPE|all [PATH] render still previews\n",
+        "  preview video TYPE|all [PATH] render animated previews\n",
         "  logs               show incident log path and recent entries\n",
+        "  paths              show companion XDG directories\n",
         "  install [--dry-run] edit Steam launch options automatically\n",
         "  uninstall [--dry-run] restore options saved by install\n",
         "\n",
@@ -390,7 +391,7 @@ companion_help() ->
         "  hide suppresses automatic contextual overlays until show or restart.\n",
         "  Production starts with the HUD hidden; development starts with it shown.\n",
         "  screenshot defaults to the user cache when FILE is omitted.\n",
-        "  preview output defaults to the ignored previews/ directory.\n",
+        "  Preview output defaults to the ignored previews/ directory.\n",
         "  Close Steam before install or uninstall.\n"
     ].
 
@@ -400,8 +401,8 @@ update_help() ->
         "  wfcli update [options]\n",
         "\n",
         "METADATA UPDATES:\n",
-        "  --default          refresh default official metadata (implicit with no flags)\n",
-        "  --all              refresh default metadata plus optional WFCD data\n",
+        "  --default          refresh standard managed metadata (implicit with no flags)\n",
+        "  --all              refresh every managed metadata source\n",
         "  --nodes            refresh solNodes.json\n",
         "  --languages        refresh languages.json\n",
         "  --manifest         refresh ExportManifest.json\n",
@@ -411,7 +412,7 @@ update_help() ->
         "  --weapons          refresh ExportWeapons.json\n",
         "  --warframes        refresh ExportWarframes.json\n",
         "  --resources        refresh ExportResources.json\n",
-        "  --wfcd             refresh optional versioned WFCD enemy data\n",
+        "  --wfcd             refresh versioned WFCD enemy data\n",
         "\n",
         "CACHE REFRESH:\n",
         "  --worldstate       refresh worldstate cache\n",
@@ -427,6 +428,7 @@ daemon_help() ->
         "\n",
         "COMMANDS:\n",
         "  status             show daemon state without starting it\n",
+        "  paths              show daemon XDG directories\n",
         "  ensure             start if absent; preserve a running daemon's idle policy\n",
         "  start [OPTIONS]    start or pin wfdaemon until explicit stop\n",
         "  stop               stop wfdaemon release if running\n",

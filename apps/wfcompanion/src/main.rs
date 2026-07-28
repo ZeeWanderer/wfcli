@@ -10,6 +10,7 @@ mod inventory;
 mod observer;
 mod overlay;
 mod painter;
+mod paths;
 mod preview;
 mod relic;
 mod shortcut;
@@ -32,11 +33,12 @@ Usage:
   wfcompanion probe
   wfcompanion screenshot [--target active|screen] OUTPUT.png
   wfcompanion relic-ocr [--target active|screen] [IMAGE]
-  wfcompanion preview --list
-  wfcompanion preview TYPE OUTPUT.png
-  wfcompanion preview --all OUTPUT_DIR
-  wfcompanion preview --animate TYPE OUTPUT.webm
-  wfcompanion preview --animate-all OUTPUT_DIR
+  wfcompanion preview list [--animated]
+  wfcompanion preview image TYPE [--background IMAGE] OUTPUT.png
+  wfcompanion preview image all OUTPUT_DIR
+  wfcompanion preview video TYPE [--background IMAGE] OUTPUT.webm
+  wfcompanion preview video all OUTPUT_DIR
+  wfcompanion paths
   wfcompanion logs
   wfcompanion --relic-screenshot IMAGE
 
@@ -46,6 +48,7 @@ Commands:
   screenshot         Capture active window or full screen through Spectacle
   relic-ocr          Print OCR candidates from saved or newly captured image
   preview            Render mock overlays onto a transparent output-sized image
+  paths              Print per-user directories and symlink destinations
   logs               Print incident log path and recent entries
 
 Options:
@@ -99,17 +102,32 @@ enum Command {
         path: Option<PathBuf>,
     },
     Preview(PreviewRequest),
+    Paths,
     Logs,
     Help,
 }
 
 #[derive(Debug, Eq, PartialEq)]
 enum PreviewRequest {
-    List,
-    One { name: String, path: PathBuf },
-    All { directory: PathBuf },
-    Animate { name: String, path: PathBuf },
-    AnimateAll { directory: PathBuf },
+    List {
+        animated_only: bool,
+    },
+    One {
+        name: String,
+        path: PathBuf,
+        background: Option<PathBuf>,
+    },
+    All {
+        directory: PathBuf,
+    },
+    Animate {
+        name: String,
+        path: PathBuf,
+        background: Option<PathBuf>,
+    },
+    AnimateAll {
+        directory: PathBuf,
+    },
 }
 
 fn main() -> ExitCode {
@@ -138,6 +156,7 @@ fn run_command(command: Command) -> Result<(), String> {
             Ok(())
         }
         Command::Logs => incident::print_recent(100),
+        Command::Paths => paths::print(),
         Command::Screenshot { target, path } => {
             let (width, height) = capture::save(target, &path)?;
             println!("saved {} ({width}x{height})", path.display());
@@ -158,8 +177,8 @@ fn run_command(command: Command) -> Result<(), String> {
             );
             Ok(())
         }
-        Command::Preview(PreviewRequest::List) => {
-            for name in preview::names() {
+        Command::Preview(PreviewRequest::List { animated_only }) => {
+            for name in preview::names(animated_only) {
                 println!("{name}");
             }
             Ok(())
@@ -229,6 +248,7 @@ fn parse_command(arguments: &[String]) -> Result<Command, String> {
         "screenshot" => parse_capture_command(&arguments[1..], true),
         "relic-ocr" => parse_capture_command(&arguments[1..], false),
         "preview" => parse_preview_command(&arguments[1..]),
+        "paths" if arguments.len() == 1 => Ok(Command::Paths),
         "logs" if arguments.len() == 1 => Ok(Command::Logs),
         "--relic-screenshot" if arguments.len() == 2 => Ok(Command::Overlay {
             launch: None,
@@ -244,30 +264,73 @@ fn parse_command(arguments: &[String]) -> Result<Command, String> {
 
 fn parse_preview_command(arguments: &[String]) -> Result<Command, String> {
     match arguments {
-        [option] if option == "--list" => Ok(Command::Preview(PreviewRequest::List)),
-        [option, directory] if option == "--all" => Ok(Command::Preview(PreviewRequest::All {
-            directory: PathBuf::from(directory),
+        [command] if command == "list" => Ok(Command::Preview(PreviewRequest::List {
+            animated_only: false,
         })),
-        [option, name, path] if option == "--animate" => {
-            Ok(Command::Preview(PreviewRequest::Animate {
-                name: name.clone(),
-                path: PathBuf::from(path),
+        [command, option] if command == "list" && option == "--animated" => {
+            Ok(Command::Preview(PreviewRequest::List {
+                animated_only: true,
             }))
         }
-        [option, directory] if option == "--animate-all" => {
+        [kind, target, directory] if kind == "image" && target == "all" => {
+            Ok(Command::Preview(PreviewRequest::All {
+                directory: PathBuf::from(directory),
+            }))
+        }
+        [kind, target, directory] if kind == "video" && target == "all" => {
             Ok(Command::Preview(PreviewRequest::AnimateAll {
                 directory: PathBuf::from(directory),
             }))
         }
-        [name, path] if !name.starts_with('-') => Ok(Command::Preview(PreviewRequest::One {
-            name: name.clone(),
-            path: PathBuf::from(path),
-        })),
+        [kind, name, rest @ ..] if kind == "image" => {
+            let (path, background) = parse_preview_output(rest)?;
+            Ok(Command::Preview(PreviewRequest::One {
+                name: name.clone(),
+                path,
+                background,
+            }))
+        }
+        [kind, name, rest @ ..] if kind == "video" => {
+            let (path, background) = parse_preview_output(rest)?;
+            Ok(Command::Preview(PreviewRequest::Animate {
+                name: name.clone(),
+                path,
+                background,
+            }))
+        }
         _ => Err(
-            "preview requires --list, --all OUTPUT_DIR, --animate TYPE OUTPUT.webm, --animate-all OUTPUT_DIR, or TYPE OUTPUT.png"
-                .to_owned(),
+            "preview requires list [--animated], image TYPE [--background IMAGE] OUTPUT.png, "
+                .to_owned()
+                + "image all OUTPUT_DIR, video TYPE [--background IMAGE] OUTPUT.webm, "
+                + "or video all OUTPUT_DIR",
         ),
     }
+}
+
+fn parse_preview_output(arguments: &[String]) -> Result<(PathBuf, Option<PathBuf>), String> {
+    let mut output = None;
+    let mut background = None;
+    let mut index = 0;
+    while index < arguments.len() {
+        match arguments[index].as_str() {
+            "--background" if index + 1 < arguments.len() => {
+                background = Some(PathBuf::from(&arguments[index + 1]));
+                index += 2;
+            }
+            "--background" => return Err("--background requires an image path".to_owned()),
+            option if option.starts_with('-') => {
+                return Err(format!("unknown preview option: {option}"));
+            }
+            value if output.is_none() => {
+                output = Some(PathBuf::from(value));
+                index += 1;
+            }
+            value => return Err(format!("unexpected preview argument: {value}")),
+        }
+    }
+    output
+        .map(|path| (path, background))
+        .ok_or_else(|| "preview requires an output path".to_owned())
 }
 
 fn parse_capture_command(arguments: &[String], require_path: bool) -> Result<Command, String> {
@@ -358,6 +421,7 @@ mod tests {
 
     #[test]
     fn parses_diagnostic_commands() {
+        assert_eq!(parse_command(&arguments(&["paths"])), Ok(Command::Paths));
         assert_eq!(
             parse_command(&arguments(&["screenshot", "capture.png"])),
             Ok(Command::Screenshot {
@@ -366,14 +430,20 @@ mod tests {
             })
         );
         assert_eq!(
-            parse_command(&arguments(&["preview", "relic-rewards", "preview.png"])),
+            parse_command(&arguments(&[
+                "preview",
+                "image",
+                "relic-rewards",
+                "preview.png"
+            ])),
             Ok(Command::Preview(PreviewRequest::One {
                 name: "relic-rewards".to_owned(),
                 path: PathBuf::from("preview.png"),
+                background: None,
             }))
         );
         assert_eq!(
-            parse_command(&arguments(&["preview", "--all", "previews"])),
+            parse_command(&arguments(&["preview", "image", "all", "previews"])),
             Ok(Command::Preview(PreviewRequest::All {
                 directory: PathBuf::from("previews"),
             }))
@@ -381,13 +451,16 @@ mod tests {
         assert_eq!(
             parse_command(&arguments(&[
                 "preview",
-                "--animate",
+                "video",
                 "relic-loading",
+                "--background",
+                "screen.jpg",
                 "preview.webm",
             ])),
             Ok(Command::Preview(PreviewRequest::Animate {
                 name: "relic-loading".to_owned(),
                 path: PathBuf::from("preview.webm"),
+                background: Some(PathBuf::from("screen.jpg")),
             }))
         );
         assert_eq!(

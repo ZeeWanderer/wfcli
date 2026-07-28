@@ -3,7 +3,7 @@
 %%%-------------------------------------------------------------------
 -module(wfcli_exports_cli).
 
--export([run/1, run_command/2, command_names/0, help/1]).
+-export([run/1, run_command/2, command_names/0, help/1, known_args/0]).
 
 -ifdef(TEST).
 -export([parse_request/2]).
@@ -172,6 +172,8 @@ unknown_arg(Arg) ->
     Suggest = wfcli_cli_suggest:suggest(Arg, known_args()),
     lists:flatten(io_lib:format("unknown arg: ~s~s", [Arg, Suggest])).
 
+-doc "Return argv tokens accepted by parser suggestions and shell completion.".
+-spec known_args() -> [string()].
 known_args() ->
     ["--type", "--polarity", "--rarity", "--compat", "--name", "--text", "--limit",
      "--offset", "--output-format", "--format", "--raw", "--exports-dir", "--file",
@@ -195,6 +197,7 @@ help(["query"]) ->
                   wfcli_help_text:mods_examples(), wfcli_help_text:items_examples()]);
 help(["mods"]) -> help_mods();
 help(["items"]) -> help_items();
+help([Topic, _ | _]) -> help([Topic]);
 help(_) -> help([]).
 
 help_mods() ->

@@ -3,7 +3,7 @@
 %%%-------------------------------------------------------------------
  -module(wfcli_visualize).
 
- -export([run/1]).
+ -export([run/1, known_args/0]).
 
 run(Args) ->
     Args1 = wfcli_cli_args:prompt_suggestions(Args, known_args()),
@@ -135,6 +135,8 @@ parse_args(["--help" | Rest], Acc) ->
  parse_args([Unknown | Rest], Acc) ->
      parse_args(Rest, Acc#{errors := [io_lib:format("unknown arg: ~s", [Unknown]) | maps:get(errors, Acc)]}).
 
+-doc "Return argv tokens accepted by parser suggestions and shell completion.".
+-spec known_args() -> [string()].
 known_args() ->
     ["--plan", "--viz", "--viz-output", "--viz-config", "--config", "--help", "-h",
      "--no-suggest-prompt"].

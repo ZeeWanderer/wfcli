@@ -4,9 +4,9 @@
 -module(wfcli_worldstate_cli).
 
 -export([run/1, run_command/2, help/1, command_names/0, command_help_names/0,
-         command_description/1]).
+         command_description/1, known_args/0]).
 -ifdef(TEST).
--export([parse_args/2, default_acc/0, known_args/0]).
+-export([parse_args/2, default_acc/0]).
 -endif.
 
 -type cli_args() :: [string()].
@@ -74,7 +74,7 @@ help(Args) ->
         [] -> help_summary(DefaultCache);
         ["watch"] -> help_watch(DefaultCache);
         ["query"] -> help_query();
-        [Sub] -> help_subcommand(Sub, DefaultCache);
+        [Sub | _] -> help_subcommand(Sub, DefaultCache);
         _ -> help_summary(DefaultCache)
     end.
 
@@ -284,7 +284,7 @@ command_specs() ->
         {"experiment-recommended", experiment_recommended, true},
         {"featured-guilds", featured_guild, true},
         {"hub-events", hub_event, true},
-        {"market", in_game_market, true},
+        {"in-game-market", in_game_market, true},
         {"library", library_info, true},
         {"lite-sorties", lite_sortie, true},
         {"node-overrides", node_override, true},
@@ -395,6 +395,13 @@ parse_args(["--lang"], Acc) ->
     parse_args([], Acc#{errors := ["--lang requires a code" | maps:get(errors, Acc, [])]});
 parse_args(["--lang", Code | Rest], Acc) ->
     parse_args(Rest, Acc#{event_lang := Code});
+parse_args(["inventory" | Rest], Acc = #{type_filter := Type})
+  when Type =:= baro; Type =:= prime_vault ->
+    parse_args(Rest, Acc#{inventory := true});
+parse_args(["deep" | Rest], Acc = #{type_filter := archimedea}) ->
+    parse_args(Rest, set_archimedea_selection(deep, Acc));
+parse_args(["temporal" | Rest], Acc = #{type_filter := archimedea}) ->
+    parse_args(Rest, set_archimedea_selection(temporal, Acc));
 parse_args(["--inventory" | Rest], Acc = #{watch := true}) ->
     parse_args(Rest, Acc#{errors := ["--inventory is not supported with watch" | maps:get(errors, Acc, [])]});
 parse_args(["--inventory" | Rest], Acc) ->
@@ -475,6 +482,8 @@ parse_args([Unknown | Rest], Acc) ->
     parse_args(Rest, Acc#{errors := [io_lib:format("unknown arg: ~s~s", [Unknown, Suggest])
                                     | maps:get(errors, Acc, [])]}).
 
+-doc "Return argv tokens accepted by parser suggestions and shell completion.".
+-spec known_args() -> [string()].
 known_args() ->
     Flags = [
         "--refresh", "--ttl", "--cache", "--search", "--lang", "--interval", "--spec", "--watch",
@@ -482,7 +491,8 @@ known_args() ->
         "--update-nodes", "--update-languages", "--update-manifest", "--update-exports",
         "--update-recipes", "--update-upgrades", "--update-weapons", "--update-warframes",
         "--update-resources", "--update-all", "--raw", "--inventory", "--output-format", "--format",
-        "--day", "--deep", "--temporal", "--no-suggest-prompt", "help", "query"
+        "--day", "--deep", "--temporal", "--no-suggest-prompt",
+        "inventory", "deep", "temporal", "help", "query"
     ],
     Flags ++ command_names().
 

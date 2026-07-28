@@ -6,7 +6,11 @@ CCACHE_DIR ?= $(CURDIR)/.cache/ccache
 COMPANION_MANIFEST := apps/wfcompanion/Cargo.toml
 VERSION := $(strip $(shell cat VERSION))
 PLATFORM := $(shell uname -s | tr '[:upper:]' '[:lower:]')-$(shell uname -m)
-PREVIEW_SIZE ?= 2560x1440
+PREVIEW_MEDIA ?= all
+PREVIEW_SETS ?= companion
+PREVIEW_SCENES ?= all
+PREVIEW_RESOLUTIONS ?= 1920x1080 2560x1440
+PREVIEW_DEPS = $(if $(findstring companion,$(PREVIEW_SETS)),dev-companion)
 
 export REBAR_CACHE_DIR
 export CARGO_TARGET_DIR
@@ -14,7 +18,7 @@ export CCACHE_DIR
 
 .PHONY: all build dev prod erlang cli daemon mcp companion \
 	dev-erlang prod-erlang dev-companion prod-companion links \
-	debug-bridge native-bridges previews preview-videos aleca-layout-setup reference-previews \
+	debug-bridge native-bridges previews aleca-layout-setup fix-executables \
 	native-compile-commands test test-erlang test-companion check fmt-check package clean
 
 all: dev
@@ -60,18 +64,18 @@ native-bridges: debug-bridge
 native-compile-commands:
 	./scripts/native-compile-commands
 
-previews: dev-companion
-	WFCOMPANION_PREVIEW_SIZE=$(PREVIEW_SIZE) dev/bin/wfcompanion preview --all previews
-
-preview-videos: dev-companion
-	WFCOMPANION_PREVIEW_SIZE=$(PREVIEW_SIZE) dev/bin/wfcompanion preview --animate-all previews
+previews: $(PREVIEW_DEPS)
+	PREVIEW_MEDIA='$(PREVIEW_MEDIA)' \
+	PREVIEW_SETS='$(PREVIEW_SETS)' \
+	PREVIEW_SCENES='$(PREVIEW_SCENES)' \
+	PREVIEW_RESOLUTIONS='$(PREVIEW_RESOLUTIONS)' \
+	./scripts/generate-previews
 
 aleca-layout-setup:
 	./scripts/setup-aleca-layout
 
-reference-previews:
-	ALECA_LAYOUT_SIZE=$(PREVIEW_SIZE) node tools/aleca-layout/index.mjs
-	ALECA_LAYOUT_SIZE=$(PREVIEW_SIZE) node tools/aleca-layout/suggestions.mjs
+fix-executables:
+	bash ./scripts/fix-executables
 
 test: test-erlang test-companion
 

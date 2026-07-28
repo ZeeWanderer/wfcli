@@ -3,7 +3,7 @@
 %%%-------------------------------------------------------------------
 -module(wfcli_update_cli).
 
--export([run/1, help/0, refresh_metadata/1]).
+-export([run/1, help/0, known_args/0, refresh_metadata/1]).
 -ifdef(TEST).
 -export([default_opts/0, parse_args/2, has_update_flags/1]).
 -endif.
@@ -80,6 +80,8 @@ parse_args([Arg | Rest], Acc) ->
 is_unknown_flag([$- | _]) -> true;
 is_unknown_flag(_) -> false.
 
+-doc "Return argv tokens accepted by parser suggestions and shell completion.".
+-spec known_args() -> [string()].
 known_args() ->
     [
         "--all", "--default", "--nodes", "--languages", "--manifest", "--exports", "--recipes",

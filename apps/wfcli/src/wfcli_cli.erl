@@ -3,7 +3,7 @@
 %%%-------------------------------------------------------------------
 -module(wfcli_cli).
 
--export([main/1]).
+-export([main/1, command_names/0, public_command_names/0, usage/0]).
 
 main(Args) ->
     ensure_started(),
@@ -22,7 +22,13 @@ ensure_started() ->
 
 dispatch(Args, Prompt) ->
     {Args1, _} = wfcli_cli_args:strip_prompt_flag(Args),
-    dispatch_args(Args1, Prompt).
+    case wfcli_cli_args:help_path(Args1) of
+        {help, Path} ->
+            wfcli_help:run(Path),
+            halt(0);
+        none ->
+            dispatch_args(Args1, Prompt)
+    end.
 
 dispatch_args(["forma-plan" | Rest], _Prompt) ->
     wfcli_forma_plan:run(Rest);
@@ -38,6 +44,10 @@ dispatch_args(["companion" | Rest], _Prompt) ->
     wfcli_companion_cli:run(Rest);
 dispatch_args(["mcp" | Rest], _Prompt) ->
     wfcli_mcp_cli:main(Rest);
+dispatch_args(["completion" | Rest], _Prompt) ->
+    wfcli_completion:run(Rest);
+dispatch_args(["paths" | Rest], _Prompt) ->
+    wfcli_path_cli:run(Rest);
 dispatch_args(["daemon" | Rest], _Prompt) ->
     wfcli_daemon_cli:run(Rest);
 dispatch_args(["update" | Rest], _Prompt) ->
@@ -120,9 +130,11 @@ usage() ->
         {"mods", "query mod exports"},
         {"items", "query export item names"},
         {"codex", "query official Codex knowledge"},
-        {"enemies", "query optional WFCD enemy knowledge"},
+        {"enemies", "query WFCD enemy knowledge"},
         {"drops", "find WFCD enemy drops by item or enemy"},
-        {"daemon", "control persistent wfdaemon process"}
+        {"daemon", "control persistent wfdaemon process"},
+        {"completion", "generate shell completion"},
+        {"paths", "show per-application XDG directories"}
     ],
     Data = [{Cmd, wfcli_worldstate_cli:command_description(Cmd)}
             || Cmd <- wfcli_worldstate_cli:command_help_names(), Cmd =/= "watch"],
@@ -172,7 +184,15 @@ is_knowledge_command(Cmd) ->
     lists:member(Cmd, wfcli_knowledge_cli:command_names()).
 
 command_names() ->
-    ["forma-plan", "visualize", "query", "player", "market", "companion", "mcp", "daemon", "update", "help"]
+    ["forma-plan", "visualize", "query", "player", "market", "companion", "mcp",
+     "daemon", "update", "completion", "paths", "help"]
     ++ wfcli_exports_cli:command_names()
     ++ wfcli_knowledge_cli:command_names()
     ++ wfcli_worldstate_cli:command_names().
+
+public_command_names() ->
+    ["forma-plan", "visualize", "query", "player", "market", "companion", "mcp",
+     "daemon", "update", "completion", "paths", "help"]
+    ++ wfcli_exports_cli:command_names()
+    ++ wfcli_knowledge_cli:command_names()
+    ++ wfcli_worldstate_cli:command_help_names().

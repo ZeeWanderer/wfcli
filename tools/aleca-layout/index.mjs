@@ -9,7 +9,8 @@ import { resolveAlecaWebRoot } from "./source.mjs";
 const toolDirectory = path.dirname(fileURLToPath(import.meta.url));
 const repositoryRoot = path.resolve(toolDirectory, "../..");
 const sourcePath = path.join(await resolveAlecaWebRoot(repositoryRoot), "relicOverlay.html");
-const outputDirectory = path.join(repositoryRoot, "previews/reference");
+const outputDirectory =
+  process.env.ALECA_LAYOUT_OUTPUT_DIR ?? path.join(repositoryRoot, "previews/reference");
 const screenshotPath = path.join(outputDirectory, "alecaframe-relic-rewards.png");
 const geometryPath = path.join(outputDirectory, "alecaframe-relic-rewards.json");
 

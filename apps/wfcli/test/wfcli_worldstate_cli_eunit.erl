@@ -84,6 +84,16 @@ archimedea_selector_adds_semantic_filter_test() ->
     ?assertEqual("(risk~shielded) archimedea=deep", maps:get(search, Parsed)),
     ?assertEqual([], maps:get(errors, Parsed, [])).
 
+scoped_commands_match_option_forms_test() ->
+    Baro = wfcli_worldstate_cli:parse_args(
+      ["baro", "inventory"], wfcli_worldstate_cli:default_acc()),
+    ?assertEqual(baro, maps:get(type_filter, Baro)),
+    ?assertEqual(true, maps:get(inventory, Baro)),
+    Temporal = wfcli_worldstate_cli:parse_args(
+      ["archimedea", "temporal"], wfcli_worldstate_cli:default_acc()),
+    ?assertEqual(archimedea, maps:get(type_filter, Temporal)),
+    ?assertEqual("archimedea=temporal", maps:get(search, Temporal)).
+
 archimedea_selectors_are_exclusive_test() ->
     Parsed = wfcli_worldstate_cli:parse_args(
       ["archimedea", "--deep", "--temporal"], wfcli_worldstate_cli:default_acc()),
@@ -132,9 +142,9 @@ baro_help_documents_inventory_workflow_test() ->
              wfcli_help_text:worldstate_subcommand(
                "baro", baro, wfcli_worldstate_cli:command_description("baro"),
                "/tmp/worldstate.json")),
-    ?assert(string:find(Text, "wfcli baro --inventory") =/= nomatch),
+    ?assert(string:find(Text, "wfcli baro inventory") =/= nomatch),
     ?assert(string:find(Text, "published Baro manifest") =/= nomatch),
-    ?assert(string:find(Text, "--inventory cannot be combined with --watch") =/= nomatch).
+    ?assert(string:find(Text, "Inventory mode cannot be combined with --watch") =/= nomatch).
 
 teshin_help_documents_calculated_inventory_test() ->
     Text = lists:flatten(

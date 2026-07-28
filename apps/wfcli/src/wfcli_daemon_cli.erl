@@ -3,7 +3,7 @@
 %%%-------------------------------------------------------------------
 -module(wfcli_daemon_cli).
 
--export([run/1, help/0, known_commands/0]).
+-export([run/1, help/0, help/1, known_commands/0]).
 
 -type cli_args() :: [string()].
 
@@ -20,6 +20,8 @@ run(Args) ->
             status();
         ["ensure"] ->
             ensure();
+        ["paths"] ->
+            wfcli_path_cli:run(["wfdaemon"]);
         ["start" | StartArgs] ->
             start(StartArgs);
         ["stop"] ->
@@ -59,10 +61,34 @@ run(Args) ->
 help() ->
     io:put_chars(wfcli_help_text:daemon_help()).
 
+-spec help([string()]) -> ok.
+help([]) -> help();
+help(["start" | _]) ->
+    io:put_chars(
+      "USAGE:\n"
+      "  wfcli daemon start [--idle-shutdown] [--idle-timeout SECONDS]\n");
+help(["restart" | _]) ->
+    io:put_chars(
+      "USAGE:\n"
+      "  wfcli daemon restart [--idle-shutdown] [--idle-timeout SECONDS]\n");
+help(["autostart" | _]) ->
+    io:put_chars("USAGE:\n  wfcli daemon autostart status|enable|disable\n");
+help(["update" | _]) ->
+    io:put_chars(
+      "USAGE:\n"
+      "  wfcli daemon update [--beam-dir DIR]\n"
+      "  wfcli daemon update --release RELEASE\n");
+help([Command | _]) ->
+    case lists:member(Command, known_commands()) of
+        true -> io:format("USAGE:~n  wfcli daemon ~s~n", [Command]);
+        false -> help()
+    end.
+
 -doc "Known daemon subcommands for suggestions and tests.".
 -spec known_commands() -> [string()].
 known_commands() ->
-    ["status", "ensure", "start", "stop", "restart", "autostart", "update", "--help", "-h"].
+    ["status", "ensure", "start", "stop", "restart", "autostart", "update", "paths",
+     "help", "--help", "-h"].
 
 status() ->
     case wfcli_client:status() of

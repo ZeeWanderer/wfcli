@@ -3,7 +3,7 @@
 %%%-------------------------------------------------------------------
 -module(wfcli_knowledge_cli).
 
--export([run_command/2, command_names/0, help/1]).
+-export([run_command/2, command_names/0, help/1, known_args/0]).
 
 -ifdef(TEST).
 -export([parse_request/2]).
@@ -43,6 +43,8 @@ expand_args(Args) ->
     Expanded = wfcli_cli_args:expand_aliases(Args, Aliases),
     wfcli_cli_args:prompt_suggestions(Expanded, known_args()).
 
+-doc "Return argv tokens accepted by parser suggestions and shell completion.".
+-spec known_args() -> [string()].
 known_args() ->
     ["--name", "--text", "--category", "--faction", "--enemy", "--rarity", "--file",
      "--include-excluded", "--raw", "--exports-dir", "--knowledge-dir", "--limit",
@@ -148,10 +150,10 @@ help(Command) ->
                      "  --include-excluded include records hidden from the in-game Codex\n",
                      "  --exports-dir DIR   override official export location\n"];
         "enemies" -> ["  --faction NAME      enemy faction\n",
-                       "  --knowledge-dir DIR override optional WFCD cache location\n"];
+                       "  --knowledge-dir DIR override WFCD cache location\n"];
         "drops" -> ["  --enemy NAME        enemy name substring\n",
                      "  --rarity NAME       drop rarity\n",
-                     "  --knowledge-dir DIR override optional WFCD cache location\n"]
+                     "  --knowledge-dir DIR override WFCD cache location\n"]
     end,
     io:put_chars(["USAGE:\n  wfcli ", Command, " [options] [query]\n\nOPTIONS:\n",
                   "  --name TEXT        name substring\n",

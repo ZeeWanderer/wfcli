@@ -1,0 +1,109 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+companion="$root/dev/bin/wfcompanion"
+fixtures="$root/apps/wfcompanion/tests/fixtures"
+output="$root/previews"
+
+media="${PREVIEW_MEDIA:-all}"
+sets="${PREVIEW_SETS:-companion}"
+scenes="${PREVIEW_SCENES:-all}"
+resolutions="${PREVIEW_RESOLUTIONS:-1920x1080 2560x1440}"
+
+case "$media" in
+    all) media="image video" ;;
+esac
+
+contains_word() {
+    local needle="$1"
+    shift
+    local word
+    for word in "$@"; do
+        [[ "$word" == "$needle" ]] && return 0
+    done
+    return 1
+}
+
+for requested in $sets; do
+    case "$requested" in
+        companion|reference) ;;
+        *) printf 'unknown preview set: %s\n' "$requested" >&2; exit 2 ;;
+    esac
+done
+
+for requested in $media; do
+    case "$requested" in
+        image|video) ;;
+        *) printf 'unknown preview media: %s\n' "$requested" >&2; exit 2 ;;
+    esac
+done
+
+background_for() {
+    local scene="$1"
+    local resolution="$2"
+    case "$scene" in
+        relic-loading|relic-rewards)
+            printf '%s/relic_rewards_4p_%s.jpg' "$fixtures" "$resolution"
+            ;;
+        relic-suggestions)
+            printf '%s/relic_selection_all_%s.jpg' "$fixtures" "$resolution"
+            ;;
+    esac
+}
+
+render_companion() {
+    local resolution="$1"
+    local scene="$2"
+    local kind="$3"
+    local background
+    background="$(background_for "$scene" "$resolution")"
+    local args=(preview "$kind" "$scene")
+    if [[ -f "$background" ]]; then
+        args+=(--background "$background")
+    fi
+    if [[ "$kind" == "image" ]]; then
+        args+=("$output/$resolution/companion/$scene.png")
+    else
+        args+=("$output/$resolution/companion/$scene.webm")
+    fi
+    WFCOMPANION_PREVIEW_SIZE="$resolution" "$companion" "${args[@]}"
+}
+
+if contains_word companion $sets; then
+    mapfile -t registered < <("$companion" preview list)
+    mapfile -t animated < <("$companion" preview list --animated)
+    selected=()
+    for scene in "${registered[@]}"; do
+        if [[ "$scenes" == "all" ]] || contains_word "$scene" $scenes; then
+            selected+=("$scene")
+        fi
+    done
+    for requested in $scenes; do
+        if [[ "$requested" != "all" ]] && ! contains_word "$requested" "${registered[@]}"; then
+            printf 'unknown preview scene: %s\n' "$requested" >&2
+            exit 2
+        fi
+    done
+    for resolution in $resolutions; do
+        for kind in $media; do
+            for scene in "${selected[@]}"; do
+                if [[ "$kind" == "image" ]] || contains_word "$scene" "${animated[@]}"; then
+                    render_companion "$resolution" "$scene" "$kind"
+                fi
+            done
+        done
+    done
+fi
+
+if contains_word reference $sets; then
+    if [[ "$media" == *image* ]]; then
+        for resolution in $resolutions; do
+            reference_output="$output/$resolution/reference"
+            ALECA_LAYOUT_SIZE="$resolution" ALECA_LAYOUT_OUTPUT_DIR="$reference_output" \
+                node "$root/tools/aleca-layout/index.mjs"
+            ALECA_LAYOUT_SIZE="$resolution" ALECA_LAYOUT_OUTPUT_DIR="$reference_output" \
+                node "$root/tools/aleca-layout/suggestions.mjs"
+        done
+    fi
+fi

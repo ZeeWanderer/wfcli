@@ -3,9 +3,9 @@
 %%%-------------------------------------------------------------------
 -module(wfcli_query_cli).
 
--export([run/1, help/0]).
+-export([run/1, help/0, known_args/0]).
 -ifdef(TEST).
--export([parse_args/2, known_args/0, default_opts/0]).
+-export([parse_args/2, default_opts/0]).
 -endif.
 
 -type cli_args() :: [string()].
@@ -208,6 +208,8 @@ parse_args([Arg | Rest], Acc) ->
 is_unknown_flag([$- | _]) -> true;
 is_unknown_flag(_) -> false.
 
+-doc "Return argv tokens accepted by parser suggestions and shell completion.".
+-spec known_args() -> [string()].
 known_args() ->
     [
         "--refresh", "--ttl", "--cache", "--lang", "--raw", "--output-format", "--format",

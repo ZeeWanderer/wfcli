@@ -18,6 +18,18 @@ strip_help_flags_test() ->
     ?assertEqual(["mods"], wfcli_cli_args:strip_help_flags(["-h", "mods"])),
     ?assertEqual(["alerts"], wfcli_cli_args:strip_help_flags(["alerts", "--help"])).
 
+help_path_tracks_nested_scope_test() ->
+    ?assertEqual(
+       {help, ["baro", "inventory"]},
+       wfcli_cli_args:help_path(["baro", "inventory", "help"])),
+    ?assertEqual(
+       {help, ["companion", "screenshot"]},
+       wfcli_cli_args:help_path(
+         ["companion", "screenshot", "--target", "screen", "--help"])),
+    ?assertEqual({help, []}, wfcli_cli_args:help_path(["help", "--help"])),
+    ?assertEqual(none, wfcli_cli_args:help_path(
+                         ["completion", "candidates", "--", "--help"])).
+
 prompt_enabled_test() ->
     ?assertEqual(true, wfcli_cli_args:prompt_enabled(["--format", "table"])),
     ?assertEqual(false, wfcli_cli_args:prompt_enabled(["--no-suggest-prompt", "--format", "table"])).

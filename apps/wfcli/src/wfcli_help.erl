@@ -6,16 +6,12 @@
 -export([run/1]).
 
 run([]) ->
-    io:format(
-      "wfcli help <topic>~n"
-      "Topics: commands, data, query, player, market, companion, mcp, watch, format, update, daemon~n"
-      "Any command name is also a topic, for example 'wfcli help baro'.~n"
-    );
+    wfcli_cli:usage();
 run(["commands"]) ->
     Data = wfcli_worldstate_cli:command_help_names(),
     Exports = wfcli_exports_cli:command_names() ++ wfcli_knowledge_cli:command_names(),
     Base = ["forma-plan", "visualize", "query", "player", "market", "companion", "mcp",
-            "daemon", "update", "help"],
+            "daemon", "update", "completion", "paths", "help"],
     List = Base ++ Exports ++ Data,
     io:format(
       "Top-level commands:~n~s~n",
@@ -25,51 +21,52 @@ run(["data"]) ->
     wfcli_worldstate_cli:help([]);
 run(["worldstate"]) ->
     run(["data"]);
-run(["mods"]) ->
-    wfcli_exports_cli:help(["mods"]);
-run(["items"]) ->
-    wfcli_exports_cli:help(["items"]);
-run([Topic]) when Topic =:= "codex"; Topic =:= "enemies"; Topic =:= "drops" ->
+run(["mods" | Rest]) ->
+    wfcli_exports_cli:help(["mods" | Rest]);
+run(["items" | Rest]) ->
+    wfcli_exports_cli:help(["items" | Rest]);
+run([Topic | _]) when Topic =:= "codex"; Topic =:= "enemies"; Topic =:= "drops" ->
     wfcli_knowledge_cli:help(Topic);
 run(["exports"]) ->
     wfcli_exports_cli:help([]);
-run(["query"]) ->
+run(["query" | _]) ->
     wfcli_query_cli:help();
-run(["player"]) ->
+run(["player" | _]) ->
     wfcli_player_cli:help();
-run(["market"]) ->
+run(["market" | _]) ->
     wfcli_market_cli:help();
-run(["companion"]) ->
-    wfcli_companion_cli:help();
-run(["mcp"]) ->
+run(["companion" | Rest]) ->
+    wfcli_companion_cli:help(Rest);
+run(["mcp" | _]) ->
     io:put_chars(wfcli_help_text:mcp_help());
-run(["watch"]) ->
+run(["watch" | _]) ->
     wfcli_worldstate_cli:help(["watch"]);
-run(["update"]) ->
+run(["update" | _]) ->
     wfcli_update_cli:help();
-run(["daemon"]) ->
-    wfcli_daemon_cli:help();
-run(["format"]) ->
+run(["daemon" | Rest]) ->
+    wfcli_daemon_cli:help(Rest);
+run(["completion" | _]) ->
+    wfcli_completion:help();
+run(["paths" | _]) ->
+    wfcli_path_cli:help();
+run(["format" | _]) ->
     io:format(
       "Output format: table|block for data/query; table|block|json for catalog commands.~n"
       "--format is an alias for --output-format where supported.~n"
     );
-run(["forma-plan"]) ->
+run(["forma-plan" | _]) ->
     io:put_chars(wfcli_help_text:forma_plan_help());
-run(["visualize"]) ->
+run(["visualize" | _]) ->
     io:put_chars(wfcli_help_text:visualize_help());
 run(["help"]) ->
     run([]);
-run([Topic]) ->
+run([Topic | Rest]) ->
     case lists:member(Topic, wfcli_worldstate_cli:command_help_names()) of
-        true -> wfcli_worldstate_cli:help([Topic]);
+        true -> wfcli_worldstate_cli:help([Topic | Rest]);
         false ->
             io:format("unknown help topic: ~s~n", [Topic]),
             run([])
-    end;
-run([Unknown | _]) ->
-    io:format("unknown help topic: ~s~n", [Unknown]),
-    run([]).
+    end.
 
 format_columns([]) -> "";
 format_columns(Items) ->

@@ -631,7 +631,7 @@ fn wfcli_command() -> PathBuf {
     PathBuf::from("wfcli")
 }
 
-fn daemon_socket_path() -> PathBuf {
+pub(crate) fn daemon_socket_path() -> PathBuf {
     if let Some(path) = std::env::var_os("WFCLI_DAEMON_SOCKET") {
         return PathBuf::from(path);
     }

@@ -3,7 +3,7 @@
 %%%-------------------------------------------------------------------
 -module(wfcli_market_cli).
 
--export([run/1, help/0]).
+-export([run/1, help/0, known_args/0]).
 -ifdef(TEST).
 -export([parse_args/2, default_opts/0]).
 -endif.
@@ -31,6 +31,12 @@ help() -> io:put_chars(wfcli_help_text:market_help()).
 default_opts() ->
     #{refresh => false, ttl => 60, output_format => table,
       query_tokens => [], errors => []}.
+
+-doc "Return argv tokens accepted by parser suggestions and shell completion.".
+-spec known_args() -> [string()].
+known_args() ->
+    ["--refresh", "--ttl", "--limit", "--output-format", "--format", "--search",
+     "--help", "-h"].
 
 run_quote(Parsed) ->
     Request0 = maps:remove(errors, Parsed#{source => market, action => quote_query}),

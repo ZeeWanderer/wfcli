@@ -100,7 +100,7 @@ pub(crate) fn temporary_png(label: &str) -> Result<PathBuf, String> {
     )))
 }
 
-fn capture_dir() -> PathBuf {
+pub(crate) fn capture_dir() -> PathBuf {
     #[cfg(test)]
     if std::env::var_os("WFCOMPANION_CAPTURE_DIR").is_none() {
         return std::env::temp_dir().join("wfcli/captures");
