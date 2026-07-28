@@ -49,9 +49,9 @@ worldstate_pagination_is_unlimited_by_default_test() ->
                      {ok, #{entries => [first, second, third]}}, #{}),
     ?assertEqual([first, second, third], maps:get(entries, Result)).
 
-dataset_selector_defaults_to_official_test() ->
+dataset_selector_defaults_to_public_sources_test() ->
     {ok, ["braton"], Datasets, false} = wfcli_query_service:select_datasets(["braton"]),
-    ?assertEqual([worldstate, mods, items, codex], Datasets).
+    ?assertEqual([worldstate, mods, items, codex, enemies, drops], Datasets).
 
 dataset_selector_is_removed_from_quoted_query_test() ->
     {ok, ["serration"], Datasets, true} =
@@ -70,7 +70,7 @@ dataset_selector_accepts_market_test() ->
 
 dataset_selector_accepts_default_plus_optional_test() ->
     {ok, [], Datasets, true} = wfcli_query_service:select_datasets(["dataset=default|drops"]),
-    ?assertEqual([worldstate, mods, items, codex, drops], Datasets).
+    ?assertEqual([worldstate, mods, items, codex, enemies, drops], Datasets).
 
 dataset_selector_rejects_unknown_test() ->
     ?assertMatch({error, _}, wfcli_query_service:select_datasets(["dataset=fish"])).

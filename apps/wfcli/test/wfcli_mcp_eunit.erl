@@ -44,7 +44,8 @@ json_normalizes_erlang_service_terms_test() ->
 dataset_resource_uses_protocol_contract_test() ->
     {ok, <<"application/json">>, Text} = wfcli_mcp_resources:read(<<"wfcli://datasets">>),
     {ok, Data} = wfcli_mcp_json:decode(Text),
-    ?assertEqual([<<"worldstate">>, <<"mods">>, <<"items">>, <<"codex">>],
+    ?assertEqual([<<"worldstate">>, <<"mods">>, <<"items">>, <<"codex">>,
+                  <<"enemies">>, <<"drops">>],
                  maps:get(<<"default">>, Data)),
     ?assertEqual(8, length(maps:get(<<"all">>, Data))).
 

@@ -113,7 +113,7 @@ update_definition() ->
           object_schema(
             #{<<"selections">> =>
                   array_schema(enum_schema(update_names()),
-                               <<"Sources to refresh; defaults to official metadata.">>)}, []),
+                               <<"Sources to refresh; defaults to all managed public metadata.">>)}, []),
       <<"annotations">> => annotations(false, true, true)}.
 
 annotations(ReadOnly, Idempotent, OpenWorld) ->

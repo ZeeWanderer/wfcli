@@ -46,8 +46,8 @@ dataset_descriptions() ->
       mods => <<"Official PublicExport mod records.">>,
       items => <<"Official PublicExport item records.">>,
       codex => <<"Official PublicExport Codex-like records.">>,
-      enemies => <<"Optional WFCD enemy knowledge.">>,
-      drops => <<"Optional WFCD drop knowledge.">>,
+      enemies => <<"WFCD enemy knowledge.">>,
+      drops => <<"WFCD drop knowledge.">>,
       player => <<"Local companion-published player observations.">>,
       market => <<"Warframe Market item catalog plus already-cached quotes.">>}.
 
@@ -65,6 +65,6 @@ query_language() ->
       "`key>value`, `key<value`, or `key:value`. `a|b` means either value inside one "
       "filter. `sort=field` and `sort=-field` control ordering.\n\n"
       "Datasets: `dataset=default|worldstate|mods|items|codex|enemies|drops|player|market|all`. "
-      "Default excludes optional WFCD enemies and drops.\n\n"
+      "Default includes all public datasets; all also includes local player and market data.\n\n"
       "Examples: `type=Fissure void`, `(fissure OR alert) NOT expired`, "
       "`enemy~corrupted rarity=Rare`.\n">>.

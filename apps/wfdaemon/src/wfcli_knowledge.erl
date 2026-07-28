@@ -1,5 +1,5 @@
 %%%-------------------------------------------------------------------
-%% Static knowledge catalog assembled from official exports and optional WFCD data.
+%% Static knowledge catalog assembled from official exports and WFCD data.
 %%%-------------------------------------------------------------------
 -module(wfcli_knowledge).
 
@@ -30,7 +30,7 @@ load_codex(ExportsDir) ->
 codex_sources(ExportsDir) ->
     wfcli_exports:item_sources(ExportsDir, wfcli_worldstate:codex_export_files()).
 
--doc "Load versioned WFCD enemy records from the local optional knowledge cache.".
+-doc "Load versioned WFCD enemy records from the local managed knowledge cache.".
 -spec load_enemies(file:filename_all() | undefined) -> {ok, [map()], source_meta()} | {error, term()}.
 load_enemies(KnowledgeDir) ->
     Path = wfcd_source(KnowledgeDir),
@@ -51,7 +51,7 @@ load_drops(KnowledgeDir) ->
         Error -> Error
     end.
 
--doc "Resolve the optional WFCD cache path; `KnowledgeDir` is used by tests and tools.".
+-doc "Resolve the WFCD cache path; `KnowledgeDir` is used by tests and tools.".
 -spec wfcd_source(file:filename_all() | undefined) -> file:filename_all().
 wfcd_source(undefined) ->
     Paths = wfcli_worldstate:metadata_paths(?WFCD_FILE),

@@ -45,7 +45,7 @@ query_combines_sources(_Config) ->
     end),
     ?assert(string:find(Output, "== Worldstate ==") =/= nomatch),
     ?assert(string:find(Output, "== Items ==") =/= nomatch),
-    ?assert(string:find(Output, "== Drops ==") =:= nomatch),
+    ?assert(string:find(Output, "== Drops ==") =/= nomatch),
     ?assert(string:find(Output, "Test Gun") =/= nomatch).
 
 query_selects_drops(_Config) ->

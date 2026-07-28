@@ -1,5 +1,5 @@
 %%%-------------------------------------------------------------------
-%% Query service for official Codex and optional WFCD knowledge.
+%% Query service for official Codex and WFCD knowledge.
 %%%-------------------------------------------------------------------
 -module(wfcli_knowledge_query).
 

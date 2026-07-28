@@ -1,5 +1,5 @@
 %%%-------------------------------------------------------------------
-%% Entity schemas for official Codex and optional WFCD knowledge.
+%% Entity schemas for official Codex and WFCD knowledge.
 %%%-------------------------------------------------------------------
 -module(wfcli_entity_knowledge).
 

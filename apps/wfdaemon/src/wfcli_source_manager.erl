@@ -5,11 +5,18 @@
 
 -behaviour(gen_server).
 
+-include_lib("kernel/include/file.hrl").
+
 -export([start_link/0, ensure_catalog/2, submit/2, status/0, requirements/2]).
+-ifdef(TEST).
+-export([expand_selections/1, stale_file/3, stale_wfcd/3]).
+-endif.
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2,
          terminate/2, code_change/3]).
 
 -define(SERVER, ?MODULE).
+-define(DEFAULT_REFRESH_INTERVAL_MS, 3600000).
+-define(DEFAULT_MAX_AGE_SECONDS, 86400).
 
 -type requirement() :: #{kind := export | wfcd,
                          id := string(),
@@ -60,7 +67,12 @@ export_requirement(File, Path, Dir) ->
     #{kind => export, id => File, path => Path, managed => Dir =:= undefined}.
 
 init([]) ->
-    {ok, #{queue => queue:new(), current => undefined, client_monitors => #{}}}.
+    Interval = daemon_env(source_refresh_interval_ms, ?DEFAULT_REFRESH_INTERVAL_MS),
+    MaxAge = daemon_env(source_max_age_seconds, ?DEFAULT_MAX_AGE_SECONDS),
+    State = #{queue => queue:new(), current => undefined, client_monitors => #{},
+              refresh_interval_ms => Interval, max_age_seconds => MaxAge,
+              refresh_timer => undefined},
+    {ok, schedule_refresh(State, initial_refresh_delay(Interval))}.
 
 handle_call({ensure_catalog, Command, Query}, From, State) ->
     Job = #{kind => ensure, command => Command, query => Query, reply => {call, From}},
@@ -80,7 +92,9 @@ handle_call({submit, Client, Request}, _From, State) when is_pid(Client), is_map
     end;
 handle_call(status, _From, State) ->
     {reply, #{queued => queue:len(maps:get(queue, State)),
-              processing => maps:get(current, State) =/= undefined}, State};
+              processing => maps:get(current, State) =/= undefined,
+              refresh_interval_ms => maps:get(refresh_interval_ms, State),
+              max_age_seconds => maps:get(max_age_seconds, State)}, State};
 handle_call(Request, _From, State) ->
     {reply, {error, {unknown_request, Request}}, State}.
 
@@ -127,15 +141,31 @@ handle_info({'DOWN', Monitor, process, _Pid, _Reason}, State) ->
             wfcli_worldstate_service:activity_end(),
             {noreply, State#{queue => Queue, client_monitors => Monitors}}
     end;
+handle_info(refresh_stale_sources, State) ->
+    State1 = State#{refresh_timer => undefined},
+    State2 = maybe_enqueue_stale_refresh(State1),
+    {noreply, schedule_refresh(State2, maps:get(refresh_interval_ms, State2))};
 handle_info(_Message, State) ->
     {noreply, State}.
 
-terminate(_Reason, _State) -> ok.
+terminate(_Reason, State) ->
+    cancel_refresh_timer(maps:get(refresh_timer, State, undefined)),
+    ok.
 
 code_change(_OldVsn, State, _Extra) ->
-    {ok, State#{queue => maps:get(queue, State, queue:new()),
-                current => maps:get(current, State, undefined),
-                client_monitors => maps:get(client_monitors, State, #{})}}.
+    Interval = maps:get(refresh_interval_ms, State,
+                        daemon_env(source_refresh_interval_ms,
+                                   ?DEFAULT_REFRESH_INTERVAL_MS)),
+    State1 = State#{queue => maps:get(queue, State, queue:new()),
+                    current => maps:get(current, State, undefined),
+                    client_monitors => maps:get(client_monitors, State, #{}),
+                    refresh_interval_ms => Interval,
+                    max_age_seconds =>
+                        maps:get(max_age_seconds, State,
+                                 daemon_env(source_max_age_seconds,
+                                            ?DEFAULT_MAX_AGE_SECONDS)),
+                    refresh_timer => maps:get(refresh_timer, State, undefined)},
+    {ok, ensure_refresh_timer(State1)}.
 
 enqueue(Job, State) ->
     self() ! process_queue,
@@ -151,7 +181,12 @@ complete_job(#{reply := {client, Client, Ref, Monitor}}, Result, State) ->
     end,
     erlang:demonitor(Monitor, [flush]),
     wfcli_worldstate_service:activity_end(),
-    State#{client_monitors => maps:remove(Monitor, maps:get(client_monitors, State))}.
+    State#{client_monitors => maps:remove(Monitor, maps:get(client_monitors, State))};
+complete_job(#{reply := none}, {ok, #{success := true}}, State) ->
+    State;
+complete_job(#{reply := none}, Result, State) ->
+    logger:warning("automatic knowledge refresh failed: ~p", [Result]),
+    State.
 
 job_ref(#{reply := {client, _Client, Ref, _Monitor}}, Ref) -> true;
 job_ref(_Job, _Ref) -> false.
@@ -159,7 +194,9 @@ job_ref(_Job, _Ref) -> false.
 execute_job(#{kind := ensure, command := Command, query := Query}) ->
     ensure_requirements(Command, Query);
 execute_job(#{kind := refresh, request := Request}) ->
-    refresh_sources(maps:get(selections, Request, [default])).
+    refresh_sources(maps:get(selections, Request, [default]));
+execute_job(#{kind := periodic, selections := Selections}) ->
+    refresh_sources(Selections).
 
 ensure_requirements(Command, Query) ->
     Requirements = requirements(Command, Query),
@@ -234,7 +271,7 @@ expand_selections(Selections) ->
     Expanded = lists:flatten([expand_selection(Selection) || Selection <- Selections]),
     unique(Expanded, []).
 
-expand_selection(default) -> [nodes, languages, exports];
+expand_selection(default) -> [nodes, languages, exports, wfcd];
 expand_selection(all) -> [nodes, languages, exports, wfcd];
 expand_selection(Selection) -> [Selection].
 
@@ -263,6 +300,95 @@ run_real_update(warframes) -> wfcli_worldstate:update_export("ExportWarframes_en
 run_real_update(resources) -> wfcli_worldstate:update_export("ExportResources_en.json");
 run_real_update(wfcd) -> wfcli_knowledge:update_wfcd();
 run_real_update(Action) -> {error, {unknown_source_update, Action}}.
+
+maybe_enqueue_stale_refresh(State) ->
+    case has_refresh_job(State) of
+        true -> State;
+        false ->
+            Selections = stale_selections(
+                           maps:get(max_age_seconds, State),
+                           erlang:system_time(second)),
+            case Selections of
+                [] -> State;
+                _ -> enqueue(#{kind => periodic, selections => Selections, reply => none},
+                             State)
+            end
+    end.
+
+has_refresh_job(State) ->
+    is_refresh(maps:get(current, State, undefined)) orelse
+    lists:any(fun is_refresh/1, queue:to_list(maps:get(queue, State))).
+
+is_refresh(#{job := Job}) -> is_refresh(Job);
+is_refresh(#{kind := Kind}) when Kind =:= periodic; Kind =:= refresh -> true;
+is_refresh(_) -> false.
+
+stale_selections(MaxAge, Now) ->
+    Candidates = [
+        {nodes, stale_file(managed_path("solNodes.json"), MaxAge, Now)},
+        {languages, stale_file(managed_path("languages.json"), MaxAge, Now)},
+        {exports, exports_stale(MaxAge, Now)},
+        {wfcd, stale_wfcd(wfcli_knowledge:wfcd_source(undefined), MaxAge, Now)}
+    ],
+    [Selection || {Selection, true} <- Candidates].
+
+exports_stale(MaxAge, Now) ->
+    Sources = wfcli_exports:item_sources(undefined, wfcli_worldstate:export_files()),
+    lists:any(fun({_File, Path}) -> stale_file(Path, MaxAge, Now) end, Sources).
+
+managed_path(Name) ->
+    Paths = wfcli_worldstate:metadata_paths(Name),
+    case [Path || Path <- Paths, filelib:is_file(Path)] of
+        [Path | _] -> Path;
+        [] ->
+            case Paths of
+                [Path | _] -> Path;
+                [] -> wfcli_paths:cache_file(Name)
+            end
+    end.
+
+stale_file(Path, MaxAge, Now) ->
+    case file:read_file_info(Path, [{time, posix}]) of
+        {ok, #file_info{mtime = Modified}} when is_integer(Modified) ->
+            Now - Modified >= MaxAge;
+        _ -> true
+    end.
+
+stale_wfcd(Path, MaxAge, Now) ->
+    case file:read_file(Path) of
+        {ok, Body} ->
+            try jsone:decode(Body, [{object_format, map}]) of
+                #{<<"fetchedAt">> := FetchedAt, <<"entries">> := Entries}
+                  when is_integer(FetchedAt), is_list(Entries) ->
+                    Now - FetchedAt >= MaxAge;
+                _ -> true
+            catch _:_ -> true
+            end;
+        {error, _} -> true
+    end.
+
+initial_refresh_delay(Interval) when is_integer(Interval), Interval > 0 ->
+    min(60000, Interval);
+initial_refresh_delay(_Interval) ->
+    0.
+
+ensure_refresh_timer(#{refresh_timer := Timer} = State)
+  when is_reference(Timer) ->
+    State;
+ensure_refresh_timer(State) ->
+    schedule_refresh(State, maps:get(refresh_interval_ms, State)).
+
+schedule_refresh(State, Delay) when is_integer(Delay), Delay > 0 ->
+    Timer = erlang:send_after(Delay, self(), refresh_stale_sources),
+    State#{refresh_timer => Timer};
+schedule_refresh(State, _Delay) ->
+    State#{refresh_timer => undefined}.
+
+cancel_refresh_timer(Timer) when is_reference(Timer) ->
+    _ = erlang:cancel_timer(Timer),
+    ok;
+cancel_refresh_timer(_) ->
+    ok.
 
 daemon_env(Key, Default) ->
     application:get_env(wfdaemon, Key, Default).
