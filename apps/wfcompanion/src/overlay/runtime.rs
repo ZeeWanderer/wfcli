@@ -34,7 +34,7 @@ use wayland_client::{Connection, QueueHandle};
 
 use super::renderer::{FrameKey, LOADING_FRAME_INTERVAL, Renderer};
 use super::scene::Presentation;
-use super::screens::{STATUS_HEIGHT, STATUS_INSET, STATUS_WIDTH};
+use super::screens::{STATUS_HEIGHT, STATUS_INSET, STATUS_WIDTH, StatusView};
 use crate::UiEvent;
 use crate::focus::FocusDetector;
 use crate::incident;
@@ -671,12 +671,13 @@ impl Overlay {
         if !partial_animation && let Some((origin, daemon, player, detail)) = status.as_ref() {
             self.renderer.draw_status(
                 &mut painter,
-                scale,
-                *origin,
-                *origin,
-                daemon,
-                player,
-                detail,
+                StatusView {
+                    scale,
+                    origin: (*origin, *origin),
+                    daemon,
+                    player,
+                    detail,
+                },
             );
         }
         if let Err(error) = painter.finish() {

@@ -293,31 +293,42 @@ fn connection_session(
         next_id += 1;
     }
 
-    let result = active_session(
-        &mut writer,
-        &mut reader,
+    let result = active_session(ActiveSession {
+        writer: &mut writer,
+        reader: &mut reader,
         outbound,
         latest,
         ui,
         stopping,
         next_id,
-        &mut pending,
-    );
+        pending: &mut pending,
+    });
     fail_pending(&mut pending, "daemon connection closed");
     result
 }
 
-#[allow(clippy::too_many_arguments)]
-fn active_session(
-    writer: &mut UnixStream,
-    reader: &mut BufReader<UnixStream>,
-    outbound: &mpsc::Receiver<Outbound>,
-    latest: &mut BTreeMap<&'static str, Value>,
-    ui: &mpsc::Sender<UiEvent>,
-    stopping: &AtomicBool,
-    mut next_id: u64,
-    pending: &mut BTreeMap<u64, mpsc::Sender<Result<Value, String>>>,
-) -> io::Result<()> {
+struct ActiveSession<'a> {
+    writer: &'a mut UnixStream,
+    reader: &'a mut BufReader<UnixStream>,
+    outbound: &'a mpsc::Receiver<Outbound>,
+    latest: &'a mut BTreeMap<&'static str, Value>,
+    ui: &'a mpsc::Sender<UiEvent>,
+    stopping: &'a AtomicBool,
+    next_id: u64,
+    pending: &'a mut BTreeMap<u64, mpsc::Sender<Result<Value, String>>>,
+}
+
+fn active_session(session: ActiveSession<'_>) -> io::Result<()> {
+    let ActiveSession {
+        writer,
+        reader,
+        outbound,
+        latest,
+        ui,
+        stopping,
+        mut next_id,
+        pending,
+    } = session;
     let mut line = String::new();
     while !stopping.load(Ordering::Relaxed) {
         while let Ok(message) = outbound.try_recv() {

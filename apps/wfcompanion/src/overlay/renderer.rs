@@ -65,18 +65,12 @@ impl Renderer {
         }
     }
 
-    #[allow(clippy::too_many_arguments)]
     pub(super) fn draw_status(
         &self,
         painter: &mut Painter<'_>,
-        scale: u32,
-        x: u32,
-        y: u32,
-        daemon: &str,
-        player: &str,
-        detail: &str,
+        view: screens::StatusView<'_>,
     ) {
-        screens::draw_status(painter, &self.font, scale, x, y, daemon, player, detail);
+        screens::draw_status(painter, &self.font, view);
     }
 }
 
@@ -156,12 +150,13 @@ fn render_notification_preview(dimensions: (u32, u32)) -> Result<image::RgbaImag
     painter.clear();
     renderer.draw_status(
         &mut painter,
-        1,
-        0,
-        0,
-        "wfdaemon 0.1.0 - connected",
-        "Warframe running (pid 12345)",
-        "wfcli companion hud hide",
+        screens::StatusView {
+            scale: 1,
+            origin: (0, 0),
+            daemon: "wfdaemon 0.1.0 - connected",
+            player: "Warframe running (pid 12345)",
+            detail: "wfcli companion hud hide",
+        },
     );
     painter
         .finish()
@@ -170,14 +165,17 @@ fn render_notification_preview(dimensions: (u32, u32)) -> Result<image::RgbaImag
     let (width, height) = dimensions;
     let mut output = vec![0; (width * height * 4) as usize];
     blit_surface(
-        &mut output,
-        width,
-        height,
-        &surface,
-        screens::STATUS_WIDTH,
-        screens::STATUS_HEIGHT,
-        screens::STATUS_INSET,
-        screens::STATUS_INSET,
+        SurfaceMut {
+            pixels: &mut output,
+            width,
+            height,
+        },
+        Surface {
+            pixels: &surface,
+            width: screens::STATUS_WIDTH,
+            height: screens::STATUS_HEIGHT,
+        },
+        (screens::STATUS_INSET, screens::STATUS_INSET),
     );
     straight_rgba(&output, width, height)
 }
@@ -189,25 +187,27 @@ fn save_preview_image(output: image::RgbaImage, path: &Path) -> Result<(), Strin
     Ok(())
 }
 
-#[allow(clippy::too_many_arguments)]
-fn blit_surface(
-    target: &mut [u8],
-    target_width: u32,
-    target_height: u32,
-    source: &[u8],
-    source_width: u32,
-    source_height: u32,
-    x: u32,
-    y: u32,
-) {
-    let copy_width = source_width.min(target_width.saturating_sub(x));
-    let copy_height = source_height.min(target_height.saturating_sub(y));
+struct Surface<'a> {
+    pixels: &'a [u8],
+    width: u32,
+    height: u32,
+}
+
+struct SurfaceMut<'a> {
+    pixels: &'a mut [u8],
+    width: u32,
+    height: u32,
+}
+
+fn blit_surface(target: SurfaceMut<'_>, source: Surface<'_>, origin: (u32, u32)) {
+    let copy_width = source.width.min(target.width.saturating_sub(origin.0));
+    let copy_height = source.height.min(target.height.saturating_sub(origin.1));
     for row in 0..copy_height {
-        let source_start = (row * source_width * 4) as usize;
-        let target_start = (((y + row) * target_width + x) * 4) as usize;
+        let source_start = (row * source.width * 4) as usize;
+        let target_start = (((origin.1 + row) * target.width + origin.0) * 4) as usize;
         let bytes = (copy_width * 4) as usize;
-        target[target_start..target_start + bytes]
-            .copy_from_slice(&source[source_start..source_start + bytes]);
+        target.pixels[target_start..target_start + bytes]
+            .copy_from_slice(&source.pixels[source_start..source_start + bytes]);
     }
 }
 
@@ -322,12 +322,13 @@ mod tests {
         painter.clear();
         renderer.draw_status(
             &mut painter,
-            1,
-            24,
-            24,
-            "DEV | wfdaemon connected",
-            "Warframe running (pid 12345)",
-            "DBWIN on | dbg 8 | log 2 | relic rewards",
+            screens::StatusView {
+                scale: 1,
+                origin: (24, 24),
+                daemon: "DEV | wfdaemon connected",
+                player: "Warframe running (pid 12345)",
+                detail: "DBWIN on | dbg 8 | log 2 | relic rewards",
+            },
         );
         painter.finish().unwrap();
 

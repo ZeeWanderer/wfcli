@@ -16,6 +16,31 @@ struct ImageData {
     stride: isize,
 }
 
+pub(super) struct Image<'a> {
+    pub(super) pixels: &'a [u8],
+    pub(super) width: u32,
+    pub(super) height: u32,
+}
+
+pub(super) struct Rect {
+    pub(super) x: u32,
+    pub(super) y: u32,
+    pub(super) width: u32,
+    pub(super) height: u32,
+}
+
+pub(super) struct Circle {
+    pub(super) x: f64,
+    pub(super) y: f64,
+    pub(super) radius: f64,
+}
+
+pub(super) struct Mask<'a> {
+    pub(super) coverage: &'a [u8],
+    pub(super) width: usize,
+    pub(super) height: usize,
+}
+
 unsafe extern "C" {
     fn wf_bl_painter_create(
         pixels: *mut u8,
@@ -204,53 +229,47 @@ impl<'a> Context<'a> {
         self.record("circle stroke", result);
     }
 
-    #[allow(clippy::too_many_arguments)]
     pub(super) fn blit_scaled_prgb32(
         &mut self,
-        pixels: &[u8],
-        source_width: u32,
-        source_height: u32,
-        target_x: u32,
-        target_y: u32,
-        target_width: u32,
-        target_height: u32,
+        source: Image<'_>,
+        target: Rect,
     ) {
         if self.failed() {
             return;
         }
-        let Ok(source) = image_data(
-            pixels.len(),
-            source_width as usize,
-            source_height as usize,
+        let Ok(data) = image_data(
+            source.pixels.len(),
+            source.width as usize,
+            source.height as usize,
             4,
             "source image",
         ) else {
             self.record_invalid("source image");
             return;
         };
-        let Ok(target_x) = c_int::try_from(target_x) else {
+        let Ok(target_x) = c_int::try_from(target.x) else {
             self.record_invalid("target x");
             return;
         };
-        let Ok(target_y) = c_int::try_from(target_y) else {
+        let Ok(target_y) = c_int::try_from(target.y) else {
             self.record_invalid("target y");
             return;
         };
-        let Ok(target_width) = c_int::try_from(target_width) else {
+        let Ok(target_width) = c_int::try_from(target.width) else {
             self.record_invalid("target width");
             return;
         };
-        let Ok(target_height) = c_int::try_from(target_height) else {
+        let Ok(target_height) = c_int::try_from(target.height) else {
             self.record_invalid("target height");
             return;
         };
         let result = unsafe {
             wf_bl_blit_prgb32(
                 self.raw(),
-                pixels.as_ptr(),
-                source.width,
-                source.height,
-                source.stride,
+                source.pixels.as_ptr(),
+                data.width,
+                data.height,
+                data.stride,
                 target_x,
                 target_y,
                 target_width,
@@ -260,74 +279,63 @@ impl<'a> Context<'a> {
         self.record("image blit", result);
     }
 
-    #[allow(clippy::too_many_arguments)]
     pub(super) fn fill_circle_prgb32(
         &mut self,
-        pixels: &[u8],
-        source_width: u32,
-        source_height: u32,
-        target_x: u32,
-        target_y: u32,
-        target_width: u32,
-        target_height: u32,
-        center_x: f64,
-        center_y: f64,
-        radius: f64,
+        source: Image<'_>,
+        target: Rect,
+        circle: Circle,
     ) {
         if self.failed() {
             return;
         }
-        let Ok(source) = image_data(
-            pixels.len(),
-            source_width as usize,
-            source_height as usize,
+        let Ok(data) = image_data(
+            source.pixels.len(),
+            source.width as usize,
+            source.height as usize,
             4,
             "source image",
         ) else {
             self.record_invalid("source image");
             return;
         };
-        let Ok(target_x) = c_int::try_from(target_x) else {
+        let Ok(target_x) = c_int::try_from(target.x) else {
             self.record_invalid("target x");
             return;
         };
-        let Ok(target_y) = c_int::try_from(target_y) else {
+        let Ok(target_y) = c_int::try_from(target.y) else {
             self.record_invalid("target y");
             return;
         };
-        let Ok(target_width) = c_int::try_from(target_width) else {
+        let Ok(target_width) = c_int::try_from(target.width) else {
             self.record_invalid("target width");
             return;
         };
-        let Ok(target_height) = c_int::try_from(target_height) else {
+        let Ok(target_height) = c_int::try_from(target.height) else {
             self.record_invalid("target height");
             return;
         };
         let result = unsafe {
             wf_bl_fill_circle_prgb32(
                 self.raw(),
-                pixels.as_ptr(),
-                source.width,
-                source.height,
-                source.stride,
+                source.pixels.as_ptr(),
+                data.width,
+                data.height,
+                data.stride,
                 target_x,
                 target_y,
                 target_width,
                 target_height,
-                center_x,
-                center_y,
-                radius,
+                circle.x,
+                circle.y,
+                circle.radius,
             )
         };
         self.record("circular image fill", result);
     }
 
-    #[allow(clippy::too_many_arguments)]
     pub(super) fn fill_a8_mask_rgba32(
         &mut self,
-        coverage: &[u8],
-        width: usize,
-        height: usize,
+        mask: Mask<'_>,
         target_x: i32,
         target_y: i32,
         rgba32: u32,
@@ -335,20 +343,26 @@ impl<'a> Context<'a> {
         if self.failed() {
             return;
         }
-        if width == 0 || height == 0 {
+        if mask.width == 0 || mask.height == 0 {
             return;
         }
-        let Ok(mask) = image_data(coverage.len(), width, height, 1, "glyph mask") else {
+        let Ok(data) = image_data(
+            mask.coverage.len(),
+            mask.width,
+            mask.height,
+            1,
+            "glyph mask",
+        ) else {
             self.record_invalid("glyph mask");
             return;
         };
         let result = unsafe {
             wf_bl_fill_a8_mask(
                 self.raw(),
-                coverage.as_ptr(),
-                mask.width,
-                mask.height,
-                mask.stride,
+                mask.coverage.as_ptr(),
+                data.width,
+                data.height,
+                data.stride,
                 target_x,
                 target_y,
                 rgba32,
@@ -436,7 +450,19 @@ mod tests {
     fn context_defers_invalid_source_error_until_finish() {
         let mut target = [0; 16];
         let mut context = Context::new(&mut target, 2, 2).unwrap();
-        context.blit_scaled_prgb32(&[0; 3], 1, 1, 0, 0, 1, 1);
+        context.blit_scaled_prgb32(
+            Image {
+                pixels: &[0; 3],
+                width: 1,
+                height: 1,
+            },
+            Rect {
+                x: 0,
+                y: 0,
+                width: 1,
+                height: 1,
+            },
+        );
 
         assert!(context.failed());
         assert!(context.finish().is_err());

@@ -1,7 +1,9 @@
 use fontdue::Font;
 
 use super::{Resources, View};
-use crate::painter::{Painter, RasterImage, TextBox, css_rgba, fit_text_size, text_width};
+use crate::painter::{
+    Painter, RasterImage, TextBox, TextLine, css_rgba, fit_text_size, text_width,
+};
 use crate::ui::{HitRegion, HitTarget, ScreenOutput};
 
 mod layout;
@@ -85,9 +87,11 @@ pub(super) fn draw(
     );
     painter.draw_text_vertically_centered(
         font,
-        layout.header.x + 41 * scale,
-        layout.header.y,
-        layout.header.height,
+        TextLine::new(
+            layout.header.x + 41 * scale,
+            layout.header.y,
+            layout.header.height,
+        ),
         16.0 * scale as f32,
         &suggestions.trace_count.to_string(),
         [255, 255, 255, 255],
@@ -171,9 +175,7 @@ pub(super) fn draw(
         }
         painter.draw_text_vertically_centered(
             font,
-            top_x,
-            top_y,
-            24 * scale,
+            TextLine::new(top_x, top_y, 24 * scale),
             17.0 * scale as f32,
             &count,
             [255, 255, 255, 255],
@@ -181,9 +183,7 @@ pub(super) fn draw(
         top_x += count_width + 8 * scale;
         painter.draw_text_vertically_centered(
             font,
-            top_x,
-            top_y,
-            24 * scale,
+            TextLine::new(top_x, top_y, 24 * scale),
             title_size,
             &suggestion.name,
             [255, 255, 255, 255],
@@ -202,9 +202,7 @@ pub(super) fn draw(
         let row_y = card.y + card.height.saturating_sub(27 * scale);
         painter.draw_text_vertically_centered(
             font,
-            row_x,
-            row_y,
-            20 * scale,
+            TextLine::new(row_x, row_y, 20 * scale),
             price_size,
             "E. profits:",
             [255, 255, 255, 255],
@@ -284,9 +282,7 @@ fn draw_suggestion_price(
     let value_width = text_width(font, value, size).ceil() as u32;
     painter.draw_text_vertically_centered(
         font,
-        x,
-        y,
-        20 * scale,
+        TextLine::new(x, y, 20 * scale),
         size,
         value,
         [255, 255, 255, 255],

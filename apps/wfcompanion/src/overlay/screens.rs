@@ -9,7 +9,9 @@ use super::scene::Scene;
 use crate::painter::Painter;
 use crate::ui::ScreenOutput;
 
-pub(super) use status::{HEIGHT as STATUS_HEIGHT, INSET as STATUS_INSET, WIDTH as STATUS_WIDTH};
+pub(super) use status::{
+    HEIGHT as STATUS_HEIGHT, INSET as STATUS_INSET, View as StatusView, WIDTH as STATUS_WIDTH,
+};
 
 pub(super) struct Assets {
     relic: relic::Assets,
@@ -70,16 +72,10 @@ pub(super) fn draw_animation(
     }
 }
 
-#[allow(clippy::too_many_arguments)]
 pub(super) fn draw_status(
     painter: &mut Painter<'_>,
     font: &Font,
-    scale: u32,
-    x: u32,
-    y: u32,
-    daemon: &str,
-    player: &str,
-    detail: &str,
+    view: StatusView<'_>,
 ) {
-    status::draw(painter, font, scale, x, y, daemon, player, detail);
+    status::draw(painter, font, view);
 }

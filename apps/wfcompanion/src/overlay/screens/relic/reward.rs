@@ -4,7 +4,9 @@ use std::time::Duration;
 use fontdue::Font;
 
 use super::{Resources, View};
-use crate::painter::{Painter, RasterImage, TextBox, css_rgba, fit_text_size, text_width};
+use crate::painter::{
+    Painter, RasterImage, TextBox, TextLine, css_rgba, fit_text_size, text_width,
+};
 use crate::ui::Rect;
 
 mod layout;
@@ -148,12 +150,14 @@ pub(super) fn draw(
                     draw_primary_price(
                         painter,
                         font,
-                        platinum_icon,
-                        card_layout.platinum,
-                        scale,
-                        28,
-                        reward.lowest_sell,
-                        css_rgba(255, 255, 255, 255),
+                        PrimaryPrice {
+                            icon: platinum_icon,
+                            bounds: card_layout.platinum,
+                            scale,
+                            icon_size: 28,
+                            price: reward.lowest_sell,
+                            color: css_rgba(255, 255, 255, 255),
+                        },
                     );
                     if let Some(bounds) = card_layout.vaulted {
                         painter.fill_rounded_rect(
@@ -175,12 +179,14 @@ pub(super) fn draw(
                     draw_primary_price(
                         painter,
                         font,
-                        ducat_icon,
-                        card_layout.ducats,
-                        scale,
-                        30,
-                        reward.ducats,
-                        css_rgba(255, 255, 255, 255),
+                        PrimaryPrice {
+                            icon: ducat_icon,
+                            bounds: card_layout.ducats,
+                            scale,
+                            icon_size: 30,
+                            price: reward.ducats,
+                            color: css_rgba(255, 255, 255, 255),
+                        },
                     );
                 }
                 draw_reward_ownership(painter, font, reward, card_layout.ownership, scale);
@@ -383,33 +389,36 @@ fn draw_message_panel(
     }
 }
 
-#[allow(clippy::too_many_arguments)]
-fn draw_primary_price(
-    painter: &mut Painter<'_>,
-    font: &Font,
-    icon: &RasterImage,
+struct PrimaryPrice<'a> {
+    icon: &'a RasterImage,
     bounds: Rect,
     scale: u32,
     icon_size: u32,
     price: Option<u64>,
     color: [u8; 4],
+}
+
+fn draw_primary_price(
+    painter: &mut Painter<'_>,
+    font: &Font,
+    view: PrimaryPrice<'_>,
 ) {
-    let value = price.map_or_else(|| "--".to_owned(), |value| value.to_string());
-    let size = 19.0 * scale as f32;
-    let icon_size = icon_size * scale;
+    let value = view
+        .price
+        .map_or_else(|| "--".to_owned(), |value| value.to_string());
+    let size = 19.0 * view.scale as f32;
+    let icon_size = view.icon_size * view.scale;
     painter.draw_text_vertically_centered(
         font,
-        bounds.x,
-        bounds.y,
-        bounds.height,
+        TextLine::new(view.bounds.x, view.bounds.y, view.bounds.height),
         size,
         &value,
-        color,
+        view.color,
     );
     painter.draw_image_contained(
-        icon,
-        bounds.x + bounds.width.saturating_sub(icon_size),
-        bounds.y + bounds.height.saturating_sub(icon_size) / 2,
+        view.icon,
+        view.bounds.x + view.bounds.width.saturating_sub(icon_size),
+        view.bounds.y + view.bounds.height.saturating_sub(icon_size) / 2,
         icon_size,
         icon_size,
     );
@@ -597,9 +606,7 @@ fn draw_reward_parts(
         let price_y = y + tile_size + connector_height;
         painter.draw_text_vertically_centered(
             font,
-            price_x,
-            price_y,
-            price_height,
+            TextLine::new(price_x, price_y, price_height),
             label_size,
             &value,
             [255, 255, 255, 255],
@@ -631,9 +638,7 @@ fn draw_account_currency(
     let brand = "wfcompanion";
     painter.draw_text_vertically_centered(
         font,
-        bounds.x + 16 * scale,
-        bounds.y,
-        bounds.height,
+        TextLine::new(bounds.x + 16 * scale, bounds.y, bounds.height),
         18.0 * scale as f32,
         brand,
         [255, 255, 255, 255],
@@ -674,32 +679,36 @@ fn draw_account_currency(
     draw_primary_price(
         painter,
         font,
-        platinum_icon,
-        Rect {
-            x: right.saturating_sub(ducat_width + 12 * scale + platinum_width),
-            y: bounds.y,
-            width: platinum_width,
-            height: bounds.height,
+        PrimaryPrice {
+            icon: platinum_icon,
+            bounds: Rect {
+                x: right.saturating_sub(ducat_width + 12 * scale + platinum_width),
+                y: bounds.y,
+                width: platinum_width,
+                height: bounds.height,
+            },
+            scale,
+            icon_size: 22,
+            price: account.platinum,
+            color: [255, 255, 255, 255],
         },
-        scale,
-        22,
-        account.platinum,
-        [255, 255, 255, 255],
     );
     draw_primary_price(
         painter,
         font,
-        ducat_icon,
-        Rect {
-            x: right.saturating_sub(ducat_width),
-            y: bounds.y,
-            width: ducat_width,
-            height: bounds.height,
+        PrimaryPrice {
+            icon: ducat_icon,
+            bounds: Rect {
+                x: right.saturating_sub(ducat_width),
+                y: bounds.y,
+                width: ducat_width,
+                height: bounds.height,
+            },
+            scale,
+            icon_size: 23,
+            price: account.ducats,
+            color: [255, 255, 255, 255],
         },
-        scale,
-        23,
-        account.ducats,
-        [255, 255, 255, 255],
     );
 }
 

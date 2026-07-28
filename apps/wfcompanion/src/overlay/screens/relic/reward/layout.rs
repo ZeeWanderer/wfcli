@@ -1,8 +1,8 @@
-use taffy::TaffyError;
 use taffy::geometry::Rect as TaffyRect;
 use taffy::prelude::*;
 
 use crate::ui::Rect;
+use crate::ui::layout::UiTree;
 
 const REFERENCE_HEIGHT: f64 = 1080.0;
 const REFERENCE_WIDTH: f64 = 1000.0;
@@ -73,15 +73,22 @@ impl Layout {
     }
 }
 
-struct CardNodes {
-    card: NodeId,
-    name: NodeId,
-    prices: NodeId,
-    platinum: NodeId,
-    vaulted: Option<NodeId>,
-    ducats: NodeId,
-    ownership: NodeId,
-    components: NodeId,
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Element {
+    Root,
+    Shell,
+    Relic,
+    Holder,
+    Footer,
+    Card(usize),
+    Name(usize),
+    Prices(usize),
+    Platinum(usize),
+    Vaulted(usize),
+    Favorite(usize),
+    Ducats(usize),
+    Ownership(usize),
+    Components(usize),
 }
 
 pub(super) fn compute(
@@ -90,13 +97,13 @@ pub(super) fn compute(
     card_specs: &[CardSpec],
 ) -> Result<Layout, String> {
     let window = relic_overlay_bounds(screen_width, screen_height);
-    let mut taffy: TaffyTree<()> = TaffyTree::new();
-    taffy.disable_rounding();
+    let mut tree = UiTree::new();
+    let mut cards = Vec::with_capacity(card_specs.len().min(4));
 
-    let mut card_nodes = Vec::with_capacity(card_specs.len());
-    for spec in card_specs.iter().take(4) {
-        let name = taffy
-            .new_leaf(Style {
+    for (index, spec) in card_specs.iter().take(4).enumerate() {
+        let name = tree.leaf(
+            Element::Name(index),
+            Style {
                 size: Size {
                     width: percent(1.0_f32),
                     height: length(24.85_f32),
@@ -105,11 +112,11 @@ pub(super) fn compute(
                 grid_row: line(1),
                 grid_column: span(2),
                 ..Default::default()
-            })
-            .map_err(layout_error)?;
-
-        let platinum = taffy
-            .new_leaf(Style {
+            },
+        )?;
+        let platinum = tree.leaf(
+            Element::Platinum(index),
+            Style {
                 size: Size {
                     width: length(spec.platinum_width),
                     height: length(28.0_f32),
@@ -121,40 +128,36 @@ pub(super) fn compute(
                     bottom: zero(),
                 },
                 ..Default::default()
-            })
-            .map_err(layout_error)?;
+            },
+        )?;
         let mut price_children = vec![platinum];
-        let vaulted = if spec.vaulted {
-            Some(
-                taffy
-                    .new_leaf(Style {
-                        size: Size {
-                            width: length(36.0_f32),
-                            height: length(30.0_f32),
-                        },
-                        ..Default::default()
-                    })
-                    .map_err(layout_error)?,
-            )
-        } else {
-            None
-        };
-        price_children.extend(vaulted);
-        if spec.favorite {
-            price_children.push(
-                taffy
-                    .new_leaf(Style {
-                        size: Size {
-                            width: length(27.0_f32),
-                            height: length(27.0_f32),
-                        },
-                        ..Default::default()
-                    })
-                    .map_err(layout_error)?,
-            );
+        if spec.vaulted {
+            price_children.push(tree.leaf(
+                Element::Vaulted(index),
+                Style {
+                    size: Size {
+                        width: length(36.0_f32),
+                        height: length(30.0_f32),
+                    },
+                    ..Default::default()
+                },
+            )?);
         }
-        let ducats = taffy
-            .new_leaf(Style {
+        if spec.favorite {
+            price_children.push(tree.leaf(
+                Element::Favorite(index),
+                Style {
+                    size: Size {
+                        width: length(27.0_f32),
+                        height: length(27.0_f32),
+                    },
+                    ..Default::default()
+                },
+            )?);
+        }
+        let ducats = tree.leaf(
+            Element::Ducats(index),
+            Style {
                 size: Size {
                     width: length(spec.ducats_width),
                     height: length(30.0_f32),
@@ -166,30 +169,28 @@ pub(super) fn compute(
                     bottom: zero(),
                 },
                 ..Default::default()
-            })
-            .map_err(layout_error)?;
+            },
+        )?;
         price_children.push(ducats);
-        let prices = taffy
-            .new_with_children(
-                Style {
-                    display: Display::Flex,
-                    size: Size {
-                        width: percent(1.0_f32),
-                        height: length(30.0_f32),
-                    },
-                    align_items: Some(AlignItems::CENTER),
-                    align_self: Some(AlignSelf::CENTER),
-                    justify_content: Some(JustifyContent::SPACE_AROUND),
-                    grid_row: line(2),
-                    grid_column: span(2),
-                    ..Default::default()
+        let prices = tree.row(
+            Element::Prices(index),
+            Style {
+                size: Size {
+                    width: percent(1.0_f32),
+                    height: length(30.0_f32),
                 },
-                &price_children,
-            )
-            .map_err(layout_error)?;
-
-        let ownership = taffy
-            .new_leaf(Style {
+                align_items: Some(AlignItems::CENTER),
+                align_self: Some(AlignSelf::CENTER),
+                justify_content: Some(JustifyContent::SPACE_AROUND),
+                grid_row: line(2),
+                grid_column: span(2),
+                ..Default::default()
+            },
+            &price_children,
+        )?;
+        let ownership = tree.leaf(
+            Element::Ownership(index),
+            Style {
                 size: Size {
                     width: percent(0.8_f32),
                     height: length(27.0_f32),
@@ -199,10 +200,11 @@ pub(super) fn compute(
                 grid_row: line(3),
                 grid_column: span(2),
                 ..Default::default()
-            })
-            .map_err(layout_error)?;
-        let components = taffy
-            .new_leaf(Style {
+            },
+        )?;
+        let components = tree.leaf(
+            Element::Components(index),
+            Style {
                 size: Size {
                     width: percent(1.0_f32),
                     height: percent(1.0_f32),
@@ -211,189 +213,149 @@ pub(super) fn compute(
                 grid_row: line(4),
                 grid_column: span(2),
                 ..Default::default()
-            })
-            .map_err(layout_error)?;
-
-        let card = taffy
-            .new_with_children(
-                Style {
-                    display: Display::Grid,
-                    size: Size {
-                        width: length(100.0_f32),
-                        height: percent(1.0_f32),
-                    },
-                    max_size: Size {
-                        width: percent(0.25_f32),
-                        height: auto(),
-                    },
-                    padding: TaffyRect {
-                        left: length(6.0_f32),
-                        right: length(6.0_f32),
-                        top: length(6.0_f32),
-                        bottom: length(6.0_f32),
-                    },
-                    align_items: Some(AlignItems::CENTER),
-                    flex_grow: 1.0,
-                    grid_template_columns: vec![fr(1.0_f32), fr(1.0_f32)],
-                    grid_template_rows: vec![fr(1.05_f32), fr(0.77_f32), fr(0.8_f32), fr(1.5_f32)],
-                    ..Default::default()
-                },
-                &[name, prices, ownership, components],
-            )
-            .map_err(layout_error)?;
-        card_nodes.push(CardNodes {
-            card,
-            name,
-            prices,
-            platinum,
-            vaulted,
-            ducats,
-            ownership,
-            components,
-        });
-    }
-
-    let holder = taffy
-        .new_with_children(
+            },
+        )?;
+        cards.push(tree.grid(
+            Element::Card(index),
             Style {
-                display: Display::Flex,
-                flex_direction: FlexDirection::Row,
-                flex_grow: 1.0,
-                min_size: Size {
-                    width: auto(),
-                    height: length(0.0_f32),
+                size: Size {
+                    width: length(100.0_f32),
+                    height: percent(1.0_f32),
+                },
+                max_size: Size {
+                    width: percent(0.25_f32),
+                    height: auto(),
                 },
                 padding: TaffyRect {
-                    left: length(7.0_f32),
-                    right: length(7.0_f32),
-                    top: length(7.0_f32),
-                    bottom: length(7.0_f32),
+                    left: length(6.0_f32),
+                    right: length(6.0_f32),
+                    top: length(6.0_f32),
+                    bottom: length(6.0_f32),
                 },
-                gap: Size {
-                    width: percent(0.005_f32),
-                    height: zero(),
-                },
-                justify_content: Some(JustifyContent::CENTER),
+                align_items: Some(AlignItems::CENTER),
+                flex_grow: 1.0,
+                grid_template_columns: vec![fr(1.0_f32), fr(1.0_f32)],
+                grid_template_rows: vec![
+                    fr(1.05_f32),
+                    fr(0.77_f32),
+                    fr(0.8_f32),
+                    fr(1.5_f32),
+                ],
                 ..Default::default()
             },
-            &card_nodes
-                .iter()
-                .map(|nodes| nodes.card)
-                .collect::<Vec<_>>(),
-        )
-        .map_err(layout_error)?;
-    let footer = taffy
-        .new_leaf(Style {
+            &[name, prices, ownership, components],
+        )?);
+    }
+
+    let holder = tree.row(
+        Element::Holder,
+        Style {
+            flex_grow: 1.0,
+            min_size: Size {
+                width: auto(),
+                height: length(0.0_f32),
+            },
+            padding: TaffyRect {
+                left: length(7.0_f32),
+                right: length(7.0_f32),
+                top: length(7.0_f32),
+                bottom: length(7.0_f32),
+            },
+            gap: Size {
+                width: percent(0.005_f32),
+                height: zero(),
+            },
+            justify_content: Some(JustifyContent::CENTER),
+            ..Default::default()
+        },
+        &cards,
+    )?;
+    let footer = tree.leaf(
+        Element::Footer,
+        Style {
             size: Size {
                 width: percent(1.0_f32),
                 height: percent(0.16_f32),
             },
             flex_shrink: 0.0,
             ..Default::default()
-        })
-        .map_err(layout_error)?;
-    let relic_part = taffy
-        .new_with_children(
-            Style {
-                display: Display::Flex,
-                flex_direction: FlexDirection::Column,
-                flex_grow: 1.0,
-                min_size: Size {
-                    width: length(0.0_f32),
-                    height: length(0.0_f32),
-                },
-                ..Default::default()
+        },
+    )?;
+    let relic = tree.column(
+        Element::Relic,
+        Style {
+            flex_grow: 1.0,
+            min_size: Size {
+                width: length(0.0_f32),
+                height: length(0.0_f32),
             },
-            &[holder, footer],
-        )
-        .map_err(layout_error)?;
-    let shell = taffy
-        .new_with_children(
-            Style {
-                display: Display::Flex,
-                flex_direction: FlexDirection::Row,
-                size: Size {
-                    width: percent(1.0_f32),
-                    height: percent(1.0_f32),
-                },
-                border: TaffyRect {
-                    left: length(2.0_f32),
-                    right: length(2.0_f32),
-                    top: length(2.0_f32),
-                    bottom: length(2.0_f32),
-                },
-                ..Default::default()
+            ..Default::default()
+        },
+        &[holder, footer],
+    )?;
+    let shell = tree.row(
+        Element::Shell,
+        Style {
+            size: Size {
+                width: percent(1.0_f32),
+                height: percent(1.0_f32),
             },
-            &[relic_part],
-        )
-        .map_err(layout_error)?;
-    let root = taffy
-        .new_with_children(
-            Style {
-                display: Display::Flex,
-                size: Size {
-                    width: length(window.width as f32),
-                    height: length(window.height as f32),
-                },
-                padding: TaffyRect {
-                    left: length(15.0_f32),
-                    right: length(15.0_f32),
-                    top: length(15.0_f32),
-                    bottom: length(15.0_f32),
-                },
-                ..Default::default()
+            border: TaffyRect {
+                left: length(2.0_f32),
+                right: length(2.0_f32),
+                top: length(2.0_f32),
+                bottom: length(2.0_f32),
             },
-            &[shell],
-        )
-        .map_err(layout_error)?;
-
-    taffy
-        .compute_layout(
-            root,
-            Size {
-                width: AvailableSpace::Definite(window.width as f32),
-                height: AvailableSpace::Definite(window.height as f32),
+            ..Default::default()
+        },
+        &[relic],
+    )?;
+    let root = tree.row(
+        Element::Root,
+        Style {
+            size: Size {
+                width: length(window.width as f32),
+                height: length(window.height as f32),
             },
-        )
-        .map_err(layout_error)?;
-
-    let origin = (window.x as f32, window.y as f32);
-    let shell_origin = child_origin(&taffy, shell, origin)?;
-    let relic_origin = child_origin(&taffy, relic_part, shell_origin)?;
-    let holder_origin = child_origin(&taffy, holder, relic_origin)?;
-    let holder_rect = node_rect(&taffy, holder, relic_origin)?;
-    let cards = Rect {
-        x: holder_rect.x + 7,
-        y: holder_rect.y + 7,
-        width: holder_rect.width.saturating_sub(14),
-        height: holder_rect.height.saturating_sub(14),
-    };
-    let mut reward_cards = Vec::with_capacity(card_nodes.len());
-    for nodes in card_nodes {
-        let card_origin = child_origin(&taffy, nodes.card, holder_origin)?;
-        let prices_origin = child_origin(&taffy, nodes.prices, card_origin)?;
-        reward_cards.push(CardLayout {
-            card: node_rect(&taffy, nodes.card, holder_origin)?,
-            name: node_rect(&taffy, nodes.name, card_origin)?,
-            prices: node_rect(&taffy, nodes.prices, card_origin)?,
-            platinum: node_rect(&taffy, nodes.platinum, prices_origin)?,
-            vaulted: nodes
-                .vaulted
-                .map(|node| node_rect(&taffy, node, prices_origin))
-                .transpose()?,
-            ducats: node_rect(&taffy, nodes.ducats, prices_origin)?,
-            ownership: node_rect(&taffy, nodes.ownership, card_origin)?,
-            components: node_rect(&taffy, nodes.components, card_origin)?,
-        });
-    }
+            padding: TaffyRect {
+                left: length(15.0_f32),
+                right: length(15.0_f32),
+                top: length(15.0_f32),
+                bottom: length(15.0_f32),
+            },
+            ..Default::default()
+        },
+        &[shell],
+    )?;
+    let layout = tree.compute(
+        root,
+        (window.x, window.y),
+        (window.width, window.height),
+    )?;
 
     Ok(Layout {
         window,
-        shell: node_rect(&taffy, shell, origin)?,
-        holder: holder_rect,
-        cards,
-        footer: node_rect(&taffy, footer, relic_origin)?,
-        reward_cards,
+        shell: layout.bounds(Element::Shell),
+        holder: layout.bounds(Element::Holder),
+        cards: layout.content_bounds(Element::Holder),
+        footer: layout.bounds(Element::Footer),
+        reward_cards: card_specs
+            .iter()
+            .take(4)
+            .enumerate()
+            .map(|(index, spec)| CardLayout {
+                card: layout.bounds(Element::Card(index)),
+                name: layout.bounds(Element::Name(index)),
+                prices: layout.bounds(Element::Prices(index)),
+                platinum: layout.bounds(Element::Platinum(index)),
+                vaulted: spec
+                    .vaulted
+                    .then(|| layout.bounds(Element::Vaulted(index))),
+                ducats: layout.bounds(Element::Ducats(index)),
+                ownership: layout.bounds(Element::Ownership(index)),
+                components: layout.bounds(Element::Components(index)),
+            })
+            .collect(),
     })
 }
 
@@ -425,29 +387,6 @@ fn relic_overlay_bounds(screen_width: u32, screen_height: u32) -> Rect {
         width,
         height,
     }
-}
-
-fn child_origin(
-    taffy: &TaffyTree<()>,
-    node: NodeId,
-    parent: (f32, f32),
-) -> Result<(f32, f32), String> {
-    let layout = taffy.layout(node).map_err(layout_error)?;
-    Ok((parent.0 + layout.location.x, parent.1 + layout.location.y))
-}
-
-fn node_rect(taffy: &TaffyTree<()>, node: NodeId, parent: (f32, f32)) -> Result<Rect, String> {
-    let layout = taffy.layout(node).map_err(layout_error)?;
-    Ok(Rect {
-        x: (parent.0 + layout.location.x).round().max(0.0) as u32,
-        y: (parent.1 + layout.location.y).round().max(0.0) as u32,
-        width: layout.size.width.round().max(0.0) as u32,
-        height: layout.size.height.round().max(0.0) as u32,
-    })
-}
-
-fn layout_error(error: TaffyError) -> String {
-    format!("relic layout failed: {error}")
 }
 
 #[cfg(test)]

@@ -23,6 +23,19 @@ pub(crate) struct TextBox {
     pub(crate) width: u32,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct TextLine {
+    pub(crate) x: u32,
+    pub(crate) y: u32,
+    pub(crate) height: u32,
+}
+
+impl TextLine {
+    pub(crate) const fn new(x: u32, y: u32, height: u32) -> Self {
+        Self { x, y, height }
+    }
+}
+
 impl TextBox {
     pub(crate) const fn new(x: u32, y: u32, width: u32) -> Self {
         Self { x, y, width }
@@ -108,13 +121,17 @@ impl<'a> Painter<'a> {
             return;
         }
         self.context.blit_scaled_prgb32(
-            &image.pixels,
-            image.width,
-            image.height,
-            x,
-            y,
-            width,
-            height,
+            blend2d::Image {
+                pixels: &image.pixels,
+                width: image.width,
+                height: image.height,
+            },
+            blend2d::Rect {
+                x,
+                y,
+                width,
+                height,
+            },
         );
     }
 
@@ -149,16 +166,22 @@ impl<'a> Painter<'a> {
         let (draw_width, draw_height) =
             contained_size(image.width, image.height, diameter, diameter);
         self.context.fill_circle_prgb32(
-            &image.pixels,
-            image.width,
-            image.height,
-            x + diameter.saturating_sub(draw_width) / 2,
-            y + diameter.saturating_sub(draw_height) / 2,
-            draw_width,
-            draw_height,
-            f64::from(x) + f64::from(diameter) / 2.0,
-            f64::from(y) + f64::from(diameter) / 2.0,
-            f64::from(diameter) / 2.0,
+            blend2d::Image {
+                pixels: &image.pixels,
+                width: image.width,
+                height: image.height,
+            },
+            blend2d::Rect {
+                x: x + diameter.saturating_sub(draw_width) / 2,
+                y: y + diameter.saturating_sub(draw_height) / 2,
+                width: draw_width,
+                height: draw_height,
+            },
+            blend2d::Circle {
+                x: f64::from(x) + f64::from(diameter) / 2.0,
+                y: f64::from(y) + f64::from(diameter) / 2.0,
+                radius: f64::from(diameter) / 2.0,
+            },
         );
     }
 
@@ -182,13 +205,10 @@ impl<'a> Painter<'a> {
         self.draw_glyphs(font, &layout, color);
     }
 
-    #[allow(clippy::too_many_arguments)]
     pub(crate) fn draw_text_vertically_centered(
         &mut self,
         font: &Font,
-        x: u32,
-        y: u32,
-        height: u32,
+        line: TextLine,
         size: f32,
         text: &str,
         color: [u8; 4],
@@ -196,9 +216,9 @@ impl<'a> Painter<'a> {
         let fonts = std::slice::from_ref(font);
         let mut layout = Layout::new(CoordinateSystem::PositiveYDown);
         layout.reset(&LayoutSettings {
-            x: x as f32,
-            y: y as f32,
-            max_height: Some(height as f32),
+            x: line.x as f32,
+            y: line.y as f32,
+            max_height: Some(line.height as f32),
             vertical_align: VerticalAlign::Middle,
             ..LayoutSettings::default()
         });
@@ -261,7 +281,16 @@ impl<'a> Painter<'a> {
             return;
         }
         self.context
-            .fill_a8_mask_rgba32(coverage, width, height, x, y, blend2d_rgba32(color));
+            .fill_a8_mask_rgba32(
+                blend2d::Mask {
+                    coverage,
+                    width,
+                    height,
+                },
+                x,
+                y,
+                blend2d_rgba32(color),
+            );
     }
 }
 
