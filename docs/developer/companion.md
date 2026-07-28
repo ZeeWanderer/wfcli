@@ -1,251 +1,178 @@
-# Companion And Player Architecture
+# Companion Architecture
 
-State ownership is split across three boundaries:
+Ownership:
 
-- `wfcompanion` observer owns transient host acquisition: process discovery, Proton prefix,
-  DBWIN listener, fallback log cursor, reconnect buffer.
-- `wfcompanion` overlay owns visibility, layout, animation, focus gating, and display cache.
-- `wfdaemon` owns canonical player snapshots, persistence, subscriptions, and query projection.
+- `wfcompanion` observer owns process discovery, Proton integration, DBWIN,
+  fallback log state, capture, and OCR.
+- `wfcompanion` overlay owns scenes, interaction, focus gating, layout,
+  rendering, and display caches.
+- `wfdaemon` owns canonical player snapshots, persistence, queries, Market
+  access, asset resolution, and relic calculations.
 
-Do not move overlay state into the daemon. Do not make the native process persist canonical
-player data. A reconnect replays the latest observation for every companion-owned namespace.
-Any additional native UI owns its own navigation and display state while consuming the same
-daemon data contracts.
+Overlay state stays native. Canonical player state stays in the daemon.
 
 ## Native Modules
 
-- `main.rs`: process composition and Steam child wrapper.
-- `observer.rs`: `/proc` classification, Proton runtime discovery, DBWIN/helper lifecycle, and
-  fallback `EE.log` cursor.
-- `debug_output.rs`: PE helper launch in the detected Proton prefix and bounded binary record
-  decoding. `debug-bridge/debug_output.c` owns the Wine-side DBWIN mapping/events.
-- `inventory.rs`: read-only native HTTP-buffer discovery, tolerant account parsing, and typed
-  inventory indexes.
-- `daemon.rs`: JSON-lines protocol, daemon ensure/reconnect, latest-value replay.
-- `capture.rs`: event-triggered Spectacle active-window capture; no continuous recording.
-- `relic.rs`: reward trigger debounce, Aleca-derived crop geometry, local Tesseract OCR,
-  catalog match scoring, and one daemon relic-context request.
-- `focus.rs`: active XWayland window identity and exact Warframe PID/class gate.
-- `overlay/runtime.rs`: Wayland layer-shell, SHM buffers, focus, input, and damage submission.
-- `overlay/renderer.rs`: fonts, static frame cache, scene dispatch, and previews.
-- `overlay/scene.rs`: top-level scene key and presentation state.
-- `overlay/screens/relic.rs`: relic assets and shared scene resources.
-- `overlay/screens/relic/reward.rs`: reward, loading, and error painting.
-- `overlay/screens/relic/reward/layout.rs`: reward Taffy tree and named boxes.
-- `overlay/screens/relic/suggestion.rs`: relic selection painting and hit regions.
-- `overlay/screens/relic/suggestion/layout.rs`: relic selection geometry.
-- `overlay/screens/status.rs`: diagnostic/status panel.
-- `painter.rs`: text layout, image fitting, colors, and high-level drawing operations.
-- `painter/blend2d.rs`: safe lifetime and error boundary over the synchronous Blend2D C bridge.
-- `ui/geometry.rs`: shared rectangles and screen render metadata.
-- `preview.rs`: named mock-overlay registry plus still and optional animated renderers.
+- `observer.rs`, `debug_output.rs`: process and Proton discovery, DBWIN helper,
+  and fallback `EE.log` cursor.
+- `inventory.rs`: read-only account-buffer discovery, tolerant parsing, and
+  typed indexes.
+- `daemon.rs`: local JSON-lines client, reconnect, replay, and request routing.
+- `capture.rs`, `relic.rs`: event-triggered capture, crop detection, OCR, and
+  relic scene construction.
+- `focus.rs`: exact Warframe window and process gate.
+- `overlay/runtime.rs`: layer shell, SHM buffers, frame callbacks, input, focus,
+  and damage.
+- `overlay/renderer.rs`: fonts, static frame cache, dispatch, and previews.
+- `overlay/scene.rs`: top-level scene and presentation state.
+- `overlay/screens/`: complete screen painting and hit regions.
+- `ui/layout.rs`: named Taffy tree and resolved geometry.
+- `ui/geometry.rs`: rectangles, hit regions, and render output.
+- `painter.rs`: text, image, and shape operations.
+- `painter/blend2d.rs`: safe synchronous boundary over the Blend2D C bridge.
 
-Observer work runs off the UI thread. It publishes typed summaries, never raw log content.
-Each new collector gets a source namespace instead of extending one untyped document.
+Observer work runs off the UI thread. New collectors publish a separate source
+namespace instead of extending one untyped payload.
 
-Relic scanning first checks expected reward-card bottom-border positions to identify 1-4 player
-layouts, matching AlecaFrame's cheap image heuristic. It OCRs only detected normal/legacy crops and
-asks the daemon to rank labels against the Market manifest. If border detection or matching fails,
-it evaluates every crop layout as fallback. After capture, the shell shows one animated loading
-mask while OCR and one batched quote request finish, then complete cards replace it in one update.
-If Market lookup fails, recognized cards appear once with unavailable prices. `Forma Blueprint` is
-handled locally because it is not tradable. Currency art is loaded from `apps/wfcompanion/assets/`;
-provenance is documented beside the files. Dynamic item and component art follows
-[`assets.md`](assets.md).
+## Layout
 
-Current overlay uses `smithay-client-toolkit` and `zwlr_layer_shell_v1` directly. It is a
-native Wayland `Overlay` layer with no keyboard focus. Passive mode has no pointer input.
-Layer-shell margins stay zero; visual HUD spacing is rendered inside the surface so interactive
-full-output surfaces have no compositor-level input gap.
-Debug-profile builds start with a compact status HUD. It shares the existing layer surface, stays
-above contextual scenes, and remains subject to global visibility and the Warframe active-window
-gate. Release builds start with the HUD hidden.
-After its first contextual scene, hidden mode keeps the full-screen layer surface mapped with a
-transparent static buffer. KWin can fail to present a reused layer surface after detach/remap;
-keeping the role mapped avoids that path without an idle frame loop or input interception. Relic
-loading alone redraws at no more than 30 FPS. Wayland frame callbacks prevent rendering while the
-compositor is not ready; monotonic elapsed time determines animation phase, so throttling and
-dropped frames do not change animation speed.
-The SHM buffer uses `wl_shm::Format::Argb8888`. On little-endian Linux its in-memory bytes are
-premultiplied BGRA, matching Blend2D `PRGB32`. `painter::blend2d` wraps that memory directly through
-the Blend2D C API; no channel conversion sits between renderer and Wayland. Contexts remain
-synchronous so temporary fontdue A8 glyph masks and decoded icon buffers may be borrowed per draw.
-Aspect-contained images use Blend2D's native bilinear scaled blit. Circular component thumbnails
-use a transformed Blend2D image pattern to fill circle geometry. Rust computes layout rectangles
-but does not resize or mask overlay pixels.
-Convert CSS colors through `painter::css_rgba`; never pass copied `[red, green, blue, alpha]`
-arrays directly to painter functions.
+`UiTree<K>` is the semideclarative layout layer. Screens declare named leaves,
+rows, columns, grids, stacks, dimensions, spacing, alignment, and clipping.
+Taffy resolves absolute and content bounds; screen code never walks parent
+origins or computes draw rectangles.
 
-### Rendering And Damage
+Taffy does not paint. Each screen consumes named bounds and issues exact
+Blend2D operations. This preserves predictable draw order and keeps visual
+logic beside its screen. Add shared components only after two screens need the
+same composition.
 
-Blend2D is the immediate-mode rasterizer, not the retained scene or buffer manager. Taffy computes
-layout; Blend2D rasterizes static scene geometry into a premultiplied BGRA cache and dynamic geometry
-directly into an available Wayland SHM buffer. A new, resized, or scene-invalidated SHM buffer gets
-one complete copy from the static cache and full-buffer damage.
+Each screen owns:
 
-Animation frames must not rebuild or copy the full output. Put unchanging animation background into
-the static cache. Before drawing a dynamic frame, restore only its dirty rectangle from that cache,
-rasterize only dynamic primitives intersecting it, and pass the same rectangle to
-`wl_surface.damage_buffer`. Each reusable SHM buffer is tagged with the static-frame key that
-initialized it; a newly allocated fallback buffer cannot use partial restoration until initialized.
-If geometry, layout, text, status, scale, or scene data changes, invalidate that key and perform one
-full composition.
+- typed display model and presentation state;
+- top-level `UiTree`;
+- painting and animation;
+- hit targets;
+- preview fixture and pixel tests.
 
-Blend2D clipping can enforce a dirty boundary, but it does not replace pixel caching: replaying an
-immediate-mode scene still submits its layout and overlapping draw operations. Prefer restoring a
-small rasterized region for mostly static scenes. Re-rasterize the clipped scene only when measured
-performance or highly dynamic content makes that cheaper. Wayland frame callbacks control when to
-submit; `wl_buffer.release` controls when a particular SHM buffer may be modified; buffer damage
-controls what KWin must repaint. These are separate responsibilities.
+Screens do not import sibling screens. `scene.rs` dispatches them. Runtime uses
+`ScreenOutput` from the cached render and has no screen-specific geometry.
 
-Blend2D's built-in multithreaded context is asynchronous. Do not enable it without extending every
-borrowed image and glyph-mask lifetime through `Painter::finish`. Current full 2560x1440 relic
-composition is below one 30 FPS frame budget and is cached; animation redraws only a small dirty
-rectangle. For this workload, synchronous JIT rendering avoids queue overhead and unsafe source
-lifetimes.
-Visibility requires both user-enabled state and positive Warframe window identity. Live KDE
-validation covered fullscreen Warframe plus an unrelated fullscreen application: overlay stayed
-above Warframe, unmapped elsewhere, and did not intercept pointer input. See
-`docs/developer/overwolf-alecaframe-overlay-research.md` for mechanism and evidence. See
-`docs/developer/alecaframe-overlay-catalog.md` for upstream feature behavior and local status.
+Use function-specific borrowed input structs when a call carries one semantic
+operation with many fields. Return normal Rust values. Output pointers belong
+only at FFI boundaries. Thin Blend2D wrappers use reusable image, rectangle,
+circle, and mask value types while preserving the underlying C ABI.
 
-Contextual scenes temporarily use a full-output transparent layer surface so reward UI can occupy
-game-relative coordinates; status mode remains a small top-left surface. Relic preview/live paths
-share AlecaFrame 2.6.90's default shell and four-row structure. Reward layout mirrors its
-Flexbox/Grid tree with Taffy, including content-dependent `space-around` price/marker placement.
-Each screen owns its layout, painting, and semantic hit regions. Runtime routes input through the
-cached render result and does not know screen geometry.
+## Rendering
 
-Taffy computes layout; Blend2D paints it. Keep exact screen visuals in the screen module. Add shared
-UI components only after a second screen needs the same element. A retained UI tree may combine
-Taffy nodes with common fill, text, image, clip, and hit payloads when more complex screens require
-it; do not add a separate textual layout language.
+The Wayland surface uses `wl_shm::Format::Argb8888`. On little-endian Linux its
+bytes are premultiplied BGRA, matching Blend2D `PRGB32`.
 
-`tools/aleca-layout` is a separate development oracle. It loads the ignored AlecaFrame HTML/CSS in
-headless Chromium with Overwolf stubs and writes a transparent reference PNG plus JSON containing
-overlay-local and absolute screen rectangles, text-run rectangles, and computed styles. Use
-`make aleca-layout-setup` once and `make reference-previews` after changing relic layout. Keep these
-direct measurements: content changes badge count and therefore price positions. They validate the
-Taffy structure; they are not production runtime coordinates.
+Static scene geometry is rasterized once into a cached frame. Animation:
 
-`wfcompanion preview --all DIR` writes transparent full-output PNGs. The notification preview
-composites the status panel at its rendered top-left inset; contextual relic previews already
-occupy the full output. `preview --animate TYPE FILE.webm` samples the same scene renderer at its
-live frame rate and streams frames to FFmpeg as lossless VP9 with alpha.
+1. restores its dirty rectangle from the static cache;
+2. draws only dynamic primitives;
+3. submits the same rectangle with `wl_surface.damage_buffer`.
 
-Blend2D 0.21.2 and its matching AsmJit 1.21.0 revision are pinned as separate Git submodules under
-`apps/wfcompanion/vendor/`. `build.rs` passes the AsmJit checkout through `ASMJIT_DIR`, builds both
-statically in Release mode even for Rust debug builds, and links the small C bridge from
-`apps/wfcompanion/native/`. Do not replace this with the published Rust crate: that crate contains
-a 2019 Blend2D 0.0.1 snapshot and leaves external-image lifetime support disabled.
+New, resized, or invalidated buffers receive one full static-frame copy.
+`wl_buffer.release` controls buffer reuse; frame callbacks control submission
+timing; damage controls compositor repainting.
 
-Run `make native-compile-commands` after changing native dependencies or build flags. It writes
-`_build/native/clangd/compile_commands.json` for Blend2D, AsmJit, the C bridge, and the MinGW
-debug-output helper. Repository VSCode settings point clangd there and rust-analyzer at the root
-Cargo workspace.
+Blend2D remains synchronous because icons and fontdue glyph masks are borrowed
+for each draw call. Its asynchronous multithreaded context requires owned
+source lifetimes through `Painter::finish` and is not useful for the current
+cached workload.
 
-## Daemon Modules
+Passive mode has no pointer region. Interactive mode enables only screen
+reported hit regions. Layer-shell margins remain zero so a persistent pointer
+position cannot fall into an uncapturable compositor gap.
 
-- `wfcli_local_api`: supervised AF_LOCAL listener and connection lifecycle.
-- `wfcli_local_protocol`: JSON encoding and native protocol version.
-- `wfcli_player_service`: source replacement, persistence, subscriptions, game status.
-- `wfcli_entity_player`: raw/source entity projection and `data.<path>` access.
-- `wfcli_player_query`: adapter into the shared query AST compiler and evaluator.
-- `wfcli_market_service`: serialized request ownership, coalescing, TTL, and cancellation.
-- `wfcli_market_api` and `wfcli_market_cache`: public HTTP normalization/rate deadline and
-  versioned owner-only persistence.
-- `wfcli_entity_market` and `wfcli_market_query`: shared AST projection over item metadata and
-  cached quotes.
+## Relic Pipeline
 
-Each `publish` atomically replaces one source namespace. It cannot overwrite other source
-namespaces. Persistence uses `player.term` mode `0600`; restart forces persisted
-`game.running` false until a connected observer replays current state.
+Reward flow:
+
+1. Deduplicate reward debug events.
+2. Capture after game UI stabilization.
+3. Detect one-to-four card geometry.
+4. OCR reward-name crops.
+5. Resolve labels and one quote batch through the daemon.
+6. Resolve ducats, vault state, player state, set graph, and visible assets.
+7. Render complete cards.
+
+Selection flow:
+
+1. Detect selection open/close events.
+2. OCR only the era selector.
+3. Ask the daemon to rank owned relics.
+4. Render immediately from cached data and refresh prices asynchronously.
+
+`Forma Blueprint` is local because it is not tradable. Dynamic image behavior
+is documented in [`assets.md`](assets.md); inventory indexing is documented in
+[`player-data.md`](player-data.md).
 
 ## Local Protocol V5
 
-Transport is newline-delimited JSON over an owner-only Unix stream socket. Client must send
-`hello` first. Breaking framing or request semantics requires a protocol increment.
-This protocol is versioned independently from the BEAM client/daemon request protocol in
-`wfcli_protocol`; their version numbers need not match.
+Transport is newline-delimited JSON over an owner-only Unix socket. Client must
+send `hello` first. This version is independent of the BEAM client protocol.
 
-Client operations:
+Requests:
 
-- `hello`: `id`, `protocol`, `client`, `version`, optional `capabilities`.
-- `get`: dataset `daemon` or `player`.
-- `subscribe`: dataset `player`; initial snapshot is the response.
-- `unsubscribe`: prior numeric subscription ID.
-- `publish`: dataset `player`, source name, object data.
-- `market_resolve`: up to 20 OCR labels and match limit `1..5`; returns ranked English
-  item names/slugs with edit distance and confidence. It ensures only the item manifest.
-- `relic_context`: up to eight Market slugs; returns reward prices, ducats, set graph,
-  ownership, crafted/set-complete state, account currencies, and visible asset requests.
-- `relic_recommendations`: era plus optional price refresh; returns up to four owned relics
-  ranked by four-player expected best reward.
-- `asset_resolve`: up to 64 trusted WFCD or Market image descriptors; returns validated local
-  cache paths and content digests.
+- `get`, `subscribe`, `unsubscribe`
+- `publish`
+- `market_resolve`
+- `relic_context`
+- `relic_recommendations`
+- `asset_resolve`
 
-Server events:
+Events:
 
-- `dataset`: replacement snapshot for a subscription.
-- `command`: optional overlay diagnostic command.
+- `dataset`: replacement subscription snapshot
+- `command`: overlay diagnostic command
 
-Messages are capped at 1 MiB. Socket parent is mode `0700`; socket is mode `0600`.
-This authenticates the local OS user, not an individual binary. Treat all same-user clients
-as trusted. Keep player data out of Erlang distribution and terminal-formatting contracts.
-See [`player-data.md`](player-data.md) for the account payload, collector, and derived
-inventory or mastery boundary.
+Messages are capped at 1 MiB. Socket parent mode is `0700`; socket mode is
+`0600`. Same-user clients are trusted. Player data does not enter Erlang
+distribution or terminal formatting contracts.
+
+Breaking framing or request semantics requires a protocol increment.
 
 ## Lifecycle
 
-Steam launch mode is the normal companion lifecycle. It makes companion Warframe's ancestor for
-read-only inventory collection and exits companion with the game. Standalone mode is retained for
-diagnostics and overlay development.
+Launch mode keeps companion tied to the Steam child and gives the inventory
+collector ptrace ancestry. Standalone mode is managed by the CLI.
 
-Companion invokes `wfcli daemon ensure` only when the socket is absent or protocol recovery is
-needed. `ensure` preserves current daemon idle policy. Each compatible `wfcompanion` connection
-holds daemon external activity until disconnect, even when the game is stopped and no request is
-running. Player fields such as `game.running` are observations, not lifecycle leases; stale
-persisted data must never pin the daemon. Connection loss removes subscriptions, but persisted
-data remains.
+Companion starts or reconnects to the daemon without passing Proton loader
+variables into BEAM. Reconnect replays latest observations for every owned
+namespace. An active companion connection keeps an implicitly started daemon
+alive.
 
-Steam launch mode gives companion host process Steam/Proton loader variables even though
-companion and daemon are native host binaries. Companion removes those variables when invoking
-`wfcli`; `wfcli_client` removes them again before starting release. Do not let `LD_PRELOAD`,
-`LD_LIBRARY_PATH`, or Steam runtime library paths reach ERTS helper programs. Correlated market
-requests replay once after connection loss so daemon recovery can finish an active relic scene.
+Debug builds show the compact HUD by default. Release builds start with it
+hidden. Hidden mode keeps the transparent layer surface mapped after its first
+scene because KWin may not present a detached and reused layer role reliably.
+No idle render loop runs.
 
-Build changes to Erlang modules still use normal daemon build-fingerprint hot update. Native
-protocol compatibility is separate because `wfcompanion` is not a BEAM client.
+## Development
 
-## Extension Rules
+```bash
+make dev-companion
+make test-companion
+make previews
+make native-compile-commands
+```
 
-1. Acquire data in native collector without blocking overlay or socket loops.
-2. Normalize into a documented source object; avoid raw memory/log dumps.
-3. Publish only on meaningful change or bounded progress intervals.
-4. Add player query and focused CLI tests when fields become user-visible.
-5. Keep terminal rendering in `wfcli`; overlay rendering stays native.
-6. Put shared market fetch/cache and item resolution in `wfdaemon`; desktop and overlay
-   consume one typed contract.
-7. Keep desktop navigation and account workflows out of overlay code.
+`make native-compile-commands` updates clangd metadata for Blend2D, AsmJit, the
+C bridge, and MinGW helper.
 
-## Market Boundary
+AlecaFrame reference layouts:
 
-AlecaFrame does not fetch one public Warframe Market endpoint per displayed item. Its client
-normalizes names to market slugs, batches requested slugs to AlecaFrame's own
-`/prices/priceData` endpoint, and caches returned values for 15 minutes. Returned `post` and
-`insta` values are consumed as sell and immediate-buy prices; rank-specific minima and volume
-are supplemental fields.
+```bash
+make aleca-layout-setup
+make reference-previews
+```
 
-`wfcli` must not depend on that private aggregator. `wfdaemon` owns Warframe Market API access,
-the identifying user agent, global rate limiter, request coalescing, item manifest, quote cache,
-and explicit quote semantics such as `lowest_sell` and `highest_buy`. `wfcompanion` sends item
-identities and retains only a presentation cache. CLI commands and `dataset=market` consume the
-same daemon service. Do not call the market API from overlay or terminal formatting code.
+Setup downloads the latest official OPK and prepares headless Chromium.
+Reference PNG and DOM geometry files are written under ignored
+`previews/reference/`. See [`tools/aleca-layout/README.md`](../../tools/aleca-layout/README.md).
 
-Current implementation uses public `/v2/items` plus `/v2/orders/item/{slug}/top`, fixed to
-PC, cross-play, and English. `lowest_sell` is the minimum returned sell order; `highest_buy`
-is the maximum returned buy order. Reward ducats come directly from `/v2/items`, so they need no
-additional request. Successful manifest and quotes persist in owner-only
-`market.term`; stale values remain usable when refresh fails. Catalog query ensures only the
-manifest. Live quote expansion requires `wfcli market` or local `market_quote` and rejects
-unbounded broad matches.
+Upstream behavior and safety evidence:
+
+- [`alecaframe-overlay-catalog.md`](alecaframe-overlay-catalog.md)
+- [`overwolf-alecaframe-overlay-research.md`](overwolf-alecaframe-overlay-research.md)

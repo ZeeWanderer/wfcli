@@ -59,7 +59,7 @@ and value helpers here.
 - `daemon`: owner-only Unix socket transport and reconnect replay.
 - `focus`: positive active-window identity for the observed Warframe process.
 - `relic`: trigger, capture, OCR, item resolution, and market requests.
-- `overlay`, `painter`, `ui_layout`: Wayland surface, Blend2D rendering, and Taffy layout.
+- `overlay`, `painter`, `ui`: Wayland surface, Blend2D rendering, and Taffy layout.
 - `preview`: registered still and animated overlay previews.
 - `main`: process composition and Steam wrapper mode.
 

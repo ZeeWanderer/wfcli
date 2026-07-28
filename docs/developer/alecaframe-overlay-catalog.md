@@ -1,275 +1,153 @@
-# AlecaFrame Overlay Feature Catalog
+# AlecaFrame Overlay Catalog
 
-Research snapshot: AlecaFrame 2.6.90, released June 30, 2026. The current
-official documentation and the matching packaged client under ignored
-`research/alecaframe/2.6.90/` were inspected in July 2026.
+Snapshot: AlecaFrame 2.6.90, released June 30, 2026. Evidence comes from
+official documentation and the matching packaged client prepared under ignored
+`research/alecaframe/2.6.90/`.
 
-This document distinguishes contextual in-game overlays from AlecaFrame's normal desktop
-application. It is an implementation reference, not a commitment to reproduce every feature.
-
-Evidence labels used below:
-
-- **Official**: described by current AlecaFrame documentation.
-- **Package**: present in the 2.6.90 manifest, HTML, JavaScript, or decompiled C# client.
-
-Local implementation status:
-
-| Surface | `wfcompanion` status |
+| Surface | Local status |
 | --- | --- |
-| Relic reward selection | Implemented: automatic trigger, local OCR, prices, ducats, ownership, crafted/vaulted state, set components, and assets |
-| Relic recommendation | Implemented: era OCR, owned-relic ranking, quote refresh, scrolling, and close interaction |
-| Chat Riven analysis | Research reference |
-| Riven reroll comparison | Research reference |
-| Trade-completion prompt | Research reference; requires authenticated Market workflows |
-| TennoFinder notification | Research reference; generic notification preview only |
+| Relic rewards | Implemented |
+| Relic recommendations | Implemented |
+| Chat Riven analysis | Researched |
+| Riven reroll comparison | Researched |
+| Trade completion | Researched; needs authenticated Market support |
+| TennoFinder notification | Researched |
 
-## In-Game Catalog
+## Relic Rewards
 
-AlecaFrame officially documents four overlay features. Its package implements them with
-three contextual windows, plus two additional in-game notification windows.
+Opens when a fissure presents reward choices.
 
-### Relic reward selection
+Each card shows:
 
-**Official, Package.** Opens automatically when a fissure presents reward choices.
-
-Displayed for each detected reward:
-
-- item name and platinum value, with the highest-value reward highlighted;
-- ducat value;
+- item name, platinum value, and highest-value highlight;
+- ducats;
 - vaulted and favourite markers;
-- whether the parent weapon or Warframe is crafted or mastered;
-- owned component count versus recipe requirement;
-- other components in the set, their owned counts, and full-set platinum value.
+- crafted or mastered state;
+- owned count and recipe requirement;
+- other set components, their owned counts, and set value.
 
-The footer can show current account platinum and ducats. An optional setting copies all
-recognized rewards and prices to the clipboard. The window closes after the reward-selection
-interval.
+Footer may show account platinum and ducats. AlecaFrame can copy recognized
+rewards and prices to clipboard.
 
-The packaged default window uses a 1000-pixel reward area plus a 420-pixel side column and
-60-pixel footer allowance at 1080-pixel game height. It is `(445, 630, 1420, 355)` at 1920x1080.
-Its `main` margin, border, `.relicHolder` padding, 16% footer, and 400-pixel sidebar put cards at
-`(469, 654, 972, 256)`. Each card uses four stable rows: name; platinum/vaulted/favourite/ducats;
-crafted and owned/required state; then other set components and set platinum value. `wfcompanion`
-uses the same structural rows and leaves only unavailable fields blank.
+Detection starts from Warframe `OutputDebugString` received through DBWIN.
+`Got rewards` delays capture for UI stabilization, crops reward labels, runs
+OCR, fuzzy-matches items, and batches item and set prices. Requiem rewards are
+skipped by this snapshot.
 
-Detection is not supplied by a semantic Overwolf event. `OCRHelper` receives Warframe's live
-`OutputDebugString` stream through the Windows DBWIN mapping/events and passes each message to
-`EELogProcessor`. `Got rewards` waits about 650 ms, captures Warframe, crops reward labels, sends
-them to AlecaFrame's OCR service, fuzzy-matches item names, and requests item and set prices in
-one batch. Requiem relics are deliberately skipped in this version.
+The reference renderer records exact Flexbox/Grid structure, computed styles,
+and content-dependent element positions:
 
-### Relic recommendation
+```bash
+make aleca-layout-setup
+make reference-previews
+```
 
-**Official, Package.** Opens when the void-fissure relic chooser appears. It displays up to
-32 owned relics for the detected era, ordered and filtered like the desktop Relic Planner.
+## Relic Recommendations
 
-The compact cards show:
+Opens with the fissure relic chooser. It displays owned relics for the detected
+era using filters and ordering from AlecaFrame's desktop relic planner.
 
-- relic name, count owned, vaulted state, and favourite state;
-- expected platinum and expected ducats for opening the relic;
-- current void traces and planner refresh progress.
+Cards show:
 
-Desktop planner filters can be exported to this overlay. Useful orderings include expected
-platinum, expected ducats, missing mastery items, and value gained by refinement. AlecaFrame
-warns that owned counts may become stale during endless missions because its inventory feed
-updates during loading screens.
+- relic name, owned count, vaulted state, and favourite state;
+- expected platinum and ducats;
+- void traces and refresh progress.
 
-`EELogProcessor` uses `ThemedProjectionManager.lua: LoadingCompleteEnd` as the trigger. A small
-screenshot crop is OCRed to determine Lith, Meso, Neo, Axi, Requiem, or All. The recommendation
-itself comes from AlecaFrame's cached player inventory and relic planner, not from OCRing every
-visible relic tile.
+`ThemedProjectionManager.lua: LoadingCompleteEnd` triggers a small era crop.
+OCR identifies Lith, Meso, Neo, Axi, Requiem, or All. Recommendations come from
+cached inventory and reward data; visible relic tiles are not individually
+OCRed.
 
-### Chat Riven analysis
+## Chat Riven Analysis
 
-**Official, Package.** Opens automatically after the user follows a Riven link in game chat.
-The shared Riven overlay displays:
+Opens after the user follows a Riven link in game chat. It shows:
 
 - weapon and Riven names;
-- positive and negative stats, per-stat roll quality, and overall grade;
-- similar Rivens, similarity percentage, price, source, and links;
-- which attributes match known good rolls and acceptable negative attributes.
+- positive and negative stats;
+- per-stat roll quality and overall grade;
+- similar Rivens with similarity, price, source, and links;
+- known good positives and acceptable negatives.
 
-`EE.log` identifies the detailed-purchase dialog and randomized-mod item. AlecaFrame then
-captures and OCRs the Riven card. The overlay is passive until Overwolf's interaction hotkey is
-pressed.
+`EE.log` identifies the detailed item dialog. AlecaFrame captures and OCRs the
+Riven card. Interaction begins through the Overwolf hotkey.
 
-### Riven reroll comparison
+## Riven Reroll Comparison
 
-**Official, Package.** Opens when a Riven is selected for cycling. The left panel retains the
-old Riven; after a reroll the right panel shows the new Riven. Both use the same stats, grades,
-similar listings, prices, and good-roll analysis as chat Riven mode.
+Opens while cycling a Riven. Left panel retains the old roll; right panel shows
+the new roll. Both use the chat Riven stats, grades, comparisons, and price
+model.
 
-`EE.log` supplies selection, confirmation, completion, and close signals. Screenshots before
-and after cycling are OCRed. This is a second mode of the same packaged `RivenOverlay` window,
-not a separate renderer.
+Selection, confirmation, completion, and close signals come from `EE.log`.
+Before and after cards are OCRed. Both modes use the same packaged
+`RivenOverlay` window.
 
-### Trade-completion prompt
+## Trade Completion
 
-**Package only.** When AlecaFrame recognizes a completed in-game trade and can match it to the
-connected Warframe Market account, an interactive prompt identifies the other player and item.
-It closes or decrements the matching regular order, or closes the matching Riven auction. The
-user can also submit positive reputation. If untouched, this version automatically performs
-the close action after a short countdown.
+Package-only interactive prompt. After a recognized trade, AlecaFrame matches
+the other player and item against the connected Warframe Market account. It
+can decrement or close a regular order, close a Riven auction, and submit
+positive reputation. A countdown applies the default close action.
 
-This depends on account authentication, current Market orders, and parsing the trade-confirmation
-text from `EE.log`. It is not part of the official four-overlay overview.
+This requires Market authentication, current orders, and trade text parsed
+from `EE.log`.
 
-### TennoFinder notification
+## TennoFinder Notification
 
-**Package only.** A generic six-second notification window is used by AlecaFrame's separate
-TennoFinder squad tool for joins, leaves, kicks, disbands, and squad messages. It can play a
-sound. Source places it against the right edge with its bottom near 80% of game height, not at the
-top and not inside the relic window. This is not a Warframe data overlay and should not be
-reproduced as a product-specific feature. A generic notification scene may still be useful for
-daemon watches.
+Package-only six-second notification used by AlecaFrame's separate squad tool.
+It handles joins, leaves, kicks, disbands, and messages, with optional sound.
+It is positioned on the right edge near 80% of game height.
 
-### Not in-game overlays
+## Desktop Features
 
-These are normal desktop or external notification features and must not be counted as overlay
-surfaces:
+These are not contextual game overlays:
 
-- Foundry, Inventory, Mastery Helper, Relic Planner, Riven Explorer, Stats, Trading Analytics,
-  Warframe Market account management, build tools, and squad management;
-- Windows toast and Discord webhook notifications for world cycles, fissures, conversations,
-  Market messages, and Riven sniper matches;
-- the main AlecaFrame window and separate desktop-only build and TennoFinder windows.
+- Foundry, Inventory, Mastery Helper, Relic Planner, Riven Explorer, Stats,
+  Trading Analytics, Market account management, and build tools;
+- Windows and Discord notifications for world state, Market messages, and
+  Riven sniper matches;
+- main AlecaFrame, build, and TennoFinder windows.
 
-## Warframe Market Account Features
+## Market Account Features
 
-AlecaFrame 2.6.90 can authenticate a Warframe Market account and:
+AlecaFrame can:
 
-- show regular orders and Riven auctions/contracts;
+- view and edit regular orders and Riven auctions;
 - create buy or sell orders from inventory and set views;
-- list Rivens, edit price and quantity, change visibility, remove orders, and repair quantities
-  that no longer match inventory;
-- copy a ready-to-paste `/w <player> ...` buy or sell message after selecting a Market order;
-- receive account messages and status through a Market socket;
-- match completed game trades to orders, close or decrement them, and optionally leave
-  reputation through the trade-completion prompt.
+- change price, quantity, visibility, and order state;
+- copy ready-to-paste Market whispers;
+- receive Market messages and online status;
+- reconcile completed trades and leave reputation.
 
-Price lookup does not require account integration. `wfdaemon` uses the public Market catalog,
-rate limiter, coalescing, and quote cache for relic prices. Authenticated account integration is
-separate: it requires owner-only credential storage, explicit user actions, and an API/rules
-review. Overlay code must never own Market credentials.
+Public price lookup does not require an account. Authenticated order mutation
+is a separate daemon capability with owner-only credentials and explicit user
+actions.
 
-## Project Ownership
+## Evidence
 
-Keep current boundaries:
+Package files:
 
-- `wfcompanion` owns DBWIN event detection, fallback `EE.log` tailing, event-triggered capture, crop
-  profiles, OCR, confidence, transient overlay scenes, visibility, and interaction state.
-- `wfdaemon` owns canonical item/relic identities, drop semantics, player snapshots, Market
-  access/cache, and reusable relic-value calculations.
-- `wfcli` owns terminal commands and formatting. It may inspect diagnostics and toggle the
-  overlay, but it does not orchestrate visual scenes.
+- `manifest.json`: in-game windows and desktop exclusions
+- `web/relicOverlay.html`, `assets/js/relicOverlay/main.js`: reward UI
+- `web/relicRecommendation.html`: recommendation UI
+- `web/rivenOverlay.html`: Riven analysis and comparison
+- `web/tradeFinishedNotification.html`: trade prompt
+- `web/InGameNotification.html`: generic notification
+- `Utils/EELogProcessor.cs`: triggers and close events
+- `Utils/OverlaysHandler.cs`: era OCR and recommendation startup
+- `OCRHelper.cs`: reward capture and enrichment
+- `Data/RivenOverlays.cs`: Riven modes
+- `Data/WFMarketHelper.cs`: trade matching
 
-Screenshots and image crops stay inside `wfcompanion`. Only normalized labels, canonical IDs,
-confidence, and resulting player events may cross the local socket. Account inventory belongs
-in the daemon's `player` dataset; display timing and placement do not.
+Public references:
 
-Native responsibilities already have explicit module boundaries:
-
-- `observer` and `debug_output`: game process, Proton, DBWIN, and fallback log events;
-- `capture`: event-triggered active-window capture;
-- `relic`: crop selection, OCR cleanup, daemon resolution, and quote orchestration;
-- `daemon`: typed request IDs, reconnect, replay, and player publication;
-- `overlay`, `ui_layout`, and `painter`: scene state, Taffy layout, and Blend2D rendering;
-- `preview`: deterministic still and animated scene rendering.
-
-## Local Implementation
-
-### Relic reward overlay
-
-Current pipeline:
-
-1. Deduplicate `Got rewards` debug events.
-2. Delay capture for game UI stabilization and retry once after recognition failure.
-3. Detect one to four reward cards from their bottom-border geometry.
-4. OCR only reward-name crops with local Tesseract.
-5. Clean OCR artifacts and batch candidate resolution through the daemon Market manifest.
-6. Resolve quotes, ducats, vault state, ownership, crafted state, set graph, account currencies,
-   and visible assets through daemon-owned services.
-7. Render complete cards in one final update, including highest-price highlighting.
-8. Hide on deadline, focus loss, or explicit companion hide.
-
-`lowest sell` is the lowest sampled online sell order, not a fixed item value. Missing or stale
-quotes retain their explicit state rather than being presented as authoritative prices.
-
-### Relic recommendation overlay
-
-Current pipeline:
-
-1. Detect the relic-selection open and close events from DBWIN or fallback `EE.log`.
-2. Capture and OCR only the era selector.
-3. Ask the daemon to rank owned relics using player inventory, WFCD reward tables, and cached
-   Market quotes.
-4. Render owned count, vaulted/favourite state, expected platinum, expected ducats, and traces.
-5. Refresh quotes without blocking initial display.
-6. Scroll through complete two-card rows in interaction mode; close explicitly or when the game
-   selection screen closes.
-
-The daemon owns expected-value calculation and source timestamps. Companion owns capture,
-interaction, paging state, and presentation.
-
-### Riven analysis design
-
-Riven overlays can reuse capture and OCR infrastructure but require a separate parser and domain
-model for stat grades, disposition, comparable listings, and old/new reroll state.
-
-### Authenticated Market workflows
-
-Login, order mutation, copied whisper actions, and trade completion require an authenticated
-daemon capability and a confirmation-oriented desktop interface. Unattended order mutation is
-outside the passive overlay boundary.
-
-## Capture And Safety Constraints
-
-- Process-memory reads are limited to the reviewed read-only inventory collector. No Wine DLL
-  injection, Vulkan layers, render hooks, packet interception, synthetic input, or game-file
-  modification.
-- Capture only the user-authorized Warframe window. Do not continuously capture the desktop.
-- Trigger capture from typed game events; do not run OCR every frame.
-- Keep passive scenes click-through. Interactive mode needs an explicit global-shortcut and
-  pointer-region transition.
-- Do not persist captures by default. An opt-in diagnostic mode may retain bounded owner-only
-  crops with an expiry.
-- Never upload screenshots or player data by default.
-
-## Verification Gates
-
-- Replay fixture log lines to prove each trigger, deduplication rule, and close condition.
-- Test saved reward crops across supported resolutions, UI scales, themes, one-to-four-player layouts,
-  and loading/error states.
-- Reject or visibly mark low-confidence OCR; never silently substitute the nearest item.
-- Verify one reward screen produces one daemon batch and no direct Market HTTP from companion.
-- Test fresh, cached, stale, partial, rate-limited, and unavailable quote responses.
-- Pixel-test every scene and live-test Warframe focus gating against another fullscreen game.
-- Measure capture-to-overlay latency and CPU use; no capture or repaint loop may run while idle.
-
-## Evidence Map
-
-Local 2.6.90 package:
-
-- `package/manifest.json`: five `in_game_only` windows and desktop-only exclusions.
-- `package/web/relicOverlay.html` and `assets/js/relicOverlay/main.js`: reward fields, highlight,
-  clipboard option, placement, and lifetime.
-- `package/web/relicRecommendation.html`: compact recommendation fields.
-- `package/web/rivenOverlay.html`: Riven stats, grades, similar prices, good rolls, and comparison.
-- `package/web/tradeFinishedNotification.html`: order close and reputation prompt.
-- `package/web/InGameNotification.html`: generic notification window.
-- `csharp/.../Utils/EELogProcessor.cs`: relic, recommendation, Riven, and trade triggers.
-- `csharp/.../Utils/OverlaysHandler.cs`: relic-era OCR and recommendation startup.
-- `csharp/.../OCRHelper.cs`: reward capture, OCR, enrichment, and non-overlay notifications.
-- `csharp/.../Data/RivenOverlays.cs`: chat and reroll OCR modes.
-- `csharp/.../Data/WFMarketHelper.cs`: completed-trade matching.
-- `package/web/assets/js/main/mainInventory.js`: copied Market whisper construction.
-
-Current public references:
-
-- [AlecaFrame overlay overview](https://docs.alecaframe.com/overlays/overview)
+- [Overlay overview](https://docs.alecaframe.com/overlays/overview)
 - [Relic rewards](https://docs.alecaframe.com/overlays/relic-rewards)
-- [Relic recommendation](https://docs.alecaframe.com/overlays/relic-recommendation)
+- [Relic recommendations](https://docs.alecaframe.com/overlays/relic-recommendation)
 - [Chat Riven](https://docs.alecaframe.com/overlays/riven-chat)
 - [Riven reroll](https://docs.alecaframe.com/overlays/riven-reroll)
-- [Warframe Market feature](https://docs.alecaframe.com/features/wfm)
-- [Current Overwolf package version](https://www.overwolf.com/app/alejandro_cabrerizo-alecaframe)
+- [Warframe Market](https://docs.alecaframe.com/features/wfm)
+- [Overwolf package page](https://www.overwolf.com/app/alejandro_cabrerizo-alecaframe)
+
+Implementation ownership and safety constraints are in
+[`companion.md`](companion.md) and
+[`overwolf-alecaframe-overlay-research.md`](overwolf-alecaframe-overlay-research.md).
