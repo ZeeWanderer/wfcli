@@ -9,5 +9,6 @@
     "--query-driver=**/x86_64-w64-mingw32-*"
   ],
   "C_Cpp.intelliSenseEngine": "disabled",
-  "makefile.configureOnOpen": false
+  "makefile.configureOnOpen": false,
+  "cmake.ignoreCMakeListsMissing": true
 }
