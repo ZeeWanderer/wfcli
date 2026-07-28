@@ -67,7 +67,7 @@ preview-videos: dev-companion
 	WFCOMPANION_PREVIEW_SIZE=$(PREVIEW_SIZE) dev/bin/wfcompanion preview --animate-all previews
 
 aleca-layout-setup:
-	npm --prefix tools/aleca-layout ci
+	./scripts/setup-aleca-layout
 
 reference-previews:
 	ALECA_LAYOUT_SIZE=$(PREVIEW_SIZE) node tools/aleca-layout/index.mjs

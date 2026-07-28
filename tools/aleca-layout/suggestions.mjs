@@ -4,12 +4,13 @@ import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 import { chromium } from "playwright-core";
+import { resolveAlecaWebRoot } from "./source.mjs";
 
 const toolDirectory = path.dirname(fileURLToPath(import.meta.url));
 const repositoryRoot = path.resolve(toolDirectory, "../..");
 const sourcePath = path.join(
-  repositoryRoot,
-  "research/alecaframe/2.6.90/package/web/relicRecommendation.html",
+  await resolveAlecaWebRoot(repositoryRoot),
+  "relicRecommendation.html",
 );
 const outputDirectory = path.join(repositoryRoot, "previews/reference");
 const screenshotPath = path.join(outputDirectory, "alecaframe-relic-suggestions.png");
@@ -52,6 +53,9 @@ try {
               });
             },
             SendRelicRecommendationMetrics() {},
+            getAnalyticsName(callback) {
+              callback(true, "reference");
+            },
           };
         },
       };

@@ -1,13 +1,24 @@
 # AlecaFrame Layout Reference
 
-Development-only renderer. It loads AlecaFrame's ignored research copy in a
-headless browser, stubs Overwolf APIs, and writes a transparent full-display
-reference image plus measured DOM geometry.
+This development tool renders AlecaFrame relic views in headless Chromium and
+writes transparent reference images plus measured DOM geometry.
 
-```sh
+```bash
 make aleca-layout-setup
 make reference-previews
 ```
 
-Outputs live under ignored `previews/reference/`. Override display assumptions
-with `ALECA_LAYOUT_SIZE=1920x1080` and `ALECA_LAYOUT_DPI=1`.
+Setup queries Overwolf's official installer metadata, downloads the latest
+compatible AlecaFrame OPK, extracts it under ignored
+`research/alecaframe/<version>/`, and installs Chromium and Node dependencies.
+Existing current packages are reused.
+
+For offline setup, pass an OPK or extracted extension:
+
+```bash
+./scripts/setup-aleca-layout /path/to/app.opk
+```
+
+Outputs use ignored `previews/reference/`. Set
+`ALECA_LAYOUT_SIZE=1920x1080` and `ALECA_LAYOUT_DPI=1` to override display
+geometry.

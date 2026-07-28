@@ -4,13 +4,11 @@ import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 import { chromium } from "playwright-core";
+import { resolveAlecaWebRoot } from "./source.mjs";
 
 const toolDirectory = path.dirname(fileURLToPath(import.meta.url));
 const repositoryRoot = path.resolve(toolDirectory, "../..");
-const sourcePath = path.join(
-  repositoryRoot,
-  "research/alecaframe/2.6.90/package/web/relicOverlay.html",
-);
+const sourcePath = path.join(await resolveAlecaWebRoot(repositoryRoot), "relicOverlay.html");
 const outputDirectory = path.join(repositoryRoot, "previews/reference");
 const screenshotPath = path.join(outputDirectory, "alecaframe-relic-rewards.png");
 const geometryPath = path.join(outputDirectory, "alecaframe-relic-rewards.json");
