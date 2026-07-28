@@ -1,15 +1,14 @@
 %%%-------------------------------------------------------------------
 %% Simple Forma planner: explores slot polarity assignments to fit builds.
 %%%-------------------------------------------------------------------
--module(wfcli_forma_planner).
+-module(wfcli_forma_search).
 
--export([plan/2, assignments_for_plan/2, validate_plan/3]).
+-export([plan/2, validate_plan/3]).
 
 -type config() :: map().
 -type flags() :: map().
 -type plan() :: map().
 -type forma_cost() :: non_neg_integer().
--type slot_assignments() :: #{term() => [{term(), term()}]}.
 
 -doc "Find the lowest-cost polarity plan that fits every build in a forma config.".
 -spec plan(config(), flags()) -> {plan(), forma_cost()} | {error, term()}.
@@ -27,7 +26,7 @@ plan(Config, Flags) ->
 -doc "Check that a planned polarity map still satisfies the config and planner flags.".
 -spec validate_plan(plan(), config(), flags()) -> ok | {error, term()}.
 validate_plan(Plan, Config, Flags) ->
-    case plan_valid(Plan, build_ctx(Config, Flags)) of
+    case wfcli_forma_rules:validate(Plan, build_ctx(Config, Flags)) of
         {ok, _} -> ok;
         Other -> Other
     end.
@@ -393,22 +392,11 @@ merge_best({PlanA, CostA}, {PlanB, CostB}, Ctx) ->
 
 seed_best_plan(Ctx) ->
     Item = maps:get(item, Ctx),
-    CurrentPlan = current_plan(Item),
-    case plan_valid(CurrentPlan, Ctx) of
+    CurrentPlan = wfcli_forma_rules:current_plan(Item),
+    case wfcli_forma_rules:validate(CurrentPlan, Ctx) of
         {ok, Cost} -> {CurrentPlan, Cost};
         _ -> undefined
     end.
-
-current_plan(Item) ->
-    Slots = maps:get(slots, Item, []),
-    Normal =
-        lists:foldl(
-          fun({Idx, Pol}, Acc) -> maps:put(Idx, Pol, Acc) end,
-          #{},
-          lists:zip(lists:seq(1, length(Slots)), Slots)),
-    Aura = maps:get(aura_slot, Item, none),
-    Exilus = maps:get(exilus_slot, Item, none),
-    Normal#{aura => Aura, exilus => Exilus}.
 
 -doc "Depth-first assignment search over candidate slots; budget counts explored partial plans.".
 search_slots([], [], PlanAcc, Ctx, Best, Budget) ->
@@ -436,7 +424,7 @@ search_slots([Slot | RestSlots], [Cands | RestCands], PlanAcc, Ctx, Best, Budget
 
 -doc "Validate a complete candidate plan and keep it only if it improves cost or tiebreaks.".
 evaluate_plan(Plan, Ctx, Best) ->
-    case plan_valid(Plan, Ctx) of
+    case wfcli_forma_rules:validate(Plan, Ctx) of
         {ok, FormaCost} ->
             case better_plan(FormaCost, Plan, Best, Ctx) of
                 true -> {Plan, FormaCost};
@@ -464,24 +452,24 @@ cost_better(Cost, _Plan, BestCost, _BestPlan, _Ctx) when Cost > BestCost ->
     false;
 cost_better(_Cost, Plan, _BestCost, BestPlan, Ctx) ->
     Item = maps:get(item, Ctx),
-    Changes = slot_change_count(Plan, Item),
-    BestChanges = slot_change_count(BestPlan, Item),
+    Changes = wfcli_forma_rules:slot_change_count(Plan, Item),
+    BestChanges = wfcli_forma_rules:slot_change_count(BestPlan, Item),
     case Changes < BestChanges of
         true -> true;
         false ->
             case Changes > BestChanges of
                 true -> false;
                 false ->
-                    Reuse = reuse_count(Plan, Item),
-                    BestReuse = reuse_count(BestPlan, Item),
+                    Reuse = wfcli_forma_rules:reuse_count(Plan, Item),
+                    BestReuse = wfcli_forma_rules:reuse_count(BestPlan, Item),
                     case Reuse > BestReuse of
                         true -> true;
                         false ->
                             case Reuse < BestReuse of
                                 true -> false;
                                 false ->
-                                    RemCost = removal_cost(maps:to_list(Plan), Item),
-                                    BestRemCost = removal_cost(maps:to_list(BestPlan), Item),
+                                    RemCost = wfcli_forma_rules:removal_cost(Plan, Item),
+                                    BestRemCost = wfcli_forma_rules:removal_cost(BestPlan, Item),
                                     case RemCost < BestRemCost of
                                         true -> true;
                                         false ->
@@ -512,9 +500,6 @@ prefer_tiebreak(Plan, BestPlan, Ctx) ->
 omni_count(Plan) ->
     length([ok || {_S, P} <- maps:to_list(Plan), P =:= omni]).
 
-slot_change_count(Plan, Item) ->
-    length([changed || {Slot, Polarity} <- maps:to_list(Plan), Polarity =/= current_pol(Slot, Item)]).
-
 -doc "Final deterministic tiebreak: prefer earlier candidate ranks in stable slot order.".
 stable_plan_tiebreak(Plan, BestPlan, Ctx) ->
     stable_plan_key(Plan, Ctx) < stable_plan_key(BestPlan, Ctx).
@@ -539,282 +524,11 @@ rank_in_candidates(Polarity, [Polarity | _Rest], Rank) ->
 rank_in_candidates(Polarity, [_Other | Rest], Rank) ->
     rank_in_candidates(Polarity, Rest, Rank + 1).
 
-%%--------------------------------------------------------------------
-%% Validation / scoring
-%%--------------------------------------------------------------------
--doc "Validate capacity and slot assignment for every build under a concrete polarity plan.".
-plan_valid(Plan, #{item := Item, builds := Builds, flags := Flags}) ->
-    ItemSlots = maps:get(slots, Item, []),
-    AuraPol = maps:get(aura, Plan, maps:get(aura_slot, Item, none)),
-    ExilusPol = maps:get(exilus, Plan, maps:get(exilus_slot, Item, none)),
-    NormalPols = plan_normal_slots(Plan, ItemSlots),
-    TotalCost = forma_total_cost(Plan, Item, Flags),
-    case maps:get(max_forma, Flags, undefined) of
-        Max when is_integer(Max), Max >= 0, TotalCost > Max ->
-            {error, over_budget};
-        _ ->
-            case build_set_fits(Builds, Item, NormalPols, AuraPol, ExilusPol) of
-                true -> {ok, TotalCost};
-                false -> {error, capacity}
-            end
-    end.
-
-plan_normal_slots(Plan, ItemSlots) ->
-    SlotCount = length(ItemSlots),
-    [maps:get(I, Plan, safe_nth(I, ItemSlots, none)) || I <- lists:seq(1, SlotCount)].
-
-build_set_fits(Builds, Item, NormalPols, AuraPol, ExilusPol) ->
-    BaseCap = wfcli_forma_model:apply_reactor(maps:get(capacity, Item, 0), maps:get(reactor, Item, false)),
-    lists:all(
-      fun(Build) ->
-          case build_fits(Build, NormalPols, AuraPol, ExilusPol, BaseCap) of
-              {ok, _Used, _Assign} -> true;
-              _ -> false
-          end
-      end,
-      Builds).
-
--doc "Find the cheapest legal mod-to-slot assignment for one build.".
-build_fits(#{mods := Mods, name := BuildName}, NormalPols, AuraPol, ExilusPol, BaseCap) ->
-    AuraMods = [M || M = #{slot := aura} <- Mods],
-    AuraGain = lists:sum([wfcli_forma_model:aura_value(maps:get(polarity, M), AuraPol, maps:get(cost, M)) || M <- AuraMods]),
-    Cap = BaseCap + AuraGain,
-    ExilusMods = [M || M = #{slot := exilus} <- Mods],
-    ExilusCost = lists:sum([wfcli_forma_model:mod_cost(maps:get(polarity, M), ExilusPol, maps:get(cost, M)) || M <- ExilusMods]),
-    NormalMods = [M || M <- Mods, allow_normal_slot(M)],
-    NormalCostEntries = [normal_slot_costs(BuildName, M, NormalPols) || M <- NormalMods],
-    case lists:any(fun(E) -> E =:= {error, invalid_slot} end, NormalCostEntries) of
-        true -> {error, invalid_slot};
-        false ->
-            SlotCosts = [E || {ok, E} <- NormalCostEntries],
-            Entries = prepare_entries(SlotCosts),
-            case assign_mods(Entries, lists:seq(1, length(NormalPols))) of
-                {ok, UsedCost, Assignments} ->
-                    TotalCost = UsedCost + ExilusCost,
-                    case TotalCost =< Cap of
-                        true -> {ok, TotalCost, append_special_assignments(BuildName, AuraMods, ExilusMods, Assignments)};
-                        false -> {error, capacity}
-                    end;
-                {error, Reason} -> {error, Reason}
-            end
-    end.
-
-allow_normal_slot(#{slot := Slot}) when is_integer(Slot), Slot > 0 -> true;
-allow_normal_slot(#{slot := Slot}) when Slot =:= undefined; Slot =:= none; Slot =:= normal -> true;
-allow_normal_slot(_) -> false.
-
-normal_slot_costs(BuildName, #{slot := Slot, polarity := Pol, cost := Cost, name := ModName}, NormalPols) when is_integer(Slot), Slot > 0 ->
-    case Slot > length(NormalPols) of
-        true -> {error, invalid_slot};
-        false ->
-            SlotPol = safe_nth(Slot, NormalPols, none),
-            {ok, #{label => {BuildName, ModName}, slot_costs => [{Slot, wfcli_forma_model:mod_cost(Pol, SlotPol, Cost)}]}}
-    end;
-normal_slot_costs(BuildName, #{polarity := Pol, cost := Cost, name := ModName}, NormalPols) ->
-    SlotCosts = [{Idx, wfcli_forma_model:mod_cost(Pol, SlotPol, Cost)} || {Idx, SlotPol} <- lists:zip(lists:seq(1, length(NormalPols)), NormalPols)],
-    {ok, #{label => {BuildName, ModName}, slot_costs => SlotCosts}}.
-
-prepare_entries(SlotCosts) ->
-    Entries0 =
-        [#{id => Id, label => maps:get(label, Entry), slot_costs => sort_slot_costs(maps:get(slot_costs, Entry, []))}
-         || {Id, Entry} <- lists:zip(lists:seq(1, length(SlotCosts)), SlotCosts)],
-    lists:sort(fun entry_order/2, Entries0).
-
-entry_order(A, B) ->
-    LenA = length(maps:get(slot_costs, A, [])),
-    LenB = length(maps:get(slot_costs, B, [])),
-    case LenA =/= LenB of
-        true -> LenA < LenB;
-        false -> min_cost(maps:get(slot_costs, A, [])) > min_cost(maps:get(slot_costs, B, []))
-    end.
-
--doc "Return the cheapest slot cost in an entry; used to order harder mods first.".
-min_cost([]) -> 0;
-min_cost(SlotCosts) ->
-    lists:min([Cost || {_Slot, Cost} <- SlotCosts]).
-
-sort_slot_costs(SlotCosts) ->
-    lists:sort(fun({_, CostA}, {_, CostB}) -> CostA =< CostB end, SlotCosts).
-
--doc "Memoized recursive assignment of normal-slot mods to available slots.".
-assign_mods(Entries, SlotsAvail) ->
-    {Result, _Memo} = assign_mods(Entries, SlotsAvail, #{}),
-    Result.
-
-assign_mods([], _SlotsAvail, Memo) ->
-    {{ok, 0, []}, Memo};
-assign_mods(Entries, SlotsAvail, Memo) ->
-    Key = {entry_ids(Entries), SlotsAvail},
-    case maps:get(Key, Memo, undefined) of
-        undefined ->
-            {Result, Memo1} = assign_mods_uncached(Entries, SlotsAvail, Memo),
-            {Result, maps:put(Key, Result, Memo1)};
-        Cached ->
-            {Cached, Memo}
-    end.
-
-assign_mods_uncached([Entry | Rest], SlotsAvail, Memo) ->
-    SlotCosts = maps:get(slot_costs, Entry, []),
-    Label = maps:get(label, Entry),
-    Allowed = [SC || SC = {Slot, _} <- SlotCosts, lists:member(Slot, SlotsAvail)],
-    case Allowed of
-        [] -> {{error, no_slot}, Memo};
-        _ ->
-            {Best, MemoOut} =
-                lists:foldl(
-                  fun({Slot, Cost}, {BestAcc, MemoAcc}) ->
-                      {ChildResult, MemoNext} = assign_mods(Rest, lists:delete(Slot, SlotsAvail), MemoAcc),
-                      BestNext = case ChildResult of
-                                     {ok, ChildCost, Assignments} ->
-                                         update_best({ChildCost + Cost, [{Slot, Label} | Assignments]}, BestAcc);
-                                     {error, _} -> BestAcc
-                                 end,
-                      {BestNext, MemoNext}
-                  end,
-                  {undefined, Memo},
-                  Allowed),
-            case Best of
-                undefined -> {{error, no_slot}, MemoOut};
-                {BestCost, Assignments} -> {{ok, BestCost, Assignments}, MemoOut}
-            end
-    end.
-
-entry_ids(Entries) ->
-    [maps:get(id, Entry, 0) || Entry <- Entries].
-
-update_best({Cost, Assignments}, undefined) ->
-    {Cost, Assignments};
-update_best({Cost, _Assignments}, {BestCost, _} = Best) when Cost >= BestCost ->
-    Best;
-update_best({Cost, Assignments}, _Best) ->
-    {Cost, Assignments}.
-
-append_special_assignments(BuildName, AuraMods, ExilusMods, Assignments) ->
-    AuraAssign = [{aura, {BuildName, maps:get(name, M)}} || M <- AuraMods],
-    ExilusAssign = [{exilus, {BuildName, maps:get(name, M)}} || M <- ExilusMods],
-    Assignments ++ AuraAssign ++ ExilusAssign.
-
--doc "Count Forma cost for changing current item polarities to the target plan.".
-forma_total_cost(Plan, Item, Flags) ->
-    AllowUmbral = maps:get(allow_umbral_forma, Flags, false),
-    Current = current_pool(Item),
-    TargetList = maps:to_list(Plan),
-    {Cost, _Remaining} = cost_from_targets(TargetList, AllowUmbral, Current),
-    RemovalCost = removal_cost(TargetList, Item),
-    Cost + RemovalCost.
-
-cost_from_targets([], _AllowUmbral, Current) ->
-    {0, Current};
-cost_from_targets([{_Slot, none} | Rest], AllowUmbral, Current) ->
-    cost_from_targets(Rest, AllowUmbral, Current);
-cost_from_targets([{_Slot, Target} | Rest], AllowUmbral, Current) ->
-    case take_pol(Target, Current, AllowUmbral) of
-        {ok, Remaining} ->
-            cost_from_targets(Rest, AllowUmbral, Remaining);
-        {apply, Cost, Remaining} ->
-            {RestCost, FinalCurr} = cost_from_targets(Rest, AllowUmbral, Remaining),
-            {Cost + RestCost, FinalCurr};
-        {error, Cost} ->
-            {Cost, Current}
-    end.
-
-take_pol(umbral, Current, false) ->
-    case consume(umbral, Current) of
-        {ok, Remaining} -> {ok, Remaining};
-        error -> {error, 99999}
-    end;
-take_pol(Target, Current, _AllowUmbral) ->
-    case consume(Target, Current) of
-        {ok, Remaining} ->
-            {ok, Remaining};
-        error ->
-            {apply, wfcli_forma_model:forma_cost(Target), Current}
-    end.
-
-consume(_Pol, []) ->
-    error;
-consume(Pol, [Pol | Rest]) ->
-    {ok, Rest};
-consume(Pol, [H | Rest]) ->
-    case consume(Pol, Rest) of
-        {ok, Remaining} -> {ok, [H | Remaining]};
-        error -> error
-    end.
-
-reuse_count(Plan, Item) ->
-    Targets = [P || {_S, P} <- maps:to_list(Plan), P =/= none],
-    Current = current_pool(Item),
-    reuse_count(Targets, Current, 0).
-
-reuse_count([], _Current, Acc) ->
-    Acc;
-reuse_count([T | Rest], Current, Acc) ->
-    case consume(T, Current) of
-        {ok, Remaining} ->
-            reuse_count(Rest, Remaining, Acc + 1);
-        error ->
-            reuse_count(Rest, Current, Acc)
-    end.
-
-current_pool(Item) ->
-    Aura = maps:get(aura_slot, Item, none),
-    Exilus = maps:get(exilus_slot, Item, none),
-    Normal = maps:get(slots, Item, []),
-    [P || P <- [Aura, Exilus | Normal], P =/= none].
-
-current_pol(aura, Item) ->
-    maps:get(aura_slot, Item, none);
-current_pol(exilus, Item) ->
-    maps:get(exilus_slot, Item, none);
-current_pol(I, Item) when is_integer(I) ->
-    safe_nth(I, maps:get(slots, Item, []), none);
-current_pol(_, _) -> none.
-
-%%--------------------------------------------------------------------
-%% Assignments for visualization / reporting
-%%--------------------------------------------------------------------
--doc "Map a valid plan to the build/mod labels assigned to each slot.".
--spec assignments_for_plan(config(), plan()) -> {ok, slot_assignments()} | {error, term()}.
-assignments_for_plan(#{item := Item, builds := Builds} = _Config, Plan) ->
-    ItemSlots = maps:get(slots, Item, []),
-    AuraPol = maps:get(aura, Plan, maps:get(aura_slot, Item, none)),
-    ExilusPol = maps:get(exilus, Plan, maps:get(exilus_slot, Item, none)),
-    NormalPols = plan_normal_slots(Plan, ItemSlots),
-    BaseCap = wfcli_forma_model:apply_reactor(maps:get(capacity, Item, 0), maps:get(reactor, Item, false)),
-    lists:foldl(
-      fun(Build, Acc) ->
-          case Acc of
-              {error, _} = Err -> Err;
-              {ok, MapAcc} ->
-                  case build_fits(Build, NormalPols, AuraPol, ExilusPol, BaseCap) of
-                      {ok, _Used, Assignments} ->
-                          {ok, add_assignments_map(Assignments, MapAcc)};
-                      {error, Reason} ->
-                          {error, Reason}
-                  end
-          end
-      end,
-      {ok, #{}},
-      Builds);
-assignments_for_plan(_, _) -> {error, invalid_config}.
-
-add_assignments_map([], Map) -> Map;
-add_assignments_map([{Slot, Label} | Rest], Map) ->
-    Updated = maps:update_with(Slot, fun(List) -> [Label | List] end, [Label], Map),
-    add_assignments_map(Rest, Updated).
-
-removal_cost(TargetList, Item) ->
-    lists:sum(
-      [wfcli_forma_model:forma_cost(Current)
-       || {Slot, none} <- TargetList,
-          Current <- [current_pol(Slot, Item)],
-          Current =/= none]).
-
 -doc "Prune partial plans that exceed max forma or cannot beat the incumbent lower bound.".
 should_prune(Plan, Ctx, Best) ->
     Flags = maps:get(flags, Ctx),
     Max = maps:get(max_forma, Flags, undefined),
-    PartialCost = forma_total_cost(Plan, maps:get(item, Ctx), Flags),
+    PartialCost = wfcli_forma_rules:cost(Plan, maps:get(item, Ctx), Flags),
     LowerBound = lower_bound_cost(Plan, Ctx),
     ProjectedCost = PartialCost + LowerBound,
     OverBudget = case Max of
@@ -837,7 +551,7 @@ min_candidate_cost(Slot, Cands, Item, Plan) ->
     case maps:is_key(Slot, Plan) of
         true -> 0;
         false ->
-            Current = current_pol(Slot, Item),
+            Current = wfcli_forma_rules:current_polarity(Slot, Item),
             min_candidate_cost(Cands, Current)
     end.
 

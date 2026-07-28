@@ -21,7 +21,7 @@ Important options:
 - `--show-alt`: include near-optimal alternatives.
 - `--output FILE`: write plan YAML.
 - `--visualize`: render after planning.
-- `--viz html|image|wx`: choose the renderer.
+- `--viz html|image`: choose the renderer.
 - `--viz-output FILE`: choose visualization output.
 - `--viz-config`: also render the input layout.
 
@@ -56,5 +56,4 @@ The plan records target slot polarities, Omni assignments, total Forma, each bui
 slot-to-mod assignment, and configured arcanes. Unsatisfied constraints are returned as
 validation errors.
 
-HTML/SVG rendering works without wx. The wx renderer requires Erlang wx, GTK, a working
-display session, and the normal desktop theme packages.
+HTML output opens through the platform file opener. Image output is SVG.

@@ -25,7 +25,7 @@ asset, or native bridge changes.
 - `./scripts/test-quiet ct`: Common Test with passing output suppressed.
 - `cargo test --locked --quiet --manifest-path apps/wfcompanion/Cargo.toml`: Rust tests.
 - `make test`: Erlang and Rust suites.
-- `make check`: Rust formatting, tests, and both staged builds.
+- `make check`: Rust formatting, xref, tests, and both staged builds.
 
 The quiet wrapper prints one line on success. On failure it prints a bounded tail and retains the
 full log under `/tmp`. Use direct `rebar3` only while debugging a failure.
@@ -55,7 +55,8 @@ ELP 0.50.0 can crash its Erlang lint service on OTP 29 functions carrying
 `{unsafe,possibly}` metadata, including `socket:open/3` and `binary_to_term/2`; this is an ELP bug,
 not a parser error in the affected module. EqWAlizer is not a project gate.
 
-Run xref after application-boundary changes:
+`rebar.config` scans application `src/` trees recursively. Run xref after
+application-boundary changes:
 
 ```bash
 rebar3 xref

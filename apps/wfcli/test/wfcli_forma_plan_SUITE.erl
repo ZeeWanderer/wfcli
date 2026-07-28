@@ -10,6 +10,7 @@
          plan_requires_omni/1,
          plan_assigns_unslotted_mods/1,
          plan_complex_dual_build/1,
+         plan_complex_three_build/1,
          plan_wisp_regression/1,
          plan_movable_aura_reuse/1,
          plan_allows_optional_slot/1,
@@ -35,6 +36,7 @@ all() ->
      plan_requires_omni,
      plan_assigns_unslotted_mods,
      plan_complex_dual_build,
+     plan_complex_three_build,
      plan_wisp_regression,
      plan_movable_aura_reuse,
      plan_allows_optional_slot,
@@ -127,6 +129,36 @@ plan_complex_dual_build(CtConfig) ->
     ?assertEqual(ExpectedPlan, Plan),
     _ = write_plan_yaml("complex_dual_build", CtConfig, {Config, Plan, Cost}).
 
+plan_complex_three_build(CtConfig) ->
+    {Config, Plan, Cost} = plan_for("complex_three_build.yml", #{}),
+    ?assertEqual(7, Cost),
+    ExpectedPlan = #{1 => madurai, 2 => vazarin, 3 => zenurik, 4 => naramon,
+                     aura => omni, exilus => naramon},
+    ?assertEqual(ExpectedPlan, Plan),
+    ?assertEqual(
+       {ok,
+        #{1 => [{<<"Endurance">>, <<"Endurance D1">>},
+                {<<"Range">>, <<"Range V1">>},
+                {<<"Strength">>, <<"Strength V1">>}],
+          2 => [{<<"Endurance">>, <<"Endurance V2">>},
+                {<<"Range">>, <<"Range D2">>},
+                {<<"Strength">>, <<"Strength D2">>}],
+          3 => [{<<"Endurance">>, <<"Endurance Z3">>},
+                {<<"Range">>, <<"Range D3">>},
+                {<<"Strength">>, <<"Strength V3">>}],
+          4 => [{<<"Endurance">>, <<"Endurance N4">>},
+                {<<"Range">>, <<"Range Z4">>},
+                {<<"Strength">>, <<"Strength D4">>}],
+          aura => [{<<"Endurance">>, <<"Endurance Aura">>},
+                   {<<"Range">>, <<"Range Aura">>},
+                   {<<"Strength">>, <<"Strength Aura">>}],
+          exilus => [{<<"Endurance">>, <<"Endurance Exilus">>},
+                     {<<"Range">>, <<"Range Exilus">>},
+                     {<<"Strength">>, <<"Strength Exilus">>}]}},
+       wfcli_forma_planner:assignments_for_plan(Config, Plan)),
+    Generated = write_plan_yaml("complex_three_build", CtConfig, {Config, Plan, Cost}),
+    _ = read_yaml_doc(Generated).
+
 plan_wisp_regression(CtConfig) ->
     {Config, Plan, Cost} = plan_for("wisp.yml", #{}),
     ?assertEqual(2, Cost),
@@ -135,7 +167,10 @@ plan_wisp_regression(CtConfig) ->
                      aura => madurai, exilus => none},
     ?assertEqual(ExpectedPlan, Plan),
     ?assertEqual({error, no_plan}, wfcli_forma_planner:plan(Config, #{max_forma => 1})),
-    _ = write_plan_yaml("wisp", CtConfig, {Config, Plan, Cost}).
+    Generated = write_plan_yaml("wisp", CtConfig, {Config, Plan, Cost}),
+    ?assertEqual(
+       normalize_plan_doc(read_yaml_doc(fixture("wisp.plan.expected.yml"))),
+       normalize_plan_doc(read_yaml_doc(Generated))).
 
 yaml_output_serialization(CtConfig) ->
     {Config, Plan, Cost} = plan_for("simple_capacity.yml", #{}),
@@ -265,6 +300,16 @@ write_plan_yaml(Name, CtConfig, {Config, Plan, Cost}) ->
     Bin = iolist_to_binary(wfcli_forma_plan:plans_to_yaml([{ok, Config, Plan, Cost}])),
     ok = file:write_file(File, Bin),
     File.
+
+read_yaml_doc(Path) ->
+    {ok, Bin} = file:read_file(Path),
+    [Doc] = yamerl_constr:string(Bin, [{map_node_format, map},
+                                       {str_node_as_binary, true}]),
+    Doc.
+
+normalize_plan_doc(Doc) ->
+    Config = unicode:characters_to_binary(config_basename(maps:get(<<"config">>, Doc))),
+    Doc#{<<"config">> => Config}.
 
 config_basename(Value) when is_binary(Value) ->
     filename:basename(binary_to_list(Value));

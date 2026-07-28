@@ -69,8 +69,6 @@ show_entry(#{config := File, plan := Plan, slot_mods := SlotMods, build_arcanes 
     end;
 show_entry(_, _, _, _, _) -> ok.
 
-do_viz(File, Plan, SlotMods, BuildArcanes, wx, _Out) ->
-    wfcli_forma_visualizer:show_plan(File, Plan, SlotMods, BuildArcanes);
 do_viz(File, Plan, SlotMods, BuildArcanes, html, Out) ->
     case wfcli_forma_visualizer:render_html(File, Plan, SlotMods, BuildArcanes, Out) of
         {ok, Path} ->
@@ -89,8 +87,6 @@ do_viz(File, Plan, SlotMods, BuildArcanes, image, Out) ->
     end;
 do_viz(_, _, _, _, _, _) -> ok.
 
-do_config_viz(File, Plan, SlotMods, BuildArcanes, wx, _Out) ->
-    wfcli_forma_visualizer:show_config_plan(File, Plan, SlotMods, BuildArcanes);
 do_config_viz(File, Plan, SlotMods, BuildArcanes, html, Out) ->
     case wfcli_forma_visualizer:render_config_html(File, Plan, SlotMods, BuildArcanes, Out) of
         {ok, Path} ->
@@ -119,7 +115,6 @@ parse_args(["--help" | Rest], Acc) ->
  parse_args(["--viz", Mode | Rest], Acc) ->
      case string:lowercase(Mode) of
          "html" -> parse_args(Rest, Acc#{viz_mode := html});
-         "wx" -> parse_args(Rest, Acc#{viz_mode := wx});
          "image" -> parse_args(Rest, Acc#{viz_mode := image});
          Other -> parse_args(Rest, Acc#{errors := [io_lib:format("invalid --viz: ~s", [Other]) | maps:get(errors, Acc)]})
      end;

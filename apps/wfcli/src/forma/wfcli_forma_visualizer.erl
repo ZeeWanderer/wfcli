@@ -1,12 +1,10 @@
 %%%-------------------------------------------------------------------
-%% Simple wx visualizer for forma plans.
+%% Forma plan HTML and SVG rendering.
 %%%-------------------------------------------------------------------
 -module(wfcli_forma_visualizer).
 
 -export([show_plan/4, show_config_plan/4, render_html/5, render_svg/5, open_file/1,
          render_config_html/5, render_config_svg/5]).
-
--include_lib("wx/include/wx.hrl").
 
 -type path() :: file:filename_all().
 -type plan() :: map().
@@ -14,137 +12,25 @@
 -type build_arcanes() :: [{term(), [term()]}].
 -type render_result() :: {ok, path()} | {error, term()}.
 
--doc "Render a solved forma plan, preferring wx when forced and HTML fallback otherwise.".
+-doc "Render a solved Forma plan to its default HTML path.".
 -spec show_plan(path(), plan(), slot_mod_labels(), build_arcanes()) -> ok | term().
 show_plan(File, Plan, SlotMods, BuildArcanes) ->
-    show_plan(File, Plan, SlotMods, BuildArcanes, fun render_html/5).
+    show_html(File, Plan, SlotMods, BuildArcanes, fun render_html/5).
 
--doc "Render the input config's current polarities instead of a solved plan.".
+-doc "Render current config polarities to their default HTML path.".
 -spec show_config_plan(path(), plan(), slot_mod_labels(), build_arcanes()) -> ok | term().
 show_config_plan(File, Plan, SlotMods, BuildArcanes) ->
-    show_plan(File, Plan, SlotMods, BuildArcanes, fun render_config_html/5).
+    show_html(File, Plan, SlotMods, BuildArcanes, fun render_config_html/5).
 
-show_plan(File, Plan, SlotMods, BuildArcanes, FallbackRenderer) ->
-    ForceWx = force_wx(),
-    case ForceWx of
-        false ->
-            case FallbackRenderer(File, Plan, SlotMods, BuildArcanes, undefined) of
-                {ok, Path} ->
-                    io:format("visualization (html) written to ~s (set WFCLI_FORCE_WX=1 and GDK_BACKEND=x11 to try native window)~n", [Path]);
-                {error, Reason} ->
-                    io:format("visualization html write failed: ~p~n", [Reason])
-            end,
+show_html(File, Plan, SlotMods, BuildArcanes, Renderer) ->
+    case Renderer(File, Plan, SlotMods, BuildArcanes, undefined) of
+        {ok, Path} ->
+            io:format("visualization (html) written to ~s~n", [Path]),
             ok;
-        true ->
-            case display_available() of
-                false ->
-                    case FallbackRenderer(File, Plan, SlotMods, BuildArcanes, undefined) of
-                        {ok, Path} ->
-                            io:format("visualization skipped: no DISPLAY/WAYLAND_DISPLAY for ~s (~s)~n", [File, Path]);
-                        {error, Reason} ->
-                            io:format("visualization skipped (html failed): ~p~n", [Reason])
-                    end,
-                    ok;
-                true ->
-                    case driver_available() of
-                        false ->
-                            case FallbackRenderer(File, Plan, SlotMods, BuildArcanes, undefined) of
-                                {ok, Path} ->
-                                    io:format("visualization skipped: wx driver not found for ~s (~s)~n", [File, Path]);
-                                {error, Reason} ->
-                                    io:format("visualization skipped (wx driver missing, html failed): ~p~n", [Reason])
-                            end;
-                        true ->
-                            start(File, Plan, SlotMods, BuildArcanes, FallbackRenderer)
-                    end
-            end
+        {error, Reason} ->
+            io:format("visualization html write failed: ~p~n", [Reason]),
+            {error, Reason}
     end.
-
-start(File, Plan, SlotMods, BuildArcanes, FallbackRenderer) ->
-    case wx_new() of
-        {error, Err} ->
-            _ = FallbackRenderer(File, Plan, SlotMods, BuildArcanes, undefined),
-            io:format("visualization failed (wx unavailable): ~p~n", [Err]);
-        {ok, _} ->
-            try
-                Frame = wxFrame:new(wx:null(), ?wxID_ANY, io_lib:format("Forma Plan: ~s", [File])),
-                Panel = wxPanel:new(Frame),
-                Sizer = wxBoxSizer:new(?wxVERTICAL),
-                Header = wxStaticText:new(Panel, ?wxID_ANY, io_lib:format("Plan for ~s", [File])),
-                wxSizer:add(Sizer, Header, [{flag, ?wxALL}, {border, 5}]),
-                add_arcane_lines(Panel, Sizer, BuildArcanes),
-                Rows = slot_rows(Plan),
-                GridSizer = wxGridSizer:new(length(Rows), 4, 5, 5),
-                add_slot_cards(Panel, GridSizer, Plan, SlotMods),
-                wxSizer:add(Sizer, GridSizer, [{flag, ?wxALL bor ?wxEXPAND}, {border, 10}]),
-                wxPanel:setSizer(Panel, Sizer),
-                wxFrame:show(Frame),
-                wx:main_loop()
-            catch C:R ->
-                _ = FallbackRenderer(File, Plan, SlotMods, BuildArcanes, undefined),
-                io:format("visualization failed: ~p:~p~n", [C, R])
-            after
-                try wx:destroy()
-                catch _:_ -> ok
-                end
-            end
-    end.
-
-wx_new() ->
-    try wx:new() of
-        Wx -> {ok, Wx}
-    catch
-        Class:Reason -> {error, {Class, Reason}}
-    end.
-
-add_slot_cards(Panel, Grid, Plan, SlotMods) ->
-    Rows = slot_rows(Plan),
-    lists:foreach(
-      fun(Row) ->
-          lists:foreach(
-            fun(Slot) ->
-                wxSizer:add(Grid, slot_card(Panel, Slot, Plan, SlotMods), [{flag, ?wxEXPAND}])
-            end,
-            Row)
-      end,
-      Rows).
-
-slot_rows(Plan) ->
-    AuraExilus = [[aura, exilus, none, none]],
-    Normals = [S || {S, _} <- lists:sort([{I, Pol} || {I, Pol} <- maps:to_list(Plan), is_integer(I)])],
-    NormalRows = chunk4(Normals),
-    AuraExilus ++ NormalRows.
-
-chunk4(List) ->
-    chunk4(List, []).
-chunk4([], Acc) -> lists:reverse(Acc);
-chunk4(List, Acc) ->
-    {Row, Rest} = lists:split(4, List),
-    chunk4(Rest, [Row ++ padding(4 - length(Row)) | Acc]).
-
-padding(N) when N =< 0 -> [];
-padding(N) -> lists:duplicate(N, none).
-
-slot_card(Panel, none, _Plan, _Mods) ->
-    wxPanel:new(Panel);
-slot_card(Panel, Slot, Plan, SlotMods) ->
-    Pol = maps:get(Slot, Plan, none),
-    Card = wxPanel:new(Panel, ?wxID_ANY, [{size, {140, 120}}]),
-    CardSizer = wxBoxSizer:new(?wxVERTICAL),
-    Title = wxStaticText:new(Card, ?wxID_ANY, io_lib:format("Slot ~p", [Slot])),
-    PolText = wxStaticText:new(Card, ?wxID_ANY, io_lib:format("Polarity: ~s", [wfcli_polarity:symbol(Pol)])),
-    wxSizer:add(CardSizer, Title, [{flag, ?wxALL}, {border, 2}]),
-    wxSizer:add(CardSizer, PolText, [{flag, ?wxALL}, {border, 2}]),
-    Mods = find_mods(Slot, SlotMods),
-    ModsLabel = wxStaticText:new(Card, ?wxID_ANY, "Mods:"),
-    wxSizer:add(CardSizer, ModsLabel, [{flag, ?wxLEFT}, {border, 2}]),
-    lists:foreach(
-      fun({Build, Mod}) ->
-          wxSizer:add(CardSizer, wxStaticText:new(Card, ?wxID_ANY, io_lib:format("- ~s: ~s", [Build, Mod])), [{flag, ?wxLEFT}, {border, 6}])
-      end,
-      Mods),
-    wxPanel:setSizer(Card, CardSizer),
-    Card.
 
 find_mods(Slot, SlotMods) ->
     case lists:keyfind(Slot, 1, SlotMods) of
@@ -152,53 +38,6 @@ find_mods(Slot, SlotMods) ->
         {_, Mods} ->
             [{wfcli_forma_plan:to_list(B), wfcli_forma_plan:to_list(M)} || {B, M} <- Mods]
     end.
-
-add_arcane_lines(_Panel, _Sizer, BuildArcanes) when BuildArcanes =:= [] -> ok;
-add_arcane_lines(Panel, Sizer, BuildArcanes) ->
-    Lines = arcane_lines(BuildArcanes),
-    case Lines of
-        [] -> ok;
-        _ ->
-            wxSizer:add(Sizer, wxStaticText:new(Panel, ?wxID_ANY, "Arcanes:"), [{flag, ?wxLEFT}, {border, 5}]),
-            lists:foreach(
-              fun(Line) ->
-                  wxSizer:add(Sizer, wxStaticText:new(Panel, ?wxID_ANY, Line), [{flag, ?wxLEFT}, {border, 12}])
-              end,
-              Lines),
-            ok
-    end.
-
-driver_available() ->
-    case code:priv_dir(wx) of
-        {error, _} -> false;
-        Dir0 ->
-            Dir = case Dir0 of
-                      Bin when is_binary(Bin) -> binary_to_list(Bin);
-                      List when is_list(List) -> List;
-                      _ -> ""
-                  end,
-            Ext = case os:type() of
-                      {win32, _} -> ".dll";
-                      _ -> ".so"
-                  end,
-            filelib:is_file(filename:join(Dir, "wxe_driver" ++ Ext))
-    end.
-
-display_available() ->
-    case {os:getenv("DISPLAY"), os:getenv("WAYLAND_DISPLAY")} of
-        {false, false} -> false;
-        {"", ""} -> false;
-        _ -> true
-    end.
-
-force_wx() ->
-    case os:getenv("WFCLI_FORCE_WX") of
-        false -> false;
-        undefined -> false;
-        Val ->
-            Lower = string:lowercase(Val),
-            Lower =:= "1" orelse Lower =:= "true" orelse Lower =:= "yes"
-	    end.
 
 -doc "Write a plan visualization as HTML and return `{ok, Path}` or `{error, Reason}`.".
 -spec render_html(path(), plan(), slot_mod_labels(), build_arcanes(), path() | undefined) -> render_result().

@@ -2,22 +2,27 @@
 
 ## Entry points
 
-- CLI: `apps/wfcli/src/wfcli_forma_plan.erl`
-- Daemon queue: `apps/wfdaemon/src/wfcli_forma_service.erl`
-- Core solver: `apps/wfdaemon/src/wfcli_forma_planner.erl`
-- Models and validation: `apps/wfdaemon/src/wfcli_forma_model.erl`
-- Mod lookup (defaults): `apps/wfdaemon/src/wfcli_forma_mod_db.erl`
-- YAML config loader: `apps/wfdaemon/src/wfcli_forma_config.erl`
-- Visualization helpers: `apps/wfcli/src/wfcli_forma_visualizer.erl`
+- CLI: `apps/wfcli/src/forma/wfcli_forma_plan.erl`
+- Daemon queue: `apps/wfdaemon/src/forma/wfcli_forma_service.erl`
+- Public solver API: `apps/wfdaemon/src/forma/wfcli_forma_planner.erl`
+- Search: `apps/wfdaemon/src/forma/wfcli_forma_search.erl`
+- Cost and validity rules: `apps/wfdaemon/src/forma/wfcli_forma_rules.erl`
+- Mod assignment: `apps/wfdaemon/src/forma/wfcli_forma_assignment.erl`
+- Item model: `apps/wfdaemon/src/forma/wfcli_forma_model.erl`
+- Mod lookup: `apps/wfdaemon/src/forma/wfcli_forma_mod_db.erl`
+- YAML loader: `apps/wfdaemon/src/forma/wfcli_forma_config.erl`
+- Visualization: `apps/wfcli/src/forma/wfcli_forma_visualizer.erl`
 
 ## Where to edit what
 
-- CLI flags/usage/errors: `apps/wfcli/src/wfcli_forma_plan.erl`
-- Queueing and data-only replies: `apps/wfdaemon/src/wfcli_forma_service.erl`
-- Plan search strategy or constraints: `apps/wfdaemon/src/wfcli_forma_planner.erl`
-- Item/build schema normalization: `apps/wfdaemon/src/wfcli_forma_model.erl`
-- YAML parsing and error shape: `apps/wfdaemon/src/wfcli_forma_config.erl`
-- Mod lookup source: `apps/wfdaemon/src/wfcli_forma_mod_db.erl`
+- CLI flags/usage/errors: `apps/wfcli/src/forma/wfcli_forma_plan.erl`
+- Queueing and replies: `wfcli_forma_service`
+- Candidate generation and search: `wfcli_forma_search`
+- Capacity, cost, and tiebreak inputs: `wfcli_forma_rules`
+- Mod-to-slot matching: `wfcli_forma_assignment`
+- Item/build normalization: `wfcli_forma_model`
+- YAML parsing and errors: `wfcli_forma_config`
+- Mod lookup source: `wfcli_forma_mod_db`
 - YAML, HTML, and SVG output: the CLI modules above.
 
 ## Concurrency and search
@@ -35,5 +40,5 @@ Without certification it still returns the best valid plan and logs a warning. I
 ## Tests and fixtures
 
 - Forma plan tests live in `apps/wfcli/test` (see `wfcli_forma_plan_SUITE.erl`).
-- Test configs, including `wisp.yml`, live in `apps/wfcli/test/fixtures/`.
+- Test configs include the real `wisp.yml` regression and an independent three-build case.
 - Sample config lives under `docs/forma_plan.example.yml`.

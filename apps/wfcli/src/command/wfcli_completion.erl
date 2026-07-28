@@ -38,10 +38,10 @@ split_current([]) -> {[], ""};
 split_current(Args) ->
     {lists:droplast(Args), lists:last(Args)}.
 
-command_candidates("forma-plan", _Rest) ->
-    options(wfcli_forma_plan:known_args());
-command_candidates("visualize", _Rest) ->
-    options(wfcli_visualize:known_args());
+command_candidates("forma-plan", Rest) ->
+    option_values(Rest, ["html", "image"], options(wfcli_forma_plan:known_args()));
+command_candidates("visualize", Rest) ->
+    option_values(Rest, ["html", "image"], options(wfcli_visualize:known_args()));
 command_candidates(Command, Rest) when Command =:= "query"; Command =:= "player" ->
     option_values(Rest, ["table", "block"], options(wfcli_query_cli:known_args()));
 command_candidates("market", Rest) ->
@@ -119,7 +119,7 @@ option_values(Rest, Formats, Default) ->
         "--output-format" -> Formats;
         "--format" -> Formats;
         "--diff-style" -> ["inline", "list", "diff", "none"];
-        "--viz" -> ["html", "image", "wx"];
+        "--viz" -> ["html", "image"];
         "--target" -> ["active", "screen"];
         _ -> Default
     end.

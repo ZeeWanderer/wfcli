@@ -13,56 +13,13 @@
 
 -define(DEFAULT_URL, "https://api.warframe.com/cdn/worldState.php").
 -define(TRADER_URL, "https://content.warframe.com/dynamic/traderInventory.php").
--define(EXPORT_BASE, "https://content.warframe.com/PublicExport/Manifest/").
--define(EXPORT_INDEX, "https://content.warframe.com/PublicExport/index_en.txt.lzma").
--define(EXPORT_FILES, ["ExportManifest.json",
-                       "ExportRecipes_en.json",
-                       "ExportUpgrades_en.json",
-                       "ExportWeapons_en.json",
-                       "ExportWarframes_en.json",
-                       "ExportResources_en.json",
-                       "ExportGear_en.json",
-                       "ExportKeys_en.json",
-                       "ExportRelicArcane_en.json",
-                       "ExportSortieRewards_en.json",
-                       "ExportCustoms_en.json",
-                       "ExportDrones_en.json",
-                       "ExportFlavour_en.json",
-                       "ExportFusionBundles_en.json",
-                       "ExportRegions_en.json",
-                       "ExportSentinels_en.json"]).
-
--define(RESOLVER_EXPORT_FILES, ["ExportRecipes_en.json",
-                                "ExportUpgrades_en.json",
-                                "ExportWeapons_en.json",
-                                "ExportWarframes_en.json",
-                                "ExportResources_en.json",
-                                "ExportGear_en.json",
-                                "ExportKeys_en.json",
-                                "ExportRelicArcane_en.json",
-                                "ExportSortieRewards_en.json"]).
-
--define(CODEX_EXPORT_FILES, ["ExportWeapons_en.json",
-                             "ExportWarframes_en.json",
-                             "ExportResources_en.json",
-                             "ExportGear_en.json",
-                             "ExportKeys_en.json",
-                             "ExportRelicArcane_en.json",
-                             "ExportCustoms_en.json",
-                             "ExportFlavour_en.json",
-                             "ExportRegions_en.json",
-                             "ExportSentinels_en.json",
-                             "ExportDrones_en.json"]).
-
 -include_lib("wfdaemon/include/wfcli_worldstate.hrl").
 
 -type opts() :: map().
 -type ws() :: #ws{}.
 -type entry() :: map().
 -type query() :: string() | binary().
--type metadata_name() :: file:filename_all().
 -type cache_source() :: cached | cached_stale | fetched.
--type update_result() :: ok | {error, term()}.
 
 %% Public API
 -spec load(opts()) -> {ok, ws(), cache_source()} | {error, term()}.
@@ -608,321 +565,41 @@ oid_or_index(Map, Prefix, Index) ->
 now_seconds() ->
     calendar:datetime_to_gregorian_seconds(calendar:universal_time()).
 
--doc "Refresh node-name metadata used to resolve worldstate node ids.".
--spec update_nodes() -> update_result().
 update_nodes() ->
-    application:ensure_all_started(inets),
-    application:ensure_all_started(ssl),
-    Url = "https://raw.githubusercontent.com/WFCD/warframe-worldstate-data/master/data/solNodes.json",
-    case httpc:request(get, {Url, []}, [{timeout, 10000}], [{body_format, binary}]) of
-        {ok, {{_, 200, _}, _Headers, Body}} ->
-            write_metadata("solNodes.json", {wfcli, node_map}, Body);
-        {ok, {{_, Code, _}, _H, B}} -> {error, {http_error, Code, B}};
-        {error, Reason} -> {error, Reason}
-    end.
+    wfcli_metadata_update:update_nodes().
 
--doc "Refresh localized string metadata used by item, node, and mission renderers.".
--spec update_languages() -> update_result().
 update_languages() ->
-    application:ensure_all_started(inets),
-    application:ensure_all_started(ssl),
-    Url = "https://raw.githubusercontent.com/WFCD/warframe-worldstate-data/master/data/languages.json",
-    case httpc:request(get, {Url, []}, [{timeout, 10000}], [{body_format, binary}]) of
-        {ok, {{_, 200, _}, _Headers, Body}} ->
-            write_metadata("languages.json", {wfcli, lang_map}, Body);
-        {ok, {{_, Code, _}, _H, B}} -> {error, {http_error, Code, B}};
-        {error, Reason} -> {error, Reason}
-    end.
+    wfcli_metadata_update:update_languages().
 
--doc "Refresh only ExportManifest.json through the hashed PublicExport index.".
--spec update_manifest() -> update_result().
 update_manifest() ->
-    update_export_file("ExportManifest.json").
+    wfcli_metadata_update:update_manifest().
 
--doc "Refresh all configured PublicExport files through one shared hashed index fetch.".
--spec update_all_exports() -> update_result().
 update_all_exports() ->
-    update_exports(?EXPORT_FILES).
+    wfcli_metadata_update:update_all_exports().
 
--doc "Refresh selected PublicExport files through one shared hashed index fetch.".
--spec update_exports([metadata_name()]) -> update_result().
-update_exports(Files) when is_list(Files) ->
-    case fetch_index() of
-        {ok, Index} ->
-            chain([fun() -> update_export_with_index(F, Index) end || F <- lists:usort(Files)]);
-        {error, Reason} -> {error, Reason}
-    end.
+update_exports(Files) ->
+    wfcli_metadata_update:update_exports(Files).
 
--doc "Refresh one PublicExport metadata file by name, for example `ExportWeapons.json`.".
--spec update_export(metadata_name()) -> update_result().
-update_export(File) when is_list(File) ->
-    case fetch_index() of
-        {ok, Index} -> update_export_with_index(File, Index);
-        {error, Reason} -> {error, Reason}
-    end.
+update_export(File) ->
+    wfcli_metadata_update:update_export(File).
 
-update_export_file(File) ->
-    case fetch_index() of
-        {ok, Index} -> update_export_with_index(File, Index);
-        {error, Reason} -> {error, Reason}
-    end.
-
-update_export_with_index(File, Index) ->
-    application:ensure_all_started(inets),
-    application:ensure_all_started(ssl),
-    case maps:get(File, Index, undefined) of
-        undefined -> {error, {not_in_index, File}};
-        Hashed ->
-            Url = ?EXPORT_BASE ++ Hashed,
-            case httpc:request(get, {Url, []}, [{timeout, 20000}], [{body_format, binary}]) of
-                {ok, {{_, 200, _}, _Headers, Body}} ->
-                    write_metadata(File, {wfcli, export, File}, Body);
-                {ok, {{_, Code, _}, _H, B}} -> {error, {http_error, Url, Code, B}};
-                {error, Reason} -> {error, Reason}
-            end
-    end.
-
--doc "Fetch and parse `index_en.txt.lzma`, which maps export names to current hashed paths.".
--spec fetch_index() -> {ok, #{string() => string()}} | {error, term()}.
-fetch_index() ->
-    application:ensure_all_started(inets),
-    application:ensure_all_started(ssl),
-    case httpc:request(get, {?EXPORT_INDEX, []}, [{timeout, 15000}], [{body_format, binary}]) of
-        {ok, {{_, 200, _}, _Headers, Body}} ->
-            case decompress_lzma(Body) of
-                {ok, Txt} -> {ok, parse_index(Txt)};
-                Error -> Error
-            end;
-        {ok, {{_, Code, _}, _H, B}} -> {error, {http_error, ?EXPORT_INDEX, Code, B}};
-        {error, Reason} -> {error, Reason}
-    end.
-
-parse_index(Bin) ->
-    Lines = string:split(binary_to_list(Bin), "\n", all),
-    Fold = fun(Line, Acc) ->
-        case string:split(Line, "!", all) of
-            [Base, Hashed] ->
-                case suffix_json(Base) of
-                    true ->
-                        Clean = strip_cr(Hashed),
-                        maps:put(Base, Base ++ "!" ++ Clean, Acc);
-                    false -> Acc
-                end;
-            _ -> Acc
-        end
-    end,
-    lists:foldl(Fold, #{}, Lines).
-
-suffix_json(Str) when is_list(Str) ->
-    Len = length(Str),
-    case Len >= 5 of
-        false -> false;
-        true ->
-            Suffix = lists:sublist(Str, Len-4, 5),
-            Suffix =:= ".json"
-    end;
-suffix_json(_) -> false.
-
-strip_cr(Str) when is_list(Str) ->
-    string:strip(Str, right, $\r);
-strip_cr(Other) -> Other.
-
--doc "Decompress Warframe's LZMA export index with `xz` using a port, not a shell command.".
--spec decompress_lzma(binary()) -> {ok, binary()} | {error, term()}.
-decompress_lzma(Bin) when is_binary(Bin) ->
-    case os:find_executable("xz") of
-        false -> {error, no_lzma};
-        Xz ->
-            Tmp = temp_path(),
-            case file:write_file(Tmp, Bin) of
-                ok ->
-                    try run_xz_decompress(Xz, Tmp)
-                    after
-                        _ = file:delete(Tmp)
-                    end;
-                {error, Reason} ->
-                    {error, {temp_write_failed, Reason}}
-            end
-    end;
-decompress_lzma(_) -> {error, bad_data}.
-
-run_xz_decompress(Xz, Tmp) ->
-    Port = open_port({spawn_executable, Xz},
-                     [binary, exit_status, stderr_to_stdout,
-                      {args, ["-d", "-c", Tmp]}]),
-    collect_xz_output(Port, []).
-
-collect_xz_output(Port, Acc) ->
-    receive
-        {Port, {data, Data}} ->
-            collect_xz_output(Port, [Data | Acc]);
-        {Port, {exit_status, 0}} ->
-            case iolist_to_binary(lists:reverse(Acc)) of
-                <<>> -> {error, lzma_failed};
-                Output -> {ok, Output}
-            end;
-        {Port, {exit_status, Status}} ->
-            {error, {lzma_failed, Status, iolist_to_binary(lists:reverse(Acc))}}
-    end.
-
-temp_path() ->
-    Base = case os:getenv("TMPDIR") of
-        false -> "/tmp";
-        undefined -> "/tmp";
-        V -> V
-    end,
-    Unique = erlang:unique_integer([monotonic, positive]),
-    filename:join(Base, io_lib:format("wfcli_index_~p.lzma", [Unique])).
-
-maybe_clear_export_cache(Name) ->
-    case lists:prefix("Export", Name) of
-        true -> persistent_term:erase({wfcli, item_map});
-        false -> ok
-    end,
-    case lists:prefix("ExportUpgrades", Name) of
-        true ->
-            persistent_term:erase({wfcli, mod_map}),
-            persistent_term:erase({wfcli, mod_name_index}),
-            persistent_term:erase({wfcli, mod_db});
-        false -> ok
-    end.
-
--doc "Refresh all local metadata needed for resolved worldstate/export queries.".
--spec update_all() -> update_result().
 update_all() ->
-    chain([fun update_nodes/0,
-           fun update_languages/0,
-           fun update_all_exports/0]).
+    wfcli_metadata_update:update_all().
 
--doc "Write a validated metadata payload into wfdaemon's preferred priv/cache root.".
--spec write_metadata_file(metadata_name(), binary()) -> update_result().
 write_metadata_file(Name, Body) when is_list(Name), is_binary(Body) ->
-    write_metadata(Name, {wfcli, metadata, Name}, Body).
+    wfcli_metadata_update:write_file(Name, Body).
 
-write_metadata(Name, TermKey, Body) ->
-    case choose_path(Name) of
-        {ok, Path} ->
-            Dir = filename:dirname(Path),
-            case ensure_dir(Dir) of
-                ok ->
-                    case write_atomic(Path, Body) of
-                        ok ->
-                            persistent_term:erase(TermKey),
-                            maybe_clear_export_cache(Name),
-                            ok;
-                        {error, Reason} ->
-                            {error, {write_failed, Path, Reason}};
-                        Other -> {error, {write_failed, Path, Other}}
-                    end;
-                {error, Reason} ->
-                    {error, {mkdir_failed, Dir, Reason}}
-            end;
-        {error, Reason} -> {error, Reason}
-    end.
-
-write_atomic(Path, Body) ->
-    Suffix = integer_to_list(erlang:unique_integer([monotonic, positive])),
-    Tmp = Path ++ ".tmp." ++ Suffix,
-    case file:write_file(Tmp, Body) of
-        ok ->
-            case file:rename(Tmp, Path) of
-                ok -> ok;
-                {error, Reason} ->
-                    _ = file:delete(Tmp),
-                    {error, Reason}
-            end;
-        {error, Reason} -> {error, Reason}
-    end.
-
-choose_path(Name) ->
-    case metadata_paths(Name) of
-        [Path | _] -> {ok, Path};
-        [] -> {error, no_path}
-    end.
-
--doc "Return candidate local metadata paths in write preference order.".
--spec metadata_paths(metadata_name()) -> [file:filename_all()].
 metadata_paths(Name) ->
-    [filename:join(Base, Name) || Base <- base_dirs(), Base =/= undefined].
+    wfcli_metadata_update:paths(Name).
 
--doc "Find priv/cache roots for repo runs, escripts, and releases without hardcoding one layout.".
--spec base_dirs() -> [file:filename_all() | undefined].
-base_dirs() ->
-    ScriptDir = script_dir(),
-    Cwd = filename:absname("."),
-    CodePriv =
-        case code:priv_dir(wfdaemon) of
-            Dir when is_list(Dir) ->
-                case filelib:is_dir(Dir) of
-                    true -> Dir;
-                    false -> undefined
-                end;
-            _ -> undefined
-        end,
-    LibPriv =
-        case code:lib_dir(wfdaemon) of
-            {error, _} -> undefined;
-            Lib when is_list(Lib) -> filename:join(Lib, "priv");
-            _ -> undefined
-        end,
-    unique_paths([
-        wfcli_paths:cache_dir(),
-        CodePriv,
-        LibPriv,
-        filename:join([Cwd, "apps", "wfdaemon", "priv"]),
-        filename:join([Cwd, "priv"]),
-        filename:join([ScriptDir, "apps", "wfdaemon", "priv"]),
-        filename:join(ScriptDir, "priv"),
-        filename:join([filename:dirname(ScriptDir), "apps", "wfdaemon", "priv"]),
-        filename:join([filename:dirname(ScriptDir), "priv"])
-    ], []).
+export_files() ->
+    wfcli_metadata_update:export_files().
 
-unique_paths([], Acc) -> lists:reverse(Acc);
-unique_paths([undefined | Rest], Acc) -> unique_paths(Rest, Acc);
-unique_paths([Path | Rest], Acc) ->
-    Absolute = filename:absname(Path),
-    case lists:member(Absolute, Acc) of
-        true -> unique_paths(Rest, Acc);
-        false -> unique_paths(Rest, [Absolute | Acc])
-    end.
+resolver_export_files() ->
+    wfcli_metadata_update:resolver_export_files().
 
--doc "Return the PublicExport files this app knows how to refresh and query.".
--spec export_files() -> [string()].
-export_files() -> ?EXPORT_FILES.
-
--doc "Return only exports used by identifier resolution; large Codex files stay out.".
--spec resolver_export_files() -> [string()].
-resolver_export_files() -> ?RESOLVER_EXPORT_FILES.
-
--doc "Return official PublicExport files used to build the static Codex catalog.".
--spec codex_export_files() -> [string()].
-codex_export_files() -> ?CODEX_EXPORT_FILES.
-
-chain([]) -> ok;
-chain([Fun | Rest]) when is_function(Fun, 0) ->
-    case Fun() of
-        ok -> chain(Rest);
-        Err -> Err
-    end.
-
-script_dir() ->
-    try escript:script_name() of
-        Script when is_list(Script), Script =/= [] -> filename:dirname(Script);
-        _ -> filename:absname(".")
-    catch
-        _:_ -> filename:absname(".")
-    end.
-
-ensure_dir(Dir) ->
-    case filelib:is_dir(Dir) of
-        true -> ok;
-        false ->
-            case filelib:ensure_dir(filename:join(Dir, "dummy")) of
-                ok -> ok;
-                {error, enotdir} -> ok;
-                Other -> Other
-            end
-    end.
+codex_export_files() ->
+    wfcli_metadata_update:codex_export_files().
 
 matches(#{name := Name, type := Type} = E, Q) ->
     NameMatch = string:find(string:lowercase(Name), Q) =/= nomatch,

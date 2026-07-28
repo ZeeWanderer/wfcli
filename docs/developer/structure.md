@@ -6,13 +6,11 @@ The repository has three executable components and one process-free OTP library.
 
 `apps/wfcli/src/` is the short-lived user and integration interface:
 
-- `wfcli_cli`, `wfcli_help*`, and `wfcli_*_cli`: arguments, help, exit status, requests.
-- `wfcli_client`: loopback distribution, daemon lifecycle, compatibility, requests,
-  subscriptions, and cancellation.
-- `wfcli_autostart`: flavor-specific systemd user units.
-- `wfcli_mcp_*`: stdio JSON-RPC, MCP schemas, resources, and request translation.
-- `wfcli_*_format`, `wfcli_*_presentation`, `wfcli_table`, `wfcli_tty`: output only.
-- `wfcli_forma_plan`, `wfcli_visualize`, `wfcli_forma_visualizer`: planner result output.
+- `command/`: arguments, help, completion, exit status, and request construction.
+- `client/`: daemon transport, lifecycle, compatibility, autostart, and companion control.
+- `mcp/`: stdio JSON-RPC, MCP schemas, resources, and request translation.
+- `output/`: formatters, presentation, table layout, and terminal handling.
+- `forma/`: planner result serialization and HTML/SVG visualization.
 
 CLI modules do not fetch, persist, compile query ASTs, normalize worldstate, or run the Forma
 solver. MCP is a `wfcli mcp` interface, not a separate OTP application.
@@ -21,17 +19,13 @@ solver. MCP is a `wfcli mcp` interface, not a separate OTP application.
 
 `apps/wfdaemon/src/` owns persistent state and domain work:
 
-- `wfcli_sup`, `wfcli_daemon`, `wfcli_hot_update`: supervision, request protocol, lifecycle.
-- `wfcli_worldstate_service`, `wfcli_exports_store`, `wfcli_source_manager`,
-  `wfcli_query_service`, `wfcli_forma_service`, `wfcli_market_service`: serialized queues and
-  shared caches.
-- `wfcli_worldstate*`, `wfcli_exports*`, `wfcli_knowledge*`, `wfcli_resolve*`: fetching,
-  persistence, normalization, and catalogs.
-- `wfcli_query_parse`, `wfcli_entity_query`, and `wfcli_entity_*`: query compilation and
-  evaluation.
-- `wfcli_player_service`, `wfcli_local_api`: canonical local player state and native-client
-  transport.
-- `wfcli_forma_config`, `wfcli_forma_model`, `wfcli_forma_planner`: planner domain.
+- `runtime/`: daemon lifecycle, hot update, local transport, and generic cache state.
+- `worldstate/`: snapshot fetch, indexing, projection, watches, and identifier resolution.
+- `catalog/`: PublicExport/WFCD updates, source preparation, exports, and knowledge.
+- `query/`: query parsing, entity adapters, sorting, and execution.
+- `market/`: market cache/API, relic context, recommendations, and assets.
+- `player/`: canonical player dataset and queries.
+- `forma/`: serialized planner queue, search, rules, assignment, config, and model.
 
 Daemon replies are data maps. Daemon modules never print, halt, or choose terminal layouts.
 Planner and query execution remain daemon-owned so concurrent clients cannot duplicate expensive
@@ -42,10 +36,8 @@ work.
 `apps/wfcore/src/` is a normal OTP library application with no application callback, supervisor,
 or process. It gives each BEAM module one owner while allowing both executables to depend on it:
 
-- `wfcli_protocol`, `wfcli_build`, `wfcli_paths`
-- `wfcli_*_schema`
-- `wfcli_text`, `wfcli_time`, `wfcli_polarity`
-- `wfcli_data_extract`, `wfcli_worldstate_diff`
+- `contract/`: protocol, build/path identity, and shared schemas.
+- `value/`: process-free text, time, polarity, extraction, and diff helpers.
 
 Compiling these files separately into `wfcli` and `wfdaemon` creates duplicate BEAM ownership,
 breaks xref, and makes debugger code paths ambiguous. Keep only stable cross-application contracts

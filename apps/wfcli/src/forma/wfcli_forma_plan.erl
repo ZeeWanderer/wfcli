@@ -202,7 +202,6 @@ parse_args(["--viz-config" | Rest], Acc) ->
 parse_args(["--viz", Mode | Rest], Acc) ->
     case string:lowercase(Mode) of
         "html" -> parse_args(Rest, Acc#{viz_mode := html});
-        "wx" -> parse_args(Rest, Acc#{viz_mode := wx});
         "image" -> parse_args(Rest, Acc#{viz_mode := image});
         Other -> parse_args(Rest, add_error(Acc, io_lib:format("invalid --viz: ~s", [Other])))
     end;
@@ -256,13 +255,19 @@ plan_to_yaml({ok, Config = #{file := File}, Plan, Cost}) ->
       "forma_cost: ", integer_to_list(Cost), "\n",
       "plan:\n",
       [iolist_to_binary(io_lib:format("  - slot: ~p~n    polarity: ~s~n",
-          [Slot, wfcli_polarity:symbol(Pol)]))
+          [Slot, polarity_yaml(Pol)]))
        || {Slot, Pol} <- SortedPlan],
       "slot_mods:\n",
       [slot_mod_entry(Slot, Mods) || {Slot, Mods} <- SlotMods],
       build_arcane_yaml(BuildArcanes),
       "\n"
     ].
+
+polarity_yaml(Pol) ->
+    case wfcli_polarity:symbol(Pol) of
+        null -> "null";
+        Symbol -> [$", Symbol, $"]
+    end.
 
 sort_plan(Plan) ->
     lists:sort(fun slot_order/2, maps:to_list(Plan)).
@@ -339,8 +344,6 @@ maybe_visualize(VizMode, VizOut, Results) ->
               SlotMods = slot_mod_labels(Config, Plan),
               BuildArcanes = build_arcane_entries(Config),
               case VizMode of
-                  wx ->
-                      wfcli_forma_visualizer:show_plan(File, Plan, SlotMods, BuildArcanes);
                   html ->
                       case wfcli_forma_visualizer:render_html(File, Plan, SlotMods, BuildArcanes, VizOut) of
                           {ok, Path} ->
@@ -371,7 +374,6 @@ maybe_visualize_config(true, VizMode, VizOut, Configs) ->
           SlotMods = maps:get(computed_current_slot_mods, Config, []),
           BuildArcanes = build_arcane_entries(Config),
           case VizMode of
-              wx -> wfcli_forma_visualizer:show_config_plan(File, Plan, SlotMods, BuildArcanes);
               html ->
                   case wfcli_forma_visualizer:render_config_html(File, Plan, SlotMods, BuildArcanes, VizOut) of
                       {ok, Path} ->

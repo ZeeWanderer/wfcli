@@ -1,0 +1,85 @@
+config: ../warframe/wisp.yml
+forma_cost: 2
+plan:
+  - slot: 1
+    polarity: V
+  - slot: 2
+    polarity: V
+  - slot: 3
+    polarity: "-"
+  - slot: 4
+    polarity: D
+  - slot: 5
+    polarity: "-"
+  - slot: 6
+    polarity: V
+  - slot: 7
+    polarity: V
+  - slot: 8
+    polarity: V
+  - slot: aura
+    polarity: V
+  - slot: exilus
+    polarity: null
+slot_mods:
+  - slot: 1
+    mods:
+      - build: Cataclism Gate
+        mod: Energy Conversion
+      - build: Flowers
+        mod: Energy Conversion
+  - slot: 2
+    mods:
+      - build: Cataclism Gate
+        mod: Blind Rage
+      - build: Flowers
+        mod: Blind Rage
+  - slot: 3
+    mods:
+      - build: Cataclism Gate
+        mod: Cataclysmic Gate
+      - build: Flowers
+        mod: Archon Flow
+  - slot: 4
+    mods:
+      - build: Cataclism Gate
+        mod: Adaptation
+      - build: Flowers
+        mod: Augur Secrets
+  - slot: 5
+    mods:
+      - build: Cataclism Gate
+        mod: Augur Secrets
+      - build: Flowers
+        mod: Archon Stretch
+  - slot: 6
+    mods:
+      - build: Cataclism Gate
+        mod: Transient Fortitude
+      - build: Flowers
+        mod: Transient Fortitude
+  - slot: 7
+    mods:
+      - build: Cataclism Gate
+        mod: Archon Intensify
+      - build: Flowers
+        mod: Archon Intensify
+  - slot: 8
+    mods:
+      - build: Cataclism Gate
+        mod: Primed Continuity
+      - build: Flowers
+        mod: Primed Continuity
+  - slot: aura
+    mods:
+      - build: Cataclism Gate
+        mod: Growing Power
+      - build: Flowers
+        mod: Growing Power
+  - slot: exilus
+    mods:
+      - build: Cataclism Gate
+        mod: Power Drift
+      - build: Flowers
+        mod: Power Drift
+build_arcanes: []

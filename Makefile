@@ -7,7 +7,7 @@ COMPANION_MANIFEST := apps/wfcompanion/Cargo.toml
 VERSION := $(strip $(shell cat VERSION))
 PLATFORM := $(shell uname -s | tr '[:upper:]' '[:lower:]')-$(shell uname -m)
 PREVIEW_MEDIA ?= all
-PREVIEW_SETS ?= companion
+PREVIEW_SETS ?= companion reference
 PREVIEW_SCENES ?= all
 PREVIEW_RESOLUTIONS ?= 1920x1080 2560x1440
 PREVIEW_DEPS = $(if $(findstring companion,$(PREVIEW_SETS)),dev-companion)
@@ -19,7 +19,7 @@ export CCACHE_DIR
 .PHONY: all build dev prod erlang cli daemon mcp companion \
 	dev-erlang prod-erlang dev-companion prod-companion links \
 	debug-bridge native-bridges previews aleca-layout-setup fix-executables \
-	native-compile-commands test test-erlang test-companion check fmt-check package clean
+	native-compile-commands test test-erlang test-companion check fmt-check xref package clean
 
 all: dev
 build: dev prod native-compile-commands
@@ -89,7 +89,10 @@ test-companion: native-bridges
 fmt-check:
 	$(CARGO) fmt --manifest-path $(COMPANION_MANIFEST) --check
 
-check: fmt-check test dev prod
+xref:
+	$(REBAR3) xref
+
+check: fmt-check xref test dev prod
 
 package: prod
 	mkdir -p releases

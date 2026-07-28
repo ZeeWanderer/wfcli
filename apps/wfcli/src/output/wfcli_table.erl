@@ -47,14 +47,18 @@ render_lines_ungrouped(Headers0, Rows0, Opts) ->
     Widths1 = wrap_widths(Headers2, Rows2, WrapMask2, TermWidth, MinWidths2,
                           MaxWidths2, true, Priorities2, FlexColumns1,
                           true, maps:get(reflow_max_iter, Opts1, 6)),
-    HeaderLine = format_line(Headers2, Widths1),
-    SepLine = format_line([lists:duplicate(W, $-) || W <- Widths1], Widths1),
-    BodyLines = format_wrapped_rows(Rows2, Widths1, WrapMask2, Statuses, ColorFun),
+    HeaderLine = wfcli_table_text:format_line(Headers2, Widths1),
+    SepLine = wfcli_table_text:format_line(
+        [lists:duplicate(W, $-) || W <- Widths1], Widths1),
+    BodyLines = wfcli_table_text:format_rows(
+        Rows2, Widths1, WrapMask2, Statuses, ColorFun),
     [HeaderLine, SepLine | BodyLines].
 
 normalize_table(Headers0, Rows0) ->
-    Headers = pad_row([sanitize_cell(H) || H <- Headers0], max_cols(Headers0, Rows0)),
-    Rows = [pad_row([sanitize_cell(V) || V <- R], length(Headers)) || R <- Rows0],
+    Headers = pad_row(
+        [wfcli_table_text:sanitize(H) || H <- Headers0], max_cols(Headers0, Rows0)),
+    Rows = [pad_row([wfcli_table_text:sanitize(V) || V <- R], length(Headers))
+            || R <- Rows0],
     DropIdxs = duplicate_raw_indexes(Rows, Headers, length(Headers)),
     Headers1 = drop_indexes(Headers, DropIdxs),
     Rows1 = [drop_indexes(Row, DropIdxs) || Row <- Rows],
@@ -314,7 +318,7 @@ fold_cell_stat(Cell, Acc0) ->
     }.
 
 max_word_width(Str) ->
-    Words = normalize_words(string:tokens(Str, " ")),
+    Words = wfcli_table_text:words(Str),
     lists:max([wfcli_tty:display_width(W) || W <- Words] ++ [0]).
 
 cell_present(Value) ->
@@ -1113,8 +1117,9 @@ total_height(Rows, Widths, WrapMask) ->
 
 row_height(Row, Widths, WrapMask) ->
     Cells = pad_row(Row, length(Widths)),
-    Wrapped = lists:zipwith3(fun wrap_cell/3, Cells, Widths, WrapMask),
-    max_lines(Wrapped).
+    Wrapped = lists:zipwith3(fun wfcli_table_text:wrap_cell/3,
+                             Cells, Widths, WrapMask),
+    lists:max([length(Cell) || Cell <- Wrapped] ++ [1]).
 
 add_at(Widths, Idx, Delta) ->
     lists:map(
@@ -1359,250 +1364,6 @@ drop_at(List, Idx) ->
         [_ | Rest] -> Head ++ Rest
     end.
 
-format_wrapped_rows(Rows, Widths, WrapMask, Statuses, ColorFun) ->
-    lists:flatmap(
-      fun({Row, Status}) ->
-          Lines = wrap_row(Row, Widths, WrapMask),
-          [format_line(Line, Widths, Status, ColorFun) || Line <- Lines]
-      end,
-      lists:zip(Rows, Statuses)).
-
-wrap_row(Row, Widths, WrapMask) ->
-    Cells = pad_row(Row, length(Widths)),
-    Wrapped = lists:zipwith3(fun wrap_cell/3, Cells, Widths, WrapMask),
-    Lines = max_lines(Wrapped),
-    [ [nth_or_empty(C, N) || C <- Wrapped] || N <- lists:seq(1, Lines) ].
-
-wrap_cell(Value, Width, Wrap) ->
-    Str = wfcli_text:to_list(Value),
-    case Wrap of
-        false -> [trim_to_width(Str, Width)];
-        true ->
-            Lines0 = [trim_to_width(Line, Width) || Line <- wrap_text(Str, Width)],
-            propagate_ansi_lines(Lines0)
-    end.
-
-wrap_text("", _Width) -> [""];
-wrap_text(Str, Width) when Width =< 0 -> [Str];
-wrap_text(Str, Width) ->
-    Words = normalize_words(string:tokens(Str, " ")),
-    wrap_words(Words, Width, "", []).
-
-normalize_words(Words) ->
-    lists:flatmap(fun maybe_split_iso_word/1, Words).
-
-sanitize_cell(Value) ->
-    Str0 = wfcli_text:to_list(Value),
-    case unicode:characters_to_binary(Str0) of
-        Bin when is_binary(Bin) ->
-            Bin1 = re:replace(Bin, "\\s+", " ", [global, {return, binary}]),
-            case unicode:characters_to_list(Bin1) of
-                List when is_list(List) -> string:trim(List);
-                _ -> string:trim(Str0)
-            end;
-        _ ->
-            string:trim(Str0)
-    end.
-
-maybe_split_iso_word(Word) ->
-    case iso_match(Word) of
-        true ->
-            case string:split(Word, "T", leading) of
-                [Date, Time] -> [Date, Time];
-                _ -> [Word]
-            end;
-        false -> [Word]
-    end.
-
-iso_match(Word) ->
-    case unicode:characters_to_binary(Word) of
-        Bin when is_binary(Bin) ->
-            case re:run(Bin, "^[0-9]{4}-[0-9]{2}-[0-9]{2}T", [{capture, none}]) of
-                match -> true;
-                nomatch -> false
-            end;
-        _ -> false
-    end.
-
-wrap_words([], _Width, "", Acc) ->
-    lists:reverse(Acc);
-wrap_words([], _Width, Line, Acc) ->
-    lists:reverse([Line | Acc]);
-wrap_words([Word | Rest], Width, "", Acc) ->
-    case wfcli_tty:display_width(Word) =< Width of
-        true -> wrap_words(Rest, Width, Word, Acc);
-        false ->
-            Chunks = split_word(Word, Width),
-            case lists:reverse(Chunks) of
-                [] -> wrap_words(Rest, Width, "", Acc);
-                [Last | RevHead] ->
-                    wrap_words(Rest, Width, Last, RevHead ++ Acc)
-            end
-    end;
-wrap_words([Word | Rest], Width, Line, Acc) ->
-    Needed = wfcli_tty:display_width(Line) + 1 + wfcli_tty:display_width(Word),
-    case Needed =< Width of
-        true -> wrap_words(Rest, Width, Line ++ " " ++ Word, Acc);
-        false ->
-            Acc1 = [Line | Acc],
-            wrap_words([Word | Rest], Width, "", Acc1)
-    end.
-
-split_word(Word, Width) when Width =< 0 -> [Word];
-split_word(Word, Width) ->
-    split_word(Word, Width, []).
-
-split_word([], _Width, Acc) ->
-    lists:reverse(Acc);
-split_word(Word, Width, Acc) ->
-    case wfcli_tty:display_width(Word) =< Width of
-        true -> lists:reverse([Word | Acc]);
-        false ->
-            case wfcli_tty:has_ansi(Word) of
-                true -> lists:reverse([Word | Acc]);
-                false ->
-                    case split_by_separator(Word, Width, $/) of
-                        {Head, Tail} -> split_word(Tail, Width, [Head | Acc]);
-                        none ->
-                            {Head, Tail} = split_by_width(Word, Width),
-                            split_word(Tail, Width, [Head | Acc])
-                    end
-            end
-    end.
-
-split_by_separator(_Word, Width, _Sep) when Width =< 0 ->
-    none;
-split_by_separator(Word, Width, Sep) ->
-    case find_last_separator(Word, Width, Sep) of
-        0 -> none;
-        Pos ->
-            {lists:sublist(Word, Pos), lists:nthtail(Pos, Word)}
-    end.
-
-find_last_separator(Word, Width, Sep) ->
-    find_last_separator(Word, Width, Sep, 0, 0).
-
-find_last_separator([], _Width, _Sep, _Idx, Last) -> Last;
-find_last_separator(_Word, Width, _Sep, Idx, Last) when Idx >= Width -> Last;
-find_last_separator([Char | Rest], Width, Sep, Idx, Last) ->
-    NewLast = case Char =:= Sep of
-        true -> Idx + 1;
-        false -> Last
-    end,
-    find_last_separator(Rest, Width, Sep, Idx + 1, NewLast).
-
-max_lines(Lists) ->
-    lists:max([length(L) || L <- Lists] ++ [1]).
-
-nth_or_empty(List, N) ->
-    case N =< length(List) of
-        true -> lists:nth(N, List);
-        false -> ""
-    end.
-
-trim_to_width(Str, Width) ->
-    trim_to_width(Str, Width, []).
-
-trim_to_width(_Str, Width, Acc) when Width =< 0 ->
-    lists:reverse(Acc);
-trim_to_width([], _Width, Acc) ->
-    lists:reverse(Acc);
-trim_to_width([$\e, $[ | Rest], Width, Acc) ->
-    {Seq, Tail} = ansi_sequence(Rest),
-    trim_to_width(Tail, Width, lists:reverse(Seq, Acc));
-trim_to_width([C | Rest], Width, Acc) ->
-    CWidth = wfcli_tty:display_width([C]),
-    case Width - CWidth >= 0 of
-        true -> trim_to_width(Rest, Width - CWidth, [C | Acc]);
-        false -> lists:reverse(Acc)
-    end.
-
-propagate_ansi_lines(Lines) ->
-    propagate_ansi_lines(Lines, "").
-
-propagate_ansi_lines([], _State) -> [];
-propagate_ansi_lines([Line | Rest], State) ->
-    Line1 = case State of
-        "" -> Line;
-        _ -> State ++ Line
-    end,
-    {NewState, Line2} = line_ansi_state(Line1),
-    [Line2 | propagate_ansi_lines(Rest, NewState)].
-
-line_ansi_state(Line) ->
-    case last_sgr(Line) of
-        "" -> {"", Line};
-        "\e[0m" -> {"", Line};
-        Sgr -> {Sgr, ensure_reset(Line)}
-    end.
-
-ensure_reset(Line) ->
-    case has_reset(Line) of
-        true -> Line;
-        false -> Line ++ "\e[0m"
-    end.
-
-has_reset(Line) ->
-    case string:find(Line, "\e[0m") of
-        nomatch -> false;
-        _ -> true
-    end.
-
-last_sgr(Line) ->
-    case last_sgr(Line, "") of
-        {ok, Sgr} -> Sgr;
-        error -> ""
-    end.
-
-last_sgr([], Last) ->
-    case Last of
-        "" -> error;
-        _ -> {ok, Last}
-    end;
-last_sgr([$\e, $[ | Rest], _Last) ->
-    {Seq, Tail} = ansi_sequence(Rest),
-    last_sgr(Tail, Seq);
-last_sgr([_ | Rest], Last) ->
-    last_sgr(Rest, Last).
-
-ansi_sequence(Rest) ->
-    ansi_sequence(Rest, [$[, $\e]).
-
-ansi_sequence([], Acc) ->
-    {lists:reverse(Acc), []};
-ansi_sequence([C | Tail], Acc) ->
-    Acc1 = [C | Acc],
-    case C of
-        $m -> {lists:reverse(Acc1), Tail};
-        _ -> ansi_sequence(Tail, Acc1)
-    end.
-
-split_by_width(Word, Width) ->
-    split_by_width(Word, Width, 0, [], []).
-
-split_by_width([], _Width, _CurWidth, HeadAcc, TailAcc) ->
-    {lists:reverse(HeadAcc), lists:reverse(TailAcc)};
-split_by_width([C | Rest], Width, CurWidth, HeadAcc, TailAcc) ->
-    CWidth = wfcli_tty:display_width([C]),
-    case CurWidth + CWidth =< Width orelse HeadAcc =:= [] of
-        true ->
-            split_by_width(Rest, Width, CurWidth + CWidth, [C | HeadAcc], TailAcc);
-        false ->
-            split_by_width(Rest, Width, CurWidth, HeadAcc, [C | TailAcc])
-    end.
-
-format_line(Row, Widths) ->
-    format_line(Row, Widths, none, fun(Line, _Status) -> Line end).
-
-format_line(Row, Widths, Status, ColorFun) ->
-    Cells = lists:zipwith(fun pad_right/2, Row, Widths),
-    Line = string:join(Cells, "  "),
-    ColorFun(Line, Status).
-
-pad_right(Str0, Width) ->
-    Str = wfcli_text:to_list(Str0),
-    Padding = max(Width - wfcli_tty:display_width(Str), 0),
-    Str ++ lists:duplicate(Padding, $ ).
 normalize_column_specs(Headers, Opts) ->
     Specs0 = maps:get(column_specs, Opts, []),
     Intent = maps:get(intent, Opts, #{}),

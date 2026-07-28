@@ -7,7 +7,8 @@ PublicExport data provides item names, metadata, and lookups used across the CLI
 - Runtime export files live under the per-user XDG cache. `apps/wfdaemon/priv/` contains bundled
   seed/fallback copies useful for source inspection.
 - Files are downloaded via `wfcli update --exports` (or `--all`) and related flags.
-- The file list is controlled by `?EXPORT_FILES` in `apps/wfdaemon/src/wfcli_worldstate.erl`.
+- Managed downloads and file sets are owned by
+  `apps/wfdaemon/src/catalog/wfcli_metadata_update.erl`.
 
 Common files:
 - `ExportUpgrades_en.json` (mods/arcanes)

@@ -1,0 +1,40 @@
+item:
+  name: "Three Build Regression"
+  type: warframe
+  capacity: 30
+  reactor: false
+  aura_slot: "V"
+  exilus_slot: null
+  slots: ["V", "D", null, null]
+
+builds:
+  - name: "Strength"
+    mods:
+      - {name: "Strength V1", polarity: "V", cost: 16, slot: 1}
+      - {name: "Strength D2", polarity: "D", cost: 14, slot: 2}
+      - {name: "Strength V3", polarity: "V", cost: 16, slot: 3}
+      - {name: "Strength D4", polarity: "D", cost: 16, slot: 4}
+      - {name: "Strength Aura", polarity: "V", cost: 14, slot: aura}
+      - {name: "Strength Exilus", polarity: "-", cost: 6, slot: exilus}
+  - name: "Range"
+    mods:
+      - {name: "Range V1", polarity: "V", cost: 14, slot: 1}
+      - {name: "Range D2", polarity: "D", cost: 12, slot: 2}
+      - {name: "Range D3", polarity: "D", cost: 14, slot: 3}
+      - {name: "Range Z4", polarity: "=", cost: 12, slot: 4}
+      - {name: "Range Aura", polarity: "V", cost: 14, slot: aura}
+      - {name: "Range Exilus", polarity: "=", cost: 6, slot: exilus}
+  - name: "Endurance"
+    mods:
+      - {name: "Endurance D1", polarity: "D", cost: 16, slot: 1}
+      - {name: "Endurance V2", polarity: "V", cost: 14, slot: 2}
+      - {name: "Endurance Z3", polarity: "=", cost: 14, slot: 3}
+      - {name: "Endurance N4", polarity: "-", cost: 12, slot: 4}
+      - {name: "Endurance Aura", polarity: "D", cost: 14, slot: aura}
+      - {name: "Endurance Exilus", polarity: "-", cost: 6, slot: exilus}
+
+constraints:
+  allow_omni: true
+  allow_umbral_forma: false
+  prefer_omni: false
+  max_forma: 10

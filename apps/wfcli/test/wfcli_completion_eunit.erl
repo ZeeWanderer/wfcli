@@ -30,4 +30,10 @@ option_value_completion_test() ->
     ?assertNot(lists:member("json", Values)),
     ?assert(lists:member(
               "json",
-              wfcli_completion:candidates(["codex", "--format", ""]))).
+              wfcli_completion:candidates(["codex", "--format", ""]))),
+    ?assertEqual(
+       ["html", "image"],
+       wfcli_completion:candidates(["visualize", "--viz", ""])),
+    ?assertEqual(
+       ["html"],
+       wfcli_completion:candidates(["forma-plan", "--viz", "h"])).
