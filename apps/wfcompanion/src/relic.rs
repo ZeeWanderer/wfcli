@@ -42,25 +42,11 @@ const TESSERACT_ARGUMENTS: &[&str] = &[
 
 #[derive(Debug)]
 pub(crate) enum Trigger {
-    Rewards(TriggerSource),
-    Suggestions(TriggerSource),
-    CloseSuggestions(TriggerSource),
+    Rewards,
+    Suggestions,
+    CloseSuggestions,
+    DismissSuggestions,
     Screenshot(PathBuf),
-}
-
-#[derive(Clone, Copy, Debug)]
-pub(crate) enum TriggerSource {
-    DebugOutput,
-    EeLog,
-}
-
-impl TriggerSource {
-    fn name(self) -> &'static str {
-        match self {
-            Self::DebugOutput => "debug_output",
-            Self::EeLog => "ee_log",
-        }
-    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -272,6 +258,7 @@ pub(crate) fn spawn(
         let mut last_suggestion_era: Option<String> = None;
         let mut last_suggestion_opened: Option<Instant> = None;
         let mut suggestion_after_reward = false;
+        let mut suggestion_dismissed = false;
         let suggestion_generation = Arc::new(AtomicU64::new(0));
         while !stopping.load(Ordering::Relaxed) {
             let trigger = match triggers.recv_timeout(Duration::from_millis(200)) {
@@ -280,27 +267,31 @@ pub(crate) fn spawn(
                 Err(mpsc::RecvTimeoutError::Disconnected) => return,
             };
             let trigger_name = match &trigger {
-                Trigger::Rewards(source) => format!("rewards source={}", source.name()),
-                Trigger::Suggestions(source) => format!("suggestions source={}", source.name()),
-                Trigger::CloseSuggestions(source) => {
-                    format!("close_suggestions source={}", source.name())
-                }
-                Trigger::Screenshot(_) => "screenshot".to_owned(),
+                Trigger::Rewards => "rewards",
+                Trigger::Suggestions => "suggestions",
+                Trigger::CloseSuggestions => "close_suggestions",
+                Trigger::DismissSuggestions => "dismiss_suggestions",
+                Trigger::Screenshot(_) => "screenshot",
             };
             match trigger {
-                Trigger::Suggestions(source) => {
+                Trigger::Suggestions => {
+                    if suggestion_dismissed {
+                        incident::info("relic.suggestion_dismissed", "current_context");
+                        continue;
+                    }
                     if reject_recent_trigger(
                         &mut last_suggestion_trigger,
                         SUGGESTION_TRIGGER_DEDUPLICATION,
                     ) {
-                        incident::info("relic.suggestion_duplicate", source.name());
+                        incident::info("relic.suggestion_duplicate", "debug_output");
                         continue;
                     }
                     let reward_recent = last_reward_trigger.is_some_and(|seen| {
                         Instant::now().saturating_duration_since(seen) < SUGGESTION_REWARD_FALLBACK
                     });
+                    let _ = ui.send(UiEvent::RelicSuggestionStart);
                     let opened = Instant::now();
-                    let generation = suggestion_generation.fetch_add(1, Ordering::Relaxed) + 1;
+                    let generation = suggestion_generation.fetch_add(1, Ordering::AcqRel) + 1;
                     match show_suggestions(
                         &daemon,
                         &ui,
@@ -327,15 +318,15 @@ pub(crate) fn spawn(
                     }
                     continue;
                 }
-                Trigger::CloseSuggestions(source) => {
+                Trigger::CloseSuggestions => {
+                    suggestion_dismissed = false;
                     if let Some(opened) = last_suggestion_opened {
                         let elapsed = opened.elapsed();
                         if ignore_suggestion_close(suggestion_after_reward, elapsed) {
                             incident::info(
                                 "relic.suggestion_close_ignored",
                                 format!(
-                                    "source={} elapsed_ms={} after_reward={suggestion_after_reward}",
-                                    source.name(),
+                                    "source=debug_output elapsed_ms={} after_reward={suggestion_after_reward}",
                                     elapsed.as_millis()
                                 ),
                             );
@@ -344,22 +335,32 @@ pub(crate) fn spawn(
                         incident::info(
                             "relic.suggestion_close",
                             format!(
-                                "source={} elapsed_ms={} after_reward={suggestion_after_reward}",
-                                source.name(),
+                                "source=debug_output elapsed_ms={} after_reward={suggestion_after_reward}",
                                 elapsed.as_millis()
                             ),
                         );
                     }
                     last_suggestion_opened = None;
                     suggestion_after_reward = false;
-                    suggestion_generation.fetch_add(1, Ordering::Relaxed);
+                    suggestion_generation.fetch_add(1, Ordering::AcqRel);
                     let _ = ui.send(UiEvent::RelicDismiss);
                     continue;
                 }
-                Trigger::Rewards(_) | Trigger::Screenshot(_) => {}
+                Trigger::DismissSuggestions => {
+                    suggestion_dismissed = true;
+                    last_suggestion_opened = None;
+                    suggestion_after_reward = false;
+                    suggestion_generation.fetch_add(1, Ordering::AcqRel);
+                    incident::info("relic.suggestion_dismiss", "current_context");
+                    continue;
+                }
+                Trigger::Rewards => {
+                    suggestion_dismissed = false;
+                }
+                Trigger::Screenshot(_) => {}
             }
-            suggestion_generation.fetch_add(1, Ordering::Relaxed);
-            let live_capture = matches!(&trigger, Trigger::Rewards(_));
+            suggestion_generation.fetch_add(1, Ordering::AcqRel);
+            let live_capture = matches!(&trigger, Trigger::Rewards);
             if live_capture && reject_duplicate_reward_trigger(&mut last_reward_trigger) {
                 incident::info("relic.trigger_duplicate", &trigger_name);
                 continue;
@@ -508,11 +509,11 @@ fn ignore_suggestion_close(after_reward: bool, elapsed: Duration) -> bool {
 
 fn capture_trigger(trigger: &Trigger) -> Result<DynamicImage, String> {
     match trigger {
-        Trigger::Rewards(_) => capture::active_window(),
+        Trigger::Rewards => capture::relic_window(),
         Trigger::Screenshot(path) => {
             image::open(path).map_err(|error| format!("could not read {}: {error}", path.display()))
         }
-        Trigger::Suggestions(_) | Trigger::CloseSuggestions(_) => {
+        Trigger::Suggestions | Trigger::CloseSuggestions | Trigger::DismissSuggestions => {
             Err("trigger does not contain a reward capture".to_owned())
         }
     }
@@ -523,28 +524,51 @@ fn show_suggestions(
     ui: &mpsc::Sender<UiEvent>,
     fallback_era: Option<&str>,
 ) -> Result<String, String> {
+    let started = Instant::now();
     thread::sleep(SUGGESTION_CAPTURE_DELAY);
-    let era = suggestion_era(&capture::active_window()?).or_else(|first_error| {
+    let (mut era, mut capture_ms, mut ocr_ms) = timed_suggestion_era();
+    let mut retried = false;
+    if let Err(first_error) = &era {
         incident::warn("relic.suggestion_ocr_retry", &first_error);
         thread::sleep(SUGGESTION_RETRY_DELAY);
-        suggestion_era(&capture::active_window()?)
-    });
+        retried = true;
+        let (retry, retry_capture_ms, retry_ocr_ms) = timed_suggestion_era();
+        era = retry;
+        capture_ms += retry_capture_ms;
+        ocr_ms += retry_ocr_ms;
+    }
     let era = match era {
         Ok(era) => era,
         Err(error) => fallback_era.map(str::to_owned).ok_or(error)?,
     };
+    let daemon_started = Instant::now();
     let response = crate::daemon::relic_recommendations(daemon, era.clone(), false)?;
+    let daemon_ms = daemon_started.elapsed().as_millis();
     let suggestions = parse_suggestions(&response)?;
     let priced = priced_suggestion_count(&suggestions);
+    let total_ms = started.elapsed().as_millis();
     incident::info(
         "relic.suggestion_ready",
         format!(
-            "era={era} relics={} priced={priced}",
-            suggestions.items.len()
+            "era={era} relics={} priced={priced} total_ms={total_ms} capture_ms={capture_ms} ocr_ms={ocr_ms} daemon_ms={daemon_ms} retried={retried}",
+            suggestions.items.len(),
         ),
     );
     send_scene(ui, Scene::Suggestions(suggestions), None);
     Ok(era)
+}
+
+fn timed_suggestion_era() -> (Result<String, String>, u128, u128) {
+    let capture_started = Instant::now();
+    let image = capture::relic_window();
+    let capture_ms = capture_started.elapsed().as_millis();
+    let image = match image {
+        Ok(image) => image,
+        Err(error) => return (Err(error), capture_ms, 0),
+    };
+    let ocr_started = Instant::now();
+    let era = suggestion_era(&image);
+    (era, capture_ms, ocr_started.elapsed().as_millis())
 }
 
 fn spawn_suggestion_prices(
@@ -559,7 +583,7 @@ fn spawn_suggestion_prices(
         let result = crate::daemon::relic_recommendations(&daemon, era.clone(), true)
             .and_then(|response| parse_suggestions(&response));
         if stopping.load(Ordering::Relaxed)
-            || current_generation.load(Ordering::Relaxed) != generation
+            || current_generation.load(Ordering::Acquire) != generation
         {
             return;
         }

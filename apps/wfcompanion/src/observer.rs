@@ -1,6 +1,6 @@
 use std::collections::BTreeMap;
 use std::fs::{self, File};
-use std::io::{self, BufRead, BufReader, Read, Seek, SeekFrom};
+use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, mpsc};
@@ -15,17 +15,14 @@ use crate::debug_output::{Bridge as DebugBridge, Event as DebugEvent, Runtime as
 use crate::incident;
 use crate::inventory::{Bridge as InventoryBridge, Event as InventoryEvent};
 use crate::relic::Trigger as RelicTrigger;
-use crate::relic::TriggerSource as RelicTriggerSource;
 
 const SCAN_INTERVAL: Duration = Duration::from_secs(2);
 const DEBUG_RESTART_DELAY: Duration = Duration::from_secs(10);
-const LOG_INTERVAL: Duration = Duration::from_millis(200);
-const MAX_LOG_BATCH: usize = 128;
+const EVENT_INTERVAL: Duration = Duration::from_millis(200);
 const UI_CONSOLE_OPEN_GUARD: Duration = Duration::from_secs(1);
 
 #[derive(Default)]
 struct CollectorStatus {
-    ee_log_lines: u64,
     debug_lines: u64,
     inventory_updates: u64,
     debug_output_active: bool,
@@ -50,38 +47,8 @@ pub(crate) struct GameState {
     pid: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     compat_data: Option<PathBuf>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    log_path: Option<PathBuf>,
     #[serde(skip)]
     runtime: Option<DebugRuntime>,
-}
-
-struct LogTail {
-    path: PathBuf,
-    reader: BufReader<File>,
-}
-
-impl LogTail {
-    fn open(path: &Path) -> io::Result<Self> {
-        let mut file = File::open(path)?;
-        file.seek(SeekFrom::End(0))?;
-        Ok(Self {
-            path: path.to_owned(),
-            reader: BufReader::new(file),
-        })
-    }
-
-    fn read_batch(&mut self) -> io::Result<Vec<String>> {
-        let mut lines = Vec::new();
-        while lines.len() < MAX_LOG_BATCH {
-            let mut line = String::new();
-            match self.reader.read_line(&mut line)? {
-                0 => break,
-                _ => lines.push(line),
-            }
-        }
-        Ok(lines)
-    }
 }
 
 pub(crate) fn spawn(
@@ -93,7 +60,6 @@ pub(crate) fn spawn(
         let (debug_tx, debug_rx) = mpsc::channel();
         let (inventory_tx, inventory_rx) = mpsc::channel();
         let mut previous: Option<GameState> = None;
-        let mut tail: Option<LogTail> = None;
         let mut bridge: Option<DebugBridge> = None;
         let mut inventory_bridge: Option<InventoryBridge> = None;
         let mut bridge_error: Option<String> = None;
@@ -114,13 +80,7 @@ pub(crate) fn spawn(
                         source: "game",
                         data,
                     });
-                    tail = current
-                        .log_path
-                        .as_deref()
-                        .and_then(|path| LogTail::open(path).ok());
                     previous = Some(current);
-                } else if tail.as_ref().is_some_and(|open| !open.path.exists()) {
-                    tail = None;
                 }
 
                 let runtime = previous.as_ref().and_then(|state| state.runtime.as_ref());
@@ -200,28 +160,6 @@ pub(crate) fn spawn(
                 next_scan = Instant::now() + SCAN_INTERVAL;
             }
 
-            if let Some(open) = &mut tail {
-                match open.read_batch() {
-                    Ok(lines) if !lines.is_empty() => {
-                        status.ee_log_lines += lines.len() as u64;
-                        for line in &lines {
-                            handle_relic_log_line(
-                                line,
-                                RelicTriggerSource::EeLog,
-                                &relic,
-                                &mut last_ui_console_open,
-                            );
-                        }
-                        publish_collector(&outbound, &status);
-                    }
-                    Ok(_) => {}
-                    Err(error) => {
-                        eprintln!("wfcompanion: EE.log read failed: {error}");
-                        tail = None;
-                    }
-                }
-            }
-
             while let Ok(event) = inventory_rx.try_recv() {
                 handle_inventory_event(
                     event,
@@ -232,7 +170,7 @@ pub(crate) fn spawn(
                 );
             }
 
-            let wait = LOG_INTERVAL.min(next_scan.saturating_duration_since(Instant::now()));
+            let wait = EVENT_INTERVAL.min(next_scan.saturating_duration_since(Instant::now()));
             if let Ok(event) = debug_rx.recv_timeout(wait) {
                 handle_debug_event(
                     event,
@@ -267,19 +205,23 @@ fn handle_debug_event(
             .is_some_and(|open| open.game_pid() == game_pid) =>
         {
             status.debug_lines += 1;
-            if relic_log_event(&message) == Some(RelicLogEvent::Rewards) {
-                incident::info(
-                    "observer.relic_debug_output",
-                    format!("game_pid={game_pid} windows_pid={sender_pid}"),
-                );
-                publish_collector(outbound, status);
+            match relic_debug_event(&message) {
+                Some(RelicDebugEvent::Rewards) => {
+                    incident::info(
+                        "observer.relic_debug_output",
+                        format!("event=rewards game_pid={game_pid} windows_pid={sender_pid}"),
+                    );
+                    publish_collector(outbound, status);
+                }
+                Some(RelicDebugEvent::Suggestions) => {
+                    incident::info(
+                        "observer.relic_debug_output",
+                        format!("event=suggestions game_pid={game_pid} windows_pid={sender_pid}"),
+                    );
+                }
+                _ => {}
             }
-            handle_relic_log_line(
-                &message,
-                RelicTriggerSource::DebugOutput,
-                relic,
-                last_ui_console_open,
-            );
+            handle_relic_debug_line(&message, relic, last_ui_console_open);
         }
         DebugEvent::Stopped { game_pid, reason }
             if bridge
@@ -337,7 +279,6 @@ fn publish_collector(outbound: &mpsc::Sender<Outbound>, status: &CollectorStatus
     let _ = outbound.send(Outbound::Publish {
         source: "collector",
         data: json!({
-            "ee_log_lines_observed": status.ee_log_lines,
             "debug_output_lines_observed": status.debug_lines,
             "inventory_updates_observed": status.inventory_updates,
             "debug_output_active": status.debug_output_active,
@@ -348,49 +289,48 @@ fn publish_collector(outbound: &mpsc::Sender<Outbound>, status: &CollectorStatus
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum RelicLogEvent {
+enum RelicDebugEvent {
     Rewards,
     Suggestions,
     CloseSuggestions,
     UiConsoleOpen,
 }
 
-fn relic_log_event(line: &str) -> Option<RelicLogEvent> {
+fn relic_debug_event(line: &str) -> Option<RelicDebugEvent> {
     if line.contains("Got rewards") {
-        Some(RelicLogEvent::Rewards)
+        Some(RelicDebugEvent::Rewards)
     } else if line.contains("ThemedProjectionManager.lua: LoadingCompleteEnd") {
-        Some(RelicLogEvent::Suggestions)
+        Some(RelicDebugEvent::Suggestions)
     } else if line.contains("InitMapping for all devices with bindings") {
-        Some(RelicLogEvent::CloseSuggestions)
+        Some(RelicDebugEvent::CloseSuggestions)
     } else if line.contains("UIConsoleTrigger::Open()") {
-        Some(RelicLogEvent::UiConsoleOpen)
+        Some(RelicDebugEvent::UiConsoleOpen)
     } else {
         None
     }
 }
 
-fn handle_relic_log_line(
+fn handle_relic_debug_line(
     line: &str,
-    source: RelicTriggerSource,
     relic: &mpsc::Sender<RelicTrigger>,
     last_ui_console_open: &mut Option<Instant>,
 ) {
-    match relic_log_event(line) {
-        Some(RelicLogEvent::Rewards) => {
-            let _ = relic.send(RelicTrigger::Rewards(source));
+    match relic_debug_event(line) {
+        Some(RelicDebugEvent::Rewards) => {
+            let _ = relic.send(RelicTrigger::Rewards);
         }
-        Some(RelicLogEvent::Suggestions) => {
+        Some(RelicDebugEvent::Suggestions) => {
             let blocked = last_ui_console_open.is_some_and(|seen| {
                 Instant::now().saturating_duration_since(seen) < UI_CONSOLE_OPEN_GUARD
             });
             if !blocked {
-                let _ = relic.send(RelicTrigger::Suggestions(source));
+                let _ = relic.send(RelicTrigger::Suggestions);
             }
         }
-        Some(RelicLogEvent::CloseSuggestions) => {
-            let _ = relic.send(RelicTrigger::CloseSuggestions(source));
+        Some(RelicDebugEvent::CloseSuggestions) => {
+            let _ = relic.send(RelicTrigger::CloseSuggestions);
         }
-        Some(RelicLogEvent::UiConsoleOpen) => {
+        Some(RelicDebugEvent::UiConsoleOpen) => {
             *last_ui_console_open = Some(Instant::now());
         }
         None => {}
@@ -435,7 +375,6 @@ pub(crate) fn find_warframe() -> GameState {
             game.launcher_running = true;
             if game.compat_data.is_none() {
                 game.compat_data = launcher.compat_data;
-                game.log_path = launcher.log_path;
             }
             game
         }
@@ -452,7 +391,6 @@ fn process_state(pid: u32, process_dir: &Path, phase: GamePhase) -> GameState {
         .or_else(|| environment.get("WINEPREFIX"))
         .map(PathBuf::from)
         .map(normalize_compat_data);
-    let log_path = compat_data.as_deref().and_then(find_ee_log);
     let runtime = (phase == GamePhase::Game)
         .then(|| {
             compat_data.as_deref().and_then(|compat_data| {
@@ -466,7 +404,6 @@ fn process_state(pid: u32, process_dir: &Path, phase: GamePhase) -> GameState {
         phase,
         pid: Some(pid),
         compat_data,
-        log_path,
         runtime,
     }
 }
@@ -529,15 +466,6 @@ fn normalize_compat_data(path: PathBuf) -> PathBuf {
     }
 }
 
-fn find_ee_log(compat_data: &Path) -> Option<PathBuf> {
-    let users = compat_data.join("pfx/drive_c/users");
-    fs::read_dir(users)
-        .ok()?
-        .flatten()
-        .map(|entry| entry.path().join("AppData/Local/Warframe/EE.log"))
-        .find(|path| path.is_file())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -575,35 +503,29 @@ mod tests {
     }
 
     #[test]
-    fn detects_relic_overlay_log_markers() {
+    fn detects_relic_overlay_debug_markers() {
         assert_eq!(
-            relic_log_event("123.4 Script [Info]: Got rewards, waiting for choice"),
-            Some(RelicLogEvent::Rewards)
+            relic_debug_event("123.4 Script [Info]: Got rewards, waiting for choice"),
+            Some(RelicDebugEvent::Rewards)
         );
         assert_eq!(
-            relic_log_event("ThemedProjectionManager.lua: LoadingCompleteEnd"),
-            Some(RelicLogEvent::Suggestions)
+            relic_debug_event("ThemedProjectionManager.lua: LoadingCompleteEnd"),
+            Some(RelicDebugEvent::Suggestions)
         );
         assert_eq!(
-            relic_log_event("InitMapping for all devices with bindings"),
-            Some(RelicLogEvent::CloseSuggestions)
+            relic_debug_event("InitMapping for all devices with bindings"),
+            Some(RelicDebugEvent::CloseSuggestions)
         );
-        assert_eq!(relic_log_event("Mission rewards"), None);
+        assert_eq!(relic_debug_event("Mission rewards"), None);
     }
 
     #[test]
     fn ui_console_open_suppresses_immediate_suggestion_trigger() {
         let (sender, receiver) = mpsc::channel();
         let mut last = None;
-        handle_relic_log_line(
-            "UIConsoleTrigger::Open()",
-            RelicTriggerSource::EeLog,
-            &sender,
-            &mut last,
-        );
-        handle_relic_log_line(
+        handle_relic_debug_line("UIConsoleTrigger::Open()", &sender, &mut last);
+        handle_relic_debug_line(
             "ThemedProjectionManager.lua: LoadingCompleteEnd",
-            RelicTriggerSource::EeLog,
             &sender,
             &mut last,
         );

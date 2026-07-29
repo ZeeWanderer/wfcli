@@ -31,8 +31,8 @@ Usage:
   wfcompanion
   wfcompanion launch -- COMMAND [ARG...]
   wfcompanion probe
-  wfcompanion screenshot [--target active|screen] OUTPUT.png
-  wfcompanion relic-ocr [--target active|screen] [IMAGE]
+  wfcompanion screenshot OUTPUT.png
+  wfcompanion relic-ocr [IMAGE]
   wfcompanion preview list [--animated]
   wfcompanion preview image TYPE [--background IMAGE] OUTPUT.png
   wfcompanion preview image all OUTPUT_DIR
@@ -45,7 +45,7 @@ Usage:
 Commands:
   launch             Run Warframe command and keep companion alive with it
   probe              Print detected Warframe process state as JSON
-  screenshot         Capture active window or full screen through Spectacle
+  screenshot         Capture Warframe through KWin
   relic-ocr          Print OCR candidates from saved or newly captured image
   preview            Render mock overlays onto a transparent output-sized image
   paths              Print per-user directories and symlink destinations
@@ -58,7 +58,6 @@ Options:
 Environment:
   WFCOMPANION_CAPTURE_DIR      Shared temporary capture directory
   WFCOMPANION_RELIC_SCREENSHOT Saved image used instead of live capture
-  WFCOMPANION_SPECTACLE        Spectacle executable path
   WFCOMPANION_TESSERACT        Tesseract executable path
   WFCOMPANION_DEBUG_BRIDGE     Proton DBWIN helper path
   WFCOMPANION_PREVIEW_SIZE     Preview size override as WIDTHxHEIGHT
@@ -81,6 +80,7 @@ pub(crate) enum UiEvent {
         scene: relic::Scene,
         deadline: Option<Instant>,
     },
+    RelicSuggestionStart,
     RelicDismiss,
     InteractionToggle,
     Shutdown,
@@ -93,14 +93,8 @@ enum Command {
         relic_screenshot: Option<PathBuf>,
     },
     Probe,
-    Screenshot {
-        target: capture::Target,
-        path: PathBuf,
-    },
-    RelicOcr {
-        target: capture::Target,
-        path: Option<PathBuf>,
-    },
+    Screenshot(PathBuf),
+    RelicOcr(Option<PathBuf>),
     Preview(PreviewRequest),
     Paths,
     Logs,
@@ -157,16 +151,16 @@ fn run_command(command: Command) -> Result<(), String> {
         }
         Command::Logs => incident::print_recent(100),
         Command::Paths => paths::print(),
-        Command::Screenshot { target, path } => {
-            let (width, height) = capture::save(target, &path)?;
+        Command::Screenshot(path) => {
+            let (width, height) = capture::save(&path)?;
             println!("saved {} ({width}x{height})", path.display());
             Ok(())
         }
-        Command::RelicOcr { target, path } => {
+        Command::RelicOcr(path) => {
             let report = match path {
                 Some(path) => relic::diagnose(&path)?,
                 None => {
-                    let image = capture::capture(target)?;
+                    let image = capture::capture()?;
                     relic::diagnose_image(&image, serde_json::Value::String("capture".to_owned()))?
                 }
             };
@@ -229,7 +223,7 @@ fn run_overlay(
     }
 
     let shortcut = shortcut::spawn(ui_tx);
-    let result = overlay::run(ui_rx, shortcut, Arc::clone(&stopping));
+    let result = overlay::run(ui_rx, relic_tx, shortcut, Arc::clone(&stopping));
     stopping.store(true, Ordering::Relaxed);
     incident::info("process.stop", format!("mode={mode}"));
     result.map_err(|error| error.to_string())
@@ -245,8 +239,8 @@ fn parse_command(arguments: &[String]) -> Result<Command, String> {
     match command {
         "-h" | "--help" | "help" if arguments.len() == 1 => Ok(Command::Help),
         "--probe" | "probe" if arguments.len() == 1 => Ok(Command::Probe),
-        "screenshot" => parse_capture_command(&arguments[1..], true),
-        "relic-ocr" => parse_capture_command(&arguments[1..], false),
+        "screenshot" => parse_screenshot_command(&arguments[1..]),
+        "relic-ocr" => parse_relic_ocr_command(&arguments[1..]),
         "preview" => parse_preview_command(&arguments[1..]),
         "paths" if arguments.len() == 1 => Ok(Command::Paths),
         "logs" if arguments.len() == 1 => Ok(Command::Logs),
@@ -333,40 +327,25 @@ fn parse_preview_output(arguments: &[String]) -> Result<(PathBuf, Option<PathBuf
         .ok_or_else(|| "preview requires an output path".to_owned())
 }
 
-fn parse_capture_command(arguments: &[String], require_path: bool) -> Result<Command, String> {
-    let mut target = capture::Target::Active;
-    let mut path = None;
-    let mut index = 0;
-    while index < arguments.len() {
-        match arguments[index].as_str() {
-            "--target" if index + 1 < arguments.len() => {
-                target = match arguments[index + 1].as_str() {
-                    "active" => capture::Target::Active,
-                    "screen" => capture::Target::Screen,
-                    value => return Err(format!("invalid capture target: {value}")),
-                };
-                index += 2;
-            }
-            argument if argument.starts_with('-') => {
-                return Err(format!("unknown capture option: {argument}"));
-            }
-            argument if path.is_none() => {
-                path = Some(PathBuf::from(argument));
-                index += 1;
-            }
-            argument => return Err(format!("unexpected capture argument: {argument}")),
+fn parse_screenshot_command(arguments: &[String]) -> Result<Command, String> {
+    match arguments {
+        [path] if !path.starts_with('-') => Ok(Command::Screenshot(PathBuf::from(path))),
+        [] => Err("screenshot requires an output path".to_owned()),
+        [option, ..] if option.starts_with('-') => {
+            Err(format!("unknown screenshot option: {option}"))
         }
+        _ => Err("screenshot accepts one output path".to_owned()),
     }
-    if require_path && path.is_none() {
-        return Err("screenshot requires an output path".to_owned());
-    }
-    if require_path {
-        Ok(Command::Screenshot {
-            target,
-            path: path.unwrap(),
-        })
-    } else {
-        Ok(Command::RelicOcr { target, path })
+}
+
+fn parse_relic_ocr_command(arguments: &[String]) -> Result<Command, String> {
+    match arguments {
+        [] => Ok(Command::RelicOcr(None)),
+        [path] if !path.starts_with('-') => Ok(Command::RelicOcr(Some(PathBuf::from(path)))),
+        [option, ..] if option.starts_with('-') => {
+            Err(format!("unknown relic-ocr option: {option}"))
+        }
+        _ => Err("relic-ocr accepts one image path".to_owned()),
     }
 }
 
@@ -424,10 +403,7 @@ mod tests {
         assert_eq!(parse_command(&arguments(&["paths"])), Ok(Command::Paths));
         assert_eq!(
             parse_command(&arguments(&["screenshot", "capture.png"])),
-            Ok(Command::Screenshot {
-                target: capture::Target::Active,
-                path: PathBuf::from("capture.png"),
-            })
+            Ok(Command::Screenshot(PathBuf::from("capture.png")))
         );
         assert_eq!(
             parse_command(&arguments(&[
@@ -465,33 +441,19 @@ mod tests {
         );
         assert_eq!(
             parse_command(&arguments(&["relic-ocr", "rewards.jpg"])),
-            Ok(Command::RelicOcr {
-                target: capture::Target::Active,
-                path: Some(PathBuf::from("rewards.jpg")),
-            })
+            Ok(Command::RelicOcr(Some(PathBuf::from("rewards.jpg"))))
         );
     }
 
     #[test]
-    fn parses_full_screen_capture_and_live_ocr() {
+    fn live_capture_is_limited_to_warframe() {
         assert_eq!(
-            parse_command(&arguments(&[
-                "screenshot",
-                "--target",
-                "screen",
-                "capture.png"
-            ])),
-            Ok(Command::Screenshot {
-                target: capture::Target::Screen,
-                path: PathBuf::from("capture.png"),
-            })
+            parse_command(&arguments(&["relic-ocr"])),
+            Ok(Command::RelicOcr(None))
         );
         assert_eq!(
-            parse_command(&arguments(&["relic-ocr", "--target", "screen"])),
-            Ok(Command::RelicOcr {
-                target: capture::Target::Screen,
-                path: None,
-            })
+            parse_command(&arguments(&["screenshot", "--target", "screen"])),
+            Err("unknown screenshot option: --target".to_owned())
         );
     }
 

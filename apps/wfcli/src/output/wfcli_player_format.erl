@@ -35,14 +35,11 @@ print_game(Game) ->
     io:format("~nGame~n"),
     print_field("phase", maps:get(<<"phase">>, Game, undefined)),
     print_field("pid", maps:get(<<"pid">>, Game, undefined)),
-    print_field("compat_data", maps:get(<<"compat_data">>, Game, undefined)),
-    print_field("EE.log", maps:get(<<"log_path">>, Game, undefined)).
+    print_field("compat_data", maps:get(<<"compat_data">>, Game, undefined)).
 
 print_collector(undefined) -> ok;
 print_collector(Collector) ->
     io:format("~nCollector~n"),
-    print_field("EE.log lines observed",
-                maps:get(<<"ee_log_lines_observed">>, Collector, undefined)),
     print_field("DBWIN active", maps:get(<<"debug_output_active">>, Collector, undefined)),
     print_field("inventory collector active",
                 maps:get(<<"inventory_active">>, Collector, undefined)),

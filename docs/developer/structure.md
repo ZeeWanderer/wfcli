@@ -47,7 +47,7 @@ and value helpers here.
 
 `apps/wfcompanion/` is a standalone Rust process:
 
-- `observer`: `/proc`, Proton prefix, DBWIN helper, and `EE.log` acquisition.
+- `observer`: `/proc`, Proton prefix, and DBWIN helper.
 - `daemon`: owner-only Unix socket transport and reconnect replay.
 - `focus`: positive active-window identity for the observed Warframe process.
 - `relic`: trigger, capture, OCR, item resolution, and market requests.

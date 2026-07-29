@@ -3,7 +3,7 @@
 Ownership:
 
 - `wfcompanion` observer owns process discovery, Proton integration, DBWIN,
-  fallback log state, capture, and OCR.
+  capture, and OCR.
 - `wfcompanion` overlay owns scenes, interaction, focus gating, layout,
   rendering, and display caches.
 - `wfdaemon` owns canonical player snapshots, persistence, queries, Market
@@ -13,13 +13,12 @@ Overlay state stays native. Canonical player state stays in the daemon.
 
 ## Native Modules
 
-- `observer.rs`, `debug_output.rs`: process and Proton discovery, DBWIN helper,
-  and fallback `EE.log` cursor.
+- `observer.rs`, `debug_output.rs`: process and Proton discovery and DBWIN helper.
 - `inventory.rs`: read-only account-buffer discovery, tolerant parsing, and
   typed indexes.
 - `daemon.rs`: local JSON-lines client, reconnect, replay, and request routing.
-- `capture.rs`, `relic.rs`: event-triggered capture, crop detection, OCR, and
-  relic scene construction.
+- `capture.rs`, `relic.rs`: KWin window capture, crop detection, OCR, and relic
+  scene construction.
 - `focus.rs`: exact Warframe window and process gate.
 - `overlay/runtime.rs`: layer shell, SHM buffers, frame callbacks, input, focus,
   and damage.

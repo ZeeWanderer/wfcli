@@ -19,3 +19,4 @@ taffy = { version = "0.12.2", default-features = false, features = ["std", "taff
 tokio = { version = "1", features = ["macros", "rt", "sync"] }
 wayland-client = "0.31"
 x11rb = "0.13"
+zbus = { version = "5.18.0", default-features = false, features = ["blocking-api", "tokio"] }

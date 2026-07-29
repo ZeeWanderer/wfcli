@@ -1,37 +1,56 @@
+use std::collections::HashMap;
 use std::ffi::OsStr;
 use std::fs;
+use std::io::Read;
+use std::os::fd::AsFd;
+use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::thread;
-use std::time::{Duration, Instant};
+use std::sync::{Mutex, OnceLock};
+use std::time::Duration;
 
-use image::{DynamicImage, ImageFormat};
+use image::{DynamicImage, ImageFormat, RgbaImage};
+use zbus::blocking::{Connection, Proxy};
+use zbus::zvariant::{Fd, OwnedValue};
 
 static CAPTURE_SEQUENCE: AtomicU64 = AtomicU64::new(1);
 const CAPTURE_WAIT: Duration = Duration::from_secs(3);
-const CAPTURE_RETRY: Duration = Duration::from_millis(50);
+const KWIN_SERVICE: &str = "org.kde.KWin";
+const KWIN_SCREENSHOT_PATH: &str = "/org/kde/KWin/ScreenShot2";
+const KWIN_SCREENSHOT_INTERFACE: &str = "org.kde.KWin.ScreenShot2";
+const KWIN_PATH: &str = "/KWin";
+const KWIN_INTERFACE: &str = "org.kde.KWin";
+const KWIN_RUNNER_PATH: &str = "/WindowsRunner";
+const KWIN_RUNNER_INTERFACE: &str = "org.kde.krunner1";
+const WARFRAME_RESOURCE_CLASS: &str = "steam_app_230410";
+const QIMAGE_FORMAT_RGB32: u32 = 4;
+const QIMAGE_FORMAT_ARGB32: u32 = 5;
+const QIMAGE_FORMAT_ARGB32_PREMULTIPLIED: u32 = 6;
+static WARFRAME_WINDOW_ID: OnceLock<Mutex<Option<String>>> = OnceLock::new();
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum Target {
-    Active,
-    Screen,
-}
+type RunnerMatch = (
+    String,
+    String,
+    String,
+    i32,
+    f64,
+    HashMap<String, OwnedValue>,
+);
 
-pub(crate) fn active_window() -> Result<DynamicImage, String> {
+pub(crate) fn relic_window() -> Result<DynamicImage, String> {
     if let Some(path) = std::env::var_os("WFCOMPANION_RELIC_SCREENSHOT") {
         return load(Path::new(&path));
     }
 
-    spectacle_capture(Target::Active)
+    capture()
 }
 
-pub(crate) fn capture(target: Target) -> Result<DynamicImage, String> {
-    spectacle_capture(target)
+pub(crate) fn capture() -> Result<DynamicImage, String> {
+    capture_warframe()
 }
 
-pub(crate) fn save(target: Target, path: &Path) -> Result<(u32, u32), String> {
-    let image = spectacle_capture(target)?;
+pub(crate) fn save(path: &Path) -> Result<(u32, u32), String> {
+    let image = capture()?;
     let dimensions = (image.width(), image.height());
     image
         .save_with_format(path, ImageFormat::Png)
@@ -39,50 +58,180 @@ pub(crate) fn save(target: Target, path: &Path) -> Result<(u32, u32), String> {
     Ok(dimensions)
 }
 
-fn spectacle_capture(target: Target) -> Result<DynamicImage, String> {
-    let spectacle = crate::external::resolve(
-        "WFCOMPANION_SPECTACLE",
-        "spectacle",
-        option_env!("WFCOMPANION_BUILD_SPECTACLE"),
-        &[
-            PathBuf::from("/usr/bin/spectacle"),
-            PathBuf::from("/usr/local/bin/spectacle"),
-        ],
-    );
-    spectacle_capture_with(&spectacle, target)
+fn capture_warframe() -> Result<DynamicImage, String> {
+    crate::desktop::ensure_identity()
+        .map_err(|error| format!("desktop screenshot identity: {error}"))?;
+    let connection = Connection::session()
+        .map_err(|error| format!("could not connect to session D-Bus: {error}"))?;
+    let cached = warframe_window_id().lock().unwrap().clone();
+    if let Some(window_id) = cached {
+        if let Ok(image) = capture_window(&connection, &window_id) {
+            return Ok(image);
+        }
+        *warframe_window_id().lock().unwrap() = None;
+    }
+
+    let window_id = find_warframe_window(&connection)?;
+    let image = capture_window(&connection, &window_id)?;
+    *warframe_window_id().lock().unwrap() = Some(window_id);
+    Ok(image)
 }
 
-fn spectacle_capture_with(spectacle: &OsStr, target: Target) -> Result<DynamicImage, String> {
-    let path = temporary_png("capture")?;
-    let mut command = Command::new(spectacle);
-    command.args(["--background", "--nonotify"]);
-    match target {
-        Target::Active => {
-            command.args(["--activewindow", "--no-decoration"]);
-        }
-        Target::Screen => {
-            command.arg("--fullscreen");
-        }
-    }
-    let output = command
-        .arg("--output")
-        .arg(&path)
-        .stdin(Stdio::null())
-        .output()
-        .map_err(|error| format!("could not run spectacle: {error}"))?;
-    if !output.status.success() {
-        let _ = fs::remove_file(&path);
-        let message = String::from_utf8_lossy(&output.stderr).trim().to_owned();
-        return Err(if message.is_empty() {
-            format!("spectacle exited with {}", output.status)
-        } else {
-            format!("spectacle: {message}")
-        });
-    }
+fn capture_window(connection: &Connection, window_id: &str) -> Result<DynamicImage, String> {
+    let proxy = screenshot_proxy(connection)?;
+    let (mut reader, writer) = capture_pipe()?;
+    let options = HashMap::<String, OwnedValue>::new();
+    let metadata = proxy
+        .call(
+            "CaptureWindow",
+            &(window_id, options, Fd::from(writer.as_fd())),
+        )
+        .map_err(|error| format!("KWin Warframe screenshot failed: {error}"))?;
+    drop(writer);
+    read_raw_image(&mut reader, metadata)
+}
 
-    let result = wait_for_image(&path);
-    let _ = fs::remove_file(&path);
-    result
+fn find_warframe_window(connection: &Connection) -> Result<String, String> {
+    let runner = Proxy::new(
+        connection,
+        KWIN_SERVICE,
+        KWIN_RUNNER_PATH,
+        KWIN_RUNNER_INTERFACE,
+    )
+    .map_err(|error| format!("KWin window runner unavailable: {error}"))?;
+    let matches: Vec<RunnerMatch> = runner
+        .call("Match", &(WARFRAME_RESOURCE_CLASS,))
+        .map_err(|error| format!("could not find Warframe window: {error}"))?;
+    let kwin = Proxy::new(connection, KWIN_SERVICE, KWIN_PATH, KWIN_INTERFACE)
+        .map_err(|error| format!("KWin window interface unavailable: {error}"))?;
+
+    for (id, _, _, _, _, _) in matches {
+        let Some(window_id) = runner_window_id(&id) else {
+            continue;
+        };
+        let info: HashMap<String, OwnedValue> = kwin
+            .call("getWindowInfo", &(window_id,))
+            .map_err(|error| format!("could not inspect Warframe window: {error}"))?;
+        if metadata_str(&info, "resourceClass") == Some(WARFRAME_RESOURCE_CLASS) {
+            return Ok(window_id.trim_matches(['{', '}']).to_owned());
+        }
+    }
+    Err("Warframe window not found".to_owned())
+}
+
+fn runner_window_id(match_id: &str) -> Option<&str> {
+    let (action, window_id) = match_id.split_once('_')?;
+    (action == "0").then(|| window_id.trim_matches(['{', '}']))
+}
+
+fn warframe_window_id() -> &'static Mutex<Option<String>> {
+    WARFRAME_WINDOW_ID.get_or_init(|| Mutex::new(None))
+}
+
+fn screenshot_proxy(connection: &Connection) -> Result<Proxy<'_>, String> {
+    Proxy::new(
+        connection,
+        KWIN_SERVICE,
+        KWIN_SCREENSHOT_PATH,
+        KWIN_SCREENSHOT_INTERFACE,
+    )
+    .map_err(|error| format!("KWin screenshot interface unavailable: {error}"))
+}
+
+fn capture_pipe() -> Result<(UnixStream, UnixStream), String> {
+    let (reader, writer) =
+        UnixStream::pair().map_err(|error| format!("could not create screenshot pipe: {error}"))?;
+    reader
+        .set_read_timeout(Some(CAPTURE_WAIT))
+        .map_err(|error| format!("could not configure screenshot pipe: {error}"))?;
+    Ok((reader, writer))
+}
+
+fn read_raw_image(
+    reader: &mut UnixStream,
+    metadata: HashMap<String, OwnedValue>,
+) -> Result<DynamicImage, String> {
+    let width = metadata_u32(&metadata, "width")?;
+    let height = metadata_u32(&metadata, "height")?;
+    let stride = metadata_u32(&metadata, "stride")?;
+    let format = metadata_u32(&metadata, "format")?;
+    let row_bytes = width
+        .checked_mul(4)
+        .ok_or_else(|| "KWin screenshot width overflow".to_owned())?;
+    if stride < row_bytes {
+        return Err(format!(
+            "KWin screenshot stride {stride} is smaller than row size {row_bytes}"
+        ));
+    }
+    let byte_count = usize::try_from(
+        stride
+            .checked_mul(height)
+            .ok_or_else(|| "KWin screenshot size overflow".to_owned())?,
+    )
+    .map_err(|_| "KWin screenshot is too large".to_owned())?;
+    let mut raw = vec![0; byte_count];
+    reader
+        .read_exact(&mut raw)
+        .map_err(|error| format!("could not read KWin screenshot pixels: {error}"))?;
+    qimage_to_rgba(raw, width, height, stride, format).map(DynamicImage::ImageRgba8)
+}
+
+fn metadata_u32(metadata: &HashMap<String, OwnedValue>, key: &str) -> Result<u32, String> {
+    metadata
+        .get(key)
+        .and_then(|value| u32::try_from(value).ok())
+        .ok_or_else(|| format!("KWin screenshot metadata has no valid {key}"))
+}
+
+fn metadata_str<'a>(metadata: &'a HashMap<String, OwnedValue>, key: &str) -> Option<&'a str> {
+    metadata
+        .get(key)
+        .and_then(|value| <&str>::try_from(value).ok())
+}
+
+fn qimage_to_rgba(
+    raw: Vec<u8>,
+    width: u32,
+    height: u32,
+    stride: u32,
+    format: u32,
+) -> Result<RgbaImage, String> {
+    if cfg!(target_endian = "big") {
+        return Err("KWin screenshot conversion does not support big-endian targets".to_owned());
+    }
+    if !matches!(
+        format,
+        QIMAGE_FORMAT_RGB32 | QIMAGE_FORMAT_ARGB32 | QIMAGE_FORMAT_ARGB32_PREMULTIPLIED
+    ) {
+        return Err(format!("unsupported KWin QImage format {format}"));
+    }
+    let mut rgba = Vec::with_capacity(width as usize * height as usize * 4);
+    for row in raw.chunks_exact(stride as usize).take(height as usize) {
+        for pixel in row[..width as usize * 4].chunks_exact(4) {
+            let alpha = if format == QIMAGE_FORMAT_RGB32 {
+                255
+            } else {
+                pixel[3]
+            };
+            let (red, green, blue) =
+                if format == QIMAGE_FORMAT_ARGB32_PREMULTIPLIED && alpha > 0 && alpha < 255 {
+                    (
+                        unpremultiply(pixel[2], alpha),
+                        unpremultiply(pixel[1], alpha),
+                        unpremultiply(pixel[0], alpha),
+                    )
+                } else {
+                    (pixel[2], pixel[1], pixel[0])
+                };
+            rgba.extend_from_slice(&[red, green, blue, alpha]);
+        }
+    }
+    RgbaImage::from_raw(width, height, rgba)
+        .ok_or_else(|| "could not construct image from KWin screenshot".to_owned())
+}
+
+fn unpremultiply(channel: u8, alpha: u8) -> u8 {
+    ((u16::from(channel) * 255 + u16::from(alpha) / 2) / u16::from(alpha)).min(255) as u8
 }
 
 pub(crate) fn temporary_png(label: &str) -> Result<PathBuf, String> {
@@ -131,25 +280,6 @@ fn capture_dir_from(
     temp.join("wfcli/captures")
 }
 
-fn wait_for_image(path: &Path) -> Result<DynamicImage, String> {
-    let deadline = Instant::now() + CAPTURE_WAIT;
-    loop {
-        match load(path) {
-            Ok(image) => return Ok(image),
-            Err(error) if Instant::now() < deadline => {
-                let _ = error;
-                thread::sleep(CAPTURE_RETRY);
-            }
-            Err(error) => {
-                return Err(format!(
-                    "{error}; spectacle exited successfully but capture was not readable after {} ms",
-                    CAPTURE_WAIT.as_millis()
-                ));
-            }
-        }
-    }
-}
-
 fn load(path: &Path) -> Result<DynamicImage, String> {
     image::open(path).map_err(|error| format!("could not read {}: {error}", path.display()))
 }
@@ -157,9 +287,6 @@ fn load(path: &Path) -> Result<DynamicImage, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[cfg(unix)]
-    use std::os::unix::fs::PermissionsExt;
 
     #[test]
     fn capture_directory_prefers_shared_user_cache() {
@@ -192,79 +319,20 @@ mod tests {
     }
 
     #[test]
-    fn waits_for_delayed_capture_write() {
-        let path = temporary_png("delayed-test").unwrap();
-        let writer_path = path.clone();
-        let writer = thread::spawn(move || {
-            thread::sleep(Duration::from_millis(100));
-            DynamicImage::new_rgb8(8, 6)
-                .save_with_format(writer_path, ImageFormat::Png)
-                .unwrap();
-        });
-        let image = wait_for_image(&path).unwrap();
-        writer.join().unwrap();
-        let _ = fs::remove_file(path);
-        assert_eq!((image.width(), image.height()), (8, 6));
+    fn converts_premultiplied_bgra_with_stride() {
+        let raw = vec![25, 50, 100, 128, 0, 0, 0, 0, 10, 20, 30, 255, 0, 0, 0, 0];
+        let image = qimage_to_rgba(raw, 1, 2, 8, QIMAGE_FORMAT_ARGB32_PREMULTIPLIED).unwrap();
+        assert_eq!(image.get_pixel(0, 0).0, [199, 100, 50, 128]);
+        assert_eq!(image.get_pixel(0, 1).0, [30, 20, 10, 255]);
     }
 
-    #[cfg(unix)]
     #[test]
-    fn spectacle_capture_reads_requested_output_path() {
-        let fixture = std::env::temp_dir().join(format!(
-            "wfcompanion-fake-capture-{}.png",
-            std::process::id()
-        ));
-        DynamicImage::new_rgb8(8, 6)
-            .save_with_format(&fixture, ImageFormat::Png)
-            .unwrap();
-        let script = std::env::temp_dir().join(format!(
-            "wfcompanion-fake-spectacle-{}.sh",
-            std::process::id()
-        ));
-        fs::write(
-            &script,
-            format!(
-                "#!/bin/sh\nwhile [ \"$#\" -gt 0 ]; do\n  if [ \"$1\" = --output ]; then\n    shift\n    cp -- '{}' \"$1\"\n    exit $?\n  fi\n  shift\ndone\nexit 2\n",
-                fixture.display()
-            ),
-        )
-        .unwrap();
-        fs::set_permissions(&script, fs::Permissions::from_mode(0o700)).unwrap();
-        let image = spectacle_capture_with(script.as_os_str(), Target::Active).unwrap();
-        let _ = fs::remove_file(script);
-        let _ = fs::remove_file(fixture);
-        assert_eq!((image.width(), image.height()), (8, 6));
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn full_screen_capture_uses_fullscreen_flag() {
-        let arguments = std::env::temp_dir().join(format!(
-            "wfcompanion-fake-spectacle-args-{}.txt",
-            std::process::id()
-        ));
-        let script = std::env::temp_dir().join(format!(
-            "wfcompanion-fake-spectacle-screen-{}.sh",
-            std::process::id()
-        ));
-        fs::write(
-            &script,
-            format!(
-                "#!/bin/sh\nprintf '%s\\n' \"$@\" > '{}'\nwhile [ \"$#\" -gt 0 ]; do\n  if [ \"$1\" = --output ]; then\n    shift\n    printf 'not-an-image' > \"$1\"\n    exit 1\n  fi\n  shift\ndone\nexit 2\n",
-                arguments.display()
-            ),
-        )
-        .unwrap();
-        fs::set_permissions(&script, fs::Permissions::from_mode(0o700)).unwrap();
-        assert!(spectacle_capture_with(script.as_os_str(), Target::Screen).is_err());
-        let captured = fs::read_to_string(&arguments).unwrap();
-        let _ = fs::remove_file(script);
-        let _ = fs::remove_file(arguments);
-        assert!(captured.lines().any(|argument| argument == "--fullscreen"));
-        assert!(
-            !captured
-                .lines()
-                .any(|argument| argument == "--activewindow")
+    fn extracts_window_id_from_activate_match() {
+        assert_eq!(
+            runner_window_id("0_{a2ca4507-2eba-4167-a14f-30b22808bc4c}"),
+            Some("a2ca4507-2eba-4167-a14f-30b22808bc4c")
         );
+        assert_eq!(runner_window_id("2_{uuid}"), None);
+        assert_eq!(runner_window_id("invalid"), None);
     }
 }

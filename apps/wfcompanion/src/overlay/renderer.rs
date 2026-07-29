@@ -374,7 +374,7 @@ mod tests {
                 origin: (24, 24),
                 daemon: "DEV | wfdaemon connected",
                 player: "Warframe running (pid 12345)",
-                detail: "DBWIN on | dbg 8 | log 2 | relic rewards",
+                detail: "DBWIN on | dbg 8 | relic rewards",
             },
         );
         painter.finish().unwrap();

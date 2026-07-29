@@ -15,7 +15,7 @@ Current overlays:
 Runtime:
 
 - KDE Plasma on Wayland
-- KScreen and Spectacle
+- KWin screenshot support and KScreen
 - Tesseract 5 with English language data
 - a built `wfcli` and `wfdaemon`
 
@@ -89,8 +89,8 @@ input to the game. Passive overlays remain click-through.
 
 ## Data Flow
 
-Companion receives Warframe debug output through a small Wine DBWIN helper and
-uses `EE.log` as a delayed fallback.
+Companion receives Warframe `OutputDebugString` messages through a small Wine
+DBWIN helper.
 
 Relic rewards trigger one window capture. Companion detects the one-to-four
 card layout and runs local Tesseract OCR over reward names. The daemon resolves
@@ -99,6 +99,9 @@ items, player metadata, assets, and one batched set of Market quotes.
 Relic selection captures only the era selector. The daemon ranks relics from
 cached player inventory, WFCD reward tables, and Market quotes.
 
+KWin captures the Warframe window directly, including while it is unfocused or
+minimized. Other windows are not included.
+
 ## Diagnostics
 
 ```bash
@@ -106,9 +109,8 @@ wfcli companion probe
 wfcli companion paths
 wfcli companion logs
 wfcli companion screenshot ./capture.png
-wfcli companion screenshot --target screen ./screen.png
 wfcli companion relic-ocr ./capture.png
-wfcli companion relic-ocr --target screen
+wfcli companion relic-ocr
 ```
 
 Run the full saved-image reward pipeline:

@@ -39,7 +39,11 @@ option_value_completion_test() ->
        wfcli_completion:candidates(["visualize", "--viz", ""])),
     ?assertEqual(
        ["html"],
-       wfcli_completion:candidates(["forma-plan", "--viz", "h"])).
+       wfcli_completion:candidates(["forma-plan", "--viz", "h"])),
+    ?assertNot(
+       lists:member(
+         "--target",
+         wfcli_completion:candidates(["companion", "screenshot", ""]))).
 
 generated_bash_completes_without_wfcli_process_test() ->
     Script = iolist_to_binary(wfcli_completion:script()),

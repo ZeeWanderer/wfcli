@@ -52,11 +52,11 @@ help(["preview" | _]) ->
 help(["screenshot" | _]) ->
     io:put_chars(
       "USAGE:\n"
-      "  wfcli companion screenshot [--target active|screen] [FILE]\n");
+      "  wfcli companion screenshot [FILE]\n");
 help(["relic-ocr" | _]) ->
     io:put_chars(
       "USAGE:\n"
-      "  wfcli companion relic-ocr [--target active|screen] [IMAGE]\n");
+      "  wfcli companion relic-ocr [IMAGE]\n");
 help(["hud" | _]) ->
     io:put_chars("USAGE:\n  wfcli companion hud show|hide\n");
 help([Command | _]) when Command =:= "install"; Command =:= "uninstall" ->
@@ -196,14 +196,17 @@ connected_companions() ->
     end.
 
 screenshot(Args) ->
-    case capture_positionals(Args, []) of
-        {ok, []} ->
+    case Args of
+        [] ->
             Output = wfcli_paths:cache_file("companion-screenshot.png"),
             ok = filelib:ensure_dir(Output),
-            diagnostic(["screenshot" | Args ++ [Output]]);
-        {ok, [_Path]} -> diagnostic(["screenshot" | Args]);
-        {ok, _Paths} -> fail("screenshot accepts one output path");
-        {error, Message} -> fail(Message)
+            diagnostic(["screenshot", Output]);
+        [[ $- | _ ] = Option | _] ->
+            fail(io_lib:format("unknown screenshot option: ~s", [Option]));
+        [_Path] ->
+            diagnostic(["screenshot" | Args]);
+        _ ->
+            fail("screenshot accepts one output path")
     end.
 
 preview(["list"]) -> diagnostic(["preview", "list"]);
@@ -237,15 +240,6 @@ preview_directory(Companion) ->
                _ -> Parent
            end,
     filename:join(Root, "previews").
-
-capture_positionals([], Acc) -> {ok, lists:reverse(Acc)};
-capture_positionals(["--target", Target | Rest], Acc)
-  when Target =:= "active"; Target =:= "screen" ->
-    capture_positionals(Rest, Acc);
-capture_positionals(["--target"], _Acc) -> {error, "--target requires active or screen"};
-capture_positionals([[ $- | _ ] = Option | _Rest], _Acc) ->
-    {error, io_lib:format("unknown screenshot option: ~s", [Option])};
-capture_positionals([Path | Rest], Acc) -> capture_positionals(Rest, [Path | Acc]).
 
 diagnostic(Args) ->
     case wfcli_companion_process:run(Args) of

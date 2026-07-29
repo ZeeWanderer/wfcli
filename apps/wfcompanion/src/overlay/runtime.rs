@@ -50,6 +50,7 @@ const DEBUG_HUD: bool = cfg!(debug_assertions);
 
 pub(crate) fn run(
     events: mpsc::Receiver<UiEvent>,
+    relic: mpsc::Sender<crate::relic::Trigger>,
     shortcut: crate::shortcut::Controller,
     stopping: Arc<AtomicBool>,
 ) -> Result<(), Box<dyn std::error::Error>> {
@@ -114,12 +115,14 @@ pub(crate) fn run(
         snapshots: BTreeMap::new(),
         connection_error: None,
         relic_scene: None,
+        suggestion_dismissed: false,
         last_loading_frame: Instant::now() - LOADING_FRAME_INTERVAL,
         frame_pending: false,
         interaction_active: false,
         shortcut_scope: false,
         presentation: Presentation::default(),
         events,
+        relic,
         shortcut,
         stopping,
         focus: FocusDetector::connect().ok(),
@@ -175,12 +178,14 @@ struct Overlay {
     snapshots: BTreeMap<String, Value>,
     connection_error: Option<String>,
     relic_scene: Option<(crate::relic::Scene, Option<Instant>, Instant)>,
+    suggestion_dismissed: bool,
     last_loading_frame: Instant,
     frame_pending: bool,
     interaction_active: bool,
     shortcut_scope: bool,
     presentation: Presentation,
     events: mpsc::Receiver<UiEvent>,
+    relic: mpsc::Sender<crate::relic::Trigger>,
     shortcut: crate::shortcut::Controller,
     stopping: Arc<AtomicBool>,
     focus: Option<FocusDetector>,
@@ -275,6 +280,15 @@ impl Overlay {
                     self.request_full_redraw();
                 }
                 UiEvent::RelicScene { scene, deadline } => {
+                    if self.suggestion_dismissed
+                        && matches!(scene, crate::relic::Scene::Suggestions(_))
+                    {
+                        incident::info("overlay.scene_late", "kind=suggestions dismissed=true");
+                        continue;
+                    }
+                    if !matches!(scene, crate::relic::Scene::Suggestions(_)) {
+                        self.suggestion_dismissed = false;
+                    }
                     let now = Instant::now();
                     if !scene_deadline_is_current(deadline, now) {
                         incident::info(
@@ -318,7 +332,11 @@ impl Overlay {
                     self.relic_scene = Some((scene, deadline, started));
                     self.request_full_redraw();
                 }
+                UiEvent::RelicSuggestionStart => {
+                    self.suggestion_dismissed = false;
+                }
                 UiEvent::RelicDismiss => {
+                    self.suggestion_dismissed = false;
                     if self.relic_scene.as_ref().is_some_and(|(scene, _, _)| {
                         matches!(scene, crate::relic::Scene::Suggestions(_))
                     }) {
@@ -460,6 +478,8 @@ impl Overlay {
             .is_some_and(|(scene, _, _)| matches!(scene, crate::relic::Scene::Suggestions(_)))
         {
             incident::info("overlay.scene", "kind=closed");
+            self.suggestion_dismissed = true;
+            let _ = self.relic.send(crate::relic::Trigger::DismissSuggestions);
             self.relic_scene = None;
             self.set_interaction(false);
             self.request_full_redraw();
@@ -773,15 +793,11 @@ impl Overlay {
             .and_then(|data| data.get("debug_output_lines_observed"))
             .and_then(Value::as_u64)
             .unwrap_or(0);
-        let log_lines = collector
-            .and_then(|data| data.get("ee_log_lines_observed"))
-            .and_then(Value::as_u64)
-            .unwrap_or(0);
         let scene = self
             .relic_scene
             .as_ref()
             .map_or("idle", |(scene, _, _)| scene_name(scene));
-        format!("DBWIN {bridge} | dbg {debug_lines} | log {log_lines} | relic {scene}")
+        format!("DBWIN {bridge} | dbg {debug_lines} | relic {scene}")
     }
 }
 

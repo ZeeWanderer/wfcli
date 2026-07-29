@@ -64,8 +64,8 @@ Opens after the user follows a Riven link in game chat. It shows:
 - similar Rivens with similarity, price, source, and links;
 - known good positives and acceptable negatives.
 
-`EE.log` identifies the detailed item dialog. AlecaFrame captures and OCRs the
-Riven card. Interaction begins through the Overwolf hotkey.
+DBWIN debug output identifies the detailed item dialog. AlecaFrame captures and
+OCRs the Riven card. Interaction begins through the Overwolf hotkey.
 
 ## Riven Reroll Comparison
 
@@ -73,7 +73,7 @@ Opens while cycling a Riven. Left panel retains the old roll; right panel shows
 the new roll. Both use the chat Riven stats, grades, comparisons, and price
 model.
 
-Selection, confirmation, completion, and close signals come from `EE.log`.
+Selection, confirmation, completion, and close signals come from DBWIN debug output.
 Before and after cards are OCRed. Both modes use the same packaged
 `RivenOverlay` window.
 
@@ -84,8 +84,8 @@ the other player and item against the connected Warframe Market account. It
 can decrement or close a regular order, close a Riven auction, and submit
 positive reputation. A countdown applies the default close action.
 
-This requires Market authentication, current orders, and trade text parsed
-from `EE.log`.
+This requires Market authentication, current orders, and trade text parsed from
+DBWIN debug output.
 
 ## TennoFinder Notification
 

@@ -93,7 +93,7 @@ metadata needs a separate player-data source; OCR only sees the current screen.
 
 Current ownership:
 
-- `wfcompanion` owns process discovery, Proton paths, DBWIN and fallback `EE.log` observation,
+- `wfcompanion` owns process discovery, Proton paths, DBWIN observation,
   capture/OCR orchestration, daemon connection, overlay visibility, layout, and animation.
 - `wfdaemon` owns canonical worldstate, catalogs, player snapshots, market cache, request
   batching, persistence, and query projection. It never renders GUI or terminal output.
@@ -164,7 +164,7 @@ external layer-shell client should own pixels.
 Implemented data flow:
 
 1. Receive `Got rewards` from Warframe's debug output and debounce duplicate events.
-2. Capture the active Warframe window through Spectacle after UI stabilization.
+2. Capture Warframe directly through KWin after UI stabilization.
 3. Detect squad reward count and crop resolution-specific reward-name regions.
 4. Run Tesseract locally and clean common OCR artifacts.
 5. Resolve noisy labels against daemon-owned item metadata.
@@ -188,9 +188,12 @@ listener exactly.
 The native process reads bounded PID/text records from helper stdout. This works in both Steam
 wrapper and standalone modes because both discover the active Warframe process environment;
 neither mode attaches a debugger or injects code. An isolated Proton 10 test delivered a known
-`OutputDebugString` message through this path. `EE.log` remains fallback only: a 200 ms file poll
-cannot explain a measured roughly 12-second trigger delay, so file notification APIs cannot fix
-that flush latency.
+`OutputDebugString` message through this path. `wfcompanion` does not tail `EE.log`: delayed file
+flushes produce stale duplicate lifecycle events.
+
+AlecaFrame's live overlay path also uses DBWIN. Its `EELogProcessor` name describes the message
+format, not file acquisition. Direct `EE.log` reads in AlecaFrame 2.6.90 are limited to username
+and login-state checks plus a developer fake-log replay path.
 
 ### Relic Geometry And UI Scale
 
@@ -293,7 +296,6 @@ the player's own risk. No external integration can be called ban-safe.
 Allowed project techniques:
 
 - `/proc`, Steam, Proton, cgroup, and KWin metadata for process/window identity.
-- Reading `EE.log` and emitted debug text available to the user process.
 - Receiving `OutputDebugString` through Wine's DBWIN mapping/events without debugger attach.
 - Reading only the inventory JSON path through the native Overwolf-compatible retained-response
   collector, with bounded payloads and no write, injection, debugger, or network APIs.
@@ -313,9 +315,8 @@ This deliberately does not reproduce Overwolf's injection mechanism. Wayland lay
 meets game-only, fullscreen, and performance requirements without entering Warframe's
 process or graphics stack.
 
-DBWIN and `EE.log` events identify relic-selection and reward-screen lifecycle without OCR. No
-screen-state memory collector is part of the allowed boundary; visual labels use local capture
-and OCR.
+DBWIN events identify relic-selection and reward-screen lifecycle without OCR. No screen-state
+memory collector is part of the allowed boundary; visual labels use local capture and OCR.
 
 ## Local Evidence Map
 

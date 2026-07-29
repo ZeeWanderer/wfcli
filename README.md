@@ -34,7 +34,7 @@ Companion build:
 
 Companion runtime:
 
-- KDE Plasma on Wayland, KScreen, and Spectacle
+- KDE Plasma on Wayland with KWin screenshot support and KScreen
 - Tesseract 5 with English `eng.traineddata`
 
 FFmpeg with `libvpx-vp9` is required only for animated overlay previews. `zip` is required by

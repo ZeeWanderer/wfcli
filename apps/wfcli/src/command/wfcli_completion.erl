@@ -155,8 +155,8 @@ contexts() ->
         {["companion", "preview", "list"], ["--animated" | help_flags()]},
         {["companion", "preview", "image"], ["all" | help_flags()]},
         {["companion", "preview", "video"], ["all" | help_flags()]},
-        {["companion", "screenshot"], ["--target" | help_flags()]},
-        {["companion", "relic-ocr"], ["--target" | help_flags()]},
+        {["companion", "screenshot"], help_flags()},
+        {["companion", "relic-ocr"], help_flags()},
         {["companion", "install"], ["--dry-run" | help_flags()]},
         {["companion", "uninstall"], ["--dry-run" | help_flags()]},
         {["completion"], ["bash", "install", "status", "uninstall" | help_flags()]},
@@ -188,7 +188,6 @@ values() ->
     [
         {{"*", "--diff-style"}, ["inline", "list", "diff", "none"]},
         {{"*", "--viz"}, ["html", "image"]},
-        {{"*", "--target"}, ["active", "screen"]},
         {{"completion", "--file"}, []},
         {{"daemon", "--beam-dir"}, []}
     ].
