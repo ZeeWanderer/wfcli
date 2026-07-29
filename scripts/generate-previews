@@ -97,13 +97,18 @@ if contains_word companion $sets; then
 fi
 
 if contains_word reference $sets; then
-    if [[ "$media" == *image* ]]; then
-        for resolution in $resolutions; do
+    for resolution in $resolutions; do
+        reference_output="$output/$resolution/reference"
+        if [[ "$media" == *image* ]] &&
+            { [[ "$scenes" == "all" ]] || contains_word relic-rewards $scenes; }; then
             reference_output="$output/$resolution/reference"
             ALECA_LAYOUT_SIZE="$resolution" ALECA_LAYOUT_OUTPUT_DIR="$reference_output" \
                 node "$root/tools/aleca-layout/index.mjs"
+        fi
+        if [[ "$scenes" == "all" ]] || contains_word relic-suggestions $scenes; then
             ALECA_LAYOUT_SIZE="$resolution" ALECA_LAYOUT_OUTPUT_DIR="$reference_output" \
+                ALECA_LAYOUT_MEDIA="$media" \
                 node "$root/tools/aleca-layout/suggestions.mjs"
-        done
-    fi
+        fi
+    done
 fi

@@ -21,7 +21,7 @@
 -define(DETAIL_TTL, 86400).
 -define(RELIC_CATALOG_TTL, 86400).
 -define(RELIC_CATALOG_RETRY_TTL, 60).
--define(RECOMMENDATION_CANDIDATES, 4).
+-define(RECOMMENDATION_PRICE_CANDIDATES, 4).
 
 -type state() :: map().
 
@@ -253,7 +253,7 @@ maybe_fetch_recommendation_prices(Request, Era, Player, SubmittedAt, Snapshot, N
                       maps:get(relics, Snapshot, #{}),
                       maps:get(items, Snapshot, []),
                       Player,
-                      ?RECOMMENDATION_CANDIDATES),
+                      ?RECOMMENDATION_PRICE_CANDIDATES),
             PriceRequest = Request#{ttl => 900, refresh => false},
             fetch_quotes(Slugs, PriceRequest, SubmittedAt, Snapshot, Next, #{});
         false -> {Snapshot, Next, #{}}

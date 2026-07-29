@@ -40,7 +40,11 @@ const PREVIEWS: &[Preview] = &[
     Preview {
         name: "relic-suggestions",
         render: crate::overlay::save_relic_suggestions_preview,
-        animation: None,
+        animation: Some(Animation {
+            duration: Duration::from_secs(4),
+            fps: 5,
+            render_frame: crate::overlay::render_relic_suggestions_preview,
+        }),
     },
     Preview {
         name: "notification",
@@ -366,8 +370,12 @@ mod tests {
                 "notification"
             ]
         );
-        assert_eq!(names(true).collect::<Vec<_>>(), ["relic-loading"]);
+        assert_eq!(
+            names(true).collect::<Vec<_>>(),
+            ["relic-loading", "relic-suggestions"]
+        );
         assert!(find("relic-loading").unwrap().animation.is_some());
+        assert!(find("relic-suggestions").unwrap().animation.is_some());
         assert!(find("notification").unwrap().animation.is_none());
         assert!(find("missing").is_err());
     }

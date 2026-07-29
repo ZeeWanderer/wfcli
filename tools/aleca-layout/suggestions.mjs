@@ -4,7 +4,9 @@ import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 import { chromium } from "playwright-core";
+import { suggestionScrollOffset } from "./animation.mjs";
 import { resolveAlecaWebRoot } from "./source.mjs";
+import { captureVideo } from "./video.mjs";
 
 const toolDirectory = path.dirname(fileURLToPath(import.meta.url));
 const repositoryRoot = path.resolve(toolDirectory, "../..");
@@ -16,8 +18,15 @@ const outputDirectory =
   process.env.ALECA_LAYOUT_OUTPUT_DIR ?? path.join(repositoryRoot, "previews/reference");
 const screenshotPath = path.join(outputDirectory, "alecaframe-relic-suggestions.png");
 const geometryPath = path.join(outputDirectory, "alecaframe-relic-suggestions.json");
+const videoPath = path.join(outputDirectory, "alecaframe-relic-suggestions.webm");
 const dimensions = displayDimensions();
 const bounds = { width: 480, height: 220, left: dimensions.width - 500, top: 20 };
+const media = new Set((process.env.ALECA_LAYOUT_MEDIA ?? "image").split(/\s+/).filter(Boolean));
+for (const value of media) {
+  if (value !== "image" && value !== "video") {
+    throw new Error(`unknown Aleca reference media: ${value}`);
+  }
+}
 
 await mkdir(outputDirectory, { recursive: true });
 
@@ -115,7 +124,7 @@ try {
   );
 
   await page.goto(pathToFileURL(sourcePath).href, { waitUntil: "load" });
-  await page.waitForSelector(".recommendedRelic:nth-child(4)", { timeout: 10_000 });
+  await page.waitForSelector(".recommendedRelic:nth-child(8)", { timeout: 10_000 });
   await page.evaluate(() => document.fonts.ready);
 
   const selectors = [
@@ -182,33 +191,62 @@ try {
     );
   }, selectors);
 
-  const overlayImage = await page.screenshot({ omitBackground: true });
-  await page.setViewportSize(dimensions);
-  await page.setContent(`
-    <!doctype html>
-    <html style="margin:0;background:transparent">
-      <body style="margin:0;background:transparent;overflow:hidden">
-        <img src="data:image/png;base64,${overlayImage.toString("base64")}"
-          width="${bounds.width}" height="${bounds.height}"
-          style="position:absolute;left:${bounds.left}px;top:${bounds.top}px">
-      </body>
-    </html>
-  `);
-  await page.screenshot({ path: screenshotPath, omitBackground: true });
-  await writeFile(
-    geometryPath,
-    `${JSON.stringify(
-      {
-        source: path.relative(repositoryRoot, sourcePath),
-        screen: dimensions,
-        bounds,
-        elements: offsetElements(elements, bounds),
-      },
-      null,
-      2,
-    )}\n`,
-  );
-  process.stdout.write(`${screenshotPath}\n${geometryPath}\n`);
+  const outputs = [];
+  if (media.has("video")) {
+    const maximum = await page.locator(".recommendedRelicsContainer").evaluate(
+      (element) => element.scrollHeight - element.clientHeight,
+    );
+    await captureVideo({
+      page,
+      path: videoPath,
+      dimensions,
+      bounds,
+      duration: 4,
+      fps: 10,
+      update: (elapsed) =>
+        page.locator(".recommendedRelicsContainer").evaluate(
+          (element, scrollTop) => {
+            element.scrollTop = scrollTop;
+          },
+          suggestionScrollOffset(elapsed, maximum),
+        ),
+    });
+    outputs.push(videoPath);
+  }
+
+  if (media.has("image")) {
+    await page.locator(".recommendedRelicsContainer").evaluate((element) => {
+      element.scrollTop = 0;
+    });
+    const overlayImage = await page.screenshot({ omitBackground: true });
+    await page.setViewportSize(dimensions);
+    await page.setContent(`
+      <!doctype html>
+      <html style="margin:0;background:transparent">
+        <body style="margin:0;background:transparent;overflow:hidden">
+          <img src="data:image/png;base64,${overlayImage.toString("base64")}"
+            width="${bounds.width}" height="${bounds.height}"
+            style="position:absolute;left:${bounds.left}px;top:${bounds.top}px">
+        </body>
+      </html>
+    `);
+    await page.screenshot({ path: screenshotPath, omitBackground: true });
+    await writeFile(
+      geometryPath,
+      `${JSON.stringify(
+        {
+          source: path.relative(repositoryRoot, sourcePath),
+          screen: dimensions,
+          bounds,
+          elements: offsetElements(elements, bounds),
+        },
+        null,
+        2,
+      )}\n`,
+    );
+    outputs.push(screenshotPath, geometryPath);
+  }
+  process.stdout.write(`${outputs.join("\n")}\n`);
 } finally {
   await browser.close();
 }
@@ -270,5 +308,9 @@ function suggestionData() {
     item("Axi G15", 3, 16, 42, { vaulted: true }),
     item("Axi L7", 12, 14, 36),
     item("Axi S17", 2, 13, 48, { vaulted: true, favorite: true }),
+    item("Axi V10", 6, 12, 38),
+    item("Axi P7", 4, 11, 34, { vaulted: true }),
+    item("Axi N10", 9, 10, 29, { favorite: true }),
+    item("Axi O6", 1, 9, 26, { vaulted: true }),
   ];
 }

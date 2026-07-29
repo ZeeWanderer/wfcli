@@ -8,6 +8,7 @@
 -define(URL,
         "https://raw.githubusercontent.com/WFCD/warframe-items/master/data/json/Relics.json").
 -define(VOID_TRACES, <<"/Lotus/Types/Items/MiscItems/VoidTearDrop">>).
+-define(MAX_RECOMMENDATIONS, 32).
 
 -doc "Fetch and compact the WFCD relic catalog.".
 -spec fetch() -> {ok, map()} | {error, term()}.
@@ -52,7 +53,7 @@ build(Era, Catalog, Items, Quotes, PlayerSnapshot) ->
                     || Item <- Items, maps:is_key(<<"slug">>, Item)]),
     Suggestions = ranked(Era, Catalog, Owned, ItemBySlug, Quotes),
     #{<<"trace_count">> => maps:get(?VOID_TRACES, Owned, 0),
-      <<"items">> => lists:sublist(Suggestions, 4)}.
+      <<"items">> => lists:sublist(Suggestions, ?MAX_RECOMMENDATIONS)}.
 
 -doc "Return reward slugs worth warming for the highest-ducat owned relics.".
 -spec price_slugs(binary(), map(), [map()], map(), non_neg_integer()) -> [binary()].

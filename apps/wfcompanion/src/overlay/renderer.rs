@@ -109,10 +109,50 @@ pub(crate) fn render_relic_loading_preview(
     render_relic_scene_preview(dimensions, &crate::relic::Scene::Reading, elapsed)
 }
 
+pub(crate) fn render_relic_suggestions_preview(
+    dimensions: (u32, u32),
+    elapsed: Duration,
+) -> Result<image::RgbaImage, String> {
+    let scene = crate::relic::suggestion_fixture()?;
+    let item_count = match &scene {
+        crate::relic::Scene::Suggestions(suggestions) => suggestions.items.len(),
+        _ => 0,
+    };
+    let offset = suggestion_preview_offset(item_count, elapsed);
+    render_relic_scene_preview_with_view(
+        dimensions,
+        &scene,
+        elapsed,
+        RelicView {
+            suggestion_offset: offset,
+            interaction_active: true,
+            close_hovered: false,
+        },
+    )
+}
+
 fn render_relic_scene_preview(
     dimensions: (u32, u32),
     scene: &crate::relic::Scene,
     elapsed: Duration,
+) -> Result<image::RgbaImage, String> {
+    render_relic_scene_preview_with_view(
+        dimensions,
+        scene,
+        elapsed,
+        RelicView {
+            suggestion_offset: 0,
+            interaction_active: false,
+            close_hovered: false,
+        },
+    )
+}
+
+fn render_relic_scene_preview_with_view(
+    dimensions: (u32, u32),
+    scene: &crate::relic::Scene,
+    elapsed: Duration,
+    view: RelicView,
 ) -> Result<image::RgbaImage, String> {
     let (width, height) = dimensions;
     let mut overlay = vec![0; (width * height * 4) as usize];
@@ -122,11 +162,7 @@ fn render_relic_scene_preview(
         .map_err(|error| format!("could not create overlay painter: {error}"))?;
     let scene = Scene::Relic {
         content: scene.clone(),
-        view: RelicView {
-            suggestion_offset: 0,
-            interaction_active: false,
-            close_hovered: false,
-        },
+        view,
     };
     let output = screens::draw_static(&mut painter, &renderer.font, &renderer.assets, &scene, 1);
     screens::draw_animation(&mut painter, &scene, &output, 1, elapsed);
@@ -135,6 +171,12 @@ fn render_relic_scene_preview(
         .map_err(|error| format!("could not render overlay: {error}"))?;
 
     straight_rgba(&overlay, width, height)
+}
+
+fn suggestion_preview_offset(item_count: usize, elapsed: Duration) -> usize {
+    const STEPS: [usize; 4] = [0, 2, 4, 2];
+    let step = (elapsed.as_secs() as usize) % STEPS.len();
+    STEPS[step].min(super::scene::max_suggestion_offset(item_count))
 }
 
 fn render_notification_preview(dimensions: (u32, u32)) -> Result<image::RgbaImage, String> {
@@ -244,6 +286,15 @@ mod tests {
     use std::time::Instant;
 
     use super::*;
+
+    #[test]
+    fn suggestion_preview_scrolls_complete_rows() {
+        assert_eq!(suggestion_preview_offset(8, Duration::ZERO), 0);
+        assert_eq!(suggestion_preview_offset(8, Duration::from_secs(1)), 2);
+        assert_eq!(suggestion_preview_offset(8, Duration::from_secs(2)), 4);
+        assert_eq!(suggestion_preview_offset(8, Duration::from_secs(3)), 2);
+        assert_eq!(suggestion_preview_offset(5, Duration::from_secs(2)), 2);
+    }
 
     #[test]
     fn static_relic_frame_is_reused_until_scene_changes() {

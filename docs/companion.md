@@ -132,7 +132,7 @@ removed after decoding.
 ```bash
 wfcli companion preview list
 wfcli companion preview image relic-rewards
-wfcli companion preview video relic-loading
+wfcli companion preview video relic-suggestions
 make previews
 ```
 

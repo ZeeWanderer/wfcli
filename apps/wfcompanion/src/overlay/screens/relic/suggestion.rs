@@ -226,6 +226,13 @@ pub(super) fn draw(
             &ducats,
         );
     }
+    draw_scrollbar(
+        painter,
+        grid,
+        scale,
+        suggestions.items.len(),
+        suggestion_offset,
+    );
     if suggestions.items.is_empty() {
         painter.draw_centered_text(
             font,
@@ -267,6 +274,50 @@ pub(super) fn draw(
             },
         ],
     }
+}
+
+fn draw_scrollbar(
+    painter: &mut Painter<'_>,
+    grid: crate::ui::Rect,
+    scale: u32,
+    item_count: usize,
+    suggestion_offset: usize,
+) {
+    let rows = item_count.div_ceil(2);
+    if rows <= 2 {
+        return;
+    }
+
+    let track_height = grid.height.saturating_sub(10 * scale);
+    let track_x = grid.x + grid.width.saturating_sub(5 * scale);
+    let track_y = grid.y + 5 * scale;
+    painter.fill_rounded_rect(
+        track_x,
+        track_y,
+        3 * scale,
+        track_height,
+        2 * scale,
+        css_rgba(88, 94, 107, 180),
+    );
+
+    let thumb_height = ((track_height as usize * 2) / rows)
+        .max((12 * scale) as usize)
+        .min(track_height as usize) as u32;
+    let max_row = rows - 2;
+    let row = (suggestion_offset / 2).min(max_row);
+    let thumb_y = track_y
+        + track_height
+            .saturating_sub(thumb_height)
+            .saturating_mul(row as u32)
+            / max_row as u32;
+    painter.fill_rounded_rect(
+        track_x,
+        thumb_y,
+        3 * scale,
+        thumb_height,
+        2 * scale,
+        css_rgba(255, 255, 255, 230),
+    );
 }
 
 fn draw_suggestion_price(

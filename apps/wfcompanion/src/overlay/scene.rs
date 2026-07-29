@@ -74,7 +74,7 @@ impl Presentation {
     }
 }
 
-fn max_suggestion_offset(item_count: usize) -> usize {
+pub(super) fn max_suggestion_offset(item_count: usize) -> usize {
     item_count.saturating_sub(3) / 2 * 2
 }
 

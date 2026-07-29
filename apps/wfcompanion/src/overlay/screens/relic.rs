@@ -163,13 +163,13 @@ mod tests {
     }
 
     #[test]
-    fn suggestion_fixture_has_four_ranked_relics() {
+    fn suggestion_fixture_has_scrollable_ranked_relics() {
         let crate::relic::Scene::Suggestions(suggestions) =
             crate::relic::suggestion_fixture().unwrap()
         else {
             panic!("fixture must contain suggestions");
         };
-        assert_eq!(suggestions.items.len(), 4);
+        assert_eq!(suggestions.items.len(), 8);
         assert!(
             suggestions.items[0].expected_platinum.unwrap()
                 >= suggestions.items[1].expected_platinum.unwrap()

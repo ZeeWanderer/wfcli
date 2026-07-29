@@ -32,6 +32,38 @@
       "favorite": true,
       "expected_platinum": 13,
       "expected_ducats": 48
+    },
+    {
+      "name": "Axi V10",
+      "amount_owned": 6,
+      "vaulted": false,
+      "favorite": false,
+      "expected_platinum": 12,
+      "expected_ducats": 38
+    },
+    {
+      "name": "Axi P7",
+      "amount_owned": 4,
+      "vaulted": true,
+      "favorite": false,
+      "expected_platinum": 11,
+      "expected_ducats": 34
+    },
+    {
+      "name": "Axi N10",
+      "amount_owned": 9,
+      "vaulted": false,
+      "favorite": true,
+      "expected_platinum": 10,
+      "expected_ducats": 29
+    },
+    {
+      "name": "Axi O6",
+      "amount_owned": 1,
+      "vaulted": true,
+      "favorite": false,
+      "expected_platinum": 9,
+      "expected_ducats": 26
     }
   ]
 }

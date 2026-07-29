@@ -40,6 +40,19 @@ all_excludes_requiem_relics_test() ->
              || Item <- maps:get(<<"items">>, Result)],
     ?assertEqual(false, lists:member(<<"Requiem I1 Intact">>, Names)).
 
+recommendations_match_aleca_limit_test() ->
+    Entries = lists:seq(1, 40),
+    Catalog = maps:from_list(
+                [{relic_id(Index),
+                  #{name => iolist_to_binary(io_lib:format("Axi ~2..0B Intact", [Index])),
+                    era => <<"axi">>, vaulted => false, rewards => []}}
+                 || Index <- Entries]),
+    Stacks = [#{<<"item_type">> => relic_id(Index), <<"count">> => 1}
+              || Index <- Entries],
+    Player = #{data => #{<<"inventory">> => #{<<"index">> => #{<<"stacks">> => Stacks}}}},
+    Result = wfcli_relic_recommendations:build(<<"axi">>, Catalog, [], #{}, Player),
+    ?assertEqual(32, length(maps:get(<<"items">>, Result))).
+
 fixture() ->
     jsone:encode([
         #{<<"uniqueName">> => <<"relic-a">>,
@@ -57,6 +70,8 @@ fixture() ->
         #{<<"uniqueName">> => <<"void">>, <<"name">> => <<"Void Relic">>,
           <<"rewards">> => []}
     ]).
+
+relic_id(Index) -> iolist_to_binary(io_lib:format("relic-~B", [Index])).
 
 reward(Chance, Slug) ->
     #{<<"chance">> => Chance,

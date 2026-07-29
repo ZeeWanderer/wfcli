@@ -6,6 +6,7 @@ writes transparent reference images plus measured DOM geometry.
 ```bash
 make aleca-layout-setup
 make previews PREVIEW_MEDIA=image PREVIEW_SETS=reference
+make previews PREVIEW_MEDIA=video PREVIEW_SETS=reference PREVIEW_SCENES=relic-suggestions
 ```
 
 Setup queries Overwolf's official installer metadata, downloads the latest
@@ -20,4 +21,5 @@ For offline setup, pass an OPK or extracted extension:
 ```
 
 Outputs use ignored `previews/<resolution>/reference/`. Select resolutions with
-`PREVIEW_RESOLUTIONS`; `ALECA_LAYOUT_DPI=1` overrides display scale.
+`PREVIEW_RESOLUTIONS`; `ALECA_LAYOUT_DPI=1` overrides display scale. Animated
+references require FFmpeg with `libvpx-vp9`.

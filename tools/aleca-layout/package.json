@@ -4,7 +4,7 @@
   "type": "module",
   "scripts": {
     "render": "node index.mjs",
-    "test": "node --test source.test.mjs"
+    "test": "node --test"
   },
   "devDependencies": {
     "playwright-core": "1.57.0"
