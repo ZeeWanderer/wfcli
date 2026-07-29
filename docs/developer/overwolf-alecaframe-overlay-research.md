@@ -288,6 +288,35 @@ AlecaFrame's historical `volume` field until a supported public source is docume
 Inventory, mastery, relic planning, order management, and history belong in graphical clients
 using the same daemon services. They must not be embedded in overlay rendering code.
 
+## UI State In Memory
+
+Overwolf's published Warframe provider exposes inventory, highlighted items, username, and chat.
+That is its API boundary, not proof that other game state is unavailable. AlecaFrame operates above
+that boundary, so its era OCR also does not rule out a direct collector.
+
+The current `Warframe.x64.exe` contains useful semantic anchors:
+
+- `p.eraTag` and `mVoidProjections`;
+- `OpenVoidProjectionSelectionScreenRMI`, `VoidProjectionSelectionRMI`, and the matching close RMI;
+- `VoidT1` through `VoidT5`.
+
+A bounded Ghidra reference pass found no direct code references to those strings. They appear to be
+registration or reflection data, so they establish likely state names but not a pointer path. The
+selected era may live in the local `ThemedProjectionManager` movie model, while the game-rules RMI
+state may identify only that the picker is open.
+
+Any collector should:
+
+- resolve from executable signatures or registered objects, never fixed addresses;
+- tolerate ASLR and fail closed when a game update changes layout;
+- validate context and enum range before publishing state;
+- be tested across picker changes, process restarts, and at least one game update.
+
+Next validation is a live differential scan while cycling Lith, Meso, Neo, Axi, and All. It should
+first determine whether one stable value changes with the selected tab, then trace that value back
+to a semantic owner. Raw matches for localized era text are insufficient because UI strings may
+remain cached after the tab changes.
+
 ## Safety Boundary
 
 Digital Extremes states that all third-party software, including Overwolf apps, is used at
@@ -297,16 +326,16 @@ Allowed project techniques:
 
 - `/proc`, Steam, Proton, cgroup, and KWin metadata for process/window identity.
 - Receiving `OutputDebugString` through Wine's DBWIN mapping/events without debugger attach.
-- Reading only the inventory JSON path through the native Overwolf-compatible retained-response
-  collector, with bounded payloads and no write, injection, debugger, or network APIs.
+- External read-only Warframe memory observation with bounded payloads, versioned signatures,
+  validation, and no write-capable process access.
 - Public HTTP APIs and exported game/catalog data.
 - Wayland layer-shell rendering outside the game process.
 - User-authorized portal capture and local OCR.
 
 Prohibited unless the project makes a new explicit risk decision:
 
-- Any process-memory read outside the reviewed inventory collector contract.
-- Injected Wine DLLs, Vulkan implicit layers, DXVK/vkd3d hooks, or render interception.
+- Process-memory writes, debugger control, injected Wine DLLs, Vulkan implicit layers,
+  DXVK/vkd3d hooks, or render interception.
 - Modifying game files, intercepting network traffic, or bypassing anti-cheat.
 - Synthetic input, gameplay automation, or actions not directly initiated by the user.
 - Uploading screenshots, logs, inventory, or account data without explicit informed opt-in.
@@ -315,8 +344,9 @@ This deliberately does not reproduce Overwolf's injection mechanism. Wayland lay
 meets game-only, fullscreen, and performance requirements without entering Warframe's
 process or graphics stack.
 
-DBWIN events identify relic-selection and reward-screen lifecycle without OCR. No screen-state
-memory collector is part of the allowed boundary; visual labels use local capture and OCR.
+DBWIN events identify relic-selection and reward-screen lifecycle without OCR. Current visual
+labels still use local capture and OCR until a read-only memory collector meets the validation
+requirements above.
 
 ## Local Evidence Map
 
