@@ -58,8 +58,6 @@ and value helpers here.
 The companion owns native window and overlay state. It publishes normalized observations to the
 daemon and requests shared data from it.
 
-Desktop GUI ownership and stack criteria are in [`gui.md`](gui.md).
-
 ## Runtime Layout
 
 - Rebar3 and Cargo output: `_build/`
