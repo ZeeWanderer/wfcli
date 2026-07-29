@@ -305,6 +305,10 @@ registration or reflection data, so they establish likely state names but not a 
 selected era may live in the local `ThemedProjectionManager` movie model, while the game-rules RMI
 state may identify only that the picker is open.
 
+Live inspection on the Neo relic screen confirmed that `p.eraTag` belongs to a packed metadata-name
+table, not an active-state field. `VoidT1` through `VoidT5` also occur in the intern table and
+retained worldstate JSON. Neither is a usable state anchor without a traced owner.
+
 Any collector should:
 
 - resolve from executable signatures or registered objects, never fixed addresses;
