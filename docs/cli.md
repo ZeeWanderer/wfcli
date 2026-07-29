@@ -31,15 +31,23 @@ wfcli archimedea --deep
 
 ## Bash Completion
 
-Completion candidates come from the running executable's command and option
-registries:
+Install completion in `~/.bashrc`:
+
+```bash
+wfcli completion install
+wfcli completion status
+wfcli completion uninstall
+```
+
+Use `--file PATH` with these commands for another Bash startup file. For the
+current shell only:
 
 ```bash
 source <(wfcli completion bash)
 ```
 
-Add that line to Bash startup files for persistent completion. Development
-`wfclid` is registered by the same script.
+The generated function completes from in-memory command data and registers both
+`wfcli` and `wfclid`.
 
 ## Per-User Paths
 

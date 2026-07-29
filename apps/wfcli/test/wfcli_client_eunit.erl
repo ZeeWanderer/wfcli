@@ -52,6 +52,14 @@ daemon_cli_known_commands_test() ->
     ?assert(lists:member("autostart", Known)),
     ?assert(lists:member("update", Known)).
 
+daemon_readiness_requires_registered_server_test() ->
+    ?assertEqual(
+       retry,
+       wfcli_client:readiness_result(
+         pong, {error, {daemon_call_failed, noproc}})),
+    ?assertEqual(retry, wfcli_client:readiness_result(pang, not_called)),
+    ?assertEqual(ready, wfcli_client:readiness_result(pong, {ok, #{status => running}})).
+
 autostart_unit_runs_supervised_persistent_release_test() ->
     Unit = wfcli_autostart:unit_file(
              "/tmp/wf daemon/bin/wfdaemon", "/opt/erlang/bin:/usr/bin"),

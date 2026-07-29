@@ -28,10 +28,10 @@
 ]).
 
 -ifdef(TEST).
--export([handshake_compatibility/2, terminate_port_process/1]).
+-export([handshake_compatibility/2, readiness_result/2, terminate_port_process/1]).
 -endif.
 
--define(START_RETRIES, 50).
+-define(START_RETRIES, 300).
 -define(START_SLEEP_MS, 100).
 -define(STOP_RETRIES, 50).
 -define(STOP_SLEEP_MS, 100).
@@ -649,9 +649,9 @@ start_managed_daemon(Node) ->
         {ok, true} ->
             case wfcli_autostart:start() of
                 {ok, _ServiceStatus} ->
-                    case ping(Node) of
-                        pong -> {ok, already_running, Node};
-                        pang -> start_systemd_daemon(Node, already_running)
+                    case wait_for_daemon(Node, ?START_RETRIES) of
+                        {ok, started, Node} -> {ok, already_running, Node};
+                        {error, _Reason} = Error -> Error
                     end;
                 {error, Reason} -> {error, {autostart_start_failed, Reason}}
             end;
@@ -666,7 +666,7 @@ start_managed_daemon(Node) ->
 start_systemd_daemon(Node, Status) ->
     case wfcli_autostart:start() of
         {ok, _ServiceStatus} ->
-            case wait_for_pong(Node, ?START_RETRIES) of
+            case wait_for_daemon(Node, ?START_RETRIES) of
                 {ok, started, Node} -> {ok, Status, Node};
                 {error, _Reason} = Error -> Error
             end;
@@ -675,7 +675,11 @@ start_systemd_daemon(Node, Status) ->
 
 start_release_daemon(Node) ->
     case ping(Node) of
-        pong -> {ok, already_running, Node};
+        pong ->
+            case wait_for_daemon(Node, ?START_RETRIES) of
+                {ok, started, Node} -> {ok, already_running, Node};
+                {error, _Reason} = Error -> Error
+            end;
         pang -> start_release_daemon_script(Node)
     end.
 
@@ -684,9 +688,9 @@ start_release_daemon_script(Node) ->
         {ok, Script} ->
             case run_release_script(Script, ["daemon"]) of
                 {ok, _Output} ->
-                    wait_for_pong(Node, ?START_RETRIES);
+                    wait_for_daemon(Node, ?START_RETRIES);
                 {error, Reason} ->
-                    case wait_for_pong(Node, ?START_RETRIES) of
+                    case wait_for_daemon(Node, ?START_RETRIES) of
                         {ok, started, Node} -> {ok, already_running, Node};
                         {error, _} -> {error, Reason}
                     end
@@ -838,15 +842,24 @@ close_port(Port) ->
         error:badarg -> ok
     end.
 
-wait_for_pong(Node, 0) ->
-    {error, {daemon_not_reachable, Node}};
-wait_for_pong(Node, Retries) ->
-    case ping(Node) of
-        pong -> {ok, started, Node};
-        pang ->
+wait_for_daemon(Node, 0) ->
+    {error, {daemon_not_ready, Node}};
+wait_for_daemon(Node, Retries) ->
+    Ping = ping(Node),
+    Call = case Ping of
+        pong -> daemon_call(Node, {hello, wfcli_protocol:version()});
+        pang -> not_called
+    end,
+    case readiness_result(Ping, Call) of
+        ready ->
+            {ok, started, Node};
+        retry ->
             timer:sleep(?START_SLEEP_MS),
-            wait_for_pong(Node, Retries - 1)
+            wait_for_daemon(Node, Retries - 1)
     end.
+
+readiness_result(pong, {ok, _Reply}) -> ready;
+readiness_result(_Ping, _Call) -> retry.
 
 wait_for_pang(Node, 0) ->
     {error, {daemon_still_running, Node}};

@@ -124,7 +124,7 @@ Use built-in help for the complete command surface:
 wfcli --help
 wfcli help commands
 wfcli fissures --help
-source <(wfcli completion bash)
+wfcli completion install
 ```
 
 See [Command-line client](docs/cli.md) for help forms, completion, command

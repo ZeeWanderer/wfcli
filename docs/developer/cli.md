@@ -13,7 +13,8 @@
 - Shared help text snippets live in `wfcli_help_text.erl`.
 - `wfcli_cli_args:help_path/1` resolves contextual `help`, `--help`, and `-h`.
 - `wfcli_completion.erl` derives Bash candidates from command registries and each
-  parser's `known_args/0`.
+  parser's `known_args/0`. Its generated function contains the candidates, so Tab
+  completion does not start an Erlang VM.
 
 ## Parsing
 

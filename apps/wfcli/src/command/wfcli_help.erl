@@ -45,8 +45,8 @@ run(["update" | _]) ->
     wfcli_update_cli:help();
 run(["daemon" | Rest]) ->
     wfcli_daemon_cli:help(Rest);
-run(["completion" | _]) ->
-    wfcli_completion:help();
+run(["completion" | Rest]) ->
+    wfcli_completion:help(Rest);
 run(["paths" | _]) ->
     wfcli_path_cli:help();
 run(["format" | _]) ->
