@@ -6,7 +6,7 @@
 -export([table_row_map/2, expiry/1, expiry/2, to_list/1,
          event_name/2, global_upgrade_name/2, syndicate_name/2, daily_deal_name/2, prime_vault_name/2,
          goal_name/2, season_info_name/2, in_game_market_name/2, library_info_name/2,
-         mod_lookup_by_name/1, resolve_extra_field/3]).
+         resolve_extra_field/3]).
 
 table_row_map(#{type := fissure, data := D} = Entry, Opts) ->
     Tier = wfcli_resolve:resolve("modifier", maps:get(<<"Modifier">>, D, <<"Unknown">>), Opts),
@@ -1244,23 +1244,6 @@ credits_str(_) -> "".
 to_bin(V) ->
     wfcli_text:to_binary(V).
 
-mod_map() ->
-    wfcli_resolve_registry:mod_map().
-
-mod_name_index() ->
-    wfcli_resolve_registry:mod_name_index().
-
-mod_lookup_by_name(Name) ->
-    case normalize_mod_name(Name) of
-        undefined -> {error, no_name};
-        Key ->
-            Map = mod_name_index(),
-            case maps:get(Key, Map, undefined) of
-                undefined -> {error, not_found};
-                Candidates -> {ok, select_mod_candidate(Candidates)}
-            end
-    end.
-
 -doc "Resolve one scalar optional field without moving presentation into the daemon.".
 -spec resolve_extra_field(term(), term(), map()) -> {keep, term(), string()}.
 resolve_extra_field(Key, V, Opts) ->
@@ -1278,29 +1261,4 @@ extra_resolver_key(Key) ->
     end.
 
 mod_details(ItemType) ->
-    case ItemType of
-        undefined -> undefined;
-        _ ->
-            Map = mod_map(),
-            maps:get(to_bin(ItemType), Map, undefined)
-    end.
-
-normalize_mod_name(undefined) -> undefined;
-normalize_mod_name(null) -> undefined;
-normalize_mod_name(Bin) when is_binary(Bin) ->
-    string:lowercase(binary_to_list(Bin));
-normalize_mod_name(Str) when is_list(Str) ->
-    string:lowercase(Str);
-normalize_mod_name(Atom) when is_atom(Atom) ->
-    string:lowercase(atom_to_list(Atom));
-normalize_mod_name(_) -> undefined.
-
-select_mod_candidate(Candidates) ->
-    Filtered = [C || C <- Candidates, maps:get(exclude_from_codex, C, false) =/= true],
-    Use = case Filtered of [] -> Candidates; _ -> Filtered end,
-    [First | _] = lists:sort(fun candidate_order/2, Use),
-    #{polarity => maps:get(polarity, First, none),
-      cost => maps:get(cost, First, undefined)}.
-
-candidate_order(A, B) ->
-    to_list(maps:get(unique, A, "")) =< to_list(maps:get(unique, B, "")).
+    wfcli_mod_catalog:details(ItemType).

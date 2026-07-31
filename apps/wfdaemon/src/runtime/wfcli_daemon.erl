@@ -43,7 +43,9 @@
 -type state() :: #{
     started_at := integer(),
     artifact_id := binary() | undefined,
-    artifact_update := boolean()
+    artifact_update := false | #{artifact_id := binary(), monitor := reference(), pid := pid()},
+    manual_update := false | #{token := reference(), monitor := reference(), pid := pid(),
+                               from := gen_server:from()}
 }.
 
 -doc "Start persistent service registered as `wfcli_daemon`; supervisor owns this in release mode.".
@@ -80,7 +82,8 @@ protocol_version() -> wfcli_protocol:version().
 init([]) ->
     schedule_artifact_check(),
     {ok, #{started_at => erlang:monotonic_time(millisecond),
-           artifact_id => current_artifact_id(), artifact_update => false}}.
+           artifact_id => current_artifact_id(), artifact_update => false,
+           manual_update => false}}.
 
 -spec handle_call(term(), gen_server:from(), state()) ->
     {reply, term(), state()} | {noreply, state()}.
@@ -112,13 +115,18 @@ handle_call(player_clear, _From, State) ->
 handle_call({companion_command, Command}, _From, State) when is_map(Command) ->
     {reply, wfcli_local_api:companion_command(Command), State};
 handle_call({hot_update, Bundles}, From, State) when is_list(Bundles) ->
-    _ = spawn(fun() -> gen_server:reply(From, wfcli_hot_update:apply(Bundles)) end),
-    {noreply, State};
+    case update_in_progress(State) of
+        true -> {reply, {error, update_in_progress}, State};
+        false -> {noreply, start_manual_update(Bundles, From, State)}
+    end;
 handle_call(stop, _From, State) ->
     _ = spawn(fun stop_node_after_reply/0),
     {reply, ok, State};
 handle_call({update_release, ReleaseName}, _From, State) when is_list(ReleaseName) ->
-    {reply, update_release(ReleaseName), State};
+    case update_in_progress(State) of
+        true -> {reply, {error, update_in_progress}, State};
+        false -> {reply, update_release(ReleaseName), State}
+    end;
 handle_call(Request, _From, State) ->
     {reply, {error, {unknown_request, Request}}, State}.
 
@@ -130,13 +138,33 @@ handle_cast(_Msg, State) ->
 handle_info(artifact_check, State) ->
     schedule_artifact_check(),
     {noreply, check_artifact_update(State)};
-handle_info({artifact_update, ArtifactId, Result}, State) ->
+handle_info({artifact_update, ArtifactId, Result},
+            State = #{artifact_update := #{artifact_id := ArtifactId, monitor := Monitor}}) ->
+    erlang:demonitor(Monitor, [flush]),
     case Result of
         {ok, _Info} -> {noreply, State#{artifact_id => ArtifactId, artifact_update => false}};
         {error, Reason} ->
             logger:warning("wfdaemon artifact update failed: ~p", [Reason]),
             {noreply, State#{artifact_update => false}}
     end;
+handle_info({artifact_update, _ArtifactId, _Result}, State) ->
+    {noreply, State};
+handle_info({manual_update, Token, Result},
+            State = #{manual_update := #{token := Token, monitor := Monitor,
+                                         from := From}}) ->
+    erlang:demonitor(Monitor, [flush]),
+    gen_server:reply(From, Result),
+    {noreply, State#{manual_update => false}};
+handle_info({manual_update, _Token, _Result}, State) ->
+    {noreply, State};
+handle_info({'DOWN', Monitor, process, _Pid, Reason},
+            State = #{artifact_update := #{monitor := Monitor}}) ->
+    logger:warning("wfdaemon artifact updater stopped: ~p", [Reason]),
+    {noreply, State#{artifact_update => false}};
+handle_info({'DOWN', Monitor, process, _Pid, Reason},
+            State = #{manual_update := #{monitor := Monitor, from := From}}) ->
+    gen_server:reply(From, {error, {hot_update_worker_down, Reason}}),
+    {noreply, State#{manual_update => false}};
 handle_info(_Msg, State) ->
     {noreply, State}.
 
@@ -147,9 +175,17 @@ terminate(_Reason, _State) ->
 -doc "OTP hot-upgrade hook. Real state migration belongs here once appup/relup exists.".
 -spec code_change(term(), state(), term()) -> {ok, state()}.
 code_change(_OldVsn, State, _Extra) ->
-    {ok, State}.
+    Update = case maps:get(artifact_update, State, false) of
+        #{artifact_id := _, monitor := _, pid := _} = Active -> Active;
+        _ -> false
+    end,
+    Manual = case maps:get(manual_update, State, false) of
+        #{token := _, monitor := _, pid := _, from := _} = ActiveManual -> ActiveManual;
+        _ -> false
+    end,
+    {ok, State#{artifact_update => Update, manual_update => Manual}}.
 
-status(#{started_at := StartedAt}) ->
+status(State = #{started_at := StartedAt}) ->
     Now = erlang:monotonic_time(millisecond),
     ServiceStatus = try wfcli_worldstate_service:status()
                     catch _:_ -> unavailable
@@ -179,8 +215,17 @@ status(#{started_at := StartedAt}) ->
         query => safe_status(wfcli_query_service),
         player => safe_status(wfcli_player_service),
         market => safe_status(wfcli_market_service),
-        local_api => safe_status(wfcli_local_api)
+        local_api => safe_status(wfcli_local_api),
+        update => update_status(State)
     }).
+
+update_status(#{manual_update := Manual, artifact_update := Artifact}) ->
+    case {Manual, Artifact} of
+        {false, false} -> idle;
+        {#{}, false} -> manual;
+        {false, #{}} -> artifact;
+        {#{}, #{}} -> both
+    end.
 
 with_build_identity(Map) ->
     case wfcli_hot_update:current_build_identity() of
@@ -267,12 +312,26 @@ current_artifact_id() ->
         {error, _Reason} -> undefined
     end.
 
-maybe_start_artifact_update(State = #{artifact_id := Current, artifact_update := false}) ->
+update_in_progress(State) ->
+    maps:get(artifact_update, State, false) =/= false orelse
+        maps:get(manual_update, State, false) =/= false.
+
+start_manual_update(Bundles, From, State) ->
+    Daemon = self(),
+    Token = make_ref(),
+    {Pid, Monitor} = spawn_monitor(fun() ->
+        Daemon ! {manual_update, Token, safe_hot_update(Bundles)}
+    end),
+    State#{manual_update => #{token => Token, monitor => Monitor,
+                              pid => Pid, from => From}}.
+
+maybe_start_artifact_update(
+  State = #{artifact_id := Current, artifact_update := false, manual_update := false}) ->
     case wfcli_build:artifact_id() of
         {ok, Current} -> State;
         {ok, ArtifactId} ->
             Daemon = self(),
-            _ = spawn(fun() ->
+            {Pid, Monitor} = spawn_monitor(fun() ->
                 Result = case wfcli_build:hot_ebin_dirs() of
                     {ok, Dirs} ->
                         case wfcli_hot_update:read_directories(Dirs) of
@@ -283,7 +342,24 @@ maybe_start_artifact_update(State = #{artifact_id := Current, artifact_update :=
                 end,
                 Daemon ! {artifact_update, ArtifactId, Result}
             end),
-            State#{artifact_update => true};
+            State#{artifact_update => #{artifact_id => ArtifactId,
+                                        monitor => Monitor, pid => Pid}};
         {error, _Reason} -> State
     end;
 maybe_start_artifact_update(State) -> State.
+
+safe_hot_update(Bundles) ->
+    try execute_hot_update(Bundles)
+    catch
+        Class:Reason:Stacktrace -> {error, {hot_update_crash, Class, Reason, Stacktrace}}
+    end.
+
+-ifdef(TEST).
+execute_hot_update(Bundles) ->
+    case application:get_env(wfdaemon, daemon_hot_update_fun, undefined) of
+        Fun when is_function(Fun, 1) -> Fun(Bundles);
+        undefined -> wfcli_hot_update:apply(Bundles)
+    end.
+-else.
+execute_hot_update(Bundles) -> wfcli_hot_update:apply(Bundles).
+-endif.

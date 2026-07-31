@@ -13,13 +13,19 @@
 -define(MAX_BUFFER_BYTES, 8388608).
 -define(MAX_MARKET_RESOLVE_LABELS, 20).
 -define(MAX_MARKET_RESOLVE_LIMIT, 5).
+-define(DEFAULT_REQUEST_WORKERS, 4).
+-define(DEFAULT_GLOBAL_REQUEST_WORKERS, 16).
 
 -type state() :: #{
     listen := socket:socket(),
     path := file:filename_all(),
     acceptor := pid(),
     connections := map(),
-    monitors := map()
+    monitors := map(),
+    worker_holders := map(),
+    worker_waiters := queue:queue(),
+    worker_count := non_neg_integer(),
+    worker_limit := pos_integer()
 }.
 
 -doc "Start owner-only Unix socket endpoint used by native companion processes.".
@@ -59,7 +65,9 @@ init([]) ->
             Parent = self(),
             Acceptor = spawn_link(fun() -> accept_loop(Listen, Parent) end),
             {ok, #{listen => Listen, path => Path, acceptor => Acceptor,
-                   connections => #{}, monitors => #{}}};
+                   connections => #{}, monitors => #{}, worker_holders => #{},
+                   worker_waiters => queue:new(), worker_count => 0,
+                   worker_limit => global_local_worker_limit()}};
         {error, Reason} ->
             {stop, {local_api_listen_failed, Path, Reason}}
     end.
@@ -75,7 +83,16 @@ handle_call(status, _From, State) ->
               connections => map_size(Connections),
               companions => length(CompanionDetails),
               companion_details => CompanionDetails,
+              local_workers => maps:get(worker_count, State, 0),
+              local_workers_queued => queue:len(
+                                        maps:get(worker_waiters, State, queue:new())),
+              local_worker_limit => maps:get(worker_limit, State,
+                                             global_local_worker_limit()),
               protocol => wfcli_local_protocol:protocol_version()}, State};
+handle_call({acquire_local_workers, Pid, Count}, _From, State)
+  when is_pid(Pid), is_integer(Count), Count > 0 ->
+    {Granted, Queued, State1} = acquire_local_workers(Pid, Count, State),
+    {reply, {Granted, Queued}, State1};
 handle_call({companion_command, Command}, _From, State) ->
     Count = maps:fold(
       fun(Pid, Info, Acc) ->
@@ -91,6 +108,8 @@ handle_call(Request, _From, State) ->
     {reply, {error, {unknown_request, Request}}, State}.
 
 -spec handle_cast(term(), state()) -> {noreply, state()}.
+handle_cast({release_local_worker, Pid}, State) when is_pid(Pid) ->
+    {noreply, assign_local_worker_waiters(release_local_workers(Pid, 1, State))};
 handle_cast(_Message, State) ->
     {noreply, State}.
 
@@ -120,7 +139,10 @@ handle_info({'DOWN', Monitor, process, _Pid, _Reason}, State) ->
                     {noreply, State#{monitors => Monitors}};
                 {Info, Connections} ->
                     release_client_activity(Info),
-                    {noreply, State#{connections => Connections, monitors => Monitors}}
+                    State1 = drop_local_worker_client(Connection, State),
+                    {noreply, assign_local_worker_waiters(
+                                State1#{connections => Connections,
+                                        monitors => Monitors})}
             end
     end;
 handle_info({'EXIT', Acceptor, Reason}, State = #{acceptor := Acceptor}) ->
@@ -145,10 +167,82 @@ terminate(_Reason, State) ->
 
 -spec code_change(term(), state(), term()) -> {ok, state()}.
 code_change(_OldVsn, State, _Extra) ->
-    {ok, State}.
+    {ok, State#{worker_holders => maps:get(worker_holders, State, #{}),
+                worker_waiters => maps:get(worker_waiters, State, queue:new()),
+                worker_count => maps:get(worker_count, State, 0),
+                worker_limit => maps:get(worker_limit, State,
+                                         global_local_worker_limit())}}.
+
+acquire_local_workers(Pid, Count, State) ->
+    Available = max(0, maps:get(worker_limit, State) - maps:get(worker_count, State)),
+    Granted = min(Count, Available),
+    Queued = Count - Granted,
+    State1 = add_local_worker_holders(Pid, Granted, State),
+    Waiters = enqueue_local_worker_waiters(Pid, Queued,
+                                            maps:get(worker_waiters, State1)),
+    {Granted, Queued, State1#{worker_waiters => Waiters}}.
+
+enqueue_local_worker_waiters(_Pid, 0, Queue) -> Queue;
+enqueue_local_worker_waiters(Pid, Count, Queue) ->
+    enqueue_local_worker_waiters(Pid, Count - 1, queue:in(Pid, Queue)).
+
+add_local_worker_holders(_Pid, 0, State) -> State;
+add_local_worker_holders(Pid, Count, State) ->
+    Holders = maps:get(worker_holders, State),
+    Held = maps:get(Pid, Holders, 0),
+    State#{worker_holders => Holders#{Pid => Held + Count},
+           worker_count => maps:get(worker_count, State) + Count}.
+
+release_local_workers(Pid, Count, State) ->
+    Holders = maps:get(worker_holders, State),
+    Held = maps:get(Pid, Holders, 0),
+    Released = min(Count, Held),
+    Remaining = Held - Released,
+    Holders1 = case Remaining of
+        0 -> maps:remove(Pid, Holders);
+        _ -> Holders#{Pid => Remaining}
+    end,
+    State#{worker_holders => Holders1,
+           worker_count => maps:get(worker_count, State) - Released}.
+
+drop_local_worker_client(Pid, State) ->
+    Held = maps:get(Pid, maps:get(worker_holders, State), 0),
+    Waiters = queue:filter(fun(WaitingPid) -> WaitingPid =/= Pid end,
+                           maps:get(worker_waiters, State)),
+    (release_local_workers(Pid, Held, State))#{worker_waiters => Waiters}.
+
+assign_local_worker_waiters(State) ->
+    case maps:get(worker_count, State) < maps:get(worker_limit, State) of
+        false -> State;
+        true ->
+            case queue:out(maps:get(worker_waiters, State)) of
+                {empty, Queue} -> State#{worker_waiters => Queue};
+                {{value, Pid}, Queue} ->
+                    State1 = State#{worker_waiters => Queue},
+                    case maps:is_key(Pid, maps:get(connections, State1)) of
+                        true ->
+                            Pid ! local_worker_permit,
+                            assign_local_worker_waiters(
+                              add_local_worker_holders(Pid, 1, State1));
+                        false -> assign_local_worker_waiters(State1)
+                    end
+            end
+    end.
+
+global_local_worker_limit() ->
+    case application:get_env(wfdaemon, local_request_global_workers,
+                             ?DEFAULT_GLOBAL_REQUEST_WORKERS) of
+        Count when is_integer(Count), Count > 0 -> Count;
+        _ -> ?DEFAULT_GLOBAL_REQUEST_WORKERS
+    end.
 
 open_listener(Path) ->
-    ok = filelib:ensure_dir(Path),
+    case filelib:ensure_dir(Path) of
+        ok -> open_listener_path(Path);
+        {error, _Reason} = Error -> Error
+    end.
+
+open_listener_path(Path) ->
     _ = file:make_dir(filename:dirname(Path)),
     _ = file:change_mode(filename:dirname(Path), 8#700),
     _ = file:delete(Path),
@@ -196,15 +290,19 @@ await_socket(Parent) ->
     end.
 
 connection(Socket, Parent) ->
+    process_flag(trap_exit, true),
     Handler = self(),
     {Reader, ReaderMonitor} = spawn_monitor(fun() -> socket_reader(Socket, Handler) end),
     State = #{socket => Socket, parent => Parent, reader => Reader,
               reader_monitor => ReaderMonitor, buffer => <<>>,
               hello => false, subscriptions => #{}, refs => #{}, market_refs => #{},
-              workers => #{}},
-    try connection_loop(State)
+              workers => #{}, worker_queue => queue:new(),
+              worker_permits => 0, worker_permit_requests => 0,
+              max_workers => local_worker_limit()},
+    try
+        FinalState = connection_loop(State),
+        cleanup_connection(FinalState)
     after
-        cleanup_connection(State),
         _ = socket:close(Socket)
     end.
 
@@ -213,9 +311,9 @@ connection_loop(State = #{reader_monitor := ReaderMonitor}) ->
         {socket_data, Data} ->
             case consume_data(Data, State) of
                 {ok, State1} -> connection_loop(State1);
-                {stop, _Reason, _State1} -> ok
+                {stop, _Reason, State1} -> State1
             end;
-        {socket_closed, _Reason} -> ok;
+        {socket_closed, _Reason} -> State;
         {wfcli_player, Ref, Snapshot} ->
             State1 = send_subscription_update(Ref, Snapshot, State),
             connection_loop(State1);
@@ -225,19 +323,25 @@ connection_loop(State = #{reader_monitor := ReaderMonitor}) ->
         {local_request_result, Token, Id, Dataset, Reply} ->
             State1 = send_local_request_result(Token, Id, Dataset, Reply, State),
             connection_loop(State1);
+        local_worker_permit ->
+            Waiting = max(0, maps:get(worker_permit_requests, State) - 1),
+            State1 = schedule_local_workers(
+                       State#{worker_permits => maps:get(worker_permits, State) + 1,
+                              worker_permit_requests => Waiting}),
+            connection_loop(State1);
         {daemon_command, Command} ->
             send_json(maps:get(socket, State),
                       #{<<"event">> => <<"command">>, <<"data">> => Command}),
             connection_loop(State);
         {'DOWN', ReaderMonitor, process, _Reader, Reason} ->
             case Reason of
-                normal -> ok;
+                normal -> State;
                 _ -> exit({socket_reader_failed, Reason})
             end;
         {'DOWN', Monitor, process, _Worker, Reason} ->
             State1 = local_request_down(Monitor, Reason, State),
             connection_loop(State1);
-        shutdown -> ok;
+        shutdown -> State;
         _Message -> connection_loop(State)
     end.
 
@@ -543,9 +647,13 @@ send_market_reply(Ref, Reply, State) ->
     end.
 
 start_local_request(Id, Dataset, Work, State) ->
+    Pending = queue:in({Id, Dataset, Work}, maps:get(worker_queue, State)),
+    schedule_local_workers(State#{worker_queue => Pending}).
+
+start_local_worker(Id, Dataset, Work, State) ->
     Parent = self(),
     Token = make_ref(),
-    {Pid, Monitor} = spawn_monitor(fun() ->
+    {Pid, Monitor} = spawn_opt(fun() ->
         Reply = try Work()
                 catch Class:Reason:Stack ->
                     logger:error("local API request failed: ~p:~p~n~p",
@@ -553,7 +661,7 @@ start_local_request(Id, Dataset, Work, State) ->
                     {error, {local_request_failed, Class, Reason}}
                 end,
         Parent ! {local_request_result, Token, Id, Dataset, Reply}
-    end),
+    end, [link, monitor]),
     Worker = #{pid => Pid, monitor => Monitor, id => Id},
     Workers = maps:get(workers, State, #{}),
     State#{workers => Workers#{Token => Worker}}.
@@ -563,11 +671,12 @@ send_local_request_result(Token, Id, Dataset, Reply, State) ->
         error -> State;
         {#{monitor := Monitor}, Workers} ->
             erlang:demonitor(Monitor, [flush]),
+            release_global_local_worker(),
             case Reply of
                 {ok, Data} -> send_ok(maps:get(socket, State), Id, Dataset, Data);
                 {error, Reason} -> send_error(maps:get(socket, State), Id, Reason)
             end,
-            State#{workers => Workers}
+            schedule_local_workers(State#{workers => Workers})
     end.
 
 local_request_down(Monitor, Reason, State) ->
@@ -576,9 +685,51 @@ local_request_down(Monitor, Reason, State) ->
                  maps:to_list(maps:get(workers, State, #{})),
              WorkerMonitor =:= Monitor] of
         [{Token, #{id := Id}}] ->
+            release_global_local_worker(),
             send_error(maps:get(socket, State), Id, {local_request_down, Reason}),
-            State#{workers => maps:remove(Token, maps:get(workers, State))};
+            schedule_local_workers(
+              State#{workers => maps:remove(Token, maps:get(workers, State))});
         [] -> State
+    end.
+
+schedule_local_workers(State) ->
+    State1 = start_permitted_local_workers(State),
+    Slots = maps:get(max_workers, State1) - map_size(maps:get(workers, State1)),
+    Needed0 = min(Slots, queue:len(maps:get(worker_queue, State1))),
+    Reserved = maps:get(worker_permits, State1) +
+               maps:get(worker_permit_requests, State1),
+    case max(0, Needed0 - Reserved) of
+        0 -> State1;
+        Needed ->
+            {Granted, Queued} = gen_server:call(
+                                  ?SERVER, {acquire_local_workers, self(), Needed}),
+            start_permitted_local_workers(
+              State1#{worker_permits => maps:get(worker_permits, State1) + Granted,
+                      worker_permit_requests =>
+                          maps:get(worker_permit_requests, State1) + Queued})
+    end.
+
+start_permitted_local_workers(State) ->
+    CanStart = maps:get(worker_permits, State) > 0 andalso
+               map_size(maps:get(workers, State)) < maps:get(max_workers, State),
+    case {CanStart, queue:out(maps:get(worker_queue, State))} of
+        {true, {{value, {Id, Dataset, Work}}, Queue}} ->
+            State1 = start_local_worker(
+                       Id, Dataset, Work,
+                       State#{worker_queue => Queue,
+                              worker_permits => maps:get(worker_permits, State) - 1}),
+            start_permitted_local_workers(State1);
+        {_, {empty, Queue}} -> State#{worker_queue => Queue};
+        _ -> State
+    end.
+
+release_global_local_worker() ->
+    gen_server:cast(?SERVER, {release_local_worker, self()}).
+
+local_worker_limit() ->
+    case application:get_env(wfdaemon, local_request_workers, ?DEFAULT_REQUEST_WORKERS) of
+        Count when is_integer(Count), Count > 0 -> Count;
+        _ -> ?DEFAULT_REQUEST_WORKERS
     end.
 
 dataset_snapshot(<<"player">>) ->

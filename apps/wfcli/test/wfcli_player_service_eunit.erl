@@ -13,6 +13,9 @@ player_service_test_() ->
          fun merges_source_owned_namespaces/0,
          fun notifies_and_releases_dead_subscribers/0,
          fun reloads_persisted_snapshot/0,
+         fun publish_invalidates_derived_views/0,
+         fun unchanged_publish_keeps_revision_and_views/0,
+         fun unchanged_game_publish_refreshes_transient_state/0,
          fun game_stop_does_not_erase_cached_inventory/0
      ] end}.
 
@@ -57,6 +60,39 @@ reloads_persisted_snapshot() ->
     After = wfcli_player_service:snapshot(),
     ?assertEqual(maps:get(data, Before), maps:get(data, After)).
 
+publish_invalidates_derived_views() ->
+    true = ets:insert(wfcli_player_view_cache, {test_view, cached}),
+    {ok, _} = wfcli_player_service:publish(<<"profile">>, #{<<"rank">> => 13}),
+    ?assertEqual([], ets:lookup(wfcli_player_view_cache, test_view)).
+
+unchanged_publish_keeps_revision_and_views() ->
+    Data = #{<<"value">> => 1},
+    {ok, First} = wfcli_player_service:publish(<<"stable">>, Data),
+    await_cache_clean(50),
+    {ok, Ref, _} = wfcli_player_service:subscribe(self()),
+    true = ets:insert(wfcli_player_view_cache, {stable_view, cached}),
+    {ok, Second} = wfcli_player_service:publish(<<"stable">>, Data),
+    ?assertEqual(maps:get(revision, First), maps:get(revision, Second)),
+    ?assertEqual([{stable_view, cached}],
+                 ets:lookup(wfcli_player_view_cache, stable_view)),
+    ?assertMatch(#{cache_dirty := false, persist_timer := undefined},
+                 sys:get_state(wfcli_player_service)),
+    receive
+        {wfcli_player, Ref, _Snapshot} -> error(unchanged_publish_notified)
+    after 25 -> ok
+    end,
+    ok = wfcli_player_service:unsubscribe(Ref).
+
+unchanged_game_publish_refreshes_transient_state() ->
+    Game = #{<<"running">> => true},
+    {ok, First} = wfcli_player_service:publish(<<"game">>, Game),
+    _ = sys:replace_state(
+          wfcli_player_service,
+          fun(State) -> State#{game_active => false} end),
+    {ok, Second} = wfcli_player_service:publish(<<"game">>, Game),
+    ?assertEqual(maps:get(revision, First), maps:get(revision, Second)),
+    ?assertEqual(true, maps:get(game_active, wfcli_player_service:status())).
+
 game_stop_does_not_erase_cached_inventory() ->
     Inventory = #{<<"schema">> => 1, <<"sync">> => <<"abc">>},
     {ok, _} = wfcli_player_service:publish(<<"inventory">>, Inventory),
@@ -70,4 +106,13 @@ await_subscribers(Expected, Attempts) ->
     case maps:get(subscribers, wfcli_player_service:status()) of
         Expected -> ok;
         _ -> timer:sleep(10), await_subscribers(Expected, Attempts - 1)
+    end.
+
+await_cache_clean(0) ->
+    ?assertMatch(#{cache_dirty := false, persist_timer := undefined},
+                 sys:get_state(wfcli_player_service));
+await_cache_clean(Attempts) ->
+    case sys:get_state(wfcli_player_service) of
+        #{cache_dirty := false, persist_timer := undefined} -> ok;
+        _ -> timer:sleep(10), await_cache_clean(Attempts - 1)
     end.

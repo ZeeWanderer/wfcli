@@ -12,6 +12,9 @@
 
 -define(SERVER, ?MODULE).
 -define(CACHE_VERSION, 1).
+-define(VIEW_CACHE, wfcli_player_view_cache).
+-define(PERSIST_DELAY_MS, 250).
+-define(PERSIST_RETRY_MS, 5000).
 
 -type snapshot() :: #{
     revision := non_neg_integer(),
@@ -23,7 +26,10 @@
     snapshot := snapshot(),
     subscribers := map(),
     monitors := map(),
-    game_active := boolean()
+    game_active := boolean(),
+    cache_dirty := boolean(),
+    cache_error := term() | undefined,
+    persist_timer := reference() | undefined
 }.
 
 -doc "Start daemon-owned player dataset store.".
@@ -65,11 +71,15 @@ status() ->
 init([]) ->
     CachePath = cache_path(),
     Snapshot = load_snapshot(CachePath),
+    ensure_view_cache(),
     {ok, #{cache_path => CachePath,
            snapshot => reset_session_state(Snapshot),
            subscribers => #{},
            monitors => #{},
-           game_active => false}}.
+           game_active => false,
+           cache_dirty => false,
+           cache_error => undefined,
+           persist_timer => undefined}}.
 
 -spec handle_call(term(), gen_server:from(), state()) -> {reply, term(), state()}.
 handle_call(snapshot, _From, State) ->
@@ -95,7 +105,11 @@ handle_call(clear, _From, State) ->
     Snapshot = empty_snapshot(),
     case persist_snapshot(maps:get(cache_path, State), Snapshot) of
         ok ->
-            State1 = set_game_active(false, State#{snapshot => Snapshot}),
+            cancel_timer(maps:get(persist_timer, State)),
+            invalidate_view_cache(),
+            State1 = set_game_active(
+                       false, State#{snapshot => Snapshot, cache_dirty => false,
+                                     cache_error => undefined, persist_timer => undefined}),
             notify_subscribers(Snapshot, State1),
             {reply, ok, State1};
         {error, Reason} ->
@@ -109,6 +123,7 @@ handle_call(status, _From, State) ->
               sources => lists:sort(maps:keys(Data)),
               subscribers => map_size(maps:get(subscribers, State)),
               cache_path => maps:get(cache_path, State),
+              cache_error => maps:get(cache_error, State),
               game_active => maps:get(game_active, State)}, State};
 handle_call(Request, _From, State) ->
     {reply, {error, {unknown_request, Request}}, State}.
@@ -125,34 +140,45 @@ handle_info({'DOWN', Monitor, process, _Pid, _Reason}, State) ->
             Subscribers = maps:remove(Ref, maps:get(subscribers, State)),
             {noreply, State#{subscribers => Subscribers, monitors => Monitors}}
     end;
+handle_info(persist_snapshot, State) ->
+    {noreply, flush_snapshot(State#{persist_timer => undefined})};
 handle_info(_Message, State) ->
     {noreply, State}.
 
 -spec terminate(term(), state()) -> ok.
-terminate(_Reason, _State) -> ok.
+terminate(_Reason, State) ->
+    cancel_timer(maps:get(persist_timer, State, undefined)),
+    case maps:get(cache_dirty, State, false) of
+        true -> _ = persist_snapshot(maps:get(cache_path, State), maps:get(snapshot, State));
+        false -> ok
+    end,
+    ok.
 
 -spec code_change(term(), state(), term()) -> {ok, state()}.
 code_change(_OldVsn, State, hot_update) ->
     release_legacy_game_hold(State),
-    {ok, State#{game_active => maps:get(game_active, State, false)}};
+    ensure_view_cache(),
+    {ok, ensure_persistence_state(State#{game_active => maps:get(game_active, State, false)})};
 code_change(_OldVsn, State, _Extra) ->
-    {ok, State#{game_active => maps:get(game_active, State, false)}}.
+    ensure_view_cache(),
+    {ok, ensure_persistence_state(State#{game_active => maps:get(game_active, State, false)})}.
 
 publish_source(Source, Data, State) ->
     OldSnapshot = maps:get(snapshot, State),
     OldData = maps:get(data, OldSnapshot),
-    Now = erlang:system_time(millisecond),
-    Snapshot = #{revision => maps:get(revision, OldSnapshot) + 1,
-                 updated_at => Now,
-                 data => OldData#{Source => Data}},
-    case persist_snapshot(maps:get(cache_path, State), Snapshot) of
-        ok ->
+    case maps:get(Source, OldData, '$missing') =:= Data of
+        true ->
+            {reply, {ok, OldSnapshot}, maybe_update_game_status(Source, Data, State)};
+        false ->
+            Now = erlang:system_time(millisecond),
+            Snapshot = #{revision => maps:get(revision, OldSnapshot) + 1,
+                         updated_at => Now,
+                         data => OldData#{Source => Data}},
+            invalidate_view_cache(),
             State1 = maybe_update_game_status(Source, Data,
-                                              State#{snapshot => Snapshot}),
+                                              mark_dirty(State#{snapshot => Snapshot})),
             notify_subscribers(Snapshot, State1),
-            {reply, {ok, Snapshot}, State1};
-        {error, Reason} ->
-            {reply, {error, {player_cache_write_failed, Reason}}, State}
+            {reply, {ok, Snapshot}, State1}
     end.
 
 valid_source(Source) when byte_size(Source) > 0, byte_size(Source) =< 64 ->
@@ -190,6 +216,45 @@ remove_subscriber(Ref, State) ->
             State#{subscribers => Subscribers, monitors => Monitors}
     end.
 
+ensure_persistence_state(State) ->
+    State#{cache_dirty => maps:get(cache_dirty, State, false),
+           cache_error => maps:get(cache_error, State, undefined),
+           persist_timer => maps:get(persist_timer, State, undefined)}.
+
+ensure_view_cache() ->
+    case ets:whereis(?VIEW_CACHE) of
+        undefined ->
+            _ = ets:new(?VIEW_CACHE, [named_table, set, public,
+                                      {read_concurrency, true}, {write_concurrency, true}]),
+            ok;
+        _Table -> ok
+    end.
+
+invalidate_view_cache() ->
+    try ets:delete_all_objects(?VIEW_CACHE)
+    catch error:badarg -> ok
+    end.
+
+mark_dirty(State = #{persist_timer := undefined}) ->
+    Timer = erlang:send_after(?PERSIST_DELAY_MS, self(), persist_snapshot),
+    State#{cache_dirty => true, persist_timer => Timer};
+mark_dirty(State) -> State#{cache_dirty => true}.
+
+flush_snapshot(State = #{cache_dirty := false}) -> State;
+flush_snapshot(State) ->
+    case persist_snapshot(maps:get(cache_path, State), maps:get(snapshot, State)) of
+        ok -> State#{cache_dirty => false, cache_error => undefined};
+        {error, Reason} ->
+            logger:warning("player cache write failed: ~p", [Reason]),
+            Timer = erlang:send_after(?PERSIST_RETRY_MS, self(), persist_snapshot),
+            State#{persist_timer => Timer, cache_error => Reason}
+    end.
+
+cancel_timer(undefined) -> ok;
+cancel_timer(Timer) ->
+    _ = erlang:cancel_timer(Timer),
+    ok.
+
 cache_path() ->
     case application:get_env(wfdaemon, player_cache) of
         {ok, Path} -> Path;
@@ -225,13 +290,16 @@ reset_session_state(Snapshot) ->
     end.
 
 persist_snapshot(Path, Snapshot) ->
-    ok = filelib:ensure_dir(Path),
-    Temp = Path ++ ".tmp",
-    Binary = term_to_binary(#{version => ?CACHE_VERSION, snapshot => Snapshot},
-                            [compressed]),
-    case file:write_file(Temp, Binary) of
+    case filelib:ensure_dir(Path) of
         ok ->
-            _ = file:change_mode(Temp, 8#600),
-            file:rename(Temp, Path);
+            Temp = Path ++ ".tmp",
+            Binary = term_to_binary(#{version => ?CACHE_VERSION, snapshot => Snapshot},
+                                    [compressed]),
+            case file:write_file(Temp, Binary) of
+                ok ->
+                    _ = file:change_mode(Temp, 8#600),
+                    file:rename(Temp, Path);
+                {error, _Reason} = Error -> Error
+            end;
         {error, _Reason} = Error -> Error
     end.

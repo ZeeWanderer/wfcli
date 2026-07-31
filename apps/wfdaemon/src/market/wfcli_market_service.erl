@@ -9,6 +9,10 @@
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2,
          terminate/2, code_change/3]).
 
+-ifdef(TEST).
+-export([worker_snapshot/2]).
+-endif.
+
 -define(SERVER, ?MODULE).
 -define(DEFAULT_QUOTE_TTL, 60).
 -define(MANIFEST_TTL, 86400).
@@ -22,6 +26,9 @@
 -define(RELIC_CATALOG_TTL, 86400).
 -define(RELIC_CATALOG_RETRY_TTL, 60).
 -define(RECOMMENDATION_PRICE_CANDIDATES, 4).
+-define(PERSIST_DELAY_MS, 500).
+-define(PERSIST_RETRY_MS, 5000).
+-define(DEFAULT_READ_WORKERS, 8).
 
 -type state() :: map().
 
@@ -42,9 +49,12 @@ status() -> gen_server:call(?SERVER, status).
 -spec init([]) -> {ok, state()}.
 init([]) ->
     Path = wfcli_market_cache:path(),
-    {ok, #{queue => queue:new(), current => undefined, reads => #{}, monitors => #{},
+    {ok, #{queue => queue:new(), current => undefined,
+           read_queue => queue:new(), reads => #{}, max_reads => read_worker_limit(),
+           monitors => #{},
            cache_path => Path, snapshot => wfcli_market_cache:load(Path),
-           next_request_at => 0, cache_error => undefined}}.
+           next_request_at => 0, cache_error => undefined,
+           cache_dirty => false, persist_timer => undefined}}.
 
 -spec handle_call(term(), gen_server:from(), state()) -> {reply, term(), state()}.
 handle_call({submit, Client, Request}, _From, State) when is_pid(Client), is_map(Request) ->
@@ -55,7 +65,7 @@ handle_call({submit, Client, Request}, _From, State) when is_pid(Client), is_map
     wfcli_worldstate_service:activity_start(),
     State1 = State#{monitors => (maps:get(monitors, State))#{Monitor => Ref}},
     case immediate_request(Request, maps:get(snapshot, State)) of
-        true -> {reply, {ok, Ref}, start_read(Job, State1)};
+        true -> {reply, {ok, Ref}, enqueue_read(Job, State1)};
         false ->
             self() ! process_queue,
             {reply, {ok, Ref},
@@ -63,7 +73,8 @@ handle_call({submit, Client, Request}, _From, State) when is_pid(Client), is_map
     end;
 handle_call(status, _From, State) ->
     Snapshot = maps:get(snapshot, State),
-    {reply, #{queued => queue:len(maps:get(queue, State)),
+    {reply, #{queued => queue:len(maps:get(queue, State)) +
+                         queue:len(maps:get(read_queue, State, queue:new())),
               processing => maps:get(current, State) =/= undefined orelse
                             map_size(maps:get(reads, State, #{})) > 0,
               concurrent_reads => map_size(maps:get(reads, State, #{})),
@@ -90,25 +101,27 @@ handle_info(process_queue, State) ->
         {{value, Job}, Queue} ->
             Parent = self(),
             Token = make_ref(),
-            Snapshot = maps:get(snapshot, State),
+            Snapshot = worker_snapshot(maps:get(request, Job),
+                                       maps:get(snapshot, State)),
             NextRequestAt = maps:get(next_request_at, State),
             {Pid, WorkerMonitor} = spawn_monitor(fun() ->
-                Result = safe_execute(Job, Snapshot, NextRequestAt),
-                Parent ! {market_result, Token, Result}
+                {Reply, Updated, Next} = safe_execute(Job, Snapshot, NextRequestAt),
+                Parent ! {market_result, Token,
+                          {Reply, snapshot_delta(Snapshot, Updated), Next}}
             end),
             Current = #{token => Token, worker_pid => Pid,
                         worker_monitor => WorkerMonitor, job => Job},
             {noreply, State#{queue => Queue, current => Current}}
     end;
-handle_info({market_result, Token, {Reply, Snapshot, NextRequestAt}},
+handle_info({market_result, Token, {Reply, Delta, NextRequestAt}},
             State = #{current := #{token := Token, worker_monitor := WorkerMonitor,
                                    job := Job}}) ->
     erlang:demonitor(WorkerMonitor, [flush]),
-    CacheError = persist_if_changed(State, Snapshot),
+    Snapshot = maps:merge(maps:get(snapshot, State), Delta),
     State1 = complete_job(Job, Reply,
                           State#{current => undefined, snapshot => Snapshot,
                                  next_request_at => NextRequestAt}),
-    State2 = State1#{cache_error => CacheError},
+    State2 = mark_cache_dirty(Delta, State1),
     self() ! process_queue,
     {noreply, State2};
 handle_info({market_read_result, Token, Reply}, State) ->
@@ -116,7 +129,8 @@ handle_info({market_read_result, Token, Reply}, State) ->
         error -> {noreply, State};
         {#{worker_monitor := WorkerMonitor, job := Job}, Reads} ->
             erlang:demonitor(WorkerMonitor, [flush]),
-            {noreply, complete_job(Job, Reply, State#{reads => Reads})}
+            {noreply, start_queued_reads(
+                        complete_job(Job, Reply, State#{reads => Reads}))}
     end;
 handle_info({'DOWN', Monitor, process, _Pid, Reason},
             State = #{current := #{worker_monitor := Monitor, job := Job}}) ->
@@ -127,14 +141,19 @@ handle_info({'DOWN', Monitor, process, _Pid, Reason},
 handle_info({'DOWN', Monitor, process, _Pid, Reason}, State) ->
     case take_read_by_monitor(Monitor, maps:get(reads, State, #{})) of
         {ok, Job, Reads} ->
-            {noreply, complete_job(Job, {error, {market_read_worker_down, Reason}},
-                                   State#{reads => Reads})};
+            {noreply, start_queued_reads(
+                        complete_job(Job, {error, {market_read_worker_down, Reason}},
+                                     State#{reads => Reads}))};
         error ->
             case cancel_client(Monitor, State) of
                 {not_found, State1} -> {noreply, State1};
-                {canceled, State1} -> self() ! process_queue, {noreply, State1}
+                {canceled, State1} ->
+                    self() ! process_queue,
+                    {noreply, start_queued_reads(State1)}
             end
     end;
+handle_info(persist_cache, State) ->
+    {noreply, flush_cache(State#{persist_timer => undefined})};
 handle_info(_Message, State) -> {noreply, State}.
 
 -spec terminate(term(), state()) -> ok.
@@ -142,6 +161,12 @@ terminate(_Reason, State) ->
     stop_worker(maps:get(current, State, undefined)),
     maps:foreach(fun(_Token, Worker) -> stop_worker(Worker) end,
                  maps:get(reads, State, #{})),
+    cancel_timer(maps:get(persist_timer, State, undefined)),
+    case maps:get(cache_dirty, State, false) of
+        true -> _ = wfcli_market_cache:persist(maps:get(cache_path, State),
+                                               maps:get(snapshot, State));
+        false -> ok
+    end,
     ok.
 
 -spec code_change(term(), state(), term()) -> {ok, state()}.
@@ -149,12 +174,16 @@ code_change(_OldVsn, State, _Extra) ->
     Path = maps:get(cache_path, State, wfcli_market_cache:path()),
     {ok, State#{queue => maps:get(queue, State, queue:new()),
                 current => maps:get(current, State, undefined),
+                read_queue => maps:get(read_queue, State, queue:new()),
                 reads => maps:get(reads, State, #{}),
+                max_reads => maps:get(max_reads, State, read_worker_limit()),
                 monitors => maps:get(monitors, State, #{}),
                 cache_path => Path,
                 snapshot => maps:get(snapshot, State, wfcli_market_cache:load(Path)),
                 next_request_at => maps:get(next_request_at, State, 0),
-                cache_error => maps:get(cache_error, State, undefined)}}.
+                cache_error => maps:get(cache_error, State, undefined),
+                cache_dirty => maps:get(cache_dirty, State, false),
+                persist_timer => maps:get(persist_timer, State, undefined)}}.
 
 immediate_request(#{action := Action}, Snapshot)
   when Action =:= query; Action =:= resolve_labels ->
@@ -167,6 +196,12 @@ immediate_request(#{action := relic_recommendations} = Request, Snapshot) ->
     relic_catalog_ready(Snapshot);
 immediate_request(_Request, _Snapshot) -> false.
 
+enqueue_read(Job, State) ->
+    case map_size(maps:get(reads, State, #{})) < maps:get(max_reads, State) of
+        true -> start_read(Job, State);
+        false -> State#{read_queue => queue:in(Job, maps:get(read_queue, State))}
+    end.
+
 start_read(Job, State) ->
     Parent = self(),
     Token = make_ref(),
@@ -178,12 +213,39 @@ start_read(Job, State) ->
     Worker = #{worker_pid => Pid, worker_monitor => WorkerMonitor, job => Job},
     State#{reads => (maps:get(reads, State, #{}))#{Token => Worker}}.
 
+start_queued_reads(State) ->
+    case map_size(maps:get(reads, State, #{})) < maps:get(max_reads, State) of
+        false -> State;
+        true ->
+            case queue:out(maps:get(read_queue, State)) of
+                {empty, Queue} -> State#{read_queue => Queue};
+                {{value, Job}, Queue} ->
+                    start_queued_reads(start_read(Job, State#{read_queue => Queue}))
+            end
+    end.
+
+read_worker_limit() ->
+    case application:get_env(wfdaemon, market_read_workers, ?DEFAULT_READ_WORKERS) of
+        Count when is_integer(Count), Count > 0 -> Count;
+        _ -> ?DEFAULT_READ_WORKERS
+    end.
+
 safe_execute_read(Request, Snapshot) ->
-    try execute_read(Request, Snapshot)
+    try execute_read_request(Request, Snapshot)
     catch Class:Reason:Stack ->
         logger:error("market read failed: ~p:~p~n~p", [Class, Reason, Stack]),
         {error, {market_request_failed, Class, Reason}}
     end.
+
+-ifdef(TEST).
+execute_read_request(Request, Snapshot) ->
+    case application:get_env(wfdaemon, market_read_execute_fun, undefined) of
+        Fun when is_function(Fun, 2) -> Fun(Request, Snapshot);
+        undefined -> execute_read(Request, Snapshot)
+    end.
+-else.
+execute_read_request(Request, Snapshot) -> execute_read(Request, Snapshot).
+-endif.
 
 execute_read(#{action := query, query_ast := Ast} = Request, Snapshot) ->
     wfcli_market_query:execute(Ast, Request, Snapshot);
@@ -624,17 +686,48 @@ unique([Value | Rest], Acc) ->
         false -> unique(Rest, [Value | Acc])
     end.
 
-persist_if_changed(State, Snapshot) ->
-    case Snapshot =:= maps:get(snapshot, State) of
-        true -> maps:get(cache_error, State, undefined);
-        false ->
-            case wfcli_market_cache:persist(maps:get(cache_path, State), Snapshot) of
-                ok -> undefined;
-                {error, Reason} ->
-                    logger:warning("market cache write failed: ~p", [Reason]),
-                    Reason
-            end
+worker_snapshot(Request, Snapshot) ->
+    Base = [items, manifest_fetched_at, manifest_attempted_at,
+            manifest_stale_reason, updated_at],
+    ActionKeys = case maps:get(action, Request, undefined) of
+        query -> [quotes];
+        quote_query -> [quotes];
+        quote_items -> [quotes];
+        relic_context -> [quotes, details | relic_keys()];
+        relic_recommendations -> [quotes | relic_keys()];
+        _ -> []
+    end,
+    maps:with(Base ++ ActionKeys, Snapshot).
+
+relic_keys() ->
+    [relics, relics_version, relics_fetched_at, relics_attempted_at,
+     relics_stale_reason].
+
+snapshot_delta(Before, After) ->
+    maps:filter(
+      fun(Key, Value) -> maps:get(Key, Before, '$missing') =/= Value end,
+      After).
+
+mark_cache_dirty(Delta, State) when map_size(Delta) =:= 0 -> State;
+mark_cache_dirty(_Delta, State = #{persist_timer := undefined}) ->
+    Timer = erlang:send_after(?PERSIST_DELAY_MS, self(), persist_cache),
+    State#{cache_dirty => true, persist_timer => Timer};
+mark_cache_dirty(_Delta, State) -> State#{cache_dirty => true}.
+
+flush_cache(State = #{cache_dirty := false}) -> State;
+flush_cache(State) ->
+    case wfcli_market_cache:persist(maps:get(cache_path, State), maps:get(snapshot, State)) of
+        ok -> State#{cache_dirty => false, cache_error => undefined};
+        {error, Reason} ->
+            logger:warning("market cache write failed: ~p", [Reason]),
+            Timer = erlang:send_after(?PERSIST_RETRY_MS, self(), persist_cache),
+            State#{persist_timer => Timer, cache_error => Reason}
     end.
+
+cancel_timer(undefined) -> ok;
+cancel_timer(Timer) ->
+    _ = erlang:cancel_timer(Timer),
+    ok.
 
 complete_job(#{client := Client, ref := Ref, monitor := Monitor}, Reply, State) ->
     case maps:is_key(Monitor, maps:get(monitors, State)) of
@@ -651,6 +744,8 @@ cancel_client(Monitor, State) ->
         {Ref, Monitors} ->
             Queue = queue:filter(fun(Job) -> maps:get(ref, Job) =/= Ref end,
                                  maps:get(queue, State)),
+            ReadQueue = queue:filter(fun(Job) -> maps:get(ref, Job) =/= Ref end,
+                                     maps:get(read_queue, State)),
             Current = maps:get(current, State, undefined),
             Current1 = case Current of
                 #{job := #{ref := Ref}} -> stop_worker(Current), undefined;
@@ -658,7 +753,8 @@ cancel_client(Monitor, State) ->
             end,
             Reads = cancel_read(Ref, maps:get(reads, State, #{})),
             wfcli_worldstate_service:activity_end(),
-            {canceled, State#{queue => Queue, current => Current1, reads => Reads,
+            {canceled, State#{queue => Queue, read_queue => ReadQueue,
+                              current => Current1, reads => Reads,
                               monitors => Monitors}}
     end.
 

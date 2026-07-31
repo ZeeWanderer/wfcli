@@ -62,6 +62,51 @@ typed_hot_update_request_test() ->
         cleanup_daemon(Started)
     end.
 
+concurrent_hot_updates_are_rejected_test() ->
+    Started = setup_daemon(),
+    Test = self(),
+    application:set_env(
+      wfdaemon, daemon_hot_update_fun,
+      fun(_Bundles) ->
+          Test ! {hot_update_started, self()},
+          receive continue ->
+              {ok, #{loaded => [], unchanged => [], migrated => []}}
+          end
+      end),
+    try
+        Caller = spawn(fun() -> Test ! {hot_update_reply,
+                                       wfcli_daemon:request({hot_update, []})} end),
+        Worker = receive {hot_update_started, Pid} -> Pid after 1000 -> timeout end,
+        ?assert(is_pid(Worker)),
+        ?assertEqual({error, update_in_progress},
+                     wfcli_daemon:request({hot_update, []})),
+        Worker ! continue,
+        receive
+            {hot_update_reply, Reply} ->
+                ?assertMatch({ok, #{loaded := [], unchanged := [], migrated := []}}, Reply)
+        after 1000 ->
+            exit(Caller, kill),
+            error(hot_update_reply_timeout)
+        end
+    after
+        application:unset_env(wfdaemon, daemon_hot_update_fun),
+        cleanup_daemon(Started)
+    end.
+
+artifact_worker_down_clears_update_state_test() ->
+    Monitor = make_ref(),
+    State = #{started_at => 0, artifact_id => <<"old">>,
+              artifact_update => #{artifact_id => <<"new">>, monitor => Monitor,
+                                   pid => self()}},
+    {noreply, Updated} =
+        wfcli_daemon:handle_info({'DOWN', Monitor, process, self(), test_crash}, State),
+    ?assertEqual(false, maps:get(artifact_update, Updated)).
+
+legacy_artifact_update_state_is_cleared_test() ->
+    State = #{started_at => 0, artifact_id => <<"old">>, artifact_update => true},
+    {ok, Updated} = wfcli_daemon:code_change(undefined, State, undefined),
+    ?assertEqual(false, maps:get(artifact_update, Updated)).
+
 setup_daemon() ->
     case whereis(wfcli_daemon) of
         undefined ->

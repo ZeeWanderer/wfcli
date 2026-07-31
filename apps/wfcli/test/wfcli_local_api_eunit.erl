@@ -23,6 +23,8 @@ setup() ->
     application:set_env(wfdaemon, market_request_interval_ms, 0),
     application:set_env(wfdaemon, market_http_fun, fun market_http/2),
     application:set_env(wfdaemon, asset_cache_dir, AssetCache),
+    application:set_env(wfdaemon, local_request_workers, 2),
+    application:set_env(wfdaemon, local_request_global_workers, 2),
     application:set_env(wfdaemon, daemon_idle_shutdown, false),
     {ok, _Worldstate} = wfcli_worldstate_service:start_link(),
     {ok, _Player} = wfcli_player_service:start_link(),
@@ -44,6 +46,8 @@ cleanup(#{root := Root, socket := SocketPath, cache := CachePath,
     application:unset_env(wfdaemon, market_request_interval_ms),
     application:unset_env(wfdaemon, market_http_fun),
     application:unset_env(wfdaemon, asset_cache_dir),
+    application:unset_env(wfdaemon, local_request_workers),
+    application:unset_env(wfdaemon, local_request_global_workers),
     application:unset_env(wfdaemon, asset_http_fun),
     application:unset_env(wfdaemon, daemon_idle_shutdown),
     _ = file:delete(SocketPath),
@@ -63,6 +67,8 @@ lifecycle(#{socket := SocketPath}) ->
     request_market_quote(TestSocket),
     request_cached_market_quote(TestSocket),
     slow_asset_does_not_block_dataset(TestSocket),
+    local_request_limit_queues_excess_work(TestSocket),
+    global_local_request_limit_queues_other_clients(TestSocket, SocketPath),
     ok = socket:close(TestSocket),
 
     GuiSocket = connect_client(
@@ -125,6 +131,90 @@ slow_asset_does_not_block_dataset(Socket) ->
     ?assertEqual(10, maps:get(<<"id">>, AssetReply)),
     ?assertEqual(true, maps:get(<<"ok">>, AssetReply)),
     application:unset_env(wfdaemon, asset_http_fun).
+
+local_request_limit_queues_excess_work(Socket) ->
+    Test = self(),
+    application:set_env(
+      wfdaemon, asset_http_fun,
+      fun(_Url, _Headers) ->
+          Test ! {local_asset_started, self()},
+          receive continue ->
+              {ok, 200, [{"content-type", "image/png"}],
+               <<16#89, "PNG", 13, 10, 26, 10, 0>>}
+          end
+      end),
+    lists:foreach(
+      fun(Id) ->
+          Name = <<"local-", (integer_to_binary(Id))/binary, ".png">>,
+          Request = #{<<"op">> => <<"asset_resolve">>, <<"id">> => Id,
+                      <<"assets">> => [#{<<"id">> => integer_to_binary(Id),
+                                          <<"image_name">> => Name}]},
+          ok = socket:send(Socket, wfcli_local_protocol:encode(Request))
+      end,
+      [20, 21, 22]),
+    First = receive {local_asset_started, Pid1} -> Pid1 after 1000 -> timeout end,
+    Second = receive {local_asset_started, Pid2} -> Pid2 after 1000 -> timeout end,
+    ?assert(is_pid(First)),
+    ?assert(is_pid(Second)),
+    receive {local_asset_started, _Pid} -> error(local_request_limit_exceeded)
+    after 100 -> ok
+    end,
+    First ! continue,
+    Third = receive {local_asset_started, Pid3} -> Pid3 after 1000 -> timeout end,
+    ?assert(is_pid(Third)),
+    Second ! continue,
+    Third ! continue,
+    ?assertEqual([20, 21, 22], lists:sort(recv_reply_ids(Socket, 3, <<>>, []))),
+    application:unset_env(wfdaemon, asset_http_fun).
+
+global_local_request_limit_queues_other_clients(Socket, SocketPath) ->
+    Other = connect_client(SocketPath, <<"test">>, #{}),
+    Test = self(),
+    application:set_env(
+      wfdaemon, asset_http_fun,
+      fun(_Url, _Headers) ->
+          Test ! {global_asset_started, self()},
+          receive continue ->
+              {ok, 200, [{"content-type", "image/png"}],
+               <<16#89, "PNG", 13, 10, 26, 10, 0>>}
+          end
+      end),
+    send_asset_request(Socket, 30, <<"global-30.png">>),
+    send_asset_request(Socket, 31, <<"global-31.png">>),
+    First = receive {global_asset_started, Pid1} -> Pid1 after 1000 -> timeout end,
+    Second = receive {global_asset_started, Pid2} -> Pid2 after 1000 -> timeout end,
+    ?assert(is_pid(First)),
+    ?assert(is_pid(Second)),
+    send_asset_request(Other, 32, <<"global-32.png">>),
+    receive {global_asset_started, _Pid} -> error(global_local_request_limit_exceeded)
+    after 100 -> ok
+    end,
+    First ! continue,
+    Third = receive {global_asset_started, Pid3} -> Pid3 after 1000 -> timeout end,
+    ?assert(is_pid(Third)),
+    Second ! continue,
+    Third ! continue,
+    ?assertEqual([30, 31], lists:sort(recv_reply_ids(Socket, 2, <<>>, []))),
+    ?assertEqual([32], recv_reply_ids(Other, 1, <<>>, [])),
+    ok = socket:close(Other),
+    application:unset_env(wfdaemon, asset_http_fun).
+
+send_asset_request(Socket, Id, Name) ->
+    Request = #{<<"op">> => <<"asset_resolve">>, <<"id">> => Id,
+                <<"assets">> => [#{<<"id">> => integer_to_binary(Id),
+                                    <<"image_name">> => Name}]},
+    ok = socket:send(Socket, wfcli_local_protocol:encode(Request)).
+
+recv_reply_ids(_Socket, Count, _Buffer, Ids) when length(Ids) >= Count -> Ids;
+recv_reply_ids(Socket, Count, Buffer, Ids) ->
+    {ok, Data} = socket:recv(Socket, 0, 1000),
+    Parts = binary:split(<<Buffer/binary, Data/binary>>, <<"\n">>, [global]),
+    [Rest | ReversedLines] = lists:reverse(Parts),
+    Lines = lists:reverse(ReversedLines),
+    NewIds = [maps:get(<<"id">>, Reply)
+              || Line <- Lines, Line =/= <<>>,
+                 {ok, Reply} <- [wfcli_local_protocol:decode(Line)]],
+    recv_reply_ids(Socket, Count, Rest, NewIds ++ Ids).
 
 connect_client(SocketPath, Client, Extra) ->
     {ok, Socket} = socket:open(local, stream, default),

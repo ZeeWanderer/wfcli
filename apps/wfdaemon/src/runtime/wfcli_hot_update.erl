@@ -185,7 +185,7 @@ allowed_module(Module) ->
 
 apply_validated(Bundles, BuildIdentity) ->
     {Changed0, Unchanged} = lists:partition(fun bundle_changed/1, Bundles),
-    Changed = updater_last(Changed0),
+    Changed = Changed0,
     Result = case Changed of
         [] ->
             {ok, #{loaded => [], unchanged => module_names(Unchanged), migrated => []}};
@@ -212,26 +212,40 @@ maybe_store_build_identity(Bundles, BuildIdentity) ->
     end.
 
 apply_changed(Changed, Unchanged) ->
+    case prepare_changed(Changed) of
+        {ok, Prepared} -> apply_prepared(Changed, Unchanged, Prepared);
+        {error, _Reason} = Error -> Error
+    end.
+
+prepare_changed(Changed) ->
+    Modules = [{maps:get(module, Bundle), maps:get(filename, Bundle),
+                maps:get(binary, Bundle)} || Bundle <- Changed],
+    case code:prepare_loading(Modules) of
+        {ok, Prepared} -> {ok, Prepared};
+        {error, Reasons} -> {error, {prepare_failed, Reasons}}
+    end.
+
+apply_prepared(Changed, Unchanged, Prepared) ->
     Modules = module_names(Changed),
     Stateful = stateful_processes(Modules),
     OldVersions = maps:from_list([{Module, module_vsn(Module)} || Module <- Modules]),
     case suspend_all(Stateful, []) of
         {ok, Suspended} ->
             Result = try
-                case load_all(Changed, []) of
-                    {ok, Loaded} ->
+                case code:finish_loading(Prepared) of
+                    ok ->
                         case change_code_all(Stateful, OldVersions, []) of
                             {ok, Migrated} ->
                                 case ensure_supervised_children() of
                                     ok ->
-                                        {ok, #{loaded => Loaded,
+                                        {ok, #{loaded => Modules,
                                                unchanged => module_names(Unchanged),
                                                migrated => Migrated}};
                                     {error, Reason} -> {error, {supervisor_reconcile_failed, Reason}}
                                 end;
                             {error, _Reason} = Error -> Error
                         end;
-                    {error, _Reason} = Error -> Error
+                    {error, Reasons} -> {error, {finish_loading_failed, Reasons}}
                 end
             after
                 resume_all(Suspended)
@@ -296,14 +310,6 @@ suspend_all([{Name, Module} = Process | Rest], Suspended) ->
             {error, {suspend_failed, Module, Reason}}
     end.
 
-load_all([], Loaded) ->
-    {ok, lists:reverse(Loaded)};
-load_all([#{module := Module, filename := Filename, binary := Binary} | Rest], Loaded) ->
-    case code:load_binary(Module, Filename, Binary) of
-        {module, Module} -> load_all(Rest, [Module | Loaded]);
-        {error, Reason} -> {error, {load_failed, Module, Reason}}
-    end.
-
 change_code_all([], _OldVersions, Migrated) ->
     {ok, lists:reverse(Migrated)};
 change_code_all([{Name, Module} | Rest], OldVersions, Migrated) ->
@@ -345,6 +351,7 @@ stateful_candidates() ->
         {wfcli_forma_service, wfcli_forma_service},
         {wfcli_player_service, wfcli_player_service},
         {wfcli_market_service, wfcli_market_service},
+        {wfcli_asset_service, wfcli_asset_service},
         {wfcli_local_api, wfcli_local_api},
         {wfcli_daemon, wfcli_daemon}
     ].
@@ -380,12 +387,6 @@ module_vsn(Module) ->
 
 module_names(Bundles) ->
     [maps:get(module, Bundle) || Bundle <- Bundles].
-
-updater_last(Bundles) ->
-    {Updater, Other} = lists:partition(
-                         fun(#{module := Module}) -> Module =:= ?MODULE end,
-                         Bundles),
-    Other ++ Updater.
 
 ensure_supervised_children() ->
     case whereis(wfcli_sup) of

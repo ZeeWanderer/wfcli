@@ -6,4 +6,4 @@
 -export([lookup/1]).
 
 lookup(Name) ->
-    wfcli_worldstate_projector:mod_lookup_by_name(Name).
+    wfcli_mod_catalog:lookup_by_name(Name).

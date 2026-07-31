@@ -49,6 +49,52 @@ code_change_discards_obsolete_cache_shapes_test() ->
     {ok, Updated} = wfcli_exports_store:code_change(undefined, State, undefined),
     ?assertEqual(#{CurrentKey => current}, maps:get(cache, Updated)).
 
+concurrent_cache_updates_do_not_restore_stale_entries_test() ->
+    Started = setup_stores(),
+    TestPid = self(),
+    Seed = fun(_Request, State) ->
+        {{ok, seeded}, State#{cache => #{shared => old}}}
+    end,
+    application:set_env(wfdaemon, daemon_catalog_execute_fun, Seed),
+    try
+        ?assertEqual({ok, seeded}, submit_and_wait_reply(#{kind => seed})),
+        Execute = fun(Request, State) ->
+            Kind = maps:get(kind, Request),
+            TestPid ! {catalog_worker_started, Kind, self()},
+            receive continue -> ok end,
+            Cache = maps:get(cache, State),
+            case Kind of
+                update_shared -> {{ok, updated}, State#{cache => Cache#{shared => new}}};
+                add_other -> {{ok, added}, State#{cache => Cache#{other => value}}};
+                inspect -> {{ok, Cache}, State}
+            end
+        end,
+        application:set_env(wfdaemon, daemon_catalog_execute_fun, Execute),
+        {ok, SharedRef} = wfcli_exports_store:submit(self(), #{kind => update_shared}),
+        {ok, OtherRef} = wfcli_exports_store:submit(self(), #{kind => add_other}),
+        SharedWorker = receive
+            {catalog_worker_started, update_shared, Pid1} -> Pid1
+        after 1000 -> error(shared_worker_not_started)
+        end,
+        OtherWorker = receive
+            {catalog_worker_started, add_other, Pid2} -> Pid2
+        after 1000 -> error(other_worker_not_started)
+        end,
+        SharedWorker ! continue,
+        ?assertEqual({ok, updated}, await_query(SharedRef)),
+        OtherWorker ! continue,
+        ?assertEqual({ok, added}, await_query(OtherRef)),
+        application:set_env(
+          wfdaemon, daemon_catalog_execute_fun,
+          fun(_Request, State) -> {{ok, maps:get(cache, State)}, State} end),
+        {ok, Cache} = submit_and_wait_reply(#{kind => inspect}),
+        ?assertEqual(new, maps:get(shared, Cache)),
+        ?assertEqual(value, maps:get(other, Cache))
+    after
+        application:unset_env(wfdaemon, daemon_catalog_execute_fun),
+        cleanup_stores(Started)
+    end.
+
 malformed_typed_query_does_not_crash_store_test() ->
     Started = setup_stores(),
     try
@@ -60,7 +106,7 @@ malformed_typed_query_does_not_crash_store_test() ->
         cleanup_stores(Started)
     end.
 
-concurrent_queries_start_without_serial_queue_test() ->
+identical_concurrent_queries_share_catalog_worker_test() ->
     Started = setup_stores(),
     QueryStarted = start_query_service(),
     TestPid = self(),
@@ -78,14 +124,11 @@ concurrent_queries_start_without_serial_queue_test() ->
         after 1000 ->
             error(first_catalog_worker_not_started)
         end,
-        Worker2 = receive
-            {catalog_worker_started, Pid2} -> Pid2
-        after 1000 ->
-            error(second_catalog_worker_not_started)
+        receive
+            {catalog_worker_started, _Pid2} -> error(duplicate_catalog_worker_started)
+        after 100 -> ok
         end,
-        ?assertNotEqual(Worker1, Worker2),
         Worker1 ! continue,
-        Worker2 ! continue,
         _ = await_query(Ref1),
         _ = await_query(Ref2),
         wait_until_idle(wfcli_query_service, 100),
@@ -93,6 +136,88 @@ concurrent_queries_start_without_serial_queue_test() ->
     after
         application:unset_env(wfdaemon, daemon_catalog_execute_fun),
         cleanup_query_service(QueryStarted),
+        cleanup_stores(Started)
+    end.
+
+canceling_one_duplicate_keeps_shared_catalog_worker_test() ->
+    Started = setup_stores(),
+    TestPid = self(),
+    ExecuteFun = fun(_Request, State) ->
+        TestPid ! {shared_catalog_started, self()},
+        receive continue -> {{ok, shared}, State} end
+    end,
+    application:set_env(wfdaemon, daemon_catalog_execute_fun, ExecuteFun),
+    Client1 = spawn(fun() -> receive stop -> ok end end),
+    Client2 = spawn(fun() ->
+        receive Reply -> TestPid ! {second_catalog_client, Reply} end
+    end),
+    try
+        Request = #{job => shared},
+        {ok, _Ref1} = wfcli_exports_store:submit(Client1, Request),
+        Worker = receive
+            {shared_catalog_started, Pid} -> Pid
+        after 1000 -> error(shared_catalog_worker_not_started)
+        end,
+        {ok, Ref2} = wfcli_exports_store:submit(Client2, Request),
+        WorkerMonitor = erlang:monitor(process, Worker),
+        exit(Client1, kill),
+        receive
+            {'DOWN', WorkerMonitor, process, Worker, _Reason} ->
+                error(shared_catalog_worker_was_canceled)
+        after 100 -> ok
+        end,
+        Worker ! continue,
+        receive
+            {second_catalog_client, {wfcli_daemon, Ref2, {ok, shared}}} -> ok
+        after 1000 -> error(second_catalog_client_timeout)
+        end,
+        erlang:demonitor(WorkerMonitor, [flush])
+    after
+        case is_process_alive(Client1) of true -> exit(Client1, kill); false -> ok end,
+        case is_process_alive(Client2) of true -> exit(Client2, kill); false -> ok end,
+        application:unset_env(wfdaemon, daemon_catalog_execute_fun),
+        cleanup_stores(Started)
+    end.
+
+catalog_worker_limit_queues_excess_work_test() ->
+    application:set_env(wfdaemon, catalog_workers, 2),
+    Started = setup_stores(),
+    TestPid = self(),
+    ExecuteFun = fun(Request, State) ->
+        TestPid ! {bounded_catalog_started, maps:get(job, Request), self()},
+        receive continue -> {{ok, done}, State} end
+    end,
+    application:set_env(wfdaemon, daemon_catalog_execute_fun, ExecuteFun),
+    try
+        {ok, Ref1} = wfcli_exports_store:submit(self(), #{job => 1}),
+        {ok, Ref2} = wfcli_exports_store:submit(self(), #{job => 2}),
+        {ok, Ref3} = wfcli_exports_store:submit(self(), #{job => 3}),
+        {Job1, Worker1} = receive
+            {bounded_catalog_started, FirstJob, FirstPid} -> {FirstJob, FirstPid}
+        after 1000 -> error(first_bounded_catalog_not_started)
+        end,
+        {_Job2, Worker2} = receive
+            {bounded_catalog_started, SecondJob, SecondPid} -> {SecondJob, SecondPid}
+        after 1000 -> error(second_bounded_catalog_not_started)
+        end,
+        ?assertMatch(#{active := 2, queued := 1}, wfcli_exports_store:status()),
+        receive {bounded_catalog_started, _, _} -> error(catalog_limit_exceeded)
+        after 100 -> ok
+        end,
+        Worker1 ! continue,
+        _ = await_query(case Job1 of 1 -> Ref1; 2 -> Ref2 end),
+        {Job3, Worker3} = receive
+            {bounded_catalog_started, ThirdJob, ThirdPid} -> {ThirdJob, ThirdPid}
+        after 1000 -> error(queued_catalog_not_started)
+        end,
+        ?assertEqual(3, Job3),
+        Worker2 ! continue,
+        Worker3 ! continue,
+        _ = await_query(case Job1 of 1 -> Ref2; 2 -> Ref1 end),
+        _ = await_query(Ref3)
+    after
+        application:unset_env(wfdaemon, daemon_catalog_execute_fun),
+        application:unset_env(wfdaemon, catalog_workers),
         cleanup_stores(Started)
     end.
 

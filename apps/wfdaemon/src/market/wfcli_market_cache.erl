@@ -42,13 +42,17 @@ load(Path) ->
 -doc "Atomically persist market snapshot with owner-only permissions.".
 -spec persist(file:filename_all(), map()) -> ok | {error, term()}.
 persist(Path, Snapshot) ->
-    ok = filelib:ensure_dir(Path),
-    Temp = Path ++ ".tmp",
-    Binary = term_to_binary(#{version => ?CACHE_VERSION, snapshot => Snapshot}, [compressed]),
-    case file:write_file(Temp, Binary) of
+    case filelib:ensure_dir(Path) of
         ok ->
-            _ = file:change_mode(Temp, 8#600),
-            file:rename(Temp, Path);
+            Temp = Path ++ ".tmp",
+            Binary = term_to_binary(#{version => ?CACHE_VERSION, snapshot => Snapshot},
+                                    [compressed]),
+            case file:write_file(Temp, Binary) of
+                ok ->
+                    _ = file:change_mode(Temp, 8#600),
+                    file:rename(Temp, Path);
+                {error, _Reason} = Error -> Error
+            end;
         {error, _Reason} = Error -> Error
     end.
 

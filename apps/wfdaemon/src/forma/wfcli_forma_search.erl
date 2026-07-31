@@ -5,6 +5,10 @@
 
 -export([plan/2, validate_plan/3]).
 
+-ifdef(TEST).
+-export([start_parallel_workers/4]).
+-endif.
+
 -type config() :: map().
 -type flags() :: map().
 -type plan() :: map().
@@ -294,10 +298,14 @@ run_parallel_tasks(Tasks, Ctx, Seed, Budget) ->
     WorkItems = lists:zip3(lists:seq(1, length(Tasks)), Tasks, Budgets),
     WorkerCount = parallel_worker_count(length(WorkItems)),
     Parent = self(),
-    Workers = [spawn(fun() -> parallel_worker(Parent, Ctx, Seed) end) || _ <- lists:seq(1, WorkerCount)],
+    Workers = start_parallel_workers(Parent, Ctx, Seed, WorkerCount),
     {InitialItems, Queue} = take_n(WorkerCount, WorkItems),
     lists:foreach(fun({Worker, WorkItem}) -> Worker ! {run, WorkItem} end, lists:zip(Workers, InitialItems)),
     collect_parallel_work(length(WorkItems), Queue, #{}, Seed, Ctx, 0, false).
+
+start_parallel_workers(Parent, Ctx, Seed, WorkerCount) ->
+    [spawn_link(fun() -> parallel_worker(Parent, Ctx, Seed) end)
+     || _ <- lists:seq(1, WorkerCount)].
 
 parallel_worker_count(TaskCount) ->
     Schedulers = case erlang:system_info(schedulers_online) of

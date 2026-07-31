@@ -32,8 +32,8 @@ ensure_children() ->
 init([]) ->
     SupFlags = #{
         strategy => one_for_one,
-        intensity => 1,
-        period => 5
+        intensity => 3,
+        period => 10
     },
     ChildSpecs = daemon_children(),
     {ok, {SupFlags, ChildSpecs}}.

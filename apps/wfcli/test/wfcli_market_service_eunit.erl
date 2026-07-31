@@ -9,6 +9,34 @@ market_cache_tracks_relic_schema_test() ->
     ?assertEqual(wfcli_relic_recommendations:catalog_version(),
                  maps:get(relics_version, wfcli_market_cache:empty())).
 
+market_cache_reports_unusable_parent_test() ->
+    Blocker = filename:join("/tmp", "wfcli-market-blocker-" ++
+                                     integer_to_list(erlang:unique_integer([positive]))),
+    ok = file:write_file(Blocker, <<>>),
+    try
+        ?assertMatch({error, _},
+                     wfcli_market_cache:persist(filename:join(Blocker, "market.term"), #{}))
+    after
+        _ = file:delete(Blocker)
+    end.
+
+market_worker_snapshots_are_action_scoped_test() ->
+    Snapshot = #{items => [item], quotes => #{quote => cached},
+                 details => #{detail => cached}, relics => #{relic => cached},
+                 relics_version => 1, relics_fetched_at => 2,
+                 relics_attempted_at => 3, updated_at => 4,
+                 unrelated => large_value},
+    Quote = wfcli_market_service:worker_snapshot(#{action => quote_items}, Snapshot),
+    ?assert(maps:is_key(items, Quote)),
+    ?assert(maps:is_key(quotes, Quote)),
+    ?assertNot(maps:is_key(details, Quote)),
+    ?assertNot(maps:is_key(relics, Quote)),
+    ?assertNot(maps:is_key(unrelated, Quote)),
+    Relic = wfcli_market_service:worker_snapshot(#{action => relic_context}, Snapshot),
+    ?assert(maps:is_key(details, Relic)),
+    ?assert(maps:is_key(relics, Relic)),
+    ?assertNot(maps:is_key(unrelated, Relic)).
+
 market_service_test_() ->
     {setup, fun setup/0, fun cleanup/1,
      fun(State) -> fun() -> exercise(State) end end}.
@@ -21,6 +49,7 @@ setup() ->
     ets:insert(Counters, [{items, 0}, {quotes, 0}]),
     application:set_env(wfdaemon, market_cache, Cache),
     application:set_env(wfdaemon, market_request_interval_ms, 0),
+    application:set_env(wfdaemon, market_read_workers, 2),
     application:set_env(wfdaemon, market_http_fun, success_http_fun(Counters)),
     application:set_env(wfdaemon, daemon_idle_shutdown, false),
     {ok, _Worldstate} = wfcli_worldstate_service:start_link(),
@@ -32,6 +61,8 @@ cleanup(#{root := Root, cache := Cache, counters := Counters}) ->
     stop(wfcli_worldstate_service),
     application:unset_env(wfdaemon, market_cache),
     application:unset_env(wfdaemon, market_request_interval_ms),
+    application:unset_env(wfdaemon, market_read_workers),
+    application:unset_env(wfdaemon, market_read_execute_fun),
     application:unset_env(wfdaemon, market_http_fun),
     application:unset_env(wfdaemon, daemon_idle_shutdown),
     ets:delete(Counters),
@@ -118,6 +149,8 @@ exercise(#{cache := Cache, counters := Counters}) ->
     ?assertEqual(stale, maps:get(source, maps:get(quote, StaleAgainEntry))),
     ?assertEqual(QuoteCallsAfterFailure, count(Counters, quotes)),
 
+    read_workers_are_bounded(),
+
     application:set_env(wfdaemon, market_http_fun,
                         fun(_Url, _Headers) -> timer:sleep(5000), {error, too_late} end),
     Parent = self(),
@@ -146,13 +179,49 @@ exercise(#{cache := Cache, counters := Counters}) ->
     await_idle(50),
     ?assertMatch(#{external_activity := 0}, wfcli_worldstate_service:status()),
 
-    ?assertMatch({ok, _}, file:read_file(Cache)),
+    await_cache(Cache, 100),
     stop(wfcli_market_service),
     application:set_env(wfdaemon, market_http_fun,
                         fun(_Url, _Headers) -> {error, unexpected_network} end),
     {ok, _Market} = wfcli_market_service:start_link(),
     {ok, Restored} = request(#{action => query, query_ast => match_all, limit => infinity}),
     ?assertEqual(23, maps:get(total, maps:get(results, Restored))).
+
+read_workers_are_bounded() ->
+    Test = self(),
+    application:set_env(
+      wfdaemon, market_read_execute_fun,
+      fun(_Request, _Snapshot) ->
+          Test ! {market_read_started, self()},
+          receive continue -> {ok, bounded} end
+      end),
+    Request = #{action => query, query_ast => match_all, limit => infinity},
+    {ok, Ref1} = wfcli_market_service:submit(self(), Request),
+    {ok, Ref2} = wfcli_market_service:submit(self(), Request),
+    {ok, Ref3} = wfcli_market_service:submit(self(), Request),
+    First = receive {market_read_started, Pid1} -> Pid1 after 1000 -> timeout end,
+    Second = receive {market_read_started, Pid2} -> Pid2 after 1000 -> timeout end,
+    ?assert(is_pid(First)),
+    ?assert(is_pid(Second)),
+    receive {market_read_started, _Pid} -> error(market_read_limit_exceeded)
+    after 100 -> ok
+    end,
+    First ! continue,
+    Completed = receive
+        {wfcli_daemon, CompletedRef, {ok, bounded}} -> CompletedRef
+    after 1000 -> timeout
+    end,
+    ?assert(lists:member(Completed, [Ref1, Ref2])),
+    Third = receive {market_read_started, Pid3} -> Pid3 after 1000 -> timeout end,
+    ?assert(is_pid(Third)),
+    Second ! continue,
+    Third ! continue,
+    Remaining = [receive
+                     {wfcli_daemon, ReplyRef, {ok, bounded}} -> ReplyRef
+                 after 1000 -> timeout
+                 end || _ <- [1, 2]],
+    ?assertEqual(lists:sort([Ref1, Ref2, Ref3]), lists:sort([Completed | Remaining])),
+    application:unset_env(wfdaemon, market_read_execute_fun).
 
 assert_quote(Result) ->
     [Entry] = maps:get(slice, maps:get(results, Result)),
@@ -237,6 +306,13 @@ await_idle(Attempts) ->
     case maps:get(processing, Status) =:= false andalso maps:get(queued, Status) =:= 0 of
         true -> ok;
         false -> timer:sleep(10), await_idle(Attempts - 1)
+    end.
+
+await_cache(_Path, 0) -> error(market_cache_not_persisted);
+await_cache(Path, Attempts) ->
+    case filelib:is_file(Path) of
+        true -> ok;
+        false -> timer:sleep(10), await_cache(Path, Attempts - 1)
     end.
 
 stop(Name) ->

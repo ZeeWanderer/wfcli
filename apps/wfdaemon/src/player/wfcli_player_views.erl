@@ -5,13 +5,15 @@
 
 -export([inventory/0, mastery/0, inventory/2, mastery/2]).
 
+-define(VIEW_CACHE, wfcli_player_view_cache).
+
 -doc "Build inventory view from current daemon snapshot and managed item catalog.".
 -spec inventory() -> {ok, map()} | {error, term()}.
-inventory() -> with_catalog(fun inventory/2).
+inventory() -> with_catalog(inventory, fun inventory/2).
 
 -doc "Build mastery view from current daemon snapshot and managed item catalog.".
 -spec mastery() -> {ok, map()} | {error, term()}.
-mastery() -> with_catalog(fun mastery/2).
+mastery() -> with_catalog(mastery, fun mastery/2).
 
 -doc "Build inventory view from supplied data; exposed for deterministic tests.".
 -spec inventory(map(), [map()]) -> {ok, map()}.
@@ -53,20 +55,44 @@ mastery(Snapshot, Catalog) ->
         <<"summary">> => mastery_summary(Sorted, Profile)
     }}.
 
-with_catalog(Build) ->
+with_catalog(View, Build) ->
     case wfcli_item_catalog:load() of
-        {ok, Catalog, _Meta} -> Build(wfcli_player_service:snapshot(), Catalog);
+        {ok, Catalog, Meta} -> cached_view(View, Build, Catalog, Meta);
         {error, _Reason} ->
             case wfcli_source_manager:ensure_catalog("player_views", #{}) of
                 ok ->
                     case wfcli_item_catalog:load() of
-                        {ok, Catalog, _Meta} ->
-                            Build(wfcli_player_service:snapshot(), Catalog);
+                        {ok, Catalog, Meta} -> cached_view(View, Build, Catalog, Meta);
                         {error, _LoadReason} = Error -> Error
                     end;
                 {error, _EnsureReason} = Error -> Error
             end
     end.
+
+cached_view(View, Build, Catalog, Meta) ->
+    Snapshot = wfcli_player_service:snapshot(),
+    Key = {View, maps:get(revision, Snapshot, 0),
+           maps:get(version, Meta, undefined), maps:get(fetched_at, Meta, undefined)},
+    case cache_lookup(Key) of
+        {ok, Result} -> Result;
+        error ->
+            Result = Build(Snapshot, Catalog),
+            cache_store(Key, Result),
+            Result
+    end.
+
+cache_lookup(Key) ->
+    try ets:lookup(?VIEW_CACHE, Key) of
+        [{Key, Result}] -> {ok, Result};
+        [] -> error
+    catch error:badarg -> error
+    end.
+
+cache_store(Key, Result) ->
+    try ets:insert(?VIEW_CACHE, {Key, Result})
+    catch error:badarg -> false
+    end,
+    ok.
 
 inventory_observation(Snapshot) ->
     Data = maps:get(data, Snapshot, #{}),

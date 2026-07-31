@@ -53,6 +53,26 @@ loads_changed_beam_and_skips_identical_beam_test() ->
         cleanup_module(Module)
     end.
 
+prepare_failure_does_not_partially_load_bundle_test() ->
+    Module = wfcli_hot_update_atomic_fixture,
+    OnLoadModule = wfcli_hot_update_on_load_fixture,
+    cleanup_module(Module),
+    cleanup_module(OnLoadModule),
+    {ok, Module, V1} = compile_fixture(Module, 1),
+    {module, Module} = code:load_binary(Module, "atomic_fixture.beam", V1),
+    try
+        {ok, Module, V2} = compile_fixture(Module, 2),
+        {ok, OnLoadModule, OnLoad} = compile_on_load_fixture(OnLoadModule),
+        Bundles = [#{module => Module, filename => "atomic_fixture.beam", binary => V2},
+                   #{module => OnLoadModule, filename => "on_load_fixture.beam",
+                     binary => OnLoad}],
+        ?assertMatch({error, {prepare_failed, _}}, wfcli_hot_update:apply(Bundles)),
+        ?assertEqual(1, Module:value())
+    after
+        cleanup_module(Module),
+        cleanup_module(OnLoadModule)
+    end.
+
 stateful_service_runs_code_change_test() ->
     Module = wfcli_worldstate_service,
     ensure_service_stopped(),
@@ -78,7 +98,7 @@ all_supervised_stateful_services_are_migrated_test() ->
     ?assertEqual(
        [wfcli_worldstate_service, wfcli_exports_store, wfcli_source_manager,
         wfcli_query_service, wfcli_forma_service, wfcli_player_service,
-        wfcli_market_service, wfcli_local_api, wfcli_daemon],
+        wfcli_market_service, wfcli_asset_service, wfcli_local_api, wfcli_daemon],
        [Module || {_Name, Module} <- wfcli_hot_update:stateful_candidates()]).
 
 local_api_can_be_restarted_for_code_purge_test() ->
@@ -102,6 +122,19 @@ compile_fixture(Module, Value) ->
         {attribute, 2, export, [{value, 0}]},
         {function, 3, value, 0,
          [{clause, 3, [], [], [{integer, 3, Value}]}]}
+    ],
+    case compile:forms(Forms, [binary]) of
+        {ok, Module, Binary} -> {ok, Module, Binary};
+        {ok, Module, Binary, _Warnings} -> {ok, Module, Binary}
+    end.
+
+compile_on_load_fixture(Module) ->
+    Forms = [
+        {attribute, 1, module, Module},
+        {attribute, 2, on_load, {init, 0}},
+        {attribute, 3, export, [{init, 0}]},
+        {function, 4, init, 0,
+         [{clause, 4, [], [], [{atom, 4, ok}]}]}
     ],
     case compile:forms(Forms, [binary]) of
         {ok, Module, Binary} -> {ok, Module, Binary};

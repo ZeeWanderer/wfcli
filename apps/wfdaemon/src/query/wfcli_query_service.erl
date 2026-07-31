@@ -14,6 +14,7 @@
 
 -define(SERVER, ?MODULE).
 -define(WORKER_TIMEOUT_MS, 120000).
+-define(DEFAULT_WORKERS, 8).
 
 -doc "Start the unified query coordinator.".
 -spec start_link() -> {ok, pid()} | ignore | {error, term()}.
@@ -30,8 +31,8 @@ submit(Client, Request) ->
 status() -> gen_server:call(?SERVER, status).
 
 init([]) ->
-    {ok, #{queue => queue:new(), current => undefined, workers => #{},
-           client_monitors => #{}}}.
+    {ok, #{queue => queue:new(), workers => #{},
+           client_monitors => #{}, max_workers => worker_limit()}}.
 
 handle_call({submit, Client, Request}, _From, State) when is_pid(Client), is_map(Request) ->
     Ref = make_ref(),
@@ -40,11 +41,10 @@ handle_call({submit, Client, Request}, _From, State) when is_pid(Client), is_map
     Monitors = maps:get(client_monitors, State),
     wfcli_worldstate_service:activity_start(),
     State1 = State#{client_monitors => Monitors#{Monitor => Ref}},
-    {reply, {ok, Ref}, start_job(Job, State1)};
+    {reply, {ok, Ref}, enqueue_job(Job, State1)};
 handle_call(status, _From, State) ->
     {reply, #{queued => queue:len(maps:get(queue, State)),
-              processing => maps:get(current, State) =/= undefined orelse
-                            map_size(maps:get(workers, State, #{})) > 0,
+              processing => map_size(maps:get(workers, State, #{})) > 0,
               active => map_size(maps:get(workers, State, #{}))}, State};
 handle_call(Request, _From, State) ->
     {reply, {error, {unknown_request, Request}}, State}.
@@ -53,57 +53,58 @@ handle_cast(_Message, State) -> {noreply, State}.
 
 handle_info(process_queue, State) ->
     {noreply, start_queued(State)};
-handle_info({query_result, Token, Result},
-            State = #{current := #{token := Token, worker_monitor := WorkerMonitor,
-                                   job := Job}}) ->
-    erlang:demonitor(WorkerMonitor, [flush]),
-    State1 = complete_job(Job, Result, State#{current => undefined}),
-    self() ! process_queue,
-    {noreply, State1};
 handle_info({query_result, Token, Result}, State) ->
     case maps:take(Token, maps:get(workers, State, #{})) of
         error -> {noreply, State};
         {#{worker_monitor := WorkerMonitor, job := Job}, Workers} ->
             erlang:demonitor(WorkerMonitor, [flush]),
-            {noreply, complete_job(Job, Result, State#{workers => Workers})}
+            {noreply, start_queued(complete_job(Job, Result, State#{workers => Workers}))}
     end;
-handle_info({'DOWN', Monitor, process, _Pid, Reason},
-            State = #{current := #{worker_monitor := Monitor, job := Job}}) ->
-    State1 = complete_job(Job, {error, {query_worker_down, Reason}},
-                          State#{current => undefined}),
-    self() ! process_queue,
-    {noreply, State1};
 handle_info({'DOWN', Monitor, process, _Pid, Reason}, State) ->
     case take_worker_by_monitor(Monitor, maps:get(workers, State, #{})) of
         {ok, Job, Workers} ->
-            {noreply, complete_job(Job, {error, {query_worker_down, Reason}},
-                                   State#{workers => Workers})};
+            {noreply, start_queued(
+                        complete_job(Job, {error, {query_worker_down, Reason}},
+                                     State#{workers => Workers}))};
         error ->
             case cancel_client(Monitor, State) of
                 {not_found, State1} -> {noreply, State1};
-                {canceled, State1} -> {noreply, State1}
+                {canceled, State1} -> {noreply, start_queued(State1)}
             end
     end;
 handle_info(_Message, State) -> {noreply, State}.
 
 terminate(_Reason, State) ->
-    stop_worker(maps:get(current, State, undefined)),
     maps:foreach(fun(_Token, Worker) -> stop_worker(Worker) end,
                  maps:get(workers, State, #{})),
     ok.
 
 code_change(_OldVsn, State, _Extra) ->
+    Workers0 = migrate_current(maps:get(current, State, undefined),
+                               maps:get(workers, State, #{})),
+    State1 = maps:without([current, processing], State),
     self() ! process_queue,
-    {ok, State#{queue => maps:get(queue, State, queue:new()),
-                current => maps:get(current, State, undefined),
-                workers => maps:get(workers, State, #{}),
-                client_monitors => maps:get(client_monitors, State, #{})}}.
+    {ok, State1#{queue => maps:get(queue, State, queue:new()),
+                workers => Workers0,
+                client_monitors => maps:get(client_monitors, State, #{}),
+                max_workers => maps:get(max_workers, State, worker_limit())}}.
+
+migrate_current(undefined, Workers) -> Workers;
+migrate_current(Current = #{token := Token}, Workers) ->
+    Workers#{Token => maps:remove(token, Current)};
+migrate_current(_Current, Workers) -> Workers.
+
+enqueue_job(Job, State) ->
+    case map_size(maps:get(workers, State)) < maps:get(max_workers, State) of
+        true -> start_job(Job, State);
+        false -> State#{queue => queue:in(Job, maps:get(queue, State))}
+    end.
 
 start_job(Job, State) ->
     Parent = self(),
     Token = make_ref(),
     {Pid, WorkerMonitor} = spawn_monitor(fun() ->
-        Result = try execute(maps:get(request, Job))
+        Result = try execute_request(maps:get(request, Job))
                  catch Class:Reason:Stack ->
                      {error, {query_crash, Class, Reason, Stack}}
                  end,
@@ -113,10 +114,30 @@ start_job(Job, State) ->
     State#{workers => (maps:get(workers, State, #{}))#{Token => Worker}}.
 
 start_queued(State) ->
-    case queue:out(maps:get(queue, State)) of
-        {empty, Queue} -> State#{queue => Queue};
-        {{value, Job}, Queue} -> start_queued(start_job(Job, State#{queue => Queue}))
+    case map_size(maps:get(workers, State)) < maps:get(max_workers, State) of
+        false -> State;
+        true ->
+            case queue:out(maps:get(queue, State)) of
+                {empty, Queue} -> State#{queue => Queue};
+                {{value, Job}, Queue} -> start_queued(start_job(Job, State#{queue => Queue}))
+            end
     end.
+
+worker_limit() ->
+    case application:get_env(wfdaemon, query_workers, ?DEFAULT_WORKERS) of
+        Count when is_integer(Count), Count > 0 -> Count;
+        _ -> ?DEFAULT_WORKERS
+    end.
+
+-ifdef(TEST).
+execute_request(Request) ->
+    case application:get_env(wfdaemon, daemon_query_execute_fun, undefined) of
+        Fun when is_function(Fun, 1) -> Fun(Request);
+        undefined -> execute(Request)
+    end.
+-else.
+execute_request(Request) -> execute(Request).
+-endif.
 
 -doc "Parse and execute one unified query entirely inside wfdaemon.".
 -spec execute(map()) -> {ok, map()} | {error, term()}.
@@ -127,14 +148,46 @@ execute(Request) ->
             case wfcli_query_parse:parse_arguments(Tokens) of
                 {ok, Ast} ->
                     Query = string:join(Tokens, " "),
-                    Results = [execute_dataset(Dataset, Query, Ast, Request)
-                               || Dataset <- Datasets],
+                    Results = execute_datasets(Datasets, Query, Ast, Request),
                     {ok, #{query_tokens => Tokens, datasets => Results,
                            dataset_explicit => Explicit}};
                 {error, Error} -> {error, {query_errors, [Error]}}
             end;
         {error, Error} -> {error, {query_errors, [Error]}}
     end.
+
+execute_datasets(Datasets, Query, Ast, Request) ->
+    Parent = self(),
+    Batch = make_ref(),
+    _ = [spawn_link(fun() ->
+             Result = try execute_dataset_request(Dataset, Query, Ast, Request)
+                      catch Class:Reason:Stack ->
+                          #{dataset => Dataset,
+                            reply => {error, {dataset_query_crash, Class, Reason, Stack}}}
+                      end,
+             Parent ! {query_dataset_result, Batch, Index, Result}
+         end)
+         || {Index, Dataset} <- lists:enumerate(0, Datasets)],
+    collect_dataset_results(Batch, length(Datasets), #{}).
+
+collect_dataset_results(_Batch, 0, Results) ->
+    [Result || {_Index, Result} <- lists:sort(maps:to_list(Results))];
+collect_dataset_results(Batch, Remaining, Results) ->
+    receive
+        {query_dataset_result, Batch, Index, Result} ->
+            collect_dataset_results(Batch, Remaining - 1, Results#{Index => Result})
+    end.
+
+-ifdef(TEST).
+execute_dataset_request(Dataset, Query, Ast, Request) ->
+    case application:get_env(wfdaemon, query_dataset_execute_fun, undefined) of
+        Fun when is_function(Fun, 4) -> Fun(Dataset, Query, Ast, Request);
+        undefined -> execute_dataset(Dataset, Query, Ast, Request)
+    end.
+-else.
+execute_dataset_request(Dataset, Query, Ast, Request) ->
+    execute_dataset(Dataset, Query, Ast, Request).
+-endif.
 
 execute_dataset(worldstate, Query, _Ast, Request) ->
     Opts = worldstate_opts(Request),
@@ -299,17 +352,9 @@ cancel_client(Monitor, State) ->
         {Ref, Monitors} ->
             Queue = queue:filter(fun(Job) -> maps:get(ref, Job) =/= Ref end,
                                  maps:get(queue, State)),
-            Current = maps:get(current, State, undefined),
-            Current1 = case Current of
-                #{job := #{ref := Ref}} ->
-                    stop_worker(Current),
-                    undefined;
-                _ -> Current
-            end,
             Workers = cancel_worker(Ref, maps:get(workers, State, #{})),
             wfcli_worldstate_service:activity_end(),
-            {canceled, State#{queue => Queue, current => Current1,
-                              workers => Workers,
+            {canceled, State#{queue => Queue, workers => Workers,
                               client_monitors => Monitors}}
     end.
 
