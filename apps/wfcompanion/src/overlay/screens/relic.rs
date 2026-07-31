@@ -43,7 +43,7 @@ impl Assets {
             platinum_icon: load_icon(include_bytes!("../../../assets/platinum.png"))?,
             ducat_icon: load_icon(include_bytes!("../../../assets/ducats.png"))?,
             icons: SuggestionIcons::load()?,
-            asset_images: embedded_part_images()?,
+            asset_images: embedded_images()?,
         })
     }
 
@@ -126,13 +126,17 @@ pub(super) fn draw_static_relic_scene(
     }
 }
 
-fn embedded_part_images() -> Result<BTreeMap<String, RasterImage>, Box<dyn std::error::Error>> {
+fn embedded_images() -> Result<BTreeMap<String, RasterImage>, Box<dyn std::error::Error>> {
     let mut images = BTreeMap::new();
     for asset in crate::assets::EMBEDDED_PART_ASSETS {
         if !images.contains_key(asset.image.key) {
             images.insert(asset.image.key.to_owned(), load_icon(asset.image.bytes)?);
         }
     }
+    images.insert(
+        crate::assets::FORMA_ASSET.image.key.to_owned(),
+        load_icon(crate::assets::FORMA_ASSET.image.bytes)?,
+    );
     Ok(images)
 }
 
@@ -143,6 +147,26 @@ pub(super) fn draw_loading_pulse(
     elapsed: Duration,
 ) {
     reward::draw_loading_pulse(painter, bounds, scale, elapsed);
+}
+
+fn draw_vaulted_icon(
+    painter: &mut Painter<'_>,
+    icon: &RasterImage,
+    x: u32,
+    y: u32,
+    width: u32,
+    height: u32,
+    overscan_percent: u32,
+) {
+    let scaled_width = width * overscan_percent / 100;
+    let scaled_height = height * overscan_percent / 100;
+    painter.draw_image_contained(
+        icon,
+        x.saturating_sub((scaled_width - width) / 2),
+        y.saturating_sub((scaled_height - height) / 2),
+        scaled_width,
+        scaled_height,
+    );
 }
 
 pub(super) fn mock_relic_scene() -> crate::relic::Scene {
@@ -178,14 +202,15 @@ mod tests {
 
     #[test]
     fn embedded_part_registry_matches_resolver() {
-        let images = embedded_part_images().unwrap();
-        assert_eq!(images.len(), 23);
+        let images = embedded_images().unwrap();
+        assert_eq!(images.len(), 24);
         assert!(images.len() < crate::assets::EMBEDDED_PART_ASSETS.len());
         assert!(
             crate::assets::EMBEDDED_PART_ASSETS
                 .iter()
                 .all(|asset| images.contains_key(asset.image.key))
         );
+        assert!(images.contains_key(crate::assets::FORMA_ASSET.image.key));
         for name in [
             "Blueprint",
             "Barrel",

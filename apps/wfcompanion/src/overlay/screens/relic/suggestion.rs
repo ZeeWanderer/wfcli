@@ -170,7 +170,15 @@ pub(super) fn draw(
         let mut top_x = card.x + card.width.saturating_sub(top_width) / 2;
         let top_y = card.y + 6 * scale;
         if suggestion.vaulted {
-            painter.draw_image_contained(&icons.vaulted, top_x, top_y, 25 * scale, 24 * scale);
+            super::draw_vaulted_icon(
+                painter,
+                &icons.vaulted,
+                top_x,
+                top_y,
+                25 * scale,
+                24 * scale,
+                130,
+            );
             top_x += 33 * scale;
         }
         painter.draw_text_vertically_centered(

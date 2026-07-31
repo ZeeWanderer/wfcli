@@ -168,12 +168,14 @@ pub(super) fn draw(
                             12 * scale,
                             css_rgba(73, 79, 117, 255),
                         );
-                        painter.draw_image_contained(
+                        super::draw_vaulted_icon(
+                            painter,
                             &icons.vaulted,
                             bounds.x + 7 * scale,
                             bounds.y + 4 * scale,
                             22 * scale,
                             22 * scale,
+                            149,
                         );
                     }
                     draw_primary_price(

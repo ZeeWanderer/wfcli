@@ -121,7 +121,11 @@ impl Reward {
             set_complete: None,
             vaulted: false,
             set_price: None,
-            asset: None,
+            asset: Some(Asset {
+                id: "embedded:forma".to_owned(),
+                path: String::new(),
+                digest: assets::FORMA_ASSET.image.key.to_owned(),
+            }),
             parts: Vec::new(),
         }
     }
@@ -952,7 +956,7 @@ fn resolve_assets(
 }
 
 fn embedded_asset(spec: &AssetSpec) -> Option<Asset> {
-    assets::embedded_part(&spec.source, &spec.image_name).map(|embedded| Asset {
+    assets::embedded_asset(&spec.source, &spec.image_name).map(|embedded| Asset {
         id: spec.id.clone(),
         path: String::new(),
         digest: embedded.image.key.to_owned(),
@@ -1488,6 +1492,7 @@ mod tests {
         assert_eq!(forma.ducats, Some(0));
         assert_eq!(forma.crafted, Some(true));
         assert_eq!(forma.slug, None);
+        assert_eq!(forma.asset.unwrap().digest, "forma.png");
     }
 
     #[test]
@@ -1529,6 +1534,15 @@ mod tests {
             assert!(asset.path.is_empty());
             assert_eq!(asset.digest, embedded.image.key);
         }
+
+        let forma = embedded_asset(&AssetSpec {
+            id: "embedded:forma".to_owned(),
+            source: "embedded".to_owned(),
+            image_name: "forma.png".to_owned(),
+        })
+        .unwrap();
+        assert!(forma.path.is_empty());
+        assert_eq!(forma.digest, assets::FORMA_ASSET.image.key);
 
         let wrong_source = AssetSpec {
             id: "wfcd:part".to_owned(),

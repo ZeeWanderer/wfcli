@@ -18,6 +18,10 @@ Their DE provenance can be checked independently:
 the corresponding [Google Fonts archive revision](https://github.com/google/fonts/blob/724bf98e9f5cb98a1d3d5044f45a2e286b817401/apache/roboto/Roboto-Regular.ttf).
 `Roboto-LICENSE.txt` contains its Apache 2.0 license.
 
+`forma.png` is Digital Extremes' Forma art copied from AlecaFrame's public asset CDN. Aleca uses
+this same custom image for relic rewards because WFCD relic data does not publish a Forma reward
+image.
+
 `relic-parts/` contains universal Prime-part textures published through Warframe Market's static
 asset service. Their stable `sub_icons/...` identities are also present in Market item metadata.
 The `_128x128` suffix is Warframe Market's stable identity, not an exact-dimensions guarantee;

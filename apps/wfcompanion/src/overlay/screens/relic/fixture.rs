@@ -116,7 +116,7 @@ pub(super) fn part_asset(name: &str) -> Option<crate::relic::Asset> {
         "Systems" => "sub_icons/warframe/prime_systems_128x128.png",
         _ => return None,
     };
-    let embedded = crate::assets::embedded_part("market", id)?;
+    let embedded = crate::assets::embedded_asset("market", id)?;
     Some(crate::relic::Asset {
         id: format!("preview:{name}"),
         path: String::new(),

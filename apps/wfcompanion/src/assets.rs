@@ -77,6 +77,16 @@ image!(
 image!(WEAPON_STOCK, "sub_icons/weapon/prime_stock_128x128.png");
 image!(WEAPON_SYSTEMS, "sub_icons/weapon/prime_systems_128x128.png");
 
+const FORMA_IMAGE: EmbeddedImage = EmbeddedImage {
+    key: "forma.png",
+    bytes: include_bytes!("../assets/forma.png"),
+};
+
+pub(crate) const FORMA_ASSET: EmbeddedAsset = EmbeddedAsset {
+    id: "forma.png",
+    image: &FORMA_IMAGE,
+};
+
 pub(crate) const EMBEDDED_PART_ASSETS: &[EmbeddedAsset] = &[
     asset!(
         "sub_icons/archwing/prime_chassis_128x128.png",
@@ -143,8 +153,10 @@ pub(crate) const EMBEDDED_PART_ASSETS: &[EmbeddedAsset] = &[
     asset!("sub_icons/weapon/prime_systems_128x128.png", WEAPON_SYSTEMS),
 ];
 
-pub(crate) fn embedded_part(source: &str, id: &str) -> Option<&'static EmbeddedAsset> {
-    (source == "market")
-        .then(|| EMBEDDED_PART_ASSETS.iter().find(|asset| asset.id == id))
-        .flatten()
+pub(crate) fn embedded_asset(source: &str, id: &str) -> Option<&'static EmbeddedAsset> {
+    match source {
+        "market" => EMBEDDED_PART_ASSETS.iter().find(|asset| asset.id == id),
+        "embedded" if id == FORMA_ASSET.id => Some(&FORMA_ASSET),
+        _ => None,
+    }
 }
