@@ -3,6 +3,8 @@ CARGO ?= cargo
 REBAR_CACHE_DIR ?= $(CURDIR)/.cache/rebar3
 CARGO_TARGET_DIR ?= $(CURDIR)/_build/cargo
 CCACHE_DIR ?= $(CURDIR)/.cache/ccache
+LLVM_ROOT ?= $(shell brew --prefix llvm 2>/dev/null)
+NINJA ?= $(shell command -v ninja 2>/dev/null)
 COMPANION_MANIFEST := apps/wfcompanion/Cargo.toml
 VERSION := $(strip $(shell cat VERSION))
 PLATFORM := $(shell uname -s | tr '[:upper:]' '[:lower:]')-$(shell uname -m)
@@ -16,21 +18,54 @@ export REBAR_CACHE_DIR
 export CARGO_TARGET_DIR
 export CCACHE_DIR
 
-.PHONY: all build dev prod erlang cli daemon mcp companion \
+.PHONY: all build dev prod erlang cli daemon mcp companion gui gui-dev gui-prod \
+	gui-configure-dev gui-configure-prod gui-reconfigure gui-reconfigure-dev gui-reconfigure-prod \
 	dev-erlang prod-erlang dev-companion prod-companion links \
 	debug-bridge native-bridges previews aleca-layout-setup fix-executables \
-	native-compile-commands test test-erlang test-companion check fmt-check xref package clean
+	native-compile-commands test test-erlang test-companion test-gui check fmt-check xref package clean
 
 all: dev
 build: dev prod native-compile-commands
 
-dev: dev-erlang dev-companion links
+dev: dev-erlang dev-companion gui-dev links
 
-prod: prod-erlang prod-companion links
+prod: prod-erlang prod-companion gui-prod links
 
 erlang cli daemon mcp: dev-erlang
 
 companion: dev-companion
+
+gui: gui-dev
+
+gui-configure-dev:
+	test -n "$(LLVM_ROOT)"
+	test -n "$(NINJA)"
+	LLVM_ROOT="$(LLVM_ROOT)" cmake --preset gui-dev --log-level=WARNING -DCMAKE_MAKE_PROGRAM="$(NINJA)"
+
+gui-dev: gui-configure-dev
+	LLVM_ROOT="$(LLVM_ROOT)" cmake --build --preset gui-dev
+	LLVM_ROOT="$(LLVM_ROOT)" cmake --install _build/cmake/gui-dev
+
+gui-configure-prod:
+	test -n "$(LLVM_ROOT)"
+	test -n "$(NINJA)"
+	LLVM_ROOT="$(LLVM_ROOT)" cmake --preset gui-prod --log-level=WARNING -DCMAKE_MAKE_PROGRAM="$(NINJA)"
+
+gui-prod: gui-configure-prod
+	LLVM_ROOT="$(LLVM_ROOT)" cmake --build --preset gui-prod
+	LLVM_ROOT="$(LLVM_ROOT)" cmake --install _build/cmake/gui-prod
+
+gui-reconfigure: gui-reconfigure-dev gui-reconfigure-prod
+
+gui-reconfigure-dev:
+	test -n "$(LLVM_ROOT)"
+	test -n "$(NINJA)"
+	LLVM_ROOT="$(LLVM_ROOT)" cmake --fresh --preset gui-dev --log-level=WARNING -DCMAKE_MAKE_PROGRAM="$(NINJA)"
+
+gui-reconfigure-prod:
+	test -n "$(LLVM_ROOT)"
+	test -n "$(NINJA)"
+	LLVM_ROOT="$(LLVM_ROOT)" cmake --fresh --preset gui-prod --log-level=WARNING -DCMAKE_MAKE_PROGRAM="$(NINJA)"
 
 dev-erlang:
 	$(REBAR3) escriptize
@@ -52,9 +87,11 @@ links:
 	ln -sfn dev/bin/wfcli wfclid
 	ln -sfn dev/bin/wfdaemon wfdaemond
 	ln -sfn dev/bin/wfcompanion wfcompaniond
+	ln -sfn dev/bin/wfgui wfguid
 	ln -sfn prod/bin/wfcli wfcli
 	ln -sfn prod/bin/wfdaemon wfdaemon
 	ln -sfn prod/bin/wfcompanion wfcompanion
+	ln -sfn prod/bin/wfgui wfgui
 
 debug-bridge:
 	./scripts/build-debug-bridge
@@ -77,7 +114,7 @@ aleca-layout-setup:
 fix-executables:
 	bash ./scripts/fix-executables
 
-test: test-erlang test-companion
+test: test-erlang test-companion test-gui
 
 test-erlang:
 	./scripts/test-quiet eunit
@@ -85,6 +122,9 @@ test-erlang:
 
 test-companion: native-bridges
 	$(CARGO) test --locked --quiet --manifest-path $(COMPANION_MANIFEST)
+
+test-gui:
+	./scripts/test-quiet gui
 
 fmt-check:
 	$(CARGO) fmt --manifest-path $(COMPANION_MANIFEST) --check

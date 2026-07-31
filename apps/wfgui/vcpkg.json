@@ -1,0 +1,26 @@
+{
+  "name": "wfgui",
+  "version-string": "0.1.0",
+  "builtin-baseline": "3ad1f444504f4cb2ca0ede7b57ba2ffbdb7a3c75",
+  "supports": "linux & x64",
+  "dependencies": [
+    {
+      "name": "qtbase",
+      "default-features": false,
+      "features": [
+        "dbus",
+        "fontconfig",
+        "freetype",
+        "gui",
+        "harfbuzz",
+        "network",
+        "opengl",
+        "png",
+        "testlib",
+        "thread",
+        "wayland",
+        "widgets"
+      ]
+    }
+  ]
+}

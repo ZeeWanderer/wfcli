@@ -6,9 +6,11 @@
   "clangd.arguments": [
     "--background-index",
     "--compile-commands-dir=${workspaceFolder}/_build/native/clangd",
-    "--query-driver=**/x86_64-w64-mingw32-*"
+    "--query-driver=**/clang++,**/x86_64-w64-mingw32-*"
   ],
   "C_Cpp.intelliSenseEngine": "disabled",
   "makefile.configureOnOpen": false,
-  "cmake.ignoreCMakeListsMissing": true
+  "cmake.ignoreCMakeListsMissing": false,
+  "cmake.configureOnOpen": false,
+  "cmake.useCMakePresets": "always"
 }

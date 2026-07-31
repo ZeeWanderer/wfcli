@@ -7,23 +7,30 @@ if [[ $# -gt 0 ]]; then
 fi
 
 case "$command_name" in
-    ct|eunit) ;;
+    ct|eunit|gui) ;;
     *)
-        printf 'usage: %s [ct|eunit] [rebar3 options...]\n' "$0" >&2
+        printf 'usage: %s [ct|eunit|gui] [options...]\n' "$0" >&2
         exit 2
         ;;
 esac
 
 log_file="$(mktemp "${TMPDIR:-/tmp}/wfcli-${command_name}.XXXXXX.log")"
-rebar3 "$command_name" "$@" >"$log_file" 2>&1
+if [[ "$command_name" == "gui" ]]; then
+    label="gui"
+    make gui-dev >"$log_file" 2>&1 &&
+        ctest --test-dir _build/cmake/gui-dev --output-on-failure >>"$log_file" 2>&1
+else
+    label="rebar3 $command_name"
+    rebar3 "$command_name" "$@" >"$log_file" 2>&1
+fi
 status=$?
 if [[ $status -eq 0 ]]; then
-    printf 'rebar3 %s: passed\n' "$command_name"
+    printf '%s: passed\n' "$label"
     rm -f "$log_file"
     exit 0
 fi
 
-printf 'rebar3 %s: failed (full log: %s)\n' "$command_name" "$log_file" >&2
+printf '%s: failed (full log: %s)\n' "$label" "$log_file" >&2
 perl -pe 's/\e\[[0-9;]*m//g' "$log_file" \
     | awk 'length($0) > 400 && $0 ~ /^\.+$/ { next } { print }' \
     | tail -n 120 >&2

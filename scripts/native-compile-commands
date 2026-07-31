@@ -32,12 +32,17 @@ cmake \
 
 database="$build_dir/compile_commands.json"
 merged="$build_dir/compile_commands.merged.json"
+gui_database="$root/_build/cmake/gui-dev/compile_commands.json"
+jq_inputs=("$database")
+if [[ -f "$gui_database" ]]; then
+    jq_inputs+=("$gui_database")
+fi
 jq \
     --arg directory "$root" \
     --arg compiler "$debug_compiler" \
     --arg source "$debug_source" \
     --arg output "$build_dir/wfcompanion-debug-output.exe" \
-    '. + [{
+    -s 'add + [{
         directory: $directory,
         file: $source,
         arguments: [
@@ -52,6 +57,6 @@ jq \
             $output
         ]
     }]' \
-    "$database" > "$merged"
+    "${jq_inputs[@]}" > "$merged"
 mv "$merged" "$database"
 printf '%s\n' "$database"

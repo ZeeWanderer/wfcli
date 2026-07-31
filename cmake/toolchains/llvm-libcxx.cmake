@@ -1,0 +1,24 @@
+include_guard(GLOBAL)
+
+include("${CMAKE_CURRENT_LIST_DIR}/find-llvm.cmake")
+
+set(CMAKE_C_COMPILER "${WFCLI_CLANG}" CACHE FILEPATH "" FORCE)
+set(CMAKE_CXX_COMPILER "${WFCLI_CLANGXX}" CACHE FILEPATH "" FORCE)
+set(CMAKE_AR "${WFCLI_LLVM_AR}" CACHE FILEPATH "" FORCE)
+set(CMAKE_RANLIB "${WFCLI_LLVM_RANLIB}" CACHE FILEPATH "" FORCE)
+
+find_program(WFCLI_CCACHE NAMES ccache)
+if(WFCLI_CCACHE)
+  set(CMAKE_C_COMPILER_LAUNCHER "${WFCLI_CCACHE}" CACHE FILEPATH "" FORCE)
+  set(CMAKE_CXX_COMPILER_LAUNCHER "${WFCLI_CCACHE}" CACHE FILEPATH "" FORCE)
+endif()
+
+string(APPEND VCPKG_CXX_FLAGS
+  " -stdlib=libc++ -nostdinc++ -isystem${WFCLI_LLVM_ROOT}/include/c++/v1"
+)
+string(APPEND VCPKG_LINKER_FLAGS
+  " -stdlib=libc++ -L${WFCLI_LLVM_ROOT}/lib"
+  " -Wl,-rpath,${WFCLI_LLVM_ROOT}/lib"
+)
+
+include("$ENV{VCPKG_ROOT}/scripts/toolchains/linux.cmake")

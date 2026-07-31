@@ -43,6 +43,7 @@ research/
 
 # Direct Cargo output if project-level target configuration is bypassed
 apps/wfcompanion/target/
+vcpkg_installed/
 
 # Local metadata (worldstate exports/nodes/languages)
 apps/wfcli/priv/

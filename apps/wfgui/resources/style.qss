@@ -1,0 +1,172 @@
+QWidget {
+  background: #101623;
+  color: #ffffff;
+  font-size: 11pt;
+}
+
+QWidget#sidebar {
+  background: #171e30;
+}
+
+QLabel {
+  background: transparent;
+}
+
+QLabel#brand {
+  font-size: 16pt;
+  font-weight: 600;
+}
+
+QPushButton#navigation {
+  background: #313a58;
+  color: #ffffff;
+  border-radius: 4px;
+  border: none;
+  min-height: 40px;
+  padding: 0 12px;
+  text-align: left;
+  font-weight: 500;
+}
+
+QPushButton#navigation:!checked {
+  background: transparent;
+  color: #aeb5c7;
+}
+
+QPushButton#navigation:hover {
+  background: #272f47;
+}
+
+QLabel#daemonStatus,
+QLabel#secondaryText {
+  color: #8a8c95;
+}
+
+QLabel#daemonStatus[connected="true"] {
+  color: #8fc99a;
+}
+
+QLabel#pageTitle {
+  font-size: 19pt;
+  font-weight: 600;
+}
+
+QLineEdit {
+  background: #20283e;
+  border: 1px solid #313a58;
+  border-radius: 4px;
+  padding: 7px 9px;
+}
+
+QLineEdit:focus {
+  border-color: #b59dff;
+}
+
+QPushButton {
+  background: #20283e;
+  border: 1px solid #313a58;
+  border-radius: 4px;
+  padding: 7px 12px;
+}
+
+QPushButton:hover {
+  background: #272f47;
+}
+
+QPushButton:checked {
+  background: #432289;
+  border-color: #b59dff;
+  color: #ffffff;
+}
+
+QPushButton:disabled {
+  color: #8a8c95;
+}
+
+QWidget#contentFrame {
+  background: #171e30;
+  border: 1px solid #20283e;
+  border-radius: 6px;
+}
+
+QWidget#summaryPanel {
+  background: #171e30;
+  border: 1px solid #20283e;
+  border-radius: 6px;
+}
+
+QLabel#summaryValue {
+  font-size: 13pt;
+  font-weight: 600;
+}
+
+QScrollArea#relicScroll,
+QScrollArea#relicScroll QWidget#qt_scrollarea_viewport,
+QWidget#relicGrid,
+QWidget#relicCardCanvas {
+  background: transparent;
+  border: none;
+}
+
+QListView#playerItemGrid,
+QListView#playerItemGrid QWidget#qt_scrollarea_viewport {
+  background: transparent;
+  border: none;
+  outline: none;
+}
+
+QScrollBar:vertical {
+  background: transparent;
+  border: none;
+  width: 10px;
+  margin: 4px 2px;
+}
+
+QScrollBar::handle:vertical {
+  background: #313a58;
+  border-radius: 4px;
+  min-height: 32px;
+}
+
+QScrollBar::handle:vertical:hover {
+  background: #4a557a;
+}
+
+QScrollBar::add-line:vertical,
+QScrollBar::sub-line:vertical {
+  height: 0;
+}
+
+QScrollBar::add-page:vertical,
+QScrollBar::sub-page:vertical {
+  background: transparent;
+}
+
+QLabel#emptyState {
+  color: #8a8c95;
+  padding: 40px;
+}
+
+QProgressBar {
+  background: #20283e;
+  border: 1px solid #313a58;
+  border-radius: 3px;
+  min-height: 8px;
+  max-height: 8px;
+}
+
+QProgressBar::chunk {
+  background: #5e44af;
+}
+
+QProgressBar#priceProgress {
+  background: transparent;
+  border: none;
+  border-radius: 0;
+  min-height: 2px;
+  max-height: 2px;
+}
+
+QProgressBar#priceProgress::chunk {
+  background: #5e44af;
+}

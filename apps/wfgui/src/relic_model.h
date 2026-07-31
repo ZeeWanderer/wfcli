@@ -1,0 +1,73 @@
+#pragma once
+
+#include <QAbstractListModel>
+#include <QJsonObject>
+#include <QSortFilterProxyModel>
+#include <QHash>
+
+#include <memory>
+
+class RelicModel final : public QAbstractListModel {
+  Q_OBJECT
+
+public:
+  enum Role {
+    NameRole = Qt::UserRole + 1,
+    AmountOwnedRole,
+    VaultedRole,
+    FavoriteRole,
+    HasPriceRole,
+    ExpectedPlatinumRole,
+    ExpectedDucatsRole,
+    PricesLoadingRole,
+    RefinementRole,
+    RelicImageRole,
+    PriceCompleteRole,
+    RefinementsRole,
+    RewardsRole,
+  };
+
+  explicit RelicModel(QObject *parent = nullptr);
+  ~RelicModel() override;
+
+  int rowCount(const QModelIndex &parent = {}) const override;
+  QVariant data(const QModelIndex &index, int role) const override;
+  QHash<int, QByteArray> roleNames() const override;
+
+  bool replace(const QJsonObject &data, QString *error = nullptr);
+  void clear();
+  void setPricesLoading(bool loading);
+  void setAssetPaths(const QHash<QString, QString> &paths);
+  int traceCount() const;
+
+private:
+  struct Storage;
+  std::unique_ptr<Storage> storage_;
+  bool pricesLoading_ = false;
+};
+
+class RelicFilterModel final : public QSortFilterProxyModel {
+  Q_OBJECT
+
+public:
+  explicit RelicFilterModel(QObject *parent = nullptr);
+
+  QString filterText() const;
+  bool onlyOwned() const;
+  QVariant data(const QModelIndex &index,
+                int role = Qt::DisplayRole) const override;
+  void setFilterText(const QString &text);
+  void setOnlyOwned(bool onlyOwned);
+
+signals:
+  void filterTextChanged();
+  void onlyOwnedChanged();
+
+protected:
+  bool filterAcceptsRow(int sourceRow,
+                        const QModelIndex &sourceParent) const override;
+
+private:
+  QString filterText_;
+  bool onlyOwned_ = true;
+};

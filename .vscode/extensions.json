@@ -1,7 +1,8 @@
 {
   "recommendations": [
     "rust-lang.rust-analyzer",
-    "llvm-vs-code-extensions.vscode-clangd"
+    "llvm-vs-code-extensions.vscode-clangd",
+    "ms-vscode.cmake-tools"
   ],
   "unwantedRecommendations": [
     "ms-vscode.cpptools"
