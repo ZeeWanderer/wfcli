@@ -4,6 +4,7 @@
   "type": "module",
   "scripts": {
     "render": "node index.mjs",
+    "render:planner": "node planner.mjs",
     "test": "node --test"
   },
   "devDependencies": {
