@@ -6,12 +6,14 @@ See [README build instructions](../../README.md#build-from-source) for staged
 tree layout and dependencies. Contributor targets:
 
 ```bash
-make dev             # debug Erlang, relx dev release, debug companion
-make prod            # stripped Erlang, bundled ERTS, release companion
+make dev             # debug Erlang, companion, and GUI
+make prod            # optimized Erlang, companion, and GUI
 make dev-erlang
 make prod-erlang
 make dev-companion
 make prod-companion
+make gui            # native Qt Widgets development client
+make gui-reconfigure
 make package
 ```
 
@@ -19,12 +21,29 @@ Run `make dev-erlang` before direct `wfclid` tests and after daemon application 
 Run `make prod-erlang` before direct `wfcli` tests. Run the matching companion target after Rust,
 asset, or native bridge changes.
 
+The GUI uses vcpkg manifest mode with the tracked LLVM/libc++ triplet:
+
+```bash
+export VCPKG_ROOT=/path/to/vcpkg
+make gui
+```
+
+`make gui` derives `LLVM_ROOT` from Homebrew; override it to select another complete LLVM prefix.
+Host tools and target libraries share one triplet. The build environment supplies LLVM's runtime
+path while generated tools execute. vcpkg archives and ccache remain under `.cache/`; compiler
+output remains under `_build/`.
+
+GUI prerequisites include CMake, Ninja, vcpkg, Autoconf, Autoconf Archive, Automake, and Libtool.
+VS Code CMake Tools uses the tracked presets and existing `_build/cmake/` trees.
+
 ## Tests
 
 - `./scripts/test-quiet eunit`: EUnit with passing output suppressed.
 - `./scripts/test-quiet ct`: Common Test with passing output suppressed.
+- `./scripts/test-quiet gui`: native desktop model tests with build output suppressed.
 - `cargo test --locked --quiet --manifest-path apps/wfcompanion/Cargo.toml`: Rust tests.
-- `make test`: Erlang and Rust suites.
+- `make test-gui`: native desktop model tests.
+- `make test`: Erlang, Rust, and native desktop suites.
 - `make check`: Rust formatting, xref, tests, and both staged builds.
 
 The quiet wrapper prints one line on success. On failure it prints a bounded tail and retains the

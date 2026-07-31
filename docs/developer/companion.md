@@ -108,7 +108,7 @@ Selection flow:
 is documented in [`assets.md`](assets.md); inventory indexing is documented in
 [`player-data.md`](player-data.md).
 
-## Local Protocol V5
+## Local Protocol V7
 
 Transport is newline-delimited JSON over an owner-only Unix socket. Client must
 send `hello` first. This version is independent of the BEAM client protocol.
@@ -119,6 +119,7 @@ Requests:
 - `publish`
 - `market_resolve`
 - `relic_context`
+- `relic_planner`
 - `relic_recommendations`
 - `asset_resolve`
 

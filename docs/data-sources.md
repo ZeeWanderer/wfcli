@@ -53,3 +53,7 @@ identifiers and UTC timestamps.
 
 WFCD data is external community data. The managed wrapper records source URL,
 fetch time, and content SHA-256. Custom source paths remain caller-owned.
+
+`WFCDItems.json` is a compact managed projection of WFCD `All.json`. Inventory and Mastery views
+use it for names, components, mastery metadata, relic drops, and image identities. It follows the
+same periodic refresh policy as other managed WFCD data.

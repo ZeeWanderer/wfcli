@@ -120,3 +120,7 @@ Decoded images are renderer caches, separate from the daemon's encoded-file cach
 and shaped image fills stay in Blend2D; do not create resized Rust pixel buffers during scene
 drawing. Blend2D static-scene caching remains useful after decode: static card art can be
 rasterized once, while a changed price or selection invalidates only the affected scene region.
+
+Qt widgets load catalog and embedded images through `wfgui::cachedThumbnail` in `image_cache`.
+The cache key includes source path, target bounds, and device-pixel ratio; individual widgets must
+not decode full-size pixmaps or maintain separate thumbnail caches.

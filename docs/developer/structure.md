@@ -1,6 +1,6 @@
 # Project Structure
 
-The repository has three executable components and one process-free OTP library.
+The repository has four executable components and one process-free OTP library.
 
 ## `wfcli`
 
@@ -57,6 +57,21 @@ and value helpers here.
 
 The companion owns native window and overlay state. It publishes normalized observations to the
 daemon and requests shared data from it.
+
+## `wfgui`
+
+`apps/wfgui/` is the native C++ Qt Widgets desktop client:
+
+- `daemon_client`: local JSON-lines transport, daemon startup, reconnect, and request correlation.
+- `relic_model`: typed relic list, filtering, and asset-path updates.
+- `player_item_model`: shared Inventory and Mastery data/filter model.
+- `player_item_grid_widget`: responsive model/view card rendering and visible-asset requests.
+- `app_controller`: per-view cached metadata, price, asset, loading, and error state.
+- `relic_card_layout`: responsive card constraints shared by rendering and tests.
+- `main_window` and view widgets: navigation and desktop rendering.
+
+CMake presets use a project vcpkg manifest and LLVM/libc++ overlay triplet. Build it separately
+with `make gui`; `make dev` and `make prod` include the matching GUI build.
 
 ## Runtime Layout
 

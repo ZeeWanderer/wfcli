@@ -112,5 +112,6 @@ remain queryable under `raw`.
 query entities expose profile, inventory, mastery, recipe, mission, and raw rows. Relic reward
 context joins Market set metadata to stack/equipment counts and account platinum or ducats.
 
-Broad collection-completion and mastery summaries are not yet derived. Add them from this same
-snapshot and catalog join; do not create another inventory parser or persistence owner.
+`wfcli_player_views` joins that snapshot to the managed WFCD item catalog. It derives inventory
+categories and sets plus mastery ownership, rank, pending builds, missing components, owned-relic
+availability, and completion summaries. GUI filtering remains client-owned.

@@ -11,6 +11,7 @@ Market requests, local player observations, and Forma planning.
 | [`wfcli`](docs/cli.md) | Terminal client and stdio MCP server. It parses arguments and formats data returned by the daemon. |
 | [`wfdaemon`](docs/daemon.md) | Supervised OTP service for data, persistence, queries, watches, market access, player state, and planning. |
 | [`wfcompanion`](docs/companion.md) | Native Linux/Proton observer and Wayland overlay. It publishes local player observations and displays contextual data such as relic prices. |
+| [`wfgui`](docs/gui.md) | Native C++ desktop client for inventory, relic planning, and other account views. |
 | [`wfcore`](docs/developer/shared_utilities.md) | Process-free OTP library containing shared protocols, schemas, paths, and value helpers. |
 
 Clients start `wfdaemon` when needed. Concurrent clients reuse its parsed data and rate-limited
@@ -36,6 +37,18 @@ Companion runtime:
 
 - KDE Plasma on Wayland with KWin screenshot support and KScreen
 - Tesseract 5 with English `eng.traineddata`
+
+Desktop GUI build:
+
+- LLVM with libc++, CMake, Ninja, and vcpkg
+- Autoconf, Autoconf Archive, Automake, and Libtool
+- `ccache` is optional
+
+Homebrew provides these build tools:
+
+```bash
+brew install llvm cmake ninja autoconf autoconf-archive automake libtool
+```
 
 FFmpeg with `libvpx-vp9` is required only for animated overlay previews. `zip` is required by
 `make package`.
@@ -78,6 +91,7 @@ Root links make both environments directly usable when the repository is on `PAT
 | `wfclid` | `wfcli` |
 | `wfdaemond` | `wfdaemon` |
 | `wfcompaniond` | `wfcompanion` |
+| `wfguid` | `wfgui` |
 
 Useful targets:
 
@@ -86,6 +100,7 @@ make dev-erlang
 make prod-erlang
 make dev-companion
 make prod-companion
+make gui
 make native-compile-commands
 make test
 make check
@@ -194,6 +209,16 @@ wfcli companion paths
 See [Linux/Proton companion](docs/companion.md) for launch options, runtime dependencies,
 interaction controls, player data, and troubleshooting.
 
+### Desktop GUI
+
+```bash
+export VCPKG_ROOT=/path/to/vcpkg
+make gui
+./wfguid
+```
+
+See [Desktop GUI](docs/gui.md) for current views and data requirements.
+
 ### MCP
 
 `wfcli mcp` is a newline-delimited stdio MCP server. It starts or reuses `wfdaemon` and returns
@@ -211,6 +236,7 @@ See [MCP server](docs/mcp.md) for tools, resources, and cancellation behavior.
   [query language](docs/query.md), and [Forma planner](docs/forma-plan.md)
 - [`wfdaemon`](docs/daemon.md): lifecycle, idle policy, systemd, and updates
 - [`wfcompanion`](docs/companion.md): Proton observation, OCR, overlay, and diagnostics
+- [`wfgui`](docs/gui.md): native desktop client
 - [`wfcli mcp`](docs/mcp.md): MCP tools and resources
 - [Contributor documentation](docs/DEVELOPER.md): ownership, internals, and workflows
 

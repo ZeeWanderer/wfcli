@@ -73,6 +73,11 @@ daemon-wide request limiter. `wfcli_market_api` handles wire normalization;
 accepts owner-only Unix socket clients, including `wfcompanion`, and removes subscriptions on
 disconnect. Persisted observations do not keep the daemon alive.
 
+Native clients use request IDs over newline-delimited JSON on the Unix socket. Each connection
+can run independent reads concurrently; market mutation and rate-limited fetches remain serialized
+by their owning service. A representative 80 KB relic-planner response costs about 1 ms to encode
+or decode on BEAM, so JSON is retained until profiling shows transport encoding is material.
+
 ## Supervision
 
 `wfcli_sup` uses `one_for_one` permanent children for daemon protocol, worldstate, catalogs,
