@@ -58,6 +58,7 @@ fetch_json(Url, Next0) ->
     Now = erlang:monotonic_time(millisecond),
     Wait = case Next0 of 0 -> 0; _ -> max(0, Next0 - Now) end,
     timer:sleep(Wait),
+    Next = erlang:monotonic_time(millisecond) + request_interval(),
     Headers = [{"user-agent", "wfcli/0.1 (+https://github.com/ZeeWanderer/wfcli)"},
                {"accept", "application/json"}, {"language", "en"},
                {"platform", "pc"}, {"crossplay", "true"}],
@@ -68,7 +69,6 @@ fetch_json(Url, Next0) ->
         end
     catch HttpClass:HttpReason -> {error, {market_http_crash, HttpClass, HttpReason}}
     end,
-    Next = erlang:monotonic_time(millisecond) + request_interval(),
     case Result of
         {ok, 200, Body} -> decode_json(Body, Next);
         {ok, Status, _Body} -> {error, {market_http_status, Status}, Next};

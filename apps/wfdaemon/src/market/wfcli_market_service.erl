@@ -42,7 +42,7 @@ status() -> gen_server:call(?SERVER, status).
 -spec init([]) -> {ok, state()}.
 init([]) ->
     Path = wfcli_market_cache:path(),
-    {ok, #{queue => queue:new(), current => undefined, monitors => #{},
+    {ok, #{queue => queue:new(), current => undefined, reads => #{}, monitors => #{},
            cache_path => Path, snapshot => wfcli_market_cache:load(Path),
            next_request_at => 0, cache_error => undefined}}.
 
@@ -53,14 +53,20 @@ handle_call({submit, Client, Request}, _From, State) when is_pid(Client), is_map
     Job = #{ref => Ref, client => Client, monitor => Monitor,
             submitted_at => erlang:system_time(millisecond), request => Request},
     wfcli_worldstate_service:activity_start(),
-    self() ! process_queue,
-    {reply, {ok, Ref},
-     State#{queue => queue:in(Job, maps:get(queue, State)),
-            monitors => (maps:get(monitors, State))#{Monitor => Ref}}};
+    State1 = State#{monitors => (maps:get(monitors, State))#{Monitor => Ref}},
+    case immediate_request(Request, maps:get(snapshot, State)) of
+        true -> {reply, {ok, Ref}, start_read(Job, State1)};
+        false ->
+            self() ! process_queue,
+            {reply, {ok, Ref},
+             State1#{queue => queue:in(Job, maps:get(queue, State1))}}
+    end;
 handle_call(status, _From, State) ->
     Snapshot = maps:get(snapshot, State),
     {reply, #{queued => queue:len(maps:get(queue, State)),
-              processing => maps:get(current, State) =/= undefined,
+              processing => maps:get(current, State) =/= undefined orelse
+                            map_size(maps:get(reads, State, #{})) > 0,
+              concurrent_reads => map_size(maps:get(reads, State, #{})),
               items => length(maps:get(items, Snapshot, [])),
               cached_quotes => map_size(maps:get(quotes, Snapshot, #{})),
               cached_details => map_size(maps:get(details, Snapshot, #{})),
@@ -105,22 +111,37 @@ handle_info({market_result, Token, {Reply, Snapshot, NextRequestAt}},
     State2 = State1#{cache_error => CacheError},
     self() ! process_queue,
     {noreply, State2};
+handle_info({market_read_result, Token, Reply}, State) ->
+    case maps:take(Token, maps:get(reads, State, #{})) of
+        error -> {noreply, State};
+        {#{worker_monitor := WorkerMonitor, job := Job}, Reads} ->
+            erlang:demonitor(WorkerMonitor, [flush]),
+            {noreply, complete_job(Job, Reply, State#{reads => Reads})}
+    end;
 handle_info({'DOWN', Monitor, process, _Pid, Reason},
             State = #{current := #{worker_monitor := Monitor, job := Job}}) ->
     State1 = complete_job(Job, {error, {market_worker_down, Reason}},
                           State#{current => undefined}),
     self() ! process_queue,
     {noreply, State1};
-handle_info({'DOWN', Monitor, process, _Pid, _Reason}, State) ->
-    case cancel_client(Monitor, State) of
-        {not_found, State1} -> {noreply, State1};
-        {canceled, State1} -> self() ! process_queue, {noreply, State1}
+handle_info({'DOWN', Monitor, process, _Pid, Reason}, State) ->
+    case take_read_by_monitor(Monitor, maps:get(reads, State, #{})) of
+        {ok, Job, Reads} ->
+            {noreply, complete_job(Job, {error, {market_read_worker_down, Reason}},
+                                   State#{reads => Reads})};
+        error ->
+            case cancel_client(Monitor, State) of
+                {not_found, State1} -> {noreply, State1};
+                {canceled, State1} -> self() ! process_queue, {noreply, State1}
+            end
     end;
 handle_info(_Message, State) -> {noreply, State}.
 
 -spec terminate(term(), state()) -> ok.
 terminate(_Reason, State) ->
     stop_worker(maps:get(current, State, undefined)),
+    maps:foreach(fun(_Token, Worker) -> stop_worker(Worker) end,
+                 maps:get(reads, State, #{})),
     ok.
 
 -spec code_change(term(), state(), term()) -> {ok, state()}.
@@ -128,11 +149,57 @@ code_change(_OldVsn, State, _Extra) ->
     Path = maps:get(cache_path, State, wfcli_market_cache:path()),
     {ok, State#{queue => maps:get(queue, State, queue:new()),
                 current => maps:get(current, State, undefined),
+                reads => maps:get(reads, State, #{}),
                 monitors => maps:get(monitors, State, #{}),
                 cache_path => Path,
                 snapshot => maps:get(snapshot, State, wfcli_market_cache:load(Path)),
                 next_request_at => maps:get(next_request_at, State, 0),
                 cache_error => maps:get(cache_error, State, undefined)}}.
+
+immediate_request(#{action := Action}, Snapshot)
+  when Action =:= query; Action =:= resolve_labels ->
+    maps:get(items, Snapshot, []) =/= [];
+immediate_request(#{action := quote_items, cache_only := true}, Snapshot) ->
+    maps:get(items, Snapshot, []) =/= [];
+immediate_request(#{action := relic_recommendations} = Request, Snapshot) ->
+    maps:get(fetch_prices, Request, false) =:= false andalso
+    maps:get(items, Snapshot, []) =/= [] andalso
+    relic_catalog_ready(Snapshot);
+immediate_request(_Request, _Snapshot) -> false.
+
+start_read(Job, State) ->
+    Parent = self(),
+    Token = make_ref(),
+    Snapshot = maps:get(snapshot, State),
+    {Pid, WorkerMonitor} = spawn_monitor(fun() ->
+        Reply = safe_execute_read(maps:get(request, Job), Snapshot),
+        Parent ! {market_read_result, Token, Reply}
+    end),
+    Worker = #{worker_pid => Pid, worker_monitor => WorkerMonitor, job => Job},
+    State#{reads => (maps:get(reads, State, #{}))#{Token => Worker}}.
+
+safe_execute_read(Request, Snapshot) ->
+    try execute_read(Request, Snapshot)
+    catch Class:Reason:Stack ->
+        logger:error("market read failed: ~p:~p~n~p", [Class, Reason, Stack]),
+        {error, {market_request_failed, Class, Reason}}
+    end.
+
+execute_read(#{action := query, query_ast := Ast} = Request, Snapshot) ->
+    wfcli_market_query:execute(Ast, Request, Snapshot);
+execute_read(#{action := resolve_labels} = Request, Snapshot) ->
+    {Reply, _Snapshot, _Next} = resolve_labels(Request, Snapshot, 0),
+    Reply;
+execute_read(#{action := quote_items, items := Items, cache_only := true} = Request,
+             Snapshot) ->
+    {Reply, _Snapshot, _Next} = quote_items_cached(Items, Request, Snapshot, 0),
+    Reply;
+execute_read(#{action := relic_recommendations, era := Era} = Request, Snapshot) ->
+    Reply = wfcli_relic_recommendations:build(
+              Era, maps:get(relics, Snapshot, #{}), maps:get(items, Snapshot, []),
+              maps:get(quotes, Snapshot, #{}), player_snapshot(),
+              build_options(Request)),
+    {ok, Reply#{<<"quote_errors">> => #{}}}.
 
 safe_execute(Job, Snapshot, NextRequestAt) ->
     try execute(Job, Snapshot, NextRequestAt)
@@ -159,6 +226,9 @@ execute_action(#{action := quote_query, query_tokens := Tokens} = Request, Submi
         {ok, Ast} -> quote_query(Ast, Request, SubmittedAt, Snapshot, Next);
         {error, Error} -> {{error, {query_errors, [Error]}}, Snapshot, Next}
     end;
+execute_action(#{action := quote_items, items := Items, cache_only := true} = Request,
+               _SubmittedAt, Snapshot, Next) when is_list(Items) ->
+    quote_items_cached(Items, Request, Snapshot, Next);
 execute_action(#{action := quote_items, items := Items} = Request, SubmittedAt,
                Snapshot, Next) when is_list(Items) ->
     quote_items(Items, Request, SubmittedAt, Snapshot, Next);
@@ -237,13 +307,20 @@ relic_recommendations(Request, SubmittedAt, Snapshot0, Next0) ->
                               maps:get(relics, Snapshot2, #{}),
                               maps:get(items, Snapshot2, []),
                               maps:get(quotes, Snapshot2, #{}),
-                              Player),
+                              Player,
+                              build_options(Request)),
                     {{ok, Reply#{<<"quote_errors">> => QuoteErrors}}, Snapshot2, Next1}
             end
     end.
 
 valid_relic_era(Era) ->
-    lists:member(Era, [<<"lith">>, <<"meso">>, <<"neo">>, <<"axi">>, <<"all">>]).
+    lists:member(Era, [<<"lith">>, <<"meso">>, <<"neo">>, <<"axi">>,
+                       <<"requiem">>, <<"all">>]).
+
+build_options(Request) ->
+    #{view => maps:get(view, Request, recommendations),
+      limit => maps:get(limit, Request, 32),
+      only_owned => maps:get(only_owned, Request, true)}.
 
 maybe_fetch_recommendation_prices(Request, Era, Player, SubmittedAt, Snapshot, Next) ->
     case maps:get(fetch_prices, Request, false) of
@@ -253,7 +330,8 @@ maybe_fetch_recommendation_prices(Request, Era, Player, SubmittedAt, Snapshot, N
                       maps:get(relics, Snapshot, #{}),
                       maps:get(items, Snapshot, []),
                       Player,
-                      ?RECOMMENDATION_PRICE_CANDIDATES),
+                      ?RECOMMENDATION_PRICE_CANDIDATES,
+                      maps:get(only_owned, Request, true)),
             PriceRequest = Request#{ttl => 900, refresh => false},
             fetch_quotes(Slugs, PriceRequest, SubmittedAt, Snapshot, Next, #{});
         false -> {Snapshot, Next, #{}}
@@ -264,7 +342,7 @@ ensure_relic_catalog(Snapshot) ->
     FetchedAt = maps:get(relics_fetched_at, Snapshot, 0),
     AttemptedAt = maps:get(relics_attempted_at, Snapshot, 0),
     Now = erlang:system_time(millisecond),
-    Fresh = map_size(Relics) > 0 andalso
+    Fresh = relic_catalog_ready(Snapshot) andalso
             ((is_integer(FetchedAt) andalso
               Now - FetchedAt =< ?RELIC_CATALOG_TTL * 1000) orelse
              (is_integer(AttemptedAt) andalso
@@ -275,6 +353,8 @@ ensure_relic_catalog(Snapshot) ->
             case wfcli_relic_recommendations:fetch() of
                 {ok, NewRelics} ->
                     {ok, Snapshot#{relics => NewRelics,
+                                  relics_version =>
+                                      wfcli_relic_recommendations:catalog_version(),
                                   relics_fetched_at => Now,
                                   relics_attempted_at => Now,
                                   updated_at => Now}};
@@ -285,6 +365,11 @@ ensure_relic_catalog(Snapshot) ->
                     {error, Reason, Snapshot#{relics_attempted_at => Now}}
             end
     end.
+
+relic_catalog_ready(Snapshot) ->
+    map_size(maps:get(relics, Snapshot, #{})) > 0 andalso
+    maps:get(relics_version, Snapshot, undefined) =:=
+        wfcli_relic_recommendations:catalog_version().
 
 quote_query(Ast, Request, SubmittedAt, Snapshot0, Next0) ->
     QueryRequest = query_request(Request),
@@ -331,12 +416,37 @@ quote_items(Items, Request, SubmittedAt, Snapshot0, Next0) ->
             {{error, {market_quote_limit_exceeded, length(Items), ?HARD_MAX_QUOTES}},
              Snapshot0, Next0};
         false ->
+            Slugs = unique([Slug || {_Item, Slug} <- Resolved], []),
             {Snapshot, Next, Errors} = fetch_quotes(
-                Resolved, Request, SubmittedAt, Snapshot0, Next0, #{}),
+                Slugs, Request, SubmittedAt, Snapshot0, Next0, #{}),
             Quotes = maps:get(quotes, Snapshot),
-            Rows = [#{slug => Slug, quote => maps:get(Slug, Quotes, undefined),
-                      error => maps:get(Slug, Errors, undefined)} || Slug <- Resolved],
+            Rows = [#{item => Item, slug => Slug,
+                      quote => maps:get(Slug, Quotes, undefined),
+                      error => maps:get(Slug, Errors, undefined)}
+                    || {Item, Slug} <- Resolved],
             Reply = #{context => wfcli_market_api:context(), quotes => Rows, missing => Missing},
+            {{ok, Reply}, Snapshot, Next}
+    end.
+
+quote_items_cached(Items, _Request, Snapshot, Next) ->
+    {Resolved, Missing} = resolve_items(Items, maps:get(items, Snapshot, [])),
+    case length(Items) > ?HARD_MAX_QUOTES orelse length(Resolved) > ?HARD_MAX_QUOTES of
+        true ->
+            {{error, {market_quote_limit_exceeded, length(Items), ?HARD_MAX_QUOTES}},
+             Snapshot, Next};
+        false ->
+            Quotes = maps:get(quotes, Snapshot, #{}),
+            Rows = lists:filtermap(
+                     fun({Item, Slug}) ->
+                         case maps:find(Slug, Quotes) of
+                             {ok, Quote} ->
+                                 {true, #{item => Item, slug => Slug, quote => Quote}};
+                             error -> false
+                         end
+                     end,
+                     Resolved),
+            Reply = #{context => wfcli_market_api:context(), quotes => Rows,
+                      missing => Missing},
             {{ok, Reply}, Snapshot, Next}
     end.
 
@@ -350,10 +460,10 @@ resolve_items(Values, Items) ->
         Key = string:lowercase(string:trim(wfcli_text:to_list(Value))),
         case maps:get(Key, BySlug, maps:get(Key, ByName, undefined)) of
             undefined -> {Found, [Value | Missing]};
-            Slug -> {[Slug | Found], Missing}
+            Slug -> {[{Value, Slug} | Found], Missing}
         end
     end, {[], []}, Values),
-    {unique(lists:reverse(Found0), []), lists:reverse(Missing0)}.
+    {lists:reverse(Found0), lists:reverse(Missing0)}.
 
 fetch_quotes([], _Request, _SubmittedAt, Snapshot, Next, Errors) ->
     {Snapshot, Next, Errors};
@@ -546,8 +656,28 @@ cancel_client(Monitor, State) ->
                 #{job := #{ref := Ref}} -> stop_worker(Current), undefined;
                 _ -> Current
             end,
+            Reads = cancel_read(Ref, maps:get(reads, State, #{})),
             wfcli_worldstate_service:activity_end(),
-            {canceled, State#{queue => Queue, current => Current1, monitors => Monitors}}
+            {canceled, State#{queue => Queue, current => Current1, reads => Reads,
+                              monitors => Monitors}}
+    end.
+
+cancel_read(Ref, Reads) ->
+    maps:filter(
+      fun(_Token, Worker = #{job := Job}) ->
+          case maps:get(ref, Job) =:= Ref of
+              true -> stop_worker(Worker), false;
+              false -> true
+          end
+      end,
+      Reads).
+
+take_read_by_monitor(Monitor, Reads) ->
+    case [{Token, Worker} ||
+             {Token, Worker = #{worker_monitor := WorkerMonitor}} <- maps:to_list(Reads),
+             WorkerMonitor =:= Monitor] of
+        [{Token, #{job := Job}}] -> {ok, Job, maps:remove(Token, Reads)};
+        [] -> error
     end.
 
 stop_worker(undefined) -> ok;

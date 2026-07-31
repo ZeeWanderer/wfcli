@@ -8,7 +8,8 @@
 start() ->
     {ok, CallerCwd} = file:get_cwd(),
     TestRoot = filename:join(
-                 "/tmp", "wfcli-test-" ++ integer_to_list(erlang:unique_integer([positive]))),
+                 "/tmp", "wfcli-test-" ++ os:getpid() ++ "-" ++
+                     integer_to_list(erlang:unique_integer([positive]))),
     application:set_env(wfdaemon, player_cache, filename:join(TestRoot, "player.term")),
     application:set_env(wfdaemon, local_socket, filename:join(TestRoot, "wfdaemon.sock")),
     persistent_term:put({?MODULE, test_root}, TestRoot),

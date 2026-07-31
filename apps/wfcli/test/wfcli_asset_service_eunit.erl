@@ -9,6 +9,7 @@ asset_service_test_() ->
     {setup, fun setup/0, fun cleanup/1,
      fun(_Root) -> [
          fun fetches_valid_asset_once/0,
+         fun fetches_batch_concurrently/0,
          fun accepts_market_sub_icon/0,
          fun rejects_untrusted_image_name/0,
          fun reloads_persisted_descriptor/0
@@ -52,6 +53,41 @@ fetches_valid_asset_once() ->
     {ok, [Second]} = wfcli_asset_service:resolve(Request),
     ?assertEqual(maps:get(<<"digest">>, First), maps:get(<<"digest">>, Second)),
     ?assertEqual(1, atomics:get(Counter, 1)).
+
+fetches_batch_concurrently() ->
+    Test = self(),
+    application:set_env(
+      wfdaemon, asset_http_fun,
+      fun(_Url, _Headers) ->
+          Test ! {asset_fetch_started, self()},
+          receive continue ->
+              {ok, 200, [{"etag", "\"fixture\""}], fixture_png()}
+          end
+      end),
+    Resolver = spawn(fun() ->
+        Test ! {asset_batch_result, wfcli_asset_service:resolve([
+            #{<<"id">> => <<"parallel-a">>, <<"image_name">> => <<"a.png">>},
+            #{<<"id">> => <<"parallel-b">>, <<"image_name">> => <<"b.png">>}
+        ])}
+    end),
+    First = receive {asset_fetch_started, Pid1} -> Pid1 after 1000 -> timeout end,
+    Second = receive {asset_fetch_started, Pid2} -> Pid2 after 1000 -> timeout end,
+    ?assert(is_pid(First)),
+    ?assert(is_pid(Second)),
+    First ! continue,
+    Second ! continue,
+    receive
+        {asset_batch_result, {ok, Results}} -> ?assertEqual(2, length(Results))
+    after 1000 ->
+        error({asset_batch_timeout, Resolver})
+    end,
+    {ok, Counter} = application:get_env(wfdaemon, asset_test_counter),
+    application:set_env(
+      wfdaemon, asset_http_fun,
+      fun(_Url, _Headers) ->
+          atomics:add(Counter, 1, 1),
+          {ok, 200, [{"etag", "\"fixture\""}], fixture_png()}
+      end).
 
 accepts_market_sub_icon() ->
     {ok, [Result]} = wfcli_asset_service:resolve(

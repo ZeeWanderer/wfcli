@@ -107,7 +107,7 @@ handle_info({client_identified, Pid, ClientInfo}, State) ->
         undefined -> {noreply, State};
         Info ->
             Client = maps:get(client, ClientInfo),
-            update_companion_activity(maps:get(client, Info, undefined), Client),
+            update_client_activity(maps:get(client, Info, undefined), Client),
             {noreply, State#{connections => Connections#{Pid => maps:merge(Info, ClientInfo)}}}
     end;
 handle_info({'DOWN', Monitor, process, _Pid, _Reason}, State) ->
@@ -119,7 +119,7 @@ handle_info({'DOWN', Monitor, process, _Pid, _Reason}, State) ->
                 error ->
                     {noreply, State#{monitors => Monitors}};
                 {Info, Connections} ->
-                    release_companion_activity(Info),
+                    release_client_activity(Info),
                     {noreply, State#{connections => Connections, monitors => Monitors}}
             end
     end;
@@ -200,7 +200,8 @@ connection(Socket, Parent) ->
     {Reader, ReaderMonitor} = spawn_monitor(fun() -> socket_reader(Socket, Handler) end),
     State = #{socket => Socket, parent => Parent, reader => Reader,
               reader_monitor => ReaderMonitor, buffer => <<>>,
-              hello => false, subscriptions => #{}, refs => #{}, market_refs => #{}},
+              hello => false, subscriptions => #{}, refs => #{}, market_refs => #{},
+              workers => #{}},
     try connection_loop(State)
     after
         cleanup_connection(State),
@@ -221,6 +222,9 @@ connection_loop(State = #{reader_monitor := ReaderMonitor}) ->
         {wfcli_daemon, Ref, Reply} ->
             State1 = send_market_reply(Ref, Reply, State),
             connection_loop(State1);
+        {local_request_result, Token, Id, Dataset, Reply} ->
+            State1 = send_local_request_result(Token, Id, Dataset, Reply, State),
+            connection_loop(State1);
         {daemon_command, Command} ->
             send_json(maps:get(socket, State),
                       #{<<"event">> => <<"command">>, <<"data">> => Command}),
@@ -230,6 +234,9 @@ connection_loop(State = #{reader_monitor := ReaderMonitor}) ->
                 normal -> ok;
                 _ -> exit({socket_reader_failed, Reason})
             end;
+        {'DOWN', Monitor, process, _Worker, Reason} ->
+            State1 = local_request_down(Monitor, Reason, State),
+            connection_loop(State1);
         shutdown -> ok;
         _Message -> connection_loop(State)
     end.
@@ -290,7 +297,10 @@ handle_request(#{<<"op">> := <<"hello">>} = Request, State) ->
                                <<"player.publish">>, <<"market.quote">>,
                                <<"market.resolve">>,
                                <<"relic.context">>,
+                               <<"relic.planner">>,
                                <<"relic.recommendations">>,
+                               <<"player.inventory">>,
+                               <<"player.mastery">>,
                                <<"asset.resolve">>,
                                <<"companion.command">>]
     },
@@ -305,11 +315,15 @@ handle_request(Request, State = #{hello := false}) ->
     {ok, State};
 handle_request(#{<<"op">> := <<"get">>, <<"dataset">> := Dataset} = Request, State) ->
     Id = request_id(Request),
-    case dataset_snapshot(Dataset) of
-        {ok, Snapshot} -> send_ok(maps:get(socket, State), Id, Dataset, Snapshot);
-        {error, Reason} -> send_error(maps:get(socket, State), Id, Reason)
-    end,
-    {ok, State};
+    {ok, start_local_request(Id, Dataset, fun() -> dataset_snapshot(Dataset) end, State)};
+handle_request(#{<<"op">> := <<"inventory_view">>} = Request, State) ->
+    Id = request_id(Request),
+    {ok, start_local_request(Id, <<"inventory">>,
+                             fun wfcli_player_views:inventory/0, State)};
+handle_request(#{<<"op">> := <<"mastery_view">>} = Request, State) ->
+    Id = request_id(Request),
+    {ok, start_local_request(Id, <<"mastery">>,
+                             fun wfcli_player_views:mastery/0, State)};
 handle_request(#{<<"op">> := <<"subscribe">>, <<"dataset">> := <<"player">>} = Request,
                State) ->
     subscribe_player(request_id(Request), State);
@@ -361,6 +375,8 @@ handle_request(#{<<"op">> := <<"market_quote">>, <<"items">> := Items} = Request
         true ->
             MarketRequest = #{source => market, action => quote_items, items => Items,
                               ttl => Ttl,
+                              cache_only =>
+                                  maps:get(<<"cache_only">>, Request, false) =:= true,
                               refresh => maps:get(<<"refresh">>, Request, false) =:= true},
             case wfcli_market_service:submit(self(), MarketRequest) of
                 {ok, Ref} ->
@@ -397,31 +413,65 @@ handle_request(#{<<"op">> := <<"relic_context">>} = Request, State) ->
 handle_request(#{<<"op">> := <<"relic_recommendations">>,
                  <<"era">> := Era} = Request, State) when is_binary(Era) ->
     Id = request_id(Request),
-    MarketRequest = #{source => market, action => relic_recommendations,
-                      era => Era,
-                      fetch_prices => maps:get(<<"fetch_prices">>, Request, false) =:= true},
-    case wfcli_market_service:submit(self(), MarketRequest) of
-        {ok, Ref} ->
-            Refs = maps:get(market_refs, State),
-            {ok, State#{market_refs => Refs#{Ref => Id}}};
-        {error, Reason} ->
-            send_error(maps:get(socket, State), Id, Reason),
+    case relic_limit(Request, 32) of
+        {ok, Limit} ->
+            MarketRequest = #{source => market, action => relic_recommendations,
+                              era => Era, view => recommendations, limit => Limit,
+                              only_owned => true,
+                              fetch_prices =>
+                                  maps:get(<<"fetch_prices">>, Request, false) =:= true},
+            case wfcli_market_service:submit(self(), MarketRequest) of
+                {ok, Ref} ->
+                    Refs = maps:get(market_refs, State),
+                    {ok, State#{market_refs => Refs#{Ref => Id}}};
+                {error, Reason} ->
+                    send_error(maps:get(socket, State), Id, Reason),
+                    {ok, State}
+            end;
+        error ->
+            send_error(maps:get(socket, State), Id, invalid_relic_limit),
             {ok, State}
     end;
 handle_request(#{<<"op">> := <<"relic_recommendations">>} = Request, State) ->
+    send_error(maps:get(socket, State), request_id(Request), invalid_relic_era),
+    {ok, State};
+handle_request(#{<<"op">> := <<"relic_planner">>,
+                 <<"era">> := Era} = Request, State) when is_binary(Era) ->
+    Id = request_id(Request),
+    case relic_limit(Request, all) of
+        {ok, Limit} ->
+            MarketRequest = #{source => market, action => relic_recommendations,
+                              era => Era, view => planner, limit => Limit,
+                              only_owned =>
+                                  maps:get(<<"only_owned">>, Request, true) =:= true,
+                              fetch_prices =>
+                                  maps:get(<<"fetch_prices">>, Request, false) =:= true},
+            case wfcli_market_service:submit(self(), MarketRequest) of
+                {ok, Ref} ->
+                    Refs = maps:get(market_refs, State),
+                    {ok, State#{market_refs => Refs#{Ref => Id}}};
+                {error, Reason} ->
+                    send_error(maps:get(socket, State), Id, Reason),
+                    {ok, State}
+            end;
+        error ->
+            send_error(maps:get(socket, State), Id, invalid_relic_limit),
+            {ok, State}
+    end;
+handle_request(#{<<"op">> := <<"relic_planner">>} = Request, State) ->
     send_error(maps:get(socket, State), request_id(Request), invalid_relic_era),
     {ok, State};
 handle_request(#{<<"op">> := <<"asset_resolve">>,
                  <<"assets">> := Assets} = Request, State)
   when is_list(Assets), length(Assets) =< 64 ->
     Id = request_id(Request),
-    case wfcli_asset_service:resolve(Assets) of
-        {ok, Results} ->
-            send_ok(maps:get(socket, State), Id, <<"assets">>,
-                    #{<<"assets">> => Results});
-        {error, Reason} -> send_error(maps:get(socket, State), Id, Reason)
+    Work = fun() ->
+        case wfcli_asset_service:resolve(Assets) of
+            {ok, Results} -> {ok, #{<<"assets">> => Results}};
+            {error, _Reason} = Error -> Error
+        end
     end,
-    {ok, State};
+    {ok, start_local_request(Id, <<"assets">>, Work, State)};
 handle_request(#{<<"op">> := <<"asset_resolve">>} = Request, State) ->
     send_error(maps:get(socket, State), request_id(Request), invalid_assets),
     {ok, State};
@@ -436,6 +486,13 @@ valid_market_labels(_Labels) -> false.
 
 valid_market_limit(Limit) ->
     is_integer(Limit) andalso Limit >= 1 andalso Limit =< ?MAX_MARKET_RESOLVE_LIMIT.
+
+relic_limit(Request, Default) ->
+    case maps:get(<<"limit">>, Request, Default) of
+        <<"all">> -> {ok, all};
+        Limit when is_integer(Limit), Limit >= 1, Limit =< 1000 -> {ok, Limit};
+        _ -> error
+    end.
 
 subscribe_player(Id, State) when is_integer(Id) ->
     State1 = unsubscribe_player(Id, State),
@@ -483,6 +540,45 @@ send_market_reply(Ref, Reply, State) ->
                 {error, Reason} -> send_error(maps:get(socket, State), Id, Reason)
             end,
             State#{market_refs => MarketRefs}
+    end.
+
+start_local_request(Id, Dataset, Work, State) ->
+    Parent = self(),
+    Token = make_ref(),
+    {Pid, Monitor} = spawn_monitor(fun() ->
+        Reply = try Work()
+                catch Class:Reason:Stack ->
+                    logger:error("local API request failed: ~p:~p~n~p",
+                                 [Class, Reason, Stack]),
+                    {error, {local_request_failed, Class, Reason}}
+                end,
+        Parent ! {local_request_result, Token, Id, Dataset, Reply}
+    end),
+    Worker = #{pid => Pid, monitor => Monitor, id => Id},
+    Workers = maps:get(workers, State, #{}),
+    State#{workers => Workers#{Token => Worker}}.
+
+send_local_request_result(Token, Id, Dataset, Reply, State) ->
+    case maps:take(Token, maps:get(workers, State, #{})) of
+        error -> State;
+        {#{monitor := Monitor}, Workers} ->
+            erlang:demonitor(Monitor, [flush]),
+            case Reply of
+                {ok, Data} -> send_ok(maps:get(socket, State), Id, Dataset, Data);
+                {error, Reason} -> send_error(maps:get(socket, State), Id, Reason)
+            end,
+            State#{workers => Workers}
+    end.
+
+local_request_down(Monitor, Reason, State) ->
+    case [{Token, Worker} ||
+             {Token, Worker = #{monitor := WorkerMonitor}} <-
+                 maps:to_list(maps:get(workers, State, #{})),
+             WorkerMonitor =:= Monitor] of
+        [{Token, #{id := Id}}] ->
+            send_error(maps:get(socket, State), Id, {local_request_down, Reason}),
+            State#{workers => maps:remove(Token, maps:get(workers, State))};
+        [] -> State
     end.
 
 dataset_snapshot(<<"player">>) ->
@@ -543,24 +639,42 @@ nullable(Value) -> Value.
 cleanup_connection(State) ->
     maps:foreach(fun(_Id, Ref) -> wfcli_player_service:unsubscribe(Ref) end,
                  maps:get(subscriptions, State, #{})),
+    maps:foreach(
+      fun(_Token, #{pid := Pid, monitor := Monitor}) ->
+          exit(Pid, shutdown),
+          erlang:demonitor(Monitor, [flush])
+      end,
+      maps:get(workers, State, #{})),
     exit(maps:get(reader, State), shutdown),
     erlang:demonitor(maps:get(reader_monitor, State), [flush]),
     ok.
 
-update_companion_activity(<<"wfcompanion">>, <<"wfcompanion">>) -> ok;
-update_companion_activity(<<"wfcompanion">>, _Client) ->
-    wfcli_worldstate_service:activity_end();
-update_companion_activity(_Previous, <<"wfcompanion">>) ->
-    wfcli_worldstate_service:activity_start();
-update_companion_activity(_Previous, _Client) -> ok.
+update_client_activity(Previous, Client) when Previous =:= Client -> ok;
+update_client_activity(Previous, Client) ->
+    set_client_activity(is_active_client(Previous), is_active_client(Client)).
 
-release_companion_activity(#{client := <<"wfcompanion">>}) ->
+set_client_activity(true, false) ->
     wfcli_worldstate_service:activity_end();
-release_companion_activity(_Info) -> ok.
+set_client_activity(false, true) ->
+    wfcli_worldstate_service:activity_start();
+set_client_activity(_Previous, _Client) -> ok.
+
+release_client_activity(#{client := Client}) ->
+    release_activity(is_active_client(Client));
+release_client_activity(_Info) -> ok.
+
+release_activity(true) ->
+    wfcli_worldstate_service:activity_end();
+release_activity(false) -> ok.
+
+is_active_client(<<"wfcompanion">>) -> true;
+is_active_client(<<"wfgui">>) -> true;
+is_active_client(_Client) -> false.
 
 valid_os_pid(Pid) when is_integer(Pid), Pid > 0 -> Pid;
 valid_os_pid(_Pid) -> undefined.
 
 valid_client_mode(<<"standalone">>) -> <<"standalone">>;
 valid_client_mode(<<"launch">>) -> <<"launch">>;
+valid_client_mode(<<"desktop">>) -> <<"desktop">>;
 valid_client_mode(_Mode) -> <<"unknown">>.

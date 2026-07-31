@@ -1,0 +1,142 @@
+%%%-------------------------------------------------------------------
+%% Compact WFCD item graph used by player inventory and mastery views.
+%%%-------------------------------------------------------------------
+-module(wfcli_item_catalog).
+
+-include_lib("kernel/include/file.hrl").
+
+-export([load/0, source/0, update/0]).
+-ifdef(TEST).
+-export([compact/1]).
+-endif.
+
+-define(ITEM_FILE, "WFCDItems.json").
+-define(URL,
+        "https://raw.githubusercontent.com/WFCD/warframe-items/master/data/json/All.json").
+-define(CACHE_KEY, {?MODULE, cache}).
+
+-doc "Load compact item records, caching by file signature until next update.".
+-spec load() -> {ok, [map()], map()} | {error, term()}.
+load() ->
+    Path = source(),
+    case file:read_file_info(Path, [{time, posix}]) of
+        {ok, #file_info{mtime = Modified, size = Size}} ->
+            Signature = {Path, Modified, Size},
+            case persistent_term:get(?CACHE_KEY, undefined) of
+                #{signature := Signature, entries := Entries, meta := Meta} ->
+                    {ok, Entries, Meta};
+                _ -> load_file(Path, Signature)
+            end;
+        {error, Reason} -> {error, {item_catalog_missing, Path, Reason}}
+    end.
+
+-doc "Return preferred managed item-catalog path.".
+-spec source() -> file:filename_all().
+source() ->
+    Paths = wfcli_worldstate:metadata_paths(?ITEM_FILE),
+    case [Path || Path <- Paths, filelib:is_file(Path)] of
+        [Path | _] -> Path;
+        [] -> case Paths of
+                  [Path | _] -> Path;
+                  [] -> wfcli_paths:cache_file(?ITEM_FILE)
+              end
+    end.
+
+-doc "Refresh and compact WFCD All.json for local player-data joins.".
+-spec update() -> ok | {error, term()}.
+update() ->
+    application:ensure_all_started(inets),
+    application:ensure_all_started(ssl),
+    Headers = [{"user-agent", "wfcli/0.1 (+https://github.com/ZeeWanderer/wfcli)"},
+               {"accept", "application/json"}],
+    case httpc:request(get, {?URL, Headers}, [{timeout, 120000}],
+                       [{body_format, binary}]) of
+        {ok, {{_, 200, _}, _ResponseHeaders, Body}} -> persist(Body);
+        {ok, {{_, Code, _}, _ResponseHeaders, _Body}} ->
+            {error, {item_catalog_http_status, Code}};
+        {error, Reason} -> {error, {item_catalog_http_failed, Reason}}
+    end.
+
+load_file(Path, Signature) ->
+    case file:read_file(Path) of
+        {ok, Body} ->
+            try jsone:decode(Body, [{object_format, map}]) of
+                #{<<"entries">> := Entries} = Wrapper when is_list(Entries) ->
+                    Meta = #{source => maps:get(<<"source">>, Wrapper, <<"WFCD">>),
+                             version => maps:get(<<"version">>, Wrapper, <<"unknown">>),
+                             fetched_at => maps:get(<<"fetchedAt">>, Wrapper, 0)},
+                    persistent_term:put(
+                      ?CACHE_KEY,
+                      #{signature => Signature, entries => Entries, meta => Meta}),
+                    {ok, Entries, Meta};
+                _ -> {error, {bad_item_catalog, Path}}
+            catch error:Reason -> {error, {bad_item_catalog_json, Path, Reason}}
+            end;
+        {error, Reason} -> {error, {item_catalog_read_failed, Path, Reason}}
+    end.
+
+persist(Body) ->
+    try jsone:decode(Body, [{object_format, map}]) of
+        Values when is_list(Values) ->
+            Entries = [Item || Value <- Values,
+                                Item <- [compact(Value)], Item =/= undefined],
+            Wrapper = #{<<"source">> => list_to_binary(?URL),
+                        <<"version">> => content_version(Body),
+                        <<"fetchedAt">> => erlang:system_time(second),
+                        <<"entries">> => Entries},
+            case wfcli_worldstate:write_metadata_file(?ITEM_FILE, jsone:encode(Wrapper)) of
+                ok -> persistent_term:erase(?CACHE_KEY), ok;
+                Error -> Error
+            end;
+        _ -> {error, bad_item_catalog_payload}
+    catch error:Reason -> {error, {bad_item_catalog_json, Reason}}
+    end.
+
+compact(Item) when is_map(Item) ->
+    case maps:get(<<"uniqueName">>, Item, undefined) of
+        Unique when is_binary(Unique), byte_size(Unique) > 0 ->
+            (copy(Item,
+                  [<<"uniqueName">>, <<"name">>, <<"imageName">>, <<"category">>,
+                   <<"type">>, <<"masteryReq">>, <<"masterable">>, <<"tradable">>,
+                   <<"isPrime">>, <<"primeSellingPrice">>]))#{
+                <<"components">> => compact_components(maps:get(<<"components">>, Item, []))
+            };
+        _ -> undefined
+    end;
+compact(_Item) -> undefined.
+
+compact_components(Values) when is_list(Values) ->
+    [Component || Value <- Values,
+                  Component <- [compact_component(Value)], Component =/= undefined];
+compact_components(_Values) -> [].
+
+compact_component(Component) when is_map(Component) ->
+    case maps:get(<<"uniqueName">>, Component, undefined) of
+        Unique when is_binary(Unique), byte_size(Unique) > 0 ->
+            (copy(Component,
+                  [<<"uniqueName">>, <<"name">>, <<"imageName">>, <<"type">>,
+                   <<"itemCount">>, <<"tradable">>, <<"primeSellingPrice">>]))#{
+                <<"drops">> => compact_drops(maps:get(<<"drops">>, Component, []))
+            };
+        _ -> undefined
+    end;
+compact_component(_Component) -> undefined.
+
+compact_drops(Values) when is_list(Values) ->
+    [copy(Drop, [<<"location">>, <<"chance">>, <<"uniqueName">>])
+     || Drop <- Values, is_map(Drop), relic_drop(Drop)];
+compact_drops(_Values) -> [].
+
+relic_drop(Drop) ->
+    case maps:get(<<"location">>, Drop, <<>>) of
+        Location when is_binary(Location) ->
+            binary:match(Location, <<" Relic">>) =/= nomatch;
+        _ -> false
+    end.
+
+copy(Map, Keys) ->
+    maps:with([Key || Key <- Keys, maps:is_key(Key, Map)], Map).
+
+content_version(Body) ->
+    application:ensure_all_started(crypto),
+    binary:encode_hex(crypto:hash(sha256, Body), lowercase).

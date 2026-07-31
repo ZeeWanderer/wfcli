@@ -48,8 +48,8 @@ init([]) ->
 -spec handle_call(term(), gen_server:from(), state()) -> {reply, term(), state()}.
 handle_call({resolve, Assets}, _From, State)
   when is_list(Assets), length(Assets) =< ?MAX_ASSETS ->
-    {Results, State1} = resolve_assets(Assets, State, []),
-    {reply, {ok, lists:reverse(Results)}, State1};
+    {Results, State1} = resolve_assets(Assets, State),
+    {reply, {ok, Results}, State1};
 handle_call({resolve, _Assets}, _From, State) ->
     {reply, {error, invalid_assets}, State};
 handle_call(status, _From, State) ->
@@ -70,60 +70,113 @@ terminate(_Reason, _State) -> ok.
 -spec code_change(term(), state(), term()) -> {ok, state()}.
 code_change(_OldVsn, State, _Extra) -> {ok, State}.
 
-resolve_assets([], State, Acc) -> {Acc, State};
-resolve_assets([Spec | Rest], State, Acc) ->
-    {Result, State1} = resolve_asset(Spec, State),
-    resolve_assets(Rest, State1, [Result | Acc]).
+resolve_assets(Assets, State) ->
+    Prepared = prepare_assets(Assets, State, 0, []),
+    Fetches = [{Position, Request} || {Position, {fetch, Request}} <- Prepared],
+    commit_assets(Prepared, fetch_parallel(Fetches), State, []).
 
-resolve_asset(#{<<"id">> := Id, <<"image_name">> := Name} = Spec, State)
+prepare_assets([], _State, _Position, Acc) -> lists:reverse(Acc);
+prepare_assets([Spec | Rest], State, Position, Acc) ->
+    Prepared = prepare_asset(Spec, State),
+    prepare_assets(Rest, State, Position + 1, [{Position, Prepared} | Acc]).
+
+prepare_asset(#{<<"id">> := Id, <<"image_name">> := Name} = Spec, State)
   when is_binary(Id), is_binary(Name) ->
     Source = maps:get(<<"source">>, Spec, <<"wfcd">>),
     case valid_asset_name(Source, Name) of
-        true -> resolve_valid(Id, Source, Name, State);
-        false -> {unavailable(Id, invalid_image_name), State}
+        true -> prepare_valid(Id, Source, Name, State);
+        false -> {ready, unavailable(Id, invalid_image_name)}
     end;
-resolve_asset(Spec, State) ->
+prepare_asset(Spec, _State) ->
     Id = case Spec of
         #{<<"id">> := Value} when is_binary(Value) -> Value;
         _ -> <<>>
     end,
-    {unavailable(Id, invalid_asset), State}.
+    {ready, unavailable(Id, invalid_asset)}.
 
-resolve_valid(Id, Source, Name, State) ->
+prepare_valid(Id, Source, Name, State) ->
     Entries = maps:get(entries, State),
     Key = {Source, Name},
     Cached = maps:get(Key, Entries, undefined),
     case usable_cached(Cached) andalso fresh(Cached) of
-        true -> {descriptor(Id, Source, Name, Cached, false), State};
-        false -> fetch_asset(Id, Source, Name, Cached, State)
+        true -> {ready, descriptor(Id, Source, Name, Cached, false)};
+        false -> {fetch, {Id, Source, Name, Cached}}
     end.
 
-fetch_asset(Id, Source, Name, Cached, State) ->
+fetch_parallel([]) -> #{};
+fetch_parallel(Fetches) ->
+    Parent = self(),
+    Pending = lists:foldl(
+      fun({Position, Request}, Acc) ->
+          {Pid, Monitor} = spawn_monitor(fun() ->
+              Parent ! {asset_fetch_result, self(), Position,
+                        safe_fetch_asset(Request)}
+          end),
+          Acc#{Pid => {Monitor, Position}}
+      end, #{}, Fetches),
+    collect_fetches(Pending, #{}).
+
+collect_fetches(Pending, Results) when map_size(Pending) =:= 0 -> Results;
+collect_fetches(Pending, Results) ->
+    receive
+        {asset_fetch_result, Pid, Position, Result} ->
+            case maps:take(Pid, Pending) of
+                {{Monitor, Position}, Rest} ->
+                    erlang:demonitor(Monitor, [flush]),
+                    collect_fetches(Rest, Results#{Position => Result});
+                error -> collect_fetches(Pending, Results)
+            end;
+        {'DOWN', Monitor, process, Pid, Reason} ->
+            case maps:take(Pid, Pending) of
+                {{Monitor, Position}, Rest} ->
+                    collect_fetches(
+                      Rest, Results#{Position => {error, {asset_worker_down, Reason}}});
+                error -> collect_fetches(Pending, Results)
+            end
+    end.
+
+safe_fetch_asset(Request) ->
+    try fetch_asset(Request)
+    catch Class:Reason -> {error, {asset_fetch_crash, Class, Reason}}
+    end.
+
+fetch_asset({_Id, Source, Name, Cached}) ->
     Url = asset_url(Source, Name),
     Headers = request_headers(Cached),
     case http_get(Url, Headers) of
         {ok, 304, _ResponseHeaders, _Body} when is_map(Cached) ->
-            Entry = Cached#{fetched_at => erlang:system_time(millisecond)},
-            save_entry({Source, Name}, Source, Name, Entry, State, Id, false);
+            {entry, Cached#{fetched_at => erlang:system_time(millisecond)}};
         {ok, 200, ResponseHeaders, Body0} ->
             Body = iolist_to_binary(Body0),
             case validate_body(Body, ResponseHeaders) of
                 {ok, MediaType, Extension} ->
-                    store_body(Id, Source, Name, Url, Body, MediaType, Extension,
-                               ResponseHeaders, State);
-                {error, Reason} ->
-                    stale_or_error(Id, Source, Name, Cached, Reason, State)
+                    {body, Url, Body, MediaType, Extension, ResponseHeaders};
+                {error, Reason} -> {error, Reason}
             end;
         {ok, Status, _ResponseHeaders, _Body} ->
-            stale_or_error(Id, Source, Name, Cached,
-                           {asset_http_status, Status}, State);
-        {error, Reason} ->
-            stale_or_error(Id, Source, Name, Cached,
-                           {asset_http_failed, Reason}, State);
-        Other ->
-            stale_or_error(Id, Source, Name, Cached,
-                           {invalid_asset_http_result, Other}, State)
+            {error, {asset_http_status, Status}};
+        {error, Reason} -> {error, {asset_http_failed, Reason}};
+        Other -> {error, {invalid_asset_http_result, Other}}
     end.
+
+commit_assets([], _Fetched, State, Acc) -> {lists:reverse(Acc), State};
+commit_assets([{_Position, {ready, Result}} | Rest], Fetched, State, Acc) ->
+    commit_assets(Rest, Fetched, State, [Result | Acc]);
+commit_assets([{Position, {fetch, {Id, Source, Name, Cached}}} | Rest],
+              Fetched, State, Acc) ->
+    {Result, State1} = commit_fetch(
+                         Id, Source, Name, Cached,
+                         maps:get(Position, Fetched,
+                                  {error, asset_worker_missing}), State),
+    commit_assets(Rest, Fetched, State1, [Result | Acc]).
+
+commit_fetch(Id, Source, Name, _Cached, {entry, Entry}, State) ->
+    save_entry({Source, Name}, Source, Name, Entry, State, Id, false);
+commit_fetch(Id, Source, Name, _Cached,
+             {body, Url, Body, MediaType, Extension, Headers}, State) ->
+    store_body(Id, Source, Name, Url, Body, MediaType, Extension, Headers, State);
+commit_fetch(Id, Source, Name, Cached, {error, Reason}, State) ->
+    stale_or_error(Id, Source, Name, Cached, Reason, State).
 
 store_body(Id, Source, Name, Url, Body, MediaType, Extension, Headers, State) ->
     Digest = hex(crypto:hash(sha256, Body)),

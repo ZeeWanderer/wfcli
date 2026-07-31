@@ -11,25 +11,30 @@ unix_socket_lifecycle_test_() ->
 
 setup() ->
     Root = filename:join(
-             "/tmp", "wfcli-local-api-" ++ integer_to_list(erlang:unique_integer([positive]))),
+             "/tmp", "wfcli-local-api-" ++ os:getpid() ++ "-" ++
+                 integer_to_list(erlang:unique_integer([positive]))),
     SocketPath = filename:join(Root, "wfdaemon.sock"),
     CachePath = filename:join(Root, "player.term"),
     MarketCache = filename:join(Root, "market.term"),
+    AssetCache = filename:join(Root, "assets"),
     application:set_env(wfdaemon, local_socket, SocketPath),
     application:set_env(wfdaemon, player_cache, CachePath),
     application:set_env(wfdaemon, market_cache, MarketCache),
     application:set_env(wfdaemon, market_request_interval_ms, 0),
     application:set_env(wfdaemon, market_http_fun, fun market_http/2),
+    application:set_env(wfdaemon, asset_cache_dir, AssetCache),
     application:set_env(wfdaemon, daemon_idle_shutdown, false),
     {ok, _Worldstate} = wfcli_worldstate_service:start_link(),
     {ok, _Player} = wfcli_player_service:start_link(),
     {ok, _Market} = wfcli_market_service:start_link(),
+    {ok, _Assets} = wfcli_asset_service:start_link(),
     {ok, _Api} = wfcli_local_api:start_link(),
     #{root => Root, socket => SocketPath, cache => CachePath, market_cache => MarketCache}.
 
 cleanup(#{root := Root, socket := SocketPath, cache := CachePath,
           market_cache := MarketCache}) ->
     gen_server:stop(wfcli_local_api),
+    gen_server:stop(wfcli_asset_service),
     gen_server:stop(wfcli_market_service),
     gen_server:stop(wfcli_player_service),
     gen_server:stop(wfcli_worldstate_service),
@@ -38,13 +43,15 @@ cleanup(#{root := Root, socket := SocketPath, cache := CachePath,
     application:unset_env(wfdaemon, market_cache),
     application:unset_env(wfdaemon, market_request_interval_ms),
     application:unset_env(wfdaemon, market_http_fun),
+    application:unset_env(wfdaemon, asset_cache_dir),
+    application:unset_env(wfdaemon, asset_http_fun),
     application:unset_env(wfdaemon, daemon_idle_shutdown),
     _ = file:delete(SocketPath),
     _ = file:delete(CachePath),
     _ = file:delete(CachePath ++ ".tmp"),
     _ = file:delete(MarketCache),
     _ = file:delete(MarketCache ++ ".tmp"),
-    _ = file:del_dir(Root),
+    _ = file:del_dir_r(Root),
     ok.
 
 lifecycle(#{socket := SocketPath}) ->
@@ -52,8 +59,18 @@ lifecycle(#{socket := SocketPath}) ->
     ?assertMatch(#{external_activity := 0}, wfcli_worldstate_service:status()),
     request_market_resolve(TestSocket),
     reject_invalid_market_resolve(TestSocket),
+    reject_invalid_relic_limit(TestSocket),
     request_market_quote(TestSocket),
+    request_cached_market_quote(TestSocket),
+    slow_asset_does_not_block_dataset(TestSocket),
     ok = socket:close(TestSocket),
+
+    GuiSocket = connect_client(
+                  SocketPath, <<"wfgui">>,
+                  #{<<"pid">> => 1000, <<"mode">> => <<"desktop">>}),
+    await_external_activity(1, 20),
+    ok = socket:close(GuiSocket),
+    await_external_activity(0, 20),
 
     CompanionSocket1 = connect_client(
                          SocketPath, <<"wfcompanion">>,
@@ -75,6 +92,40 @@ lifecycle(#{socket := SocketPath}) ->
     ok = socket:close(CompanionSocket2),
     await_external_activity(0, 20).
 
+slow_asset_does_not_block_dataset(Socket) ->
+    Test = self(),
+    application:set_env(
+      wfdaemon, asset_http_fun,
+      fun(_Url, _Headers) ->
+          Test ! {asset_fetch_started, self()},
+          receive continue ->
+              {ok, 200, [{"content-type", "image/png"}],
+               <<16#89, "PNG", 13, 10, 26, 10, 0>>}
+          end
+      end),
+    AssetRequest = #{<<"op">> => <<"asset_resolve">>, <<"id">> => 10,
+                     <<"assets">> => [#{<<"id">> => <<"test">>,
+                                         <<"image_name">> => <<"test.png">>}]},
+    ok = socket:send(Socket, wfcli_local_protocol:encode(AssetRequest)),
+    AssetWorker = receive
+        {asset_fetch_started, Pid} -> Pid
+    after 1000 ->
+        error(asset_fetch_not_started)
+    end,
+    GetRequest = #{<<"op">> => <<"get">>, <<"id">> => 11,
+                   <<"dataset">> => <<"daemon">>},
+    ok = socket:send(Socket, wfcli_local_protocol:encode(GetRequest)),
+    {ok, GetLine} = socket:recv(Socket, 0, 1000),
+    {ok, GetReply} = wfcli_local_protocol:decode(string:trim(GetLine)),
+    ?assertEqual(11, maps:get(<<"id">>, GetReply)),
+    ?assertEqual(true, maps:get(<<"ok">>, GetReply)),
+    AssetWorker ! continue,
+    {ok, AssetLine} = socket:recv(Socket, 0, 1000),
+    {ok, AssetReply} = wfcli_local_protocol:decode(string:trim(AssetLine)),
+    ?assertEqual(10, maps:get(<<"id">>, AssetReply)),
+    ?assertEqual(true, maps:get(<<"ok">>, AssetReply)),
+    application:unset_env(wfdaemon, asset_http_fun).
+
 connect_client(SocketPath, Client, Extra) ->
     {ok, Socket} = socket:open(local, stream, default),
     ok = socket:connect(Socket, #{family => local, path => SocketPath}),
@@ -91,6 +142,9 @@ connect_client(SocketPath, Client, Extra) ->
     ?assert(lists:member(<<"market.resolve">>, maps:get(<<"capabilities">>, Reply))),
     ?assert(lists:member(<<"relic.recommendations">>,
                          maps:get(<<"capabilities">>, Reply))),
+    ?assert(lists:member(<<"relic.planner">>, maps:get(<<"capabilities">>, Reply))),
+    ?assert(lists:member(<<"player.inventory">>, maps:get(<<"capabilities">>, Reply))),
+    ?assert(lists:member(<<"player.mastery">>, maps:get(<<"capabilities">>, Reply))),
     ?assert(lists:member(<<"asset.resolve">>, maps:get(<<"capabilities">>, Reply))),
     Socket.
 
@@ -115,8 +169,21 @@ request_market_quote(Socket) ->
     ?assertEqual(<<"market">>, maps:get(<<"dataset">>, Reply)),
     Data = maps:get(<<"data">>, Reply),
     [QuoteRow] = maps:get(<<"quotes">>, Data),
+    ?assertEqual(<<"saryn_prime_set">>, maps:get(<<"item">>, QuoteRow)),
     Quote = maps:get(<<"quote">>, QuoteRow),
     ?assertEqual(42, maps:get(<<"lowest_sell">>, Quote)).
+
+request_cached_market_quote(Socket) ->
+    Request = #{<<"op">> => <<"market_quote">>, <<"id">> => 14,
+                <<"items">> => [<<"saryn_prime_set">>],
+                <<"cache_only">> => true},
+    ok = socket:send(Socket, wfcli_local_protocol:encode(Request)),
+    {ok, ReplyLine} = socket:recv(Socket, 0, 5000),
+    {ok, Reply} = wfcli_local_protocol:decode(string:trim(ReplyLine)),
+    ?assertEqual(true, maps:get(<<"ok">>, Reply)),
+    ?assertEqual(14, maps:get(<<"id">>, Reply)),
+    [QuoteRow] = maps:get(<<"quotes">>, maps:get(<<"data">>, Reply)),
+    ?assertEqual(<<"saryn_prime_set">>, maps:get(<<"item">>, QuoteRow)).
 
 request_market_resolve(Socket) ->
     Request = #{<<"op">> => <<"market_resolve">>, <<"id">> => 8,
@@ -151,6 +218,19 @@ reject_invalid_market_resolve(Socket) ->
     {ok, Reply2} = wfcli_local_protocol:decode(string:trim(ReplyLine2)),
     ?assertEqual(false, maps:get(<<"ok">>, Reply2)),
     ?assertEqual(<<"invalid_market_limit">>, maps:get(<<"error">>, Reply2)).
+
+reject_invalid_relic_limit(Socket) ->
+    lists:foreach(
+      fun({Id, Operation}) ->
+          Request = #{<<"op">> => Operation, <<"id">> => Id,
+                      <<"era">> => <<"axi">>, <<"limit">> => 0},
+          ok = socket:send(Socket, wfcli_local_protocol:encode(Request)),
+          {ok, ReplyLine} = socket:recv(Socket, 0, 5000),
+          {ok, Reply} = wfcli_local_protocol:decode(string:trim(ReplyLine)),
+          ?assertEqual(false, maps:get(<<"ok">>, Reply)),
+          ?assertEqual(<<"invalid_relic_limit">>, maps:get(<<"error">>, Reply))
+      end,
+      [{12, <<"relic_recommendations">>}, {13, <<"relic_planner">>}]).
 
 market_http(Url, _Headers) ->
     Body = case lists:suffix("/v2/items", Url) of

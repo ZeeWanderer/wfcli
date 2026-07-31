@@ -1,5 +1,5 @@
 %%%-------------------------------------------------------------------
-%% Serialized daemon-owned unified query coordinator.
+%% Concurrent daemon-owned unified query coordinator.
 %%%-------------------------------------------------------------------
 -module(wfcli_query_service).
 
@@ -15,22 +15,23 @@
 -define(SERVER, ?MODULE).
 -define(WORKER_TIMEOUT_MS, 120000).
 
--doc "Start the unified query queue.".
+-doc "Start the unified query coordinator.".
 -spec start_link() -> {ok, pid()} | ignore | {error, term()}.
 start_link() ->
     gen_server:start_link({local, ?SERVER}, ?MODULE, [], []).
 
--doc "Queue one unified query; result arrives as `{wfcli_daemon, Ref, Reply}`.".
+-doc "Start one unified query; result arrives as `{wfcli_daemon, Ref, Reply}`.".
 -spec submit(pid(), map()) -> {ok, reference()} | {error, term()}.
 submit(Client, Request) ->
     gen_server:call(?SERVER, {submit, Client, Request}).
 
--doc "Return unified query queue state.".
+-doc "Return unified query worker state.".
 -spec status() -> map().
 status() -> gen_server:call(?SERVER, status).
 
 init([]) ->
-    {ok, #{queue => queue:new(), current => undefined, client_monitors => #{}}}.
+    {ok, #{queue => queue:new(), current => undefined, workers => #{},
+           client_monitors => #{}}}.
 
 handle_call({submit, Client, Request}, _From, State) when is_pid(Client), is_map(Request) ->
     Ref = make_ref(),
@@ -38,36 +39,20 @@ handle_call({submit, Client, Request}, _From, State) when is_pid(Client), is_map
     Job = #{client => Client, ref => Ref, monitor => Monitor, request => Request},
     Monitors = maps:get(client_monitors, State),
     wfcli_worldstate_service:activity_start(),
-    self() ! process_queue,
-    {reply, {ok, Ref}, State#{queue => queue:in(Job, maps:get(queue, State)),
-                              client_monitors => Monitors#{Monitor => Ref}}};
+    State1 = State#{client_monitors => Monitors#{Monitor => Ref}},
+    {reply, {ok, Ref}, start_job(Job, State1)};
 handle_call(status, _From, State) ->
     {reply, #{queued => queue:len(maps:get(queue, State)),
-              processing => maps:get(current, State) =/= undefined}, State};
+              processing => maps:get(current, State) =/= undefined orelse
+                            map_size(maps:get(workers, State, #{})) > 0,
+              active => map_size(maps:get(workers, State, #{}))}, State};
 handle_call(Request, _From, State) ->
     {reply, {error, {unknown_request, Request}}, State}.
 
 handle_cast(_Message, State) -> {noreply, State}.
 
-handle_info(process_queue, State = #{current := Current}) when Current =/= undefined ->
-    {noreply, State};
 handle_info(process_queue, State) ->
-    case queue:out(maps:get(queue, State)) of
-        {empty, Queue} -> {noreply, State#{queue => Queue}};
-        {{value, Job}, Queue} ->
-            Parent = self(),
-            Token = make_ref(),
-            {Pid, WorkerMonitor} = spawn_monitor(fun() ->
-                Result = try execute(maps:get(request, Job))
-                         catch Class:Reason:Stack ->
-                             {error, {query_crash, Class, Reason, Stack}}
-                         end,
-                Parent ! {query_result, Token, Result}
-            end),
-            Current = #{token => Token, worker_pid => Pid,
-                        worker_monitor => WorkerMonitor, job => Job},
-            {noreply, State#{queue => Queue, current => Current}}
-    end;
+    {noreply, start_queued(State)};
 handle_info({query_result, Token, Result},
             State = #{current := #{token := Token, worker_monitor := WorkerMonitor,
                                    job := Job}}) ->
@@ -75,29 +60,63 @@ handle_info({query_result, Token, Result},
     State1 = complete_job(Job, Result, State#{current => undefined}),
     self() ! process_queue,
     {noreply, State1};
+handle_info({query_result, Token, Result}, State) ->
+    case maps:take(Token, maps:get(workers, State, #{})) of
+        error -> {noreply, State};
+        {#{worker_monitor := WorkerMonitor, job := Job}, Workers} ->
+            erlang:demonitor(WorkerMonitor, [flush]),
+            {noreply, complete_job(Job, Result, State#{workers => Workers})}
+    end;
 handle_info({'DOWN', Monitor, process, _Pid, Reason},
             State = #{current := #{worker_monitor := Monitor, job := Job}}) ->
     State1 = complete_job(Job, {error, {query_worker_down, Reason}},
                           State#{current => undefined}),
     self() ! process_queue,
     {noreply, State1};
-handle_info({'DOWN', Monitor, process, _Pid, _Reason}, State) ->
-    case cancel_client(Monitor, State) of
-        {not_found, State1} -> {noreply, State1};
-        {canceled, State1} ->
-            self() ! process_queue,
-            {noreply, State1}
+handle_info({'DOWN', Monitor, process, _Pid, Reason}, State) ->
+    case take_worker_by_monitor(Monitor, maps:get(workers, State, #{})) of
+        {ok, Job, Workers} ->
+            {noreply, complete_job(Job, {error, {query_worker_down, Reason}},
+                                   State#{workers => Workers})};
+        error ->
+            case cancel_client(Monitor, State) of
+                {not_found, State1} -> {noreply, State1};
+                {canceled, State1} -> {noreply, State1}
+            end
     end;
 handle_info(_Message, State) -> {noreply, State}.
 
 terminate(_Reason, State) ->
     stop_worker(maps:get(current, State, undefined)),
+    maps:foreach(fun(_Token, Worker) -> stop_worker(Worker) end,
+                 maps:get(workers, State, #{})),
     ok.
 
 code_change(_OldVsn, State, _Extra) ->
+    self() ! process_queue,
     {ok, State#{queue => maps:get(queue, State, queue:new()),
                 current => maps:get(current, State, undefined),
+                workers => maps:get(workers, State, #{}),
                 client_monitors => maps:get(client_monitors, State, #{})}}.
+
+start_job(Job, State) ->
+    Parent = self(),
+    Token = make_ref(),
+    {Pid, WorkerMonitor} = spawn_monitor(fun() ->
+        Result = try execute(maps:get(request, Job))
+                 catch Class:Reason:Stack ->
+                     {error, {query_crash, Class, Reason, Stack}}
+                 end,
+        Parent ! {query_result, Token, Result}
+    end),
+    Worker = #{worker_pid => Pid, worker_monitor => WorkerMonitor, job => Job},
+    State#{workers => (maps:get(workers, State, #{}))#{Token => Worker}}.
+
+start_queued(State) ->
+    case queue:out(maps:get(queue, State)) of
+        {empty, Queue} -> State#{queue => Queue};
+        {{value, Job}, Queue} -> start_queued(start_job(Job, State#{queue => Queue}))
+    end.
 
 -doc "Parse and execute one unified query entirely inside wfdaemon.".
 -spec execute(map()) -> {ok, map()} | {error, term()}.
@@ -287,9 +306,29 @@ cancel_client(Monitor, State) ->
                     undefined;
                 _ -> Current
             end,
+            Workers = cancel_worker(Ref, maps:get(workers, State, #{})),
             wfcli_worldstate_service:activity_end(),
             {canceled, State#{queue => Queue, current => Current1,
+                              workers => Workers,
                               client_monitors => Monitors}}
+    end.
+
+cancel_worker(Ref, Workers) ->
+    maps:filter(
+      fun(_Token, Worker = #{job := Job}) ->
+          case maps:get(ref, Job) =:= Ref of
+              true -> stop_worker(Worker), false;
+              false -> true
+          end
+      end,
+      Workers).
+
+take_worker_by_monitor(Monitor, Workers) ->
+    case [{Token, Worker} ||
+             {Token, Worker = #{worker_monitor := WorkerMonitor}} <- maps:to_list(Workers),
+             WorkerMonitor =:= Monitor] of
+        [{Token, #{job := Job}}] -> {ok, Job, maps:remove(Token, Workers)};
+        [] -> error
     end.
 
 stop_worker(undefined) -> ok;

@@ -39,8 +39,23 @@ exercise() ->
 
     set_payload(#{<<"error">> => null, <<"data">> => []}),
     ?assertMatch({error, invalid_market_item, _},
-                 wfcli_market_api:fetch_item(<<"item">>, 0)).
+                 wfcli_market_api:fetch_item(<<"item">>, 0)),
+
+    application:set_env(wfdaemon, market_request_interval_ms, 10),
+    set_delayed_payload(
+      #{<<"error">> => null,
+        <<"data">> => #{<<"sell">> => [], <<"buy">> => []}}, 30),
+    {ok, _TimedQuote, Next} = wfcli_market_api:fetch_quote(<<"item">>, 0),
+    ?assert(Next =< erlang:monotonic_time(millisecond)).
 
 set_payload(Payload) ->
     application:set_env(wfdaemon, market_http_fun,
                         fun(_Url, _Headers) -> {ok, 200, jsone:encode(Payload)} end).
+
+set_delayed_payload(Payload, Delay) ->
+    application:set_env(
+      wfdaemon, market_http_fun,
+      fun(_Url, _Headers) ->
+          timer:sleep(Delay),
+          {ok, 200, jsone:encode(Payload)}
+      end).

@@ -5,6 +5,10 @@
 
 -include_lib("eunit/include/eunit.hrl").
 
+market_cache_tracks_relic_schema_test() ->
+    ?assertEqual(wfcli_relic_recommendations:catalog_version(),
+                 maps:get(relics_version, wfcli_market_cache:empty())).
+
 market_service_test_() ->
     {setup, fun setup/0, fun cleanup/1,
      fun(State) -> fun() -> exercise(State) end end}.
@@ -84,6 +88,24 @@ exercise(#{cache := Cache, counters := Counters}) ->
     [SecondEntry] = maps:get(slice, maps:get(results, Second)),
     ?assertEqual(coalesced, maps:get(source, maps:get(quote, SecondEntry))),
 
+    {ok, NamedQuotes} = request(#{action => quote_items,
+                                  items => [<<"Saryn Prime Set">>],
+                                  refresh => false, ttl => 60}),
+    [NamedQuote] = maps:get(quotes, NamedQuotes),
+    ?assertEqual(<<"Saryn Prime Set">>, maps:get(item, NamedQuote)),
+    ?assertEqual(<<"saryn_prime_set">>, maps:get(slug, NamedQuote)),
+    ?assertEqual(42, maps:get(lowest_sell, maps:get(quote, NamedQuote))),
+
+    QuoteCallsBeforeCacheRead = count(Counters, quotes),
+    {ok, CachedQuotes} = request(#{action => quote_items,
+                                   items => [<<"Saryn Prime Set">>,
+                                             <<"prime_item_2">>],
+                                   cache_only => true}),
+    [CachedQuote] = maps:get(quotes, CachedQuotes),
+    ?assertEqual(<<"Saryn Prime Set">>, maps:get(item, CachedQuote)),
+    ?assertEqual([], maps:get(missing, CachedQuotes)),
+    ?assertEqual(QuoteCallsBeforeCacheRead, count(Counters, quotes)),
+
     application:set_env(wfdaemon, market_http_fun, stale_http_fun(Counters)),
     timer:sleep(2),
     {ok, StaleResult} = request(QuoteRequest),
@@ -108,6 +130,18 @@ exercise(#{cache := Cache, counters := Counters}) ->
     end),
     receive market_request_submitted -> ok after 1000 -> error(submit_timeout) end,
     await_processing(20),
+    ReadStarted = erlang:monotonic_time(millisecond),
+    {ok, ConcurrentCatalog} = request(
+                                #{action => query, query_ast => match_all,
+                                  limit => infinity}),
+    ?assertEqual(23, maps:get(total, maps:get(results, ConcurrentCatalog))),
+    ?assert(erlang:monotonic_time(millisecond) - ReadStarted < 500),
+    CachedReadStarted = erlang:monotonic_time(millisecond),
+    {ok, CachedDuringFetch} = request(#{action => quote_items,
+                                       items => [<<"Saryn Prime Set">>],
+                                       cache_only => true}),
+    ?assertEqual(1, length(maps:get(quotes, CachedDuringFetch))),
+    ?assert(erlang:monotonic_time(millisecond) - CachedReadStarted < 500),
     exit(Client, kill),
     await_idle(50),
     ?assertMatch(#{external_activity := 0}, wfcli_worldstate_service:status()),

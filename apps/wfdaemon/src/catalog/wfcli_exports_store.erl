@@ -1,5 +1,5 @@
 %%%-------------------------------------------------------------------
-%% Persistent searchable export/knowledge catalog and queued query worker.
+%% Persistent searchable export/knowledge catalog and concurrent query workers.
 %%%-------------------------------------------------------------------
 -module(wfcli_exports_store).
 
@@ -21,33 +21,35 @@
 start_link() ->
     gen_server:start_link({local, ?SERVER}, ?MODULE, [], []).
 
--doc "Queue one export query; reply arrives as `{wfcli_daemon, Ref, Reply}`.".
+-doc "Start one export query; reply arrives as `{wfcli_daemon, Ref, Reply}`.".
 -spec submit(pid(), map()) -> {ok, reference()} | {error, term()}.
 submit(Client, Request) ->
     gen_server:call(?SERVER, {submit, Client, Request}).
 
--doc "Return export queue and searchable catalog cache counts.".
+-doc "Return export worker and searchable catalog cache counts.".
 -spec status() -> map().
 status() ->
     gen_server:call(?SERVER, status).
 
 -spec init([]) -> {ok, state()}.
 init([]) ->
-    {ok, #{queue => queue:new(), current => undefined, monitors => #{}, cache => #{}}}.
+    {ok, #{queue => queue:new(), current => undefined, workers => #{},
+           monitors => #{}, cache => #{}}}.
 
 -spec handle_call(term(), gen_server:from(), state()) -> {reply, term(), state()}.
 handle_call({submit, Client, Request}, _From, State) when is_pid(Client), is_map(Request) ->
     Ref = make_ref(),
     Monitor = erlang:monitor(process, Client),
     Item = #{ref => Ref, client => Client, monitor => Monitor, request => Request},
-    Queue = queue:in(Item, maps:get(queue, State)),
     Monitors = maps:get(monitors, State),
     wfcli_worldstate_service:activity_start(),
-    self() ! process_queue,
-    {reply, {ok, Ref}, State#{queue => Queue, monitors => Monitors#{Monitor => Ref}}};
+    State1 = State#{monitors => Monitors#{Monitor => Ref}},
+    {reply, {ok, Ref}, start_item(Item, State1)};
 handle_call(status, _From, State) ->
     {reply, #{queued => queue:len(maps:get(queue, State)),
-              processing => maps:get(current, State, undefined) =/= undefined,
+              processing => maps:get(current, State, undefined) =/= undefined orelse
+                            map_size(maps:get(workers, State, #{})) > 0,
+              active => map_size(maps:get(workers, State, #{})),
               cached_datasets => map_size(maps:get(cache, State)),
               cached_catalogs => map_size(maps:get(cache, State))}, State};
 handle_call(Request, _From, State) ->
@@ -59,12 +61,7 @@ handle_cast(_Message, State) ->
 
 -spec handle_info(term(), state()) -> {noreply, state()}.
 handle_info(process_queue, State) ->
-    case maps:get(current, State, undefined) of
-        Current when Current =/= undefined ->
-            {noreply, State};
-        undefined ->
-            start_next_item(State)
-    end;
+    {noreply, start_queued(State)};
 handle_info({catalog_result, Token, Reply, Cache},
             State = #{current := #{token := Token, worker_monitor := WorkerMonitor,
                                    item := Item}}) ->
@@ -72,18 +69,31 @@ handle_info({catalog_result, Token, Reply, Cache},
     State1 = complete_item(Item, Reply, State#{current => undefined, cache => Cache}),
     self() ! process_queue,
     {noreply, State1};
+handle_info({catalog_result, Token, Reply, Cache}, State) ->
+    case maps:take(Token, maps:get(workers, State, #{})) of
+        error -> {noreply, State};
+        {#{worker_monitor := WorkerMonitor, item := Item}, Workers} ->
+            erlang:demonitor(WorkerMonitor, [flush]),
+            MergedCache = maps:merge(maps:get(cache, State), Cache),
+            {noreply, complete_item(
+                        Item, Reply, State#{workers => Workers, cache => MergedCache})}
+    end;
 handle_info({'DOWN', Monitor, process, _Pid, Reason},
             State = #{current := #{worker_monitor := Monitor, item := Item}}) ->
     State1 = complete_item(Item, {error, {catalog_worker_down, Reason}},
                            State#{current => undefined}),
     self() ! process_queue,
     {noreply, State1};
-handle_info({'DOWN', Monitor, process, _Pid, _Reason}, State) ->
-    case cancel_client(Monitor, State) of
-        {not_found, State1} -> {noreply, State1};
-        {canceled, State1} ->
-            self() ! process_queue,
-            {noreply, State1}
+handle_info({'DOWN', Monitor, process, _Pid, Reason}, State) ->
+    case take_worker_by_monitor(Monitor, maps:get(workers, State, #{})) of
+        {ok, Item, Workers} ->
+            {noreply, complete_item(Item, {error, {catalog_worker_down, Reason}},
+                                    State#{workers => Workers})};
+        error ->
+            case cancel_client(Monitor, State) of
+                {not_found, State1} -> {noreply, State1};
+                {canceled, State1} -> {noreply, State1}
+            end
     end;
 handle_info(_Message, State) ->
     {noreply, State}.
@@ -91,6 +101,8 @@ handle_info(_Message, State) ->
 -spec terminate(term(), state()) -> ok.
 terminate(_Reason, State) ->
     stop_worker(maps:get(current, State, undefined)),
+    maps:foreach(fun(_Token, Worker) -> stop_worker(Worker) end,
+                 maps:get(workers, State, #{})),
     ok.
 
 -spec code_change(term(), state(), term()) -> {ok, state()}.
@@ -98,8 +110,12 @@ code_change(_OldVsn, State, _Extra) ->
     Cache = maps:get(cache, State, #{}),
     Current = maps:filter(fun(Key, _Value) -> current_cache_key(Key) end, Cache),
     State1 = maps:remove(processing, State),
+    self() ! process_queue,
     {ok, State1#{cache => Current,
-                 current => maps:get(current, State1, undefined)}}.
+                 queue => maps:get(queue, State1, queue:new()),
+                 current => maps:get(current, State1, undefined),
+                 workers => maps:get(workers, State1, #{}),
+                 monitors => maps:get(monitors, State1, #{})}}.
 
 current_cache_key(Key) when is_tuple(Key) ->
     case tuple_to_list(Key) of
@@ -108,22 +124,21 @@ current_cache_key(Key) when is_tuple(Key) ->
     end;
 current_cache_key(_Key) -> false.
 
-start_next_item(State) ->
+start_item(Item, State) ->
+    Parent = self(),
+    Token = make_ref(),
+    Cache = maps:get(cache, State),
+    {Pid, WorkerMonitor} = spawn_monitor(fun() ->
+        {Reply, ExecuteState} = safe_execute(maps:get(request, Item), #{cache => Cache}),
+        Parent ! {catalog_result, Token, Reply, maps:get(cache, ExecuteState)}
+    end),
+    Worker = #{worker_pid => Pid, worker_monitor => WorkerMonitor, item => Item},
+    State#{workers => (maps:get(workers, State, #{}))#{Token => Worker}}.
+
+start_queued(State) ->
     case queue:out(maps:get(queue, State)) of
-        {empty, Queue} ->
-            {noreply, State#{queue => Queue}};
-        {{value, Item}, Queue} ->
-            Parent = self(),
-            Token = make_ref(),
-            Cache = maps:get(cache, State),
-            {Pid, WorkerMonitor} = spawn_monitor(fun() ->
-                {Reply, ExecuteState} = safe_execute(maps:get(request, Item),
-                                                     #{cache => Cache}),
-                Parent ! {catalog_result, Token, Reply, maps:get(cache, ExecuteState)}
-            end),
-            Current = #{token => Token, worker_pid => Pid,
-                        worker_monitor => WorkerMonitor, item => Item},
-            {noreply, State#{queue => Queue, current => Current}}
+        {empty, Queue} -> State#{queue => Queue};
+        {{value, Item}, Queue} -> start_queued(start_item(Item, State#{queue => Queue}))
     end.
 
 complete_item(Item, Reply, State) ->
@@ -153,8 +168,28 @@ cancel_client(Monitor, State) ->
                     undefined;
                 _ -> Current
             end,
+            Workers = cancel_worker(Ref, maps:get(workers, State, #{})),
             wfcli_worldstate_service:activity_end(),
-            {canceled, State#{queue => Queue, current => Current1, monitors => Monitors}}
+            {canceled, State#{queue => Queue, current => Current1, workers => Workers,
+                              monitors => Monitors}}
+    end.
+
+cancel_worker(Ref, Workers) ->
+    maps:filter(
+      fun(_Token, Worker = #{item := Item}) ->
+          case maps:get(ref, Item) =:= Ref of
+              true -> stop_worker(Worker), false;
+              false -> true
+          end
+      end,
+      Workers).
+
+take_worker_by_monitor(Monitor, Workers) ->
+    case [{Token, Worker} ||
+             {Token, Worker = #{worker_monitor := WorkerMonitor}} <- maps:to_list(Workers),
+             WorkerMonitor =:= Monitor] of
+        [{Token, #{item := Item}}] -> {ok, Item, maps:remove(Token, Workers)};
+        [] -> error
     end.
 
 stop_worker(undefined) -> ok;

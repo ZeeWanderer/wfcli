@@ -60,6 +60,9 @@ requirements(Command, Query) when Command =:= "enemies"; Command =:= "drops" ->
     Dir = maps:get(knowledge_dir, Query, undefined),
     [#{kind => wfcd, id => "WFCDEnemy.json",
        path => wfcli_knowledge:wfcd_source(Dir), managed => Dir =:= undefined}];
+requirements("player_views", _Query) ->
+    [#{kind => wfcd, id => "WFCDItems.json",
+       path => wfcli_item_catalog:source(), managed => true}];
 requirements(_Command, _Query) ->
     [].
 
@@ -298,7 +301,7 @@ run_real_update(upgrades) -> wfcli_worldstate:update_export("ExportUpgrades_en.j
 run_real_update(weapons) -> wfcli_worldstate:update_export("ExportWeapons_en.json");
 run_real_update(warframes) -> wfcli_worldstate:update_export("ExportWarframes_en.json");
 run_real_update(resources) -> wfcli_worldstate:update_export("ExportResources_en.json");
-run_real_update(wfcd) -> wfcli_knowledge:update_wfcd();
+run_real_update(wfcd) -> update_wfcd_sources();
 run_real_update(Action) -> {error, {unknown_source_update, Action}}.
 
 maybe_enqueue_stale_refresh(State) ->
@@ -328,7 +331,8 @@ stale_selections(MaxAge, Now) ->
         {nodes, stale_file(managed_path("solNodes.json"), MaxAge, Now)},
         {languages, stale_file(managed_path("languages.json"), MaxAge, Now)},
         {exports, exports_stale(MaxAge, Now)},
-        {wfcd, stale_wfcd(wfcli_knowledge:wfcd_source(undefined), MaxAge, Now)}
+        {wfcd, stale_wfcd(wfcli_knowledge:wfcd_source(undefined), MaxAge, Now)
+               orelse stale_wfcd(wfcli_item_catalog:source(), MaxAge, Now)}
     ],
     [Selection || {Selection, true} <- Candidates].
 
@@ -365,6 +369,12 @@ stale_wfcd(Path, MaxAge, Now) ->
             catch _:_ -> true
             end;
         {error, _} -> true
+    end.
+
+update_wfcd_sources() ->
+    case wfcli_knowledge:update_wfcd() of
+        ok -> wfcli_item_catalog:update();
+        {error, _Reason} = Error -> Error
     end.
 
 initial_refresh_delay(Interval) when is_integer(Interval), Interval > 0 ->

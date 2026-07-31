@@ -60,6 +60,42 @@ malformed_typed_query_does_not_crash_store_test() ->
         cleanup_stores(Started)
     end.
 
+concurrent_queries_start_without_serial_queue_test() ->
+    Started = setup_stores(),
+    QueryStarted = start_query_service(),
+    TestPid = self(),
+    ExecuteFun = fun(_Request, State) ->
+        TestPid ! {catalog_worker_started, self()},
+        receive continue -> {{ok, ignored}, State} end
+    end,
+    application:set_env(wfdaemon, daemon_catalog_execute_fun, ExecuteFun),
+    try
+        Request = #{query_tokens => ["dataset=mods", "test"]},
+        {ok, Ref1} = wfcli_query_service:submit(self(), Request),
+        {ok, Ref2} = wfcli_query_service:submit(self(), Request),
+        Worker1 = receive
+            {catalog_worker_started, Pid1} -> Pid1
+        after 1000 ->
+            error(first_catalog_worker_not_started)
+        end,
+        Worker2 = receive
+            {catalog_worker_started, Pid2} -> Pid2
+        after 1000 ->
+            error(second_catalog_worker_not_started)
+        end,
+        ?assertNotEqual(Worker1, Worker2),
+        Worker1 ! continue,
+        Worker2 ! continue,
+        _ = await_query(Ref1),
+        _ = await_query(Ref2),
+        wait_until_idle(wfcli_query_service, 100),
+        wait_until_idle(wfcli_exports_store, 100)
+    after
+        application:unset_env(wfdaemon, daemon_catalog_execute_fun),
+        cleanup_query_service(QueryStarted),
+        cleanup_stores(Started)
+    end.
+
 query_client_exit_cancels_running_catalog_work_test() ->
     Started = setup_stores(),
     QueryStarted = start_query_service(),
@@ -104,6 +140,13 @@ submit_and_wait_reply(Request) ->
         {wfcli_daemon, Ref, Reply} -> Reply
     after 5000 ->
         ?assert(false)
+    end.
+
+await_query(Ref) ->
+    receive
+        {wfcli_daemon, Ref, Reply} -> Reply
+    after 5000 ->
+        error({query_reply_timeout, Ref})
     end.
 
 catalog_request(Command, Args) when Command =:= "mods"; Command =:= "items" ->

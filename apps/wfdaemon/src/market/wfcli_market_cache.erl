@@ -20,7 +20,8 @@ path() ->
 empty() ->
     #{items => [], manifest_fetched_at => undefined, manifest_attempted_at => undefined,
       updated_at => undefined, quotes => #{}, details => #{},
-      relics => #{}, relics_fetched_at => undefined,
+      relics => #{}, relics_version => wfcli_relic_recommendations:catalog_version(),
+      relics_fetched_at => undefined,
       relics_attempted_at => undefined}.
 
 -doc "Load valid cache data; malformed or obsolete files become an empty snapshot.".
@@ -61,6 +62,7 @@ normalize(Snapshot) ->
       quotes => Quotes,
       details => maps:get(details, Snapshot, #{}),
       relics => maps:get(relics, Snapshot, #{}),
+      relics_version => maps:get(relics_version, Snapshot, undefined),
       relics_fetched_at => maps:get(relics_fetched_at, Snapshot, undefined),
       relics_attempted_at => maps:get(relics_attempted_at, Snapshot, undefined)}.
 

@@ -13,12 +13,13 @@ use serde_json::Value;
 
 use crate::{UiEvent, incident};
 
-const PROTOCOL_VERSION: u32 = 5;
+const PROTOCOL_VERSION: u32 = 7;
 const CLIENT_VERSION: &str = env!("WFCLI_VERSION");
 const RECONNECT_INTERVAL: Duration = Duration::from_secs(2);
 const SOCKET_READ_TIMEOUT: Duration = Duration::from_millis(200);
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(2);
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
+const RELIC_SUGGESTION_LIMIT: u64 = 32;
 
 #[derive(Debug, Serialize)]
 #[serde(tag = "op", rename_all = "snake_case")]
@@ -63,6 +64,7 @@ enum ClientMessage<'a> {
         id: u64,
         era: &'a str,
         fetch_prices: bool,
+        limit: u64,
     },
 }
 
@@ -88,6 +90,7 @@ pub(crate) enum Outbound {
     RelicRecommendations {
         era: String,
         fetch_prices: bool,
+        limit: u64,
         reply: mpsc::Sender<Result<Value, String>>,
     },
 }
@@ -132,6 +135,7 @@ pub(crate) fn relic_recommendations(
     request(outbound, |reply| Outbound::RelicRecommendations {
         era: era.clone(),
         fetch_prices,
+        limit: RELIC_SUGGESTION_LIMIT,
         reply,
     })
 }
@@ -413,6 +417,7 @@ fn send_outbound(
         Outbound::RelicRecommendations {
             era,
             fetch_prices,
+            limit,
             reply,
         } => {
             pending.insert(id, reply);
@@ -422,6 +427,7 @@ fn send_outbound(
                     id,
                     era: &era,
                     fetch_prices,
+                    limit,
                 },
             )
         }
@@ -750,6 +756,7 @@ mod tests {
         let worker = thread::spawn(move || {
             let Outbound::RelicRecommendations {
                 fetch_prices,
+                limit,
                 reply,
                 ..
             } = receiver.recv().unwrap()
@@ -757,6 +764,7 @@ mod tests {
                 panic!("expected relic recommendations request");
             };
             assert!(fetch_prices);
+            assert_eq!(limit, 32);
             reply
                 .send(Ok(serde_json::json!({"data": {"items": []}})))
                 .unwrap();
