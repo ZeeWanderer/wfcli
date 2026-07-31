@@ -47,6 +47,7 @@ public:
   bool replace(const QJsonObject &data, QString *error = nullptr);
   void clear();
   void setAssetPaths(const QHash<QString, QString> &paths);
+  void applyAssetPaths(const QHash<QString, QString> &paths);
   void applyMarketQuotes(const QJsonArray &quotes, const QJsonArray &missing);
   void markMarketUnavailable(const QStringList &items);
 

@@ -5,6 +5,8 @@
 #include <QTemporaryDir>
 #include <QtTest>
 
+#include <utility>
+
 #include "image_cache.h"
 #include "player_item_grid_widget.h"
 #include "player_item_model.h"
@@ -32,6 +34,7 @@ private slots:
   void inventoryGridRequestsVisibleQuotes();
   void ownershipFilterKeepsVisibleCardsStable();
   void thumbnailCacheRespectsSizeAndDpr();
+  void widgetThumbnailDecodeCompletesOffPaintPath();
 };
 
 namespace {
@@ -46,6 +49,23 @@ protected:
     }
     return false;
   }
+};
+
+class ThumbnailProbe final : public QWidget {
+public:
+  explicit ThumbnailProbe(QString path) : path_(std::move(path)) {}
+
+  const QPixmap &thumbnail() const { return thumbnail_; }
+
+protected:
+  void paintEvent(QPaintEvent *) override {
+    QPainter painter(this);
+    thumbnail_ = wfgui::cachedThumbnail(painter, path_, QSize(20, 20));
+  }
+
+private:
+  QString path_;
+  QPixmap thumbnail_;
 };
 
 QJsonObject recommendations() {
@@ -463,6 +483,21 @@ void RelicModelTest::thumbnailCacheRespectsSizeAndDpr() {
   QCOMPARE(highDpi.deviceIndependentSize(), QSizeF(20, 10));
   QCOMPARE(highDpi.devicePixelRatio(), 2.0);
   QVERIFY(highDpi.cacheKey() != first.cacheKey());
+}
+
+void RelicModelTest::widgetThumbnailDecodeCompletesOffPaintPath() {
+  QTemporaryDir directory;
+  QVERIFY(directory.isValid());
+  const QString path = directory.filePath("async-asset.png");
+  QImage source(80, 40, QImage::Format_ARGB32_Premultiplied);
+  source.fill(Qt::green);
+  QVERIFY(source.save(path));
+
+  ThumbnailProbe probe(path);
+  probe.resize(32, 32);
+  probe.show();
+  QTRY_VERIFY_WITH_TIMEOUT(!probe.thumbnail().isNull(), 2000);
+  QCOMPARE(probe.thumbnail().deviceIndependentSize(), QSizeF(20, 10));
 }
 
 QTEST_MAIN(RelicModelTest)

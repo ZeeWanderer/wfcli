@@ -9,7 +9,7 @@ class QPainter;
 
 namespace wfgui {
 
-// Decode once at display size. Cache identity includes path, bounds, and DPR.
+// Widget paints schedule disk decode off-thread; cache identity includes bounds and DPR.
 [[nodiscard]] QPixmap cachedThumbnail(QPainter &painter, const QString &path,
                                       const QSize &logicalBounds);
 

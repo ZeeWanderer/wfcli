@@ -38,16 +38,24 @@ AppController::AppController(QObject *parent)
           });
   connect(&daemon_, &DaemonClient::assetsResolved, this,
           [this](const QJsonArray &assets) {
+            QHash<QString, QString> changedPaths;
             for (const QJsonValue &value : assets) {
               const QJsonObject asset = value.toObject();
               if (asset.value("ok").toBool()) {
-                assetPaths_.insert(asset.value("id").toString(),
-                                   asset.value("path").toString());
+                const QString id = asset.value("id").toString();
+                const QString path = asset.value("path").toString();
+                if (!id.isEmpty() && !path.isEmpty() &&
+                    assetPaths_.value(id) != path) {
+                  assetPaths_.insert(id, path);
+                  changedPaths.insert(id, path);
+                }
               }
             }
-            relics_.setAssetPaths(assetPaths_);
-            inventoryItems_.setAssetPaths(assetPaths_);
-            masteryItems_.setAssetPaths(assetPaths_);
+            if (!changedPaths.isEmpty()) {
+              relics_.setAssetPaths(changedPaths);
+              inventoryItems_.applyAssetPaths(changedPaths);
+              masteryItems_.applyAssetPaths(changedPaths);
+            }
           });
   connect(&daemon_, &DaemonClient::requestFailed, this,
           [this](const QString &era, bool prices, const QString &requestError) {
@@ -78,8 +86,13 @@ AppController::AppController(QObject *parent)
           });
   connect(&daemon_, &DaemonClient::marketQuotesResolved, &inventoryItems_,
           &PlayerItemModel::applyMarketQuotes);
-  connect(&daemon_, &DaemonClient::marketQuoteRequestFailed, &inventoryItems_,
-          &PlayerItemModel::markMarketUnavailable);
+  connect(&daemon_, &DaemonClient::marketQuoteRequestFailed, this,
+          [this](const QStringList &items, const QString &) {
+            for (const QString &item : items) {
+              marketRequestedAt_.remove(item);
+            }
+            inventoryItems_.markMarketUnavailable(items);
+          });
 
   daemon_.start();
   refresh();

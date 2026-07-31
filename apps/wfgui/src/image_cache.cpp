@@ -1,14 +1,141 @@
 #include "image_cache.h"
 
+#include <QApplication>
+#include <QHash>
 #include <QImageIOHandler>
 #include <QImageReader>
+#include <QList>
 #include <QPaintDevice>
 #include <QPainter>
 #include <QPixmapCache>
+#include <QPointer>
+#include <QSet>
+#include <QThread>
+#include <QThreadPool>
+#include <QWidget>
 #include <QtMath>
 
 #include <algorithm>
+#include <limits>
 #include <utility>
+
+namespace {
+
+QImage decodeThumbnail(const QString &path, const QSize &pixelBounds) {
+  QImageReader reader(path);
+  reader.setAutoTransform(true);
+  const QSize sourceSize = reader.size();
+  QSize targetSize = sourceSize.isValid()
+                         ? sourceSize.scaled(pixelBounds, Qt::KeepAspectRatio)
+                         : pixelBounds;
+  targetSize.setWidth(std::max(1, targetSize.width()));
+  targetSize.setHeight(std::max(1, targetSize.height()));
+  if (reader.supportsOption(QImageIOHandler::ScaledSize)) {
+    reader.setScaledSize(targetSize);
+  }
+
+  QImage decoded = reader.read();
+  if (!decoded.isNull() && decoded.size() != targetSize) {
+    decoded = decoded.scaled(targetSize, Qt::KeepAspectRatio,
+                             Qt::SmoothTransformation);
+  }
+  return decoded;
+}
+
+QPixmap toPixmap(QImage image, qreal dpr) {
+  if (image.isNull()) {
+    return {};
+  }
+  QPixmap pixmap = QPixmap::fromImage(std::move(image));
+  pixmap.setDevicePixelRatio(dpr);
+  return pixmap;
+}
+
+class ThumbnailLoader final : public QObject {
+public:
+  explicit ThumbnailLoader(QObject *parent) : QObject(parent) {
+    pool_.setMaxThreadCount(std::clamp(QThread::idealThreadCount(), 1, 4));
+    QPixmapCache::setCacheLimit(
+        std::max(QPixmapCache::cacheLimit(), 64 * 1024));
+  }
+
+  void request(const QString &key, const QString &path,
+               const QSize &pixelBounds, qreal dpr, QWidget *target) {
+    if (failed_.contains(key)) {
+      return;
+    }
+
+    auto &waiters = waiters_[key];
+    const auto targetAlreadyQueued =
+        std::any_of(waiters.cbegin(), waiters.cend(), [target](const auto &item) {
+          return item == target;
+        });
+    if (!targetAlreadyQueued) {
+      waiters.append(target);
+    }
+    if (pending_.contains(key)) {
+      return;
+    }
+    pending_.insert(key);
+
+    QPointer<ThumbnailLoader> loader(this);
+    pool_.start(
+        [loader, key, path, pixelBounds, dpr] {
+          QImage image = decodeThumbnail(path, pixelBounds);
+          if (!loader) {
+            return;
+          }
+          QMetaObject::invokeMethod(
+              loader,
+              [loader, key, image = std::move(image), dpr]() mutable {
+                if (loader) {
+                  loader->finish(key, std::move(image), dpr);
+                }
+              },
+              Qt::QueuedConnection);
+        },
+        nextPriority());
+  }
+
+private:
+  int nextPriority() {
+    if (priority_ == std::numeric_limits<int>::max()) {
+      priority_ = 0;
+    }
+    return ++priority_;
+  }
+
+  void finish(const QString &key, QImage image, qreal dpr) {
+    pending_.remove(key);
+    if (image.isNull()) {
+      failed_.insert(key);
+    } else {
+      QPixmapCache::insert(key, toPixmap(std::move(image), dpr));
+    }
+    const auto waiters = waiters_.take(key);
+    for (const QPointer<QWidget> &target : waiters) {
+      if (target) {
+        target->update();
+      }
+    }
+  }
+
+  QThreadPool pool_;
+  QSet<QString> pending_;
+  QSet<QString> failed_;
+  QHash<QString, QList<QPointer<QWidget>>> waiters_;
+  int priority_ = 0;
+};
+
+ThumbnailLoader *thumbnailLoader() {
+  static QPointer<ThumbnailLoader> loader;
+  if (!loader) {
+    loader = new ThumbnailLoader(QApplication::instance());
+  }
+  return loader;
+}
+
+} // namespace
 
 namespace wfgui {
 
@@ -32,26 +159,14 @@ QPixmap cachedThumbnail(QPainter &painter, const QString &path,
     return image;
   }
 
-  QImageReader reader(path);
-  reader.setAutoTransform(true);
-  const QSize sourceSize = reader.size();
-  QSize targetSize = sourceSize.isValid()
-                         ? sourceSize.scaled(pixelBounds, Qt::KeepAspectRatio)
-                         : pixelBounds;
-  targetSize.setWidth(std::max(1, targetSize.width()));
-  targetSize.setHeight(std::max(1, targetSize.height()));
-  if (reader.supportsOption(QImageIOHandler::ScaledSize)) {
-    reader.setScaledSize(targetSize);
+  QWidget *target = dynamic_cast<QWidget *>(painter.device());
+  if (target && !path.startsWith(":/")) {
+    thumbnailLoader()->request(key, path, pixelBounds, dpr, target);
+    return {};
   }
 
-  QImage decoded = reader.read();
-  if (!decoded.isNull() && decoded.size() != targetSize) {
-    decoded = decoded.scaled(targetSize, Qt::KeepAspectRatio,
-                             Qt::SmoothTransformation);
-  }
-  if (!decoded.isNull()) {
-    image = QPixmap::fromImage(std::move(decoded));
-    image.setDevicePixelRatio(dpr);
+  image = toPixmap(decodeThumbnail(path, pixelBounds), dpr);
+  if (!image.isNull()) {
     QPixmapCache::insert(key, image);
   }
   return image;

@@ -157,24 +157,42 @@ void PlayerItemModel::clear() {
 }
 
 void PlayerItemModel::setAssetPaths(const QHash<QString, QString> &paths) {
-  QSet<QString> changed;
+  if (assetPaths_ == paths) {
+    return;
+  }
+
+  QSet<int> affectedRows;
   for (auto path = assetPaths_.cbegin(); path != assetPaths_.cend(); ++path) {
     if (paths.value(path.key()) != path.value()) {
-      changed.insert(path.key());
+      for (int row : assetRows_.values(path.key())) {
+        affectedRows.insert(row);
+      }
     }
   }
   for (auto path = paths.cbegin(); path != paths.cend(); ++path) {
     if (assetPaths_.value(path.key()) != path.value()) {
-      changed.insert(path.key());
+      for (int row : assetRows_.values(path.key())) {
+        affectedRows.insert(row);
+      }
     }
   }
+
   assetPaths_ = paths;
-  if (changed.isEmpty()) {
-    return;
+  for (int row : affectedRows) {
+    componentCache_.remove(row);
+    emit dataChanged(index(row), index(row), {AssetPathRole, ComponentsRole});
   }
+}
+
+void PlayerItemModel::applyAssetPaths(
+    const QHash<QString, QString> &paths) {
   QSet<int> affectedRows;
-  for (const QString &id : changed) {
-    for (int row : assetRows_.values(id)) {
+  for (auto path = paths.cbegin(); path != paths.cend(); ++path) {
+    if (path.value().isEmpty() || assetPaths_.value(path.key()) == path.value()) {
+      continue;
+    }
+    assetPaths_.insert(path.key(), path.value());
+    for (int row : assetRows_.values(path.key())) {
       affectedRows.insert(row);
     }
   }
