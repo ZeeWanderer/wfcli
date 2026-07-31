@@ -112,14 +112,16 @@ pub(super) fn part_asset(name: &str) -> Option<crate::relic::Asset> {
         "Barrel" => "sub_icons/weapon/prime_barrel_128x128.png",
         "Receiver" => "sub_icons/weapon/prime_receiver_128x128.png",
         "Chassis" => "sub_icons/warframe/prime_chassis_128x128.png",
-        "Neuroptics" => "sub_icons/warframe/prime_helmet_128x128.png",
-        "Systems" => "sub_icons/warframe/prime_systems_128x128.png",
+        "Neuroptics" => "sub_icons/sentinel/prime_cerebrum_128x128.png",
+        "Systems" => "sub_icons/sentinel/prime_systems_128x128.png",
         _ => return None,
     };
-    let embedded = crate::assets::embedded_asset("market", id)?;
     Some(crate::relic::Asset {
         id: format!("preview:{name}"),
-        path: String::new(),
-        digest: embedded.image.key.to_owned(),
+        path: format!(
+            "{}/test/fixtures/relic-parts/{id}",
+            env!("CARGO_MANIFEST_DIR")
+        ),
+        digest: id.to_owned(),
     })
 }

@@ -156,8 +156,9 @@ fn render_relic_scene_preview_with_view(
 ) -> Result<image::RgbaImage, String> {
     let (width, height) = dimensions;
     let mut overlay = vec![0; (width * height * 4) as usize];
-    let renderer =
+    let mut renderer =
         Renderer::load().map_err(|error| format!("could not load overlay renderer: {error}"))?;
+    renderer.cache_scene_assets(scene);
     let mut painter = Painter::new(&mut overlay, width, height)
         .map_err(|error| format!("could not create overlay painter: {error}"))?;
     let scene = Scene::Relic {

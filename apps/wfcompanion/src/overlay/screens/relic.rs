@@ -34,7 +34,8 @@ pub(super) struct Assets {
     platinum_icon: RasterImage,
     ducat_icon: RasterImage,
     icons: SuggestionIcons,
-    asset_images: BTreeMap<String, RasterImage>,
+    permanent_images: BTreeMap<String, RasterImage>,
+    scene_images: BTreeMap<String, RasterImage>,
 }
 
 impl Assets {
@@ -43,21 +44,35 @@ impl Assets {
             platinum_icon: load_icon(include_bytes!("../../../assets/platinum.png"))?,
             ducat_icon: load_icon(include_bytes!("../../../assets/ducats.png"))?,
             icons: SuggestionIcons::load()?,
-            asset_images: embedded_images()?,
+            permanent_images: permanent_images()?,
+            scene_images: BTreeMap::new(),
         })
     }
 
     pub(super) fn cache_scene(&mut self, scene: &crate::relic::Scene) {
         let crate::relic::Scene::Rewards(rewards) = scene else {
+            self.scene_images.clear();
             return;
         };
-        for asset in rewards.items.iter().flat_map(|reward| {
-            reward
-                .asset
-                .iter()
-                .chain(reward.parts.iter().filter_map(|part| part.asset.as_ref()))
-        }) {
-            if self.asset_images.contains_key(&asset.digest) {
+
+        let requested = rewards
+            .items
+            .iter()
+            .flat_map(|reward| {
+                reward
+                    .asset
+                    .iter()
+                    .chain(reward.parts.iter().filter_map(|part| part.asset.as_ref()))
+            })
+            .map(|asset| (asset.digest.clone(), asset))
+            .collect::<BTreeMap<_, _>>();
+        self.scene_images
+            .retain(|digest, _| requested.contains_key(digest));
+
+        for (digest, asset) in requested.into_iter().take(MAX_DECODED_ASSETS) {
+            if self.permanent_images.contains_key(&digest)
+                || self.scene_images.contains_key(&digest)
+            {
                 continue;
             }
             let image = fs::read(&asset.path)
@@ -65,12 +80,7 @@ impl Assets {
                 .and_then(|bytes| load_icon(&bytes).map_err(|error| error.to_string()));
             match image {
                 Ok(image) => {
-                    if self.asset_images.len() >= MAX_DECODED_ASSETS
-                        && let Some(oldest) = self.asset_images.keys().next().cloned()
-                    {
-                        self.asset_images.remove(&oldest);
-                    }
-                    self.asset_images.insert(asset.digest.clone(), image);
+                    self.scene_images.insert(digest, image);
                 }
                 Err(error) => incident::warn(
                     "overlay.asset_decode_failed",
@@ -86,7 +96,8 @@ impl Assets {
             platinum_icon: &self.platinum_icon,
             ducat_icon: &self.ducat_icon,
             icons: &self.icons,
-            asset_images: &self.asset_images,
+            permanent_images: &self.permanent_images,
+            scene_images: &self.scene_images,
         }
     }
 }
@@ -96,7 +107,16 @@ struct Resources<'a> {
     platinum_icon: &'a RasterImage,
     ducat_icon: &'a RasterImage,
     icons: &'a SuggestionIcons,
-    asset_images: &'a BTreeMap<String, RasterImage>,
+    permanent_images: &'a BTreeMap<String, RasterImage>,
+    scene_images: &'a BTreeMap<String, RasterImage>,
+}
+
+impl Resources<'_> {
+    fn asset_image(&self, digest: &str) -> Option<&RasterImage> {
+        self.permanent_images
+            .get(digest)
+            .or_else(|| self.scene_images.get(digest))
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -126,13 +146,8 @@ pub(super) fn draw_static_relic_scene(
     }
 }
 
-fn embedded_images() -> Result<BTreeMap<String, RasterImage>, Box<dyn std::error::Error>> {
+fn permanent_images() -> Result<BTreeMap<String, RasterImage>, Box<dyn std::error::Error>> {
     let mut images = BTreeMap::new();
-    for asset in crate::assets::EMBEDDED_PART_ASSETS {
-        if !images.contains_key(asset.image.key) {
-            images.insert(asset.image.key.to_owned(), load_icon(asset.image.bytes)?);
-        }
-    }
     images.insert(
         crate::assets::FORMA_ASSET.image.key.to_owned(),
         load_icon(crate::assets::FORMA_ASSET.image.bytes)?,
@@ -201,16 +216,15 @@ mod tests {
     }
 
     #[test]
-    fn embedded_part_registry_matches_resolver() {
-        let images = embedded_images().unwrap();
-        assert_eq!(images.len(), 24);
-        assert!(images.len() < crate::assets::EMBEDDED_PART_ASSETS.len());
+    fn scene_assets_are_loaded_from_preview_fixtures() {
+        let mut assets = Assets::load().unwrap();
+        assert_eq!(assets.permanent_images.len(), 1);
         assert!(
-            crate::assets::EMBEDDED_PART_ASSETS
-                .iter()
-                .all(|asset| images.contains_key(asset.image.key))
+            assets
+                .permanent_images
+                .contains_key(crate::assets::FORMA_ASSET.image.key)
         );
-        assert!(images.contains_key(crate::assets::FORMA_ASSET.image.key));
+        assets.cache_scene(&fixture::scene());
         for name in [
             "Blueprint",
             "Barrel",
@@ -220,7 +234,7 @@ mod tests {
             "Systems",
         ] {
             let asset = fixture::part_asset(name).unwrap();
-            assert!(images.contains_key(&asset.digest));
+            assert!(assets.scene_images.contains_key(&asset.digest));
         }
     }
 }

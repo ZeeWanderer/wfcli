@@ -444,19 +444,42 @@ fn validate_hello(message: &Value) -> io::Result<()> {
     let compatible = message.get("id").and_then(Value::as_u64) == Some(1)
         && message.get("ok").and_then(Value::as_bool) == Some(true)
         && message.get("compatible").and_then(Value::as_bool) == Some(true);
-    if compatible {
-        Ok(())
-    } else {
+    if !compatible {
         let daemon_protocol = message
             .get("protocol")
             .and_then(Value::as_u64)
             .map_or_else(|| "unknown".to_owned(), |value| value.to_string());
-        Err(io::Error::new(
+        return Err(io::Error::new(
             io::ErrorKind::InvalidData,
             format!(
                 "local protocol mismatch: companion {PROTOCOL_VERSION}, daemon {daemon_protocol}"
             ),
-        ))
+        ));
+    }
+
+    const REQUIRED: &[&str] = &[
+        "player.publish",
+        "dataset.subscribe",
+        "market.resolve",
+        "market.quote",
+        "relic.context",
+        "asset.resolve",
+    ];
+    let capabilities = message
+        .get("capabilities")
+        .and_then(Value::as_array)
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "daemon sent no capabilities"))?;
+    let missing = REQUIRED.iter().find(|required| {
+        !capabilities
+            .iter()
+            .any(|capability| capability.as_str() == Some(**required))
+    });
+    match missing {
+        Some(capability) => Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("daemon missing required capability: {capability}"),
+        )),
+        None => Ok(()),
     }
 }
 
@@ -687,6 +710,42 @@ mod tests {
             "protocol": 2
         }));
         assert_eq!(result.unwrap_err().kind(), io::ErrorKind::InvalidData);
+    }
+
+    #[test]
+    fn rejects_handshake_missing_required_capability() {
+        let result = validate_hello(&serde_json::json!({
+            "id": 1,
+            "ok": true,
+            "compatible": true,
+            "protocol": PROTOCOL_VERSION,
+            "capabilities": ["player.publish"]
+        }));
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("dataset.subscribe")
+        );
+    }
+
+    #[test]
+    fn accepts_handshake_with_required_capabilities() {
+        validate_hello(&serde_json::json!({
+            "id": 1,
+            "ok": true,
+            "compatible": true,
+            "protocol": PROTOCOL_VERSION,
+            "capabilities": [
+                "player.publish",
+                "dataset.subscribe",
+                "market.resolve",
+                "market.quote",
+                "relic.context",
+                "asset.resolve"
+            ]
+        }))
+        .unwrap();
     }
 
     #[test]

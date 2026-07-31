@@ -1,4 +1,3 @@
-use std::collections::BTreeMap;
 use std::time::Duration;
 
 use fontdue::Font;
@@ -28,7 +27,7 @@ pub(super) fn draw(
         platinum_icon,
         ducat_icon,
         icons,
-        asset_images,
+        ..
     } = resources;
     let View {
         scale,
@@ -192,15 +191,7 @@ pub(super) fn draw(
                     );
                 }
                 draw_reward_ownership(painter, font, reward, card_layout.ownership, scale);
-                draw_reward_parts(
-                    painter,
-                    font,
-                    platinum_icon,
-                    asset_images,
-                    reward,
-                    card_layout.components,
-                    scale,
-                );
+                draw_reward_parts(painter, resources, reward, card_layout.components, scale);
             }
             draw_account_currency(
                 painter,
@@ -483,13 +474,16 @@ fn draw_reward_ownership(
 
 fn draw_reward_parts(
     painter: &mut Painter<'_>,
-    font: &Font,
-    platinum_icon: &RasterImage,
-    asset_images: &BTreeMap<String, RasterImage>,
+    resources: &Resources<'_>,
     reward: &crate::relic::Reward,
     bounds: Rect,
     scale: u32,
 ) {
+    let Resources {
+        font,
+        platinum_icon,
+        ..
+    } = resources;
     let parts = reward.parts.iter().take(5).collect::<Vec<_>>();
     if parts.is_empty() {
         return;
@@ -521,7 +515,7 @@ fn draw_reward_parts(
         if let Some(image) = part
             .asset
             .as_ref()
-            .and_then(|asset| asset_images.get(&asset.digest))
+            .and_then(|asset| resources.asset_image(&asset.digest))
         {
             painter.draw_image_contained_circle(
                 image,
