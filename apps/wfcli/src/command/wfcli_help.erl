@@ -11,7 +11,7 @@ run(["commands"]) ->
     Data = wfcli_worldstate_cli:command_help_names(),
     Exports = wfcli_exports_cli:command_names() ++ wfcli_knowledge_cli:command_names(),
     Base = ["forma-plan", "visualize", "query", "player", "market", "notifications",
-            "companion", "mcp",
+            "companion", "gui", "mcp",
             "daemon", "update", "completion", "paths", "help"],
     List = Base ++ Exports ++ Data,
     io:format(
@@ -40,6 +40,8 @@ run(["notifications" | _]) ->
     wfcli_notification_cli:help();
 run(["companion" | Rest]) ->
     wfcli_companion_cli:help(Rest);
+run(["gui" | _]) ->
+    wfcli_gui_cli:help();
 run(["mcp" | _]) ->
     io:put_chars(wfcli_help_text:mcp_help());
 run(["watch" | _]) ->

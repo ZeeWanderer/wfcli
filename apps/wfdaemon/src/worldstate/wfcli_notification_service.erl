@@ -11,7 +11,8 @@
          terminate/2, code_change/3]).
 
 -ifdef(TEST).
--export([select_new/4, matches_filter/2, notification_text/1]).
+-export([select_new/4, matches_filter/2, notification_text/1,
+         notification_args/1]).
 -endif.
 
 -define(SERVER, ?MODULE).
@@ -270,8 +271,7 @@ desktop_notification(Fissure) ->
     case os:find_executable("notify-send") of
         false -> {error, notify_send_not_found};
         Executable ->
-            Args = ["--app-name=wfcli", "--icon=dialog-information",
-                    "Warframe fissure", binary_to_list(notification_text(Fissure))],
+            Args = notification_args(Fissure),
             try open_port({spawn_executable, Executable},
                           [binary, exit_status, stderr_to_stdout, {args, Args}]) of
                 Port -> await_port(Port, <<>>)
@@ -279,6 +279,11 @@ desktop_notification(Fissure) ->
                 error:Reason -> {error, Reason}
             end
     end.
+
+notification_args(Fissure) ->
+    ["--app-name=wfgui", "--icon=wfgui",
+     "--hint=string:desktop-entry:wfgui",
+     "Warframe fissure", binary_to_list(notification_text(Fissure))].
 
 await_port(Port, Output) ->
     receive

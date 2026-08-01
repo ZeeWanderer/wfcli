@@ -29,6 +29,11 @@ notification_text_identifies_fissure_test() ->
     ?assertNotEqual(nomatch, binary:match(Text, <<"Steel Path Axi">>)),
     ?assertNotEqual(nomatch, binary:match(Text, <<"Mot (Void)">>)).
 
+notification_uses_desktop_identity_test() ->
+    Args = wfcli_notification_service:notification_args(fissure(<<"one">>, true)),
+    ?assert(lists:member("--icon=wfgui", Args)),
+    ?assert(lists:member("--hint=string:desktop-entry:wfgui", Args)).
+
 fissure(Id, Hard) ->
     #{<<"id">> => Id, <<"tier">> => <<"Axi">>,
       <<"mission">> => <<"Survival">>, <<"node">> => <<"Mot (Void)">>,

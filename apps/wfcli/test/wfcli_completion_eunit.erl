@@ -7,6 +7,7 @@
 
 top_level_completion_test() ->
     ?assert(lists:member("daemon", wfcli_completion:candidates(["da"]))),
+    ?assert(lists:member("gui", wfcli_completion:candidates(["gu"]))),
     ?assert(lists:member("completion", wfcli_completion:candidates([""]))),
     ?assert(lists:member("paths", wfcli_completion:candidates(["pa"]))).
 
@@ -23,6 +24,7 @@ nested_command_completion_test() ->
     ?assertEqual(["inventory"], wfcli_completion:candidates(["baro", "i"])),
     ?assertEqual(["video"], wfcli_completion:candidates(["companion", "preview", "v"])),
     ?assertEqual(["install"], wfcli_completion:candidates(["completion", "i"])),
+    ?assertEqual(["install"], wfcli_completion:candidates(["gui", "i"])),
     ?assertEqual(["--file"],
                  wfcli_completion:candidates(["completion", "install", "--f"])).
 

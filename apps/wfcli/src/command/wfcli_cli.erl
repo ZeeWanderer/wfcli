@@ -44,6 +44,8 @@ dispatch_args(["notifications" | Rest], _Prompt) ->
     wfcli_notification_cli:run(Rest);
 dispatch_args(["companion" | Rest], _Prompt) ->
     wfcli_companion_cli:run(Rest);
+dispatch_args(["gui" | Rest], _Prompt) ->
+    wfcli_gui_cli:run(Rest);
 dispatch_args(["mcp" | Rest], _Prompt) ->
     wfcli_mcp_cli:main(Rest);
 dispatch_args(["completion" | Rest], _Prompt) ->
@@ -144,6 +146,7 @@ usage() ->
     Utility = [
         {"update", "update cached knowledge base data"},
         {"companion", "inspect native game companion"},
+        {"gui", "install the desktop launcher"},
         {"mcp", "serve MCP over standard input/output"},
         {"watch", "watch command specs (multi-source)"},
         {"help", "show help topics"},
@@ -188,7 +191,7 @@ is_knowledge_command(Cmd) ->
 
 command_names() ->
     ["forma-plan", "visualize", "query", "player", "market", "notifications",
-     "companion", "mcp",
+     "companion", "gui", "mcp",
      "daemon", "update", "completion", "paths", "help"]
     ++ wfcli_exports_cli:command_names()
     ++ wfcli_knowledge_cli:command_names()
@@ -196,7 +199,7 @@ command_names() ->
 
 public_command_names() ->
     ["forma-plan", "visualize", "query", "player", "market", "notifications",
-     "companion", "mcp",
+     "companion", "gui", "mcp",
      "daemon", "update", "completion", "paths", "help"]
     ++ wfcli_exports_cli:command_names()
     ++ wfcli_knowledge_cli:command_names()

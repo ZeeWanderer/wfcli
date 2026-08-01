@@ -160,6 +160,7 @@ contexts() ->
         {["companion", "relic-ocr"], help_flags()},
         {["companion", "install"], ["--dry-run" | help_flags()]},
         {["companion", "uninstall"], ["--dry-run" | help_flags()]},
+        {["gui"], wfcli_gui_cli:known_commands()},
         {["completion"], ["bash", "install", "status", "uninstall" | help_flags()]},
         {["completion", "install"], ["--file" | help_flags()]},
         {["completion", "status"], ["--file" | help_flags()]},
@@ -205,7 +206,7 @@ options(Args) ->
 
 help_choices() ->
     ["commands", "data", "query", "player", "market", "notifications",
-     "companion", "mcp",
+     "companion", "gui", "mcp",
      "watch", "format", "update", "daemon" | wfcli_cli:public_command_names()].
 
 help_flags() -> ["help", "--help", "-h"].
