@@ -18,7 +18,7 @@
 -define(DEFAULT_REFRESH_INTERVAL_MS, 3600000).
 -define(DEFAULT_MAX_AGE_SECONDS, 86400).
 
--type requirement() :: #{kind := export | wfcd,
+-type requirement() :: #{kind := export | wfcd | star_chart,
                          id := string(),
                          path := file:filename_all(),
                          managed := boolean()}.
@@ -63,6 +63,9 @@ requirements(Command, Query) when Command =:= "enemies"; Command =:= "drops" ->
 requirements("player_views", _Query) ->
     [#{kind => wfcd, id => "WFCDItems.json",
        path => wfcli_item_catalog:source(), managed => true}];
+requirements("mastery_star_chart", _Query) ->
+    [#{kind => star_chart, id => "StarChart.json",
+       path => wfcli_star_chart:source(), managed => true}];
 requirements(_Command, _Query) ->
     [].
 
@@ -234,6 +237,12 @@ validate_requirement(#{kind := wfcd, path := Path}) ->
     validate_json(Path,
                   fun(#{<<"entries">> := Entries}) -> is_list(Entries);
                      (_) -> false
+                  end);
+validate_requirement(#{kind := star_chart, path := Path}) ->
+    validate_json(Path,
+                  fun(#{<<"nodes">> := Nodes, <<"junctions">> := Junctions}) ->
+                          is_map(Nodes) andalso is_list(Junctions);
+                     (_) -> false
                   end).
 
 validate_json(Path, Valid) ->
@@ -255,13 +264,22 @@ refresh_requirements(Requirements) ->
     ExportFiles = lists:usort([maps:get(id, R) || R <- Requirements,
                                                    maps:get(kind, R) =:= export]),
     NeedWfcd = lists:any(fun(R) -> maps:get(kind, R) =:= wfcd end, Requirements),
+    NeedStarChart = lists:any(fun(R) -> maps:get(kind, R) =:= star_chart end,
+                              Requirements),
     case maybe_update_exports(ExportFiles) of
-        ok -> case NeedWfcd of true -> run_update(wfcd); false -> ok end;
+        ok ->
+            case maybe_run_update(NeedWfcd, wfcd) of
+                ok -> maybe_run_update(NeedStarChart, star_chart);
+                {error, _Reason} = Error -> Error
+            end;
         {error, _Reason} = Error -> Error
     end.
 
 maybe_update_exports([]) -> ok;
 maybe_update_exports(Files) -> run_update({exports, Files}).
+
+maybe_run_update(true, Source) -> run_update(Source);
+maybe_run_update(false, _Source) -> ok.
 
 refresh_sources(Selections0) ->
     Selections = expand_selections(Selections0),
@@ -274,8 +292,8 @@ expand_selections(Selections) ->
     Expanded = lists:flatten([expand_selection(Selection) || Selection <- Selections]),
     unique(Expanded, []).
 
-expand_selection(default) -> [nodes, languages, exports, wfcd];
-expand_selection(all) -> [nodes, languages, exports, wfcd];
+expand_selection(default) -> [nodes, languages, exports, wfcd, star_chart];
+expand_selection(all) -> [nodes, languages, exports, wfcd, star_chart];
 expand_selection(Selection) -> [Selection].
 
 unique([], Acc) -> lists:reverse(Acc);
@@ -302,6 +320,7 @@ run_real_update(weapons) -> wfcli_worldstate:update_export("ExportWeapons_en.jso
 run_real_update(warframes) -> wfcli_worldstate:update_export("ExportWarframes_en.json");
 run_real_update(resources) -> wfcli_worldstate:update_export("ExportResources_en.json");
 run_real_update(wfcd) -> update_wfcd_sources();
+run_real_update(star_chart) -> wfcli_star_chart:update();
 run_real_update(Action) -> {error, {unknown_source_update, Action}}.
 
 maybe_enqueue_stale_refresh(State) ->
@@ -331,6 +350,7 @@ stale_selections(MaxAge, Now) ->
         {nodes, stale_file(managed_path("solNodes.json"), MaxAge, Now)},
         {languages, stale_file(managed_path("languages.json"), MaxAge, Now)},
         {exports, exports_stale(MaxAge, Now)},
+        {star_chart, stale_file(wfcli_star_chart:source(), MaxAge, Now)},
         {wfcd, stale_wfcd(wfcli_knowledge:wfcd_source(undefined), MaxAge, Now)
                orelse stale_wfcd(wfcli_item_catalog:source(), MaxAge, Now)}
     ],

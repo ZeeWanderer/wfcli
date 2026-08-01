@@ -7,10 +7,10 @@
 
 default_selection_includes_wfcd_test() ->
     ?assertEqual(
-       [nodes, languages, exports, wfcd],
+       [nodes, languages, exports, wfcd, star_chart],
        wfcli_source_manager:expand_selections([default])),
     ?assertEqual(
-       [nodes, languages, exports, wfcd],
+       [nodes, languages, exports, wfcd, star_chart],
        wfcli_source_manager:expand_selections([all])).
 
 file_age_controls_staleness_test() ->
@@ -47,8 +47,8 @@ periodic_refresh_queues_stale_sources_test() ->
     {ok, Pid} = wfcli_source_manager:start_link(),
     try
         ?assertEqual(
-           [exports, languages, nodes, wfcd],
-           lists:sort(collect_updates(4, [])))
+           [exports, languages, nodes, star_chart, wfcd],
+           lists:sort(collect_updates(5, [])))
     after
         gen_server:stop(Pid),
         application:unset_env(wfdaemon, source_refresh_interval_ms),

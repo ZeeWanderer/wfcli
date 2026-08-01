@@ -2,8 +2,9 @@ use std::collections::HashSet;
 use std::collections::hash_map::DefaultHasher;
 use std::fs::{self, File};
 use std::hash::{Hash, Hasher};
-use std::io;
+use std::io::{self, BufRead, BufReader};
 use std::os::unix::fs::FileExt;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, mpsc};
 use std::thread::{self, JoinHandle};
@@ -84,7 +85,7 @@ pub(crate) struct Bridge {
 impl Bridge {
     pub(crate) fn start(runtime: &Runtime, events: mpsc::Sender<Event>) -> Result<Self, String> {
         let game_pid = runtime.game_pid();
-        let (stopping, worker) = start_native(game_pid, events)?;
+        let (stopping, worker) = start_native(game_pid, runtime.prefix().to_owned(), events)?;
         Ok(Self {
             game_pid,
             stopping,
@@ -126,6 +127,7 @@ struct Observation {
 
 #[derive(Debug, Default, Serialize)]
 struct Profile {
+    player_name: Option<String>,
     player_level: Option<i64>,
     regular_credits: Option<i64>,
     premium_credits: Option<i64>,
@@ -178,6 +180,7 @@ struct ExecutableRegion {
 
 fn start_native(
     game_pid: u32,
+    prefix: PathBuf,
     events: mpsc::Sender<Event>,
 ) -> Result<(Arc<AtomicBool>, JoinHandle<()>), String> {
     let mem = File::open(format!("/proc/{game_pid}/mem"))
@@ -185,8 +188,9 @@ fn start_native(
     let queue_global = resolve_http_queue(&mem, game_pid)?;
     let stopping = Arc::new(AtomicBool::new(false));
     let worker_stopping = Arc::clone(&stopping);
-    let worker =
-        thread::spawn(move || scan_native(game_pid, mem, queue_global, worker_stopping, events));
+    let worker = thread::spawn(move || {
+        scan_native(game_pid, mem, queue_global, prefix, worker_stopping, events)
+    });
     Ok((stopping, worker))
 }
 
@@ -194,10 +198,12 @@ fn scan_native(
     game_pid: u32,
     mem: File,
     queue_global: u64,
+    prefix: PathBuf,
     stopping: Arc<AtomicBool>,
     events: mpsc::Sender<Event>,
 ) {
     let mut last_sync: Option<String> = None;
+    let mut player_name = player_name_from_log(&prefix);
     let mut seen_payloads = HashSet::new();
     crate::incident::info(
         "inventory.native_queue_ready",
@@ -217,9 +223,15 @@ fn scan_native(
                 if !seen_payloads.insert(hasher.finish()) {
                     continue;
                 }
-                if let Ok((sync_key, data)) =
-                    parse_observation(&payload, "native_http_buffer", game_pid)
-                    && last_sync.as_ref() != Some(&sync_key)
+                if player_name.is_none() {
+                    player_name = player_name_from_log(&prefix);
+                }
+                if let Ok((sync_key, data)) = parse_observation(
+                    &payload,
+                    "native_http_buffer",
+                    game_pid,
+                    player_name.as_deref(),
+                ) && last_sync.as_ref() != Some(&sync_key)
                 {
                     last_sync = Some(sync_key.clone());
                     if events
@@ -403,10 +415,33 @@ fn wait_for_scan(stopping: &AtomicBool) {
     }
 }
 
+fn player_name_from_log(prefix: &Path) -> Option<String> {
+    let users = prefix.join("drive_c/users");
+    let steam_log = users.join("steamuser/AppData/Local/Warframe/EE.log");
+    let log = if steam_log.is_file() {
+        steam_log
+    } else {
+        fs::read_dir(users)
+            .ok()?
+            .flatten()
+            .map(|entry| entry.path().join("AppData/Local/Warframe/EE.log"))
+            .find(|path| path.is_file())?
+    };
+    BufReader::new(File::open(log).ok()?)
+        .lines()
+        .map_while(Result::ok)
+        .find_map(|line| {
+            let (_, login) = line.split_once("Logged in ")?;
+            let name = login.split('(').next()?.trim();
+            (!name.is_empty()).then(|| name.to_owned())
+        })
+}
+
 fn parse_observation(
     payload: &[u8],
     collector: &'static str,
     process_pid: u32,
+    player_name: Option<&str>,
 ) -> Result<(String, Value), String> {
     let value: Value = serde_json::from_slice(payload)
         .map_err(|error| format!("inventory payload is not valid JSON: {error}"))?;
@@ -428,7 +463,7 @@ fn parse_observation(
         collected_at: unix_time_millis(),
         process_pid,
         sync,
-        profile: profile(object),
+        profile: profile(object, player_name),
         index: build_index(object),
         raw,
     };
@@ -449,8 +484,9 @@ fn unwrap_inventory(value: Value) -> Result<Value, String> {
         .map_err(|error| format!("InventoryJSON is not valid JSON: {error}"))
 }
 
-fn profile(object: &Map<String, Value>) -> Profile {
+fn profile(object: &Map<String, Value>, player_name: Option<&str>) -> Profile {
     Profile {
+        player_name: player_name.map(str::to_owned),
         player_level: integer(object, "PlayerLevel"),
         regular_credits: integer(object, "RegularCredits"),
         premium_credits: integer(object, "PremiumCredits"),
@@ -587,11 +623,18 @@ mod tests {
 
     #[test]
     fn parses_and_indexes_inventory_without_dropping_raw_fields() {
-        let (sync, value) = parse_observation(SAMPLE.as_bytes(), "native_http_queue", 42).unwrap();
+        let (sync, value) = parse_observation(
+            SAMPLE.as_bytes(),
+            "native_http_queue",
+            42,
+            Some("TestTenno"),
+        )
+        .unwrap();
         assert_eq!(sync, "abcdef");
         assert_eq!(value["schema"], 1);
         assert_eq!(value["collector"], "native_http_queue");
         assert_eq!(value["process_pid"], 42);
+        assert_eq!(value["profile"]["player_name"], "TestTenno");
         assert_eq!(value["profile"]["player_level"], 18);
         assert_eq!(value["index"]["equipment"][0]["count"], 1);
         assert_eq!(value["index"]["stacks"][0]["count"], 3);
@@ -602,7 +645,8 @@ mod tests {
     #[test]
     fn unwraps_inventory_json_envelope() {
         let wrapped = serde_json::json!({"InventoryJSON": SAMPLE}).to_string();
-        let (sync, value) = parse_observation(wrapped.as_bytes(), "native_http_queue", 7).unwrap();
+        let (sync, value) =
+            parse_observation(wrapped.as_bytes(), "native_http_queue", 7, None).unwrap();
         assert_eq!(sync, "abcdef");
         assert_eq!(value["process_pid"], 7);
     }
@@ -610,10 +654,24 @@ mod tests {
     #[test]
     fn rejects_payload_without_sync_marker() {
         assert!(
-            parse_observation(br#"{"MiscItems":[]}"#, "native_http_queue", 1)
+            parse_observation(br#"{"MiscItems":[]}"#, "native_http_queue", 1, None)
                 .unwrap_err()
                 .contains("LastInventorySync")
         );
+    }
+
+    #[test]
+    fn reads_player_name_from_proton_log() {
+        let prefix = std::env::temp_dir().join(format!(
+            "wfcompanion-inventory-{}-{}",
+            std::process::id(),
+            unix_time_millis()
+        ));
+        let log = prefix.join("drive_c/users/steamuser/AppData/Local/Warframe/EE.log");
+        fs::create_dir_all(log.parent().unwrap()).unwrap();
+        fs::write(&log, "0.0 Sys [Info]: Logged in TestTenno (abcdef)\n").unwrap();
+        assert_eq!(player_name_from_log(&prefix).as_deref(), Some("TestTenno"));
+        fs::remove_dir_all(prefix).unwrap();
     }
 
     #[test]

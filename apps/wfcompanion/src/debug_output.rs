@@ -55,6 +55,10 @@ impl Runtime {
         self.game_pid
     }
 
+    pub(crate) fn prefix(&self) -> &Path {
+        &self.prefix
+    }
+
     pub(crate) fn helper_command(&self, helper: &Path) -> Command {
         let mut command = Command::new(&self.wine);
         command

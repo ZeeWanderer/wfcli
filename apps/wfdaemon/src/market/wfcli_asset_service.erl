@@ -13,6 +13,8 @@
 -define(CACHE_VERSION, 1).
 -define(DEFAULT_BASE_URL, "https://cdn.warframestat.us/img/").
 -define(DEFAULT_MARKET_BASE_URL, "https://warframe.market/static/assets/").
+-define(DEFAULT_MASTERY_BASE_URL,
+        "https://cdn.alecaframe.com/warframeData/custom/imgRemote/levelIcons/").
 -define(MAX_ASSETS, 64).
 -define(MAX_ASSET_BYTES, 8388608).
 -define(FRESH_MS, 604800000).
@@ -418,6 +420,7 @@ unavailable(Id, Reason) ->
 
 valid_asset_name(<<"wfcd">>, Name) -> valid_image_name(Name);
 valid_asset_name(<<"market">>, Name) -> valid_market_path(Name);
+valid_asset_name(<<"mastery">>, Name) -> valid_mastery_rank_name(Name);
 valid_asset_name(_Source, _Name) -> false.
 
 valid_image_name(Name) when byte_size(Name) > 0, byte_size(Name) =< 255 ->
@@ -437,17 +440,27 @@ valid_market_path(Name) when byte_size(Name) > 0, byte_size(Name) =< 512 ->
     andalso binary:match(Name, <<0>>) =:= nomatch;
 valid_market_path(_Name) -> false.
 
+valid_mastery_rank_name(Name) ->
+    case re:run(Name, <<"^(0|[1-9][0-9]?)\\.webp$">>, [{capture, none}]) of
+        match -> true;
+        nomatch -> false
+    end.
+
 asset_url(<<"wfcd">>, Name) ->
     Base = application:get_env(wfdaemon, asset_base_url, ?DEFAULT_BASE_URL),
     Base ++ uri_string:quote(binary_to_list(Name));
 asset_url(<<"market">>, Name) ->
     Base = application:get_env(wfdaemon, market_asset_base_url,
                                ?DEFAULT_MARKET_BASE_URL),
+    Base ++ binary_to_list(Name);
+asset_url(<<"mastery">>, Name) ->
+    Base = application:get_env(wfdaemon, mastery_asset_base_url,
+                               ?DEFAULT_MASTERY_BASE_URL),
     Base ++ binary_to_list(Name).
 
 request_headers(Cached) ->
     Base = [{"user-agent", "wfcli/0.1 (+https://github.com/ZeeWanderer/wfcli)"},
-            {"accept", "image/png,image/jpeg"}],
+            {"accept", "image/png,image/jpeg,image/webp"}],
     conditional_header("if-none-match", etag, Cached,
       conditional_header("if-modified-since", last_modified, Cached, Base)).
 
@@ -482,6 +495,8 @@ validate_body(<<16#89, "PNG", 13, 10, 26, 10, _/binary>>, _Headers) ->
     {ok, <<"image/png">>, <<".png">>};
 validate_body(<<16#ff, 16#d8, 16#ff, _/binary>>, _Headers) ->
     {ok, <<"image/jpeg">>, <<".jpg">>};
+validate_body(<<"RIFF", _Size:32/little, "WEBP", _/binary>>, _Headers) ->
+    {ok, <<"image/webp">>, <<".webp">>};
 validate_body(_Body, _Headers) ->
     {error, invalid_asset_body}.
 

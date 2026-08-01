@@ -15,6 +15,7 @@ asset_service_test_() ->
          fun drops_dead_resolve_waiters/0,
          fun prewarms_without_refetching/0,
          fun accepts_market_sub_icon/0,
+         fun accepts_mastery_rank_icon/0,
          fun rejects_untrusted_image_name/0,
          fun reloads_persisted_descriptor/0,
          fun removes_orphan_cache_objects/0
@@ -192,6 +193,22 @@ accepts_market_sub_icon() ->
                           <<"image_name">> =>
                               <<"sub_icons/weapon/prime_barrel_128x128.png">>}]),
     ?assertEqual(true, maps:get(<<"ok">>, Result)).
+
+accepts_mastery_rank_icon() ->
+    application:set_env(
+      wfdaemon, asset_http_fun,
+      fun(_Url, _Headers) ->
+          {ok, 200, [], <<"RIFF", 4:32/little, "WEBP", 0:32>>}
+      end),
+    {ok, [Result]} = wfcli_asset_service:resolve(
+                       [#{<<"id">> => <<"mastery-rank:18">>,
+                          <<"source">> => <<"mastery">>,
+                          <<"image_name">> => <<"18.webp">>}]),
+    ?assertEqual(true, maps:get(<<"ok">>, Result)),
+    ?assertEqual(<<"image/webp">>, maps:get(<<"media_type">>, Result)),
+    ?assertEqual(<<".webp">>,
+                 filename:extension(maps:get(<<"path">>, Result))),
+    restore_http_fun().
 
 rejects_untrusted_image_name() ->
     {ok, [Result]} = wfcli_asset_service:resolve(

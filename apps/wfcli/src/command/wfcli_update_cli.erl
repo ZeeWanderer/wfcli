@@ -155,6 +155,7 @@ source_label(weapons) -> "ExportWeapons_en.json";
 source_label(warframes) -> "ExportWarframes_en.json";
 source_label(resources) -> "ExportResources_en.json";
 source_label(wfcd) -> "WFCD enemy knowledge";
+source_label(star_chart) -> "Star Chart mastery metadata";
 source_label(Source) -> atom_to_list(Source).
 
 maybe_refresh_worldstate(Parsed) ->

@@ -4,7 +4,7 @@
 -module(wfcli_player_views).
 
 -export([foundry/0, inventory/0, mastery/0,
-         foundry/2, inventory/2, mastery/2]).
+         foundry/2, inventory/2, mastery/2, mastery/3]).
 
 -define(VIEW_CACHE, wfcli_player_view_cache).
 
@@ -18,7 +18,17 @@ inventory() -> with_catalog(inventory, fun inventory/2).
 
 -doc "Build mastery view from current daemon snapshot and managed item catalog.".
 -spec mastery() -> {ok, map()} | {error, term()}.
-mastery() -> with_catalog(mastery, fun mastery/2).
+mastery() ->
+    case load_star_chart() of
+        {ok, Chart, Meta} ->
+            Version = {maps:get(version, Meta, undefined),
+                       maps:get(fetched_at, Meta, undefined)},
+            with_catalog(mastery,
+                         fun(Snapshot, Catalog) -> mastery(Snapshot, Catalog, Chart) end,
+                         Version);
+        {error, _Reason} ->
+            with_catalog(mastery, fun mastery/2)
+    end.
 
 -doc "Build Foundry view from supplied data; exposed for deterministic tests.".
 -spec foundry(map(), [map()]) -> {ok, map()}.
@@ -63,6 +73,11 @@ inventory(Snapshot, Catalog) ->
 -doc "Build mastery planner view from supplied data; exposed for deterministic tests.".
 -spec mastery(map(), [map()]) -> {ok, map()}.
 mastery(Snapshot, Catalog) ->
+    mastery(Snapshot, Catalog, undefined).
+
+-doc "Build mastery view with supplied Star Chart metadata.".
+-spec mastery(map(), [map()], map() | undefined) -> {ok, map()}.
+mastery(Snapshot, Catalog, StarChart) ->
     Observation = inventory_observation(Snapshot),
     Index = maps:get(<<"index">>, Observation, #{}),
     Owned = aggregate(maps:get(<<"equipment">>, Index, []) ++
@@ -72,36 +87,51 @@ mastery(Snapshot, Catalog) ->
     Items = [mastery_item(Item, Owned, Mastery, Pending)
              || Item <- Catalog, mastery_item_supported(Item)],
     Sorted = lists:sort(fun mastery_before/2, Items),
-    Profile = maps:get(<<"profile">>, Observation, #{}),
+    Profile = profile(maps:get(<<"profile">>, Observation, #{})),
     {ok, (base_response(Snapshot))#{
         <<"items">> => Sorted,
-        <<"summary">> => mastery_summary(Sorted, Profile, Index)
+        <<"summary">> => mastery_summary(Sorted, Profile, Index, StarChart)
     }}.
 
 with_catalog(View, Build) ->
+    with_catalog(View, Build, undefined).
+
+with_catalog(View, Build, ExtraVersion) ->
     case wfcli_item_catalog:load() of
-        {ok, Catalog, Meta} -> cached_view(View, Build, Catalog, Meta);
+        {ok, Catalog, Meta} -> cached_view(View, Build, Catalog, Meta, ExtraVersion);
         {error, _Reason} ->
             case wfcli_source_manager:ensure_catalog("player_views", #{}) of
                 ok ->
                     case wfcli_item_catalog:load() of
-                        {ok, Catalog, Meta} -> cached_view(View, Build, Catalog, Meta);
+                        {ok, Catalog, Meta} ->
+                            cached_view(View, Build, Catalog, Meta, ExtraVersion);
                         {error, _LoadReason} = Error -> Error
                     end;
                 {error, _EnsureReason} = Error -> Error
             end
     end.
 
-cached_view(View, Build, Catalog, Meta) ->
+cached_view(View, Build, Catalog, Meta, ExtraVersion) ->
     Snapshot = wfcli_player_service:snapshot(),
     Key = {View, maps:get(revision, Snapshot, 0),
-           maps:get(version, Meta, undefined), maps:get(fetched_at, Meta, undefined)},
+           maps:get(version, Meta, undefined), maps:get(fetched_at, Meta, undefined),
+           ExtraVersion, ?MODULE:module_info(md5)},
     case cache_lookup(Key) of
         {ok, Result} -> Result;
         error ->
             Result = Build(Snapshot, Catalog),
             cache_store(Key, Result),
             Result
+    end.
+
+load_star_chart() ->
+    case wfcli_star_chart:load() of
+        {ok, _Chart, _Meta} = Result -> Result;
+        {error, _Reason} ->
+            case wfcli_source_manager:ensure_catalog("mastery_star_chart", #{}) of
+                ok -> wfcli_star_chart:load();
+                {error, _EnsureReason} = Error -> Error
+            end
     end.
 
 cache_lookup(Key) ->
@@ -122,8 +152,26 @@ inventory_observation(Snapshot) ->
     maps:get(<<"inventory">>, Data, #{}).
 
 base_response(Snapshot) ->
+    Observation = inventory_observation(Snapshot),
     #{<<"revision">> => maps:get(revision, Snapshot, 0),
-      <<"updated_at">> => nullable(maps:get(updated_at, Snapshot, undefined))}.
+      <<"updated_at">> => nullable(maps:get(updated_at, Snapshot, undefined)),
+      <<"profile">> => profile(maps:get(<<"profile">>, Observation, #{}))}.
+
+profile(Profile) when is_map(Profile) ->
+    case maps:get(<<"player_level">>, Profile, undefined) of
+        Level when is_integer(Level), Level >= 0 ->
+            Profile#{<<"rank_asset">> => rank_asset(Level)};
+        Level when is_float(Level), Level >= 0 ->
+            Profile#{<<"rank_asset">> => rank_asset(trunc(Level))};
+        _ -> Profile
+    end;
+profile(_Profile) -> #{}.
+
+rank_asset(Level) ->
+    Rank = integer_to_binary(Level),
+    #{<<"id">> => <<"mastery-rank:", Rank/binary>>,
+      <<"source">> => <<"mastery">>,
+      <<"image_name">> => <<Rank/binary, ".webp">>}.
 
 catalog_index(Catalog) ->
     lists:foldl(
@@ -141,6 +189,10 @@ put_catalog(Item, Parent, Component, Acc) when is_map(Item) ->
                               <<"parentUniqueName">> => maps:get(<<"uniqueName">>, Parent,
                                                                   undefined),
                               <<"parentType">> => maps:get(<<"type">>, Parent, <<>>),
+                              <<"parentIsPrime">> =>
+                                  maps:get(<<"isPrime">>, Parent, false),
+                              <<"parentVaulted">> =>
+                                  maps:get(<<"vaulted">>, Parent, undefined),
                               <<"component">> => Component},
             case maps:get(Unique, Acc, undefined) of
                 undefined -> Acc#{Unique => Candidate};
@@ -233,6 +285,11 @@ inventory_item(Unique, Entry, Catalog, Mastery) ->
       <<"quantity">> => maps:get(count, Entry),
       <<"xp">> => maps:get(xp, Entry),
       <<"mastered">> => maps:get(MasteryKey, Mastery, 0) > 0,
+      <<"is_prime">> => maps:get(<<"isPrime">>, Catalog, false) =:= true orelse
+                        maps:get(<<"parentIsPrime">>, Catalog, false) =:= true,
+      <<"vaulted">> => optional_or(maps:get(<<"vaulted">>, Catalog, undefined),
+                                    maps:get(<<"parentVaulted">>, Catalog,
+                                             undefined)),
       <<"tradable">> => maps:get(<<"tradable">>, Catalog, false) =:= true,
       <<"ducats">> => number(maps:get(<<"primeSellingPrice">>, Catalog, 0)),
       <<"asset">> => asset(Unique, maps:get(<<"imageName">>, Catalog, undefined))}.
@@ -296,6 +353,9 @@ inventory_set(Item, Stacks, Mastery) ->
               <<"quantity">> => Quantity,
               <<"xp">> => maps:get(Unique, Mastery, 0),
               <<"mastered">> => maps:get(Unique, Mastery, 0) > 0,
+              <<"is_prime">> => maps:get(<<"isPrime">>, Item, false) =:= true,
+              <<"vaulted">> => optional_bool(maps:get(<<"vaulted">>, Item,
+                                                       undefined)),
               <<"tradable">> => true,
               <<"ducats">> => Ducats,
               <<"components">> => OwnedComponents,
@@ -334,10 +394,12 @@ mastery_item(Item, Owned, Mastery, Pending) ->
     Xp = maps:get(Unique, Mastery, maps:get(xp, maps:get(Unique, Owned, #{}), 0)),
     MaxRank = max_rank(Name),
     Rank = mastery_rank(Xp, Category, Type, MaxRank),
-    Components = mastery_components(maps:get(<<"components">>, Item, []), Owned),
+    MasteryPerRank = mastery_per_rank(Category, Type),
+    Components = mastery_components(Item, Owned),
     Missing = [Component || Component <- Components,
                             maps:get(<<"owned">>, Component) <
                             maps:get(<<"required">>, Component)],
+    RelicProbability = item_relic_probability(Missing),
     OwnedCount = maps:get(count, maps:get(Unique, Owned, #{}), 0),
     #{<<"id">> => Unique,
       <<"name">> => Name,
@@ -352,14 +414,13 @@ mastery_item(Item, Owned, Mastery, Pending) ->
       <<"rank">> => Rank,
       <<"max_rank">> => MaxRank,
       <<"mastered">> => Rank >= MaxRank,
-      <<"potential_xp">> => (MaxRank - Rank) * mastery_per_rank(Category, Type),
+      <<"earned_xp">> => Rank * MasteryPerRank,
+      <<"potential_xp">> => (MaxRank - Rank) * MasteryPerRank,
+      <<"has_recipe">> => Components =/= [],
       <<"missing_parts">> => length(Missing),
-      <<"from_relics">> => Missing =/= [] andalso
-                            lists:all(fun from_owned_relic/1, Missing),
-      <<"buyable">> => Missing =/= [] andalso
-                        lists:all(fun(Component) ->
-                            maps:get(<<"tradable">>, Component, false) =:= true
-                        end, Missing),
+      <<"relic_probability">> => RelicProbability,
+      <<"from_relics">> => RelicProbability > 0,
+      <<"buyable">> => buyable_candidate(Missing),
       <<"components">> => Components,
       <<"asset">> => asset(Unique, maps:get(<<"imageName">>, Item, undefined))}.
 
@@ -380,21 +441,110 @@ foundry_item(Item, Owned, Mastery, Pending, Subsumed) ->
           <<"components_owned">> => Available,
           <<"components_required">> => Required}.
 
-mastery_components(Components, Owned) ->
+mastery_components(Item, Owned) ->
+    Components = maps:get(<<"components">>, Item, []),
     [begin
          Unique = maps:get(<<"uniqueName">>, Component),
+         ExternalName = component_external_name(Item, Component),
+         MarketName = component_market_name(Component, ExternalName),
          #{<<"id">> => Unique,
            <<"name">> => maps:get(<<"name">>, Component, fallback_name(Unique)),
+           <<"market_name">> => MarketName,
+           <<"market_required">> =>
+               contains(ExternalName, <<"Blueprint">>) andalso
+               not zero_price_component(ExternalName),
            <<"required">> => max(1, number(maps:get(<<"itemCount">>, Component, 1))),
            <<"owned">> => maps:get(count, maps:get(Unique, Owned, #{}), 0),
            <<"tradable">> => maps:get(<<"tradable">>, Component, false) =:= true,
            <<"relic_drop">> => maps:get(<<"drops">>, Component, []) =/= [],
            <<"owned_relic">> => has_owned_relic(maps:get(<<"drops">>, Component, []), Owned),
+           <<"relic_probability">> =>
+               component_relic_probability(maps:get(<<"drops">>, Component, []), Owned),
            <<"asset">> => asset(Unique, maps:get(<<"imageName">>, Component, undefined))}
      end || Component <- Components, is_map(Component),
             is_binary(maps:get(<<"uniqueName">>, Component, undefined))].
 
-from_owned_relic(Component) -> maps:get(<<"owned_relic">>, Component, false) =:= true.
+buyable_candidate([]) -> false;
+buyable_candidate(Components) ->
+    lists:any(fun(Component) -> present(maps:get(<<"market_name">>, Component, null)) end,
+              Components) andalso
+    lists:all(
+      fun(Component) ->
+          not maps:get(<<"market_required">>, Component, false) orelse
+          present(maps:get(<<"market_name">>, Component, null))
+      end, Components).
+
+component_market_name(Component, ExternalName) ->
+    case maps:get(<<"tradable">>, Component, false) =:= true of
+        false -> null;
+        true ->
+            Unique = maps:get(<<"uniqueName">>, Component, <<>>),
+            case standalone_component(Unique) andalso
+                 not ends_with(ExternalName, <<" Set">>) of
+                true -> <<ExternalName/binary, " Set">>;
+                false -> ExternalName
+            end
+    end.
+
+component_external_name(Item, Component) ->
+    Name = maps:get(<<"name">>, Component,
+                    fallback_name(maps:get(<<"uniqueName">>, Component, <<>>))),
+    Unique = maps:get(<<"uniqueName">>, Component, <<>>),
+    Parent = maps:get(<<"name">>, Item, <<>>),
+    Category = maps:get(<<"category">>, Item, <<>>),
+    case Name of
+        <<"Forma">> -> <<"Forma Blueprint">>;
+        _ ->
+            case contains(Name, <<"Kavasa Prime">>) orelse
+                 resource_component(Unique) orelse standalone_component(Unique) of
+                true -> Name;
+                false -> maybe_blueprint(join_component_name(Parent, Name), Category)
+            end
+    end.
+
+zero_price_component(Name) ->
+    Lower = string:lowercase(Name),
+    contains(Lower, <<"forma">>) orelse contains(Lower, <<"orokin">>).
+
+join_component_name(<<>>, Name) -> Name;
+join_component_name(Parent, Name) ->
+    Prefix = <<Parent/binary, " ">>,
+    case Name of
+        <<Prefix:(byte_size(Prefix))/binary, _/binary>> -> Name;
+        _ -> <<Parent/binary, " ", Name/binary>>
+    end.
+
+maybe_blueprint(Name, Category)
+  when Category =:= <<"Warframes">>; Category =:= <<"Archwing">> ->
+    case ends_with(Name, <<"Blueprint">>) of
+        true -> Name;
+        false -> <<Name/binary, " Blueprint">>
+    end;
+maybe_blueprint(Name, _Category) -> Name.
+
+resource_component(Unique) ->
+    contains(Unique, <<"/Resources/">>) orelse
+    contains(Unique, <<"/Resource/">>) orelse
+    contains(Unique, <<"/Types/Items/">>).
+
+standalone_component(Unique) ->
+    starts_with(Unique, <<"/Lotus/Weapons/">>) orelse
+    starts_with(Unique, <<"/Lotus/Powersuits/">>).
+
+contains(Value, Part) when is_binary(Value), is_binary(Part) ->
+    binary:match(Value, Part) =/= nomatch;
+contains(_Value, _Part) -> false.
+
+starts_with(Value, Prefix) when is_binary(Value), is_binary(Prefix),
+                                byte_size(Value) >= byte_size(Prefix) ->
+    binary:part(Value, 0, byte_size(Prefix)) =:= Prefix;
+starts_with(_Value, _Prefix) -> false.
+
+ends_with(Value, Suffix) when is_binary(Value), is_binary(Suffix),
+                              byte_size(Value) >= byte_size(Suffix) ->
+    binary:part(Value, byte_size(Value) - byte_size(Suffix), byte_size(Suffix))
+        =:= Suffix;
+ends_with(_Value, _Suffix) -> false.
 
 has_owned_relic(Drops, Owned) ->
     lists:any(
@@ -402,6 +552,22 @@ has_owned_relic(Drops, Owned) ->
           Unique = maps:get(<<"uniqueName">>, Drop, undefined),
           maps:get(count, maps:get(Unique, Owned, #{}), 0) > 0
       end, Drops).
+
+component_relic_probability(Drops, Owned) ->
+    1.0 - lists:foldl(
+      fun(Drop, MissChance) ->
+          Unique = maps:get(<<"uniqueName">>, Drop, undefined),
+          Count = maps:get(count, maps:get(Unique, Owned, #{}), 0),
+          Chance = min(100, max(0, number(maps:get(<<"chance">>, Drop, 0)))) / 100,
+          MissChance * math:pow(1.0 - Chance, Count)
+      end, 1.0, Drops).
+
+item_relic_probability([]) -> 0.0;
+item_relic_probability(Components) ->
+    lists:foldl(
+      fun(Component, Chance) ->
+          Chance * maps:get(<<"relic_probability">>, Component, 0.0)
+      end, 1.0, Components).
 
 foundry_summary(Items) ->
     Groups = lists:foldl(
@@ -416,20 +582,87 @@ foundry_summary(Items) ->
       <<"ready">> => count_true(<<"ready_to_build">>, Items),
       <<"groups">> => Groups}.
 
-mastery_summary(Items, Profile, Index) ->
+mastery_summary(Items, Profile, Index, StarChartMetadata) ->
     Groups = [<<"warframes">>, <<"weapons">>, <<"companions">>],
     GroupSummary = maps:from_list(
       [{Group, category_summary(Group, Items)} || Group <- Groups]),
     Total = length(Items),
     Mastered = length([ok || Item <- Items, maps:get(<<"mastered">>, Item)]),
+    Intrinsics = intrinsic_summary(maps:get(<<"player_skills">>, Index, #{})),
+    StarChart = star_chart_summary(maps:get(<<"missions">>, Index, []),
+                                   StarChartMetadata),
+    Level = player_level(Profile),
+    RankProgress = mastery_progress(Level, Items, Index, StarChart, Intrinsics),
     GroupSummary#{
         <<"total">> => Total,
         <<"mastered">> => Mastered,
-        <<"percent">> => percent(Mastered, Total),
-        <<"player_level">> => number(maps:get(<<"player_level">>, Profile, 0)),
-        <<"intrinsics">> => intrinsic_summary(maps:get(<<"player_skills">>, Index, #{})),
-        <<"star_chart">> => star_chart_summary(maps:get(<<"missions">>, Index, []))
+        <<"content_percent">> => percent(Mastered, Total),
+        <<"player_name">> => nullable(maps:get(<<"player_name">>, Profile, undefined)),
+        <<"player_level">> => nullable(Level),
+        <<"rank_progress">> => RankProgress,
+        <<"intrinsics">> => Intrinsics,
+        <<"star_chart">> => StarChart
     }.
+
+player_level(Profile) ->
+    case maps:get(<<"player_level">>, Profile, undefined) of
+        Level when is_integer(Level), Level >= 0 -> Level;
+        Level when is_float(Level), Level >= 0 -> trunc(Level);
+        _ -> undefined
+    end.
+
+mastery_progress(Level, Items, Index, StarChart, Intrinsics)
+  when is_integer(Level) ->
+    case {maps:get(<<"xp">>, StarChart, null),
+          maps:get(<<"xp">>, Intrinsics, null)} of
+        {StarXp, IntrinsicXp} when is_integer(StarXp), is_integer(IntrinsicXp) ->
+            Known = lists:sum([maps:get(<<"earned_xp">>, Item, 0) || Item <- Items]),
+            Extra = extra_mastery_xp(maps:get(<<"mastery">>, Index, []), Items),
+            TotalXp = Known + Extra + StarXp + IntrinsicXp,
+            Start = mastery_threshold(Level),
+            Required = mastery_threshold(Level + 1) - Start,
+            Current = max(0, TotalXp - Start),
+            Available = TotalXp >= Start,
+            #{<<"available">> => Available,
+              <<"current">> => case Available of true -> Current; false -> null end,
+              <<"total">> => case Available of true -> Required; false -> null end,
+              <<"percent">> => case Available of
+                  true -> min(100, percent(Current, Required));
+                  false -> null
+              end,
+              <<"total_xp">> => TotalXp};
+        _ -> unavailable_mastery_progress()
+    end;
+mastery_progress(_Level, _Items, _Index, _StarChart, _Intrinsics) ->
+    unavailable_mastery_progress().
+
+unavailable_mastery_progress() ->
+    #{<<"available">> => false, <<"current">> => null, <<"total">> => null,
+      <<"percent">> => null, <<"total_xp">> => null}.
+
+extra_mastery_xp(Records, Items) when is_list(Records) ->
+    Known = maps:from_keys([maps:get(<<"id">>, Item) || Item <- Items], true),
+    lists:sum(
+      [extra_mastery_record_xp(Record)
+       || Record <- Records,
+          is_map(Record),
+          not maps:is_key(maps:get(<<"item_type">>, Record, undefined), Known)]);
+extra_mastery_xp(_Records, _Items) -> 0.
+
+extra_mastery_record_xp(Record) ->
+    Unique = maps:get(<<"item_type">>, Record, <<>>),
+    PerRank = case mastery_heavy_item(Unique) of true -> 200; false -> 100 end,
+    rank_from_xp(number(maps:get(<<"xp">>, Record, 0)), PerRank, 30) * PerRank.
+
+mastery_heavy_item(Unique) when is_binary(Unique) ->
+    binary:match(Unique, <<"/Powersuits/">>) =/= nomatch orelse
+    binary:match(Unique, <<"/Sentinel/">>) =/= nomatch orelse
+    Unique =:= <<"/Lotus/Types/Game/CrewShip/RailJack/DefaultHarness">>;
+mastery_heavy_item(_Unique) -> false.
+
+mastery_threshold(Level) when Level =< 0 -> 0;
+mastery_threshold(Level) when Level =< 30 -> 2500 * Level * Level;
+mastery_threshold(Level) -> 2250000 + 147500 * (Level - 30).
 
 intrinsic_summary(Skills) when is_map(Skills) ->
     Railjack = sum_keys(Skills, [<<"LPS_TACTICAL">>, <<"LPS_PILOTING">>,
@@ -441,13 +674,40 @@ intrinsic_summary(Skills) when is_map(Skills) ->
                                 <<"LPS_DRIFT_ENDURANCE">>]),
     #{<<"railjack">> => progress(Railjack, 50),
       <<"duviri">> => progress(Duviri, 40),
-      <<"percent">> => percent(Railjack + Duviri, 90)};
+      <<"percent">> => percent(Railjack + Duviri, 90),
+      <<"xp">> => (Railjack + Duviri) * 1500};
 intrinsic_summary(_Skills) ->
     #{<<"railjack">> => progress(0, 50),
       <<"duviri">> => progress(0, 40),
-      <<"percent">> => 0}.
+      <<"percent">> => 0,
+      <<"xp">> => 0}.
 
-star_chart_summary(Missions) when is_list(Missions) ->
+star_chart_summary(Missions, #{nodes := Nodes, junctions := JunctionIndex})
+  when is_list(Missions), is_map(Nodes), is_map(JunctionIndex) ->
+    Normal = length([ok || Mission <- Missions,
+                           completed_mission(Mission, normal, Nodes)]),
+    Steel = length([ok || Mission <- Missions,
+                          completed_mission(Mission, steel, Nodes)]),
+    JunctionCount = length([ok || Mission <- Missions,
+                                  completed_junction(Mission, normal,
+                                                     JunctionIndex)]),
+    SteelJunctions = length([ok || Mission <- Missions,
+                                   completed_junction(Mission, steel,
+                                                      JunctionIndex)]),
+    NodeTotal = map_size(Nodes),
+    JunctionTotal = map_size(JunctionIndex),
+    Total = NodeTotal * 2 + JunctionTotal * 2,
+    Current = Normal + Steel + JunctionCount + SteelJunctions,
+    Xp = completed_node_xp(Missions, normal, Nodes) +
+         completed_node_xp(Missions, steel, Nodes) +
+         (JunctionCount + SteelJunctions) * 1000,
+    #{<<"normal">> => progress(Normal, NodeTotal),
+      <<"steel">> => progress(Steel, NodeTotal),
+      <<"junctions">> => progress(JunctionCount, JunctionTotal),
+      <<"steel_junctions">> => progress(SteelJunctions, JunctionTotal),
+      <<"percent">> => percent(Current, Total),
+      <<"xp">> => Xp};
+star_chart_summary(Missions, _Metadata) when is_list(Missions) ->
     Normal = length([ok || Mission <- Missions,
                            completed_mission(Mission, normal)]),
     Steel = length([ok || Mission <- Missions,
@@ -459,14 +719,29 @@ star_chart_summary(Missions) when is_list(Missions) ->
     #{<<"normal">> => observed_progress(Normal),
       <<"steel">> => observed_progress(Steel),
       <<"junctions">> => observed_progress(Junctions),
-      <<"steel_junctions">> => observed_progress(SteelJunctions)};
-star_chart_summary(_Missions) -> star_chart_summary([]).
+      <<"steel_junctions">> => observed_progress(SteelJunctions),
+      <<"percent">> => null,
+      <<"xp">> => null};
+star_chart_summary(_Missions, Metadata) -> star_chart_summary([], Metadata).
+
+completed_node_xp(Missions, Mode, Nodes) ->
+    lists:sum([maps:get(maps:get(<<"Tag">>, Mission), Nodes)
+               || Mission <- Missions,
+                  completed_mission(Mission, Mode, Nodes)]).
+
+completed_mission(Mission, Mode, Nodes) ->
+    Tag = maps:get(<<"Tag">>, Mission, <<>>),
+    maps:is_key(Tag, Nodes) andalso completed_mission(Mission, Mode).
 
 completed_mission(Mission, Mode) when is_map(Mission) ->
     Tag = maps:get(<<"Tag">>, Mission, <<>>),
     not is_junction(Tag) andalso number(maps:get(<<"Completes">>, Mission, 0)) > 0
         andalso (Mode =:= normal orelse number(maps:get(<<"Tier">>, Mission, 0)) > 0);
 completed_mission(_Mission, _Mode) -> false.
+
+completed_junction(Mission, Mode, Junctions) ->
+    Tag = maps:get(<<"Tag">>, Mission, <<>>),
+    maps:is_key(Tag, Junctions) andalso completed_junction(Mission, Mode).
 
 completed_junction(Mission, Mode) when is_map(Mission) ->
     Tag = maps:get(<<"Tag">>, Mission, <<>>),
@@ -499,9 +774,11 @@ count_true(Key, Items) ->
 
 category_summary(Group, Items) ->
     Matching = [Item || Item <- Items, maps:get(<<"group">>, Item) =:= Group],
-    #{<<"total">> => length(Matching),
-      <<"mastered">> => length([ok || Item <- Matching,
-                                      maps:get(<<"mastered">>, Item)])}.
+    Total = length(Matching),
+    Mastered = length([ok || Item <- Matching, maps:get(<<"mastered">>, Item)]),
+    #{<<"total">> => Total,
+      <<"mastered">> => Mastered,
+      <<"percent">> => percent(Mastered, Total)}.
 
 mastery_group(Category, _Type) when Category =:= <<"Warframes">>;
                                     Category =:= <<"Archwing">> -> <<"warframes">>;
@@ -522,7 +799,10 @@ foundry_group(<<"Misc">>, _Type) -> <<"modular">>;
 foundry_group(_Category, _Type) -> <<"other">>.
 
 mastery_rank(Xp, Category, Type, MaxRank) ->
-    Divisor = case mastery_per_rank(Category, Type) of 200 -> 1000; 100 -> 500 end,
+    rank_from_xp(Xp, mastery_per_rank(Category, Type), MaxRank).
+
+rank_from_xp(Xp, PerRank, MaxRank) ->
+    Divisor = case PerRank of 200 -> 1000; 100 -> 500 end,
     min(MaxRank, trunc(math:sqrt(max(0, Xp) / Divisor))).
 
 mastery_per_rank(Category, Type) when Category =:= <<"Warframes">>;
@@ -602,3 +882,13 @@ percent(Current, Total) -> round(Current * 100 / Total).
 
 nullable(undefined) -> null;
 nullable(Value) -> Value.
+
+optional_or(true, _) -> true;
+optional_or(_, true) -> true;
+optional_or(false, _) -> false;
+optional_or(_, false) -> false;
+optional_or(_, _) -> null.
+
+optional_bool(true) -> true;
+optional_bool(false) -> false;
+optional_bool(_) -> null.
