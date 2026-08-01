@@ -7,6 +7,7 @@
 | Missions, cycles, alerts, fissures, and other live state | Official Warframe worldstate | Worldstate cache and watch service |
 | Mods, items, recipes, names, and Codex records | Official PublicExport files | Managed export catalog |
 | Enemies, drops, relic rewards, components, and image identities | WFCD `warframe-items` | Managed WFCD catalog |
+| Star Chart mastery values | `warframe-public-export-plus` regions | Managed mastery catalog |
 | Public listings and top orders | Warframe Market | Market cache and request queue |
 | Inventory, mastery, and local game state | `wfcompanion` observation | Owner-only player store |
 
@@ -21,8 +22,8 @@ wfcli update --default
 wfcli update --all
 ```
 
-No flags and `--default` refresh Sol nodes, languages, PublicExport files, and WFCD data. `--all`
-selects every managed source.
+No flags and `--default` refresh Sol nodes, languages, PublicExport files, WFCD data, and Star
+Chart mastery values. `--all` selects every managed source.
 
 Targeted metadata options:
 

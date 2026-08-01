@@ -5,6 +5,14 @@ releases its activity lease when the window closes.
 
 Build instructions and staged executable names are in the [repository README](../README.md#build).
 
+Install the application launcher and notification identity:
+
+```bash
+wfcli gui install
+```
+
+Use `wfcli gui status` or `wfcli gui uninstall` to inspect or remove it.
+
 ## Pages
 
 ### Foundry
@@ -16,8 +24,8 @@ requirements, and available quantities.
 ### Mastery Helper
 
 Mastery Helper combines equipment, historical mastery XP, pending builds, components, and owned
-relics. Filters isolate unfinished items by available progress source. Hovering a component shows
-its name and owned/required count.
+relics. Its header shows progress within the current Mastery Rank. Filters isolate unfinished items
+by available progress source. Hovering a component shows its name and owned/required count.
 
 ### Inventory
 

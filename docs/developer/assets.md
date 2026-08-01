@@ -43,6 +43,9 @@ Catalog assets:
 - Fetched lazily from trusted catalog descriptors.
 - Never bundled wholesale; the current WFCD image tree is hundreds of megabytes.
 
+Player rank cards use the constrained `mastery` source (`<rank>.webp`). They share the daemon
+cache and validation path used by catalog assets; Qt clients include WebP decoding.
+
 Embedding is based on startup or offline necessity, not on how often a texture happens to repeat.
 A shared prime-component image can still be a catalog asset because one cached file serves every
 item that references it.
@@ -99,7 +102,8 @@ concurrent requests for the same canonical URL.
 Preferred item source is the daemon-managed WFCD item catalog because it covers both tradable and
 non-tradable game content and exposes component relationships. Warframe Market icon or thumbnail
 paths may be fallback metadata for tradable items, but they are not a complete game catalog.
-AlecaFrame CDN URLs are research evidence, not a production dependency.
+AlecaFrame item URLs are research evidence, not a catalog dependency; rank cards are the explicit
+presentation-only exception documented above.
 
 Refresh of the WFCD catalog makes newly added items resolvable. Their textures are fetched only
 when a visible scene requests them. No application release is needed when a new item uses existing
