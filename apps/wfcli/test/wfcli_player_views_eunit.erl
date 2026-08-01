@@ -46,8 +46,9 @@ inventory_and_mastery_join_test() ->
                 <<"itemCount">> => 1, <<"tradable">> => true,
                 <<"drops">> => [Drop]}
           ]},
-        #{<<"uniqueName">> => Relic, <<"name">> => <<"Lith T1 Relic">>,
+        #{<<"uniqueName">> => Relic, <<"name">> => <<"Lith T1 Intact">>,
           <<"category">> => <<"Relics">>, <<"masterable">> => false,
+          <<"tradable">> => true,
           <<"components">> => []}
     ],
 
@@ -59,12 +60,20 @@ inventory_and_mastery_join_test() ->
     [Part] = [Item || Item <- InventoryItems,
                      maps:get(<<"group">>, Item) =:= <<"parts">>],
     ?assertEqual(<<"Test Prime Chassis">>, maps:get(<<"name">>, Part)),
+    ?assertEqual(<<"Test Prime Chassis Blueprint">>,
+                 maps:get(<<"market_name">>, Part)),
     ?assertEqual(true, maps:get(<<"is_prime">>, Part)),
     ?assertEqual(true, maps:get(<<"vaulted">>, Part)),
     [Set] = [Item || Item <- InventoryItems,
                     maps:get(<<"group">>, Item) =:= <<"sets">>],
     ?assertEqual(true, maps:get(<<"is_prime">>, Set)),
     ?assertEqual(true, maps:get(<<"vaulted">>, Set)),
+    ?assertEqual(0, maps:get(<<"quantity">>, Set)),
+    ?assertEqual(<<"Test Prime Set">>, maps:get(<<"market_name">>, Set)),
+    [RelicItem] = [Item || Item <- InventoryItems,
+                           maps:get(<<"group">>, Item) =:= <<"relics">>],
+    ?assertEqual(<<"Lith T1 Intact">>, maps:get(<<"name">>, RelicItem)),
+    ?assertEqual(<<"Lith T1 Relic">>, maps:get(<<"market_name">>, RelicItem)),
 
     {ok, Foundry} = wfcli_player_views:foundry(Snapshot, Catalog),
     [FoundryItem] = maps:get(<<"items">>, Foundry),

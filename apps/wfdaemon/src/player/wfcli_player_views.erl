@@ -272,13 +272,16 @@ inventory_item(Unique, Entry, Catalog, Mastery) ->
     Category = maps:get(<<"category">>, Catalog,
                         maps:get(<<"parentCategory">>, Catalog, <<>>)),
     Collections = maps:get(collections, Entry, []),
+    Group = inventory_group(Unique, Catalog, Category, Collections),
+    Tradable = maps:get(<<"tradable">>, Catalog, false) =:= true,
     MasteryKey = case maps:get(<<"component">>, Catalog, false) of
                      true -> maps:get(<<"parentUniqueName">>, Catalog, Unique);
                      false -> Unique
                  end,
     #{<<"id">> => Unique,
       <<"name">> => Name,
-      <<"group">> => inventory_group(Unique, Catalog, Category, Collections),
+      <<"market_name">> => inventory_market_name(Name, Group, Catalog, Tradable),
+      <<"group">> => Group,
       <<"category">> => Category,
       <<"type">> => maps:get(<<"type">>, Catalog,
                               maps:get(<<"parentType">>, Catalog, <<>>)),
@@ -290,7 +293,7 @@ inventory_item(Unique, Entry, Catalog, Mastery) ->
       <<"vaulted">> => optional_or(maps:get(<<"vaulted">>, Catalog, undefined),
                                     maps:get(<<"parentVaulted">>, Catalog,
                                              undefined)),
-      <<"tradable">> => maps:get(<<"tradable">>, Catalog, false) =:= true,
+      <<"tradable">> => Tradable,
       <<"ducats">> => number(maps:get(<<"primeSellingPrice">>, Catalog, 0)),
       <<"asset">> => asset(Unique, maps:get(<<"imageName">>, Catalog, undefined))}.
 
@@ -347,6 +350,9 @@ inventory_set(Item, Stacks, Mastery) ->
               <<"name">> => <<(maps:get(<<"name">>, Item,
                                            fallback_name(Unique)))/binary,
                                 " Set">>,
+              <<"market_name">> => <<(maps:get(<<"name">>, Item,
+                                                  fallback_name(Unique)))/binary,
+                                       " Set">>,
               <<"group">> => <<"sets">>,
               <<"category">> => Category,
               <<"type">> => <<"Set">>,
@@ -371,6 +377,18 @@ inventory_set_component(Component, Stacks) ->
       <<"owned">> => maps:get(count, maps:get(Unique, Stacks, #{}), 0),
       <<"ducats">> => number(maps:get(<<"primeSellingPrice">>, Component, 0)),
       <<"asset">> => asset(Unique, maps:get(<<"imageName">>, Component, undefined))}.
+
+inventory_market_name(_Name, _Group, _Catalog, false) -> null;
+inventory_market_name(Name, <<"relics">>, _Catalog, true) ->
+    case binary:split(Name, <<" ">>, [global, trim_all]) of
+        [Era, Code | _] -> <<Era/binary, " ", Code/binary, " Relic">>;
+        _ -> Name
+    end;
+inventory_market_name(_Name, _Group, #{<<"component">> := true} = Catalog, true) ->
+    Parent = #{<<"name">> => maps:get(<<"parentName">>, Catalog, <<>>),
+               <<"category">> => maps:get(<<"parentCategory">>, Catalog, <<>>)},
+    component_market_name(Catalog, component_external_name(Parent, Catalog));
+inventory_market_name(Name, _Group, _Catalog, true) -> Name.
 
 equipment_category(Category) ->
     lists:member(Category,
