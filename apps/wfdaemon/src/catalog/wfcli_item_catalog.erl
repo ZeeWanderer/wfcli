@@ -98,7 +98,7 @@ compact(Item) when is_map(Item) ->
             (copy(Item,
                   [<<"uniqueName">>, <<"name">>, <<"imageName">>, <<"category">>,
                    <<"type">>, <<"masteryReq">>, <<"masterable">>, <<"tradable">>,
-                   <<"isPrime">>, <<"primeSellingPrice">>]))#{
+                   <<"isPrime">>, <<"vaulted">>, <<"primeSellingPrice">>]))#{
                 <<"components">> => compact_components(maps:get(<<"components">>, Item, []))
             };
         _ -> undefined

@@ -10,6 +10,9 @@ inventory_and_mastery_join_test() ->
     Snapshot = #{revision => 7, updated_at => 100,
                  data => #{<<"inventory">> => #{
                      <<"profile">> => #{<<"player_level">> => 18},
+                     <<"raw">> => #{<<"InfestedFoundry">> => #{
+                         <<"ConsumedSuits">> => [#{<<"s">> => Frame}]
+                     }},
                      <<"index">> => #{
                          <<"equipment">> => [entry(Frame, 1, 100000)],
                          <<"stacks">> => [entry(Relic, 2, 0), entry(Chassis, 1, 0)],
@@ -30,6 +33,7 @@ inventory_and_mastery_join_test() ->
     Catalog = [
         #{<<"uniqueName">> => Frame, <<"name">> => <<"Test Prime">>,
           <<"category">> => <<"Warframes">>, <<"masterable">> => true,
+          <<"isPrime">> => true, <<"vaulted">> => true,
           <<"imageName">> => <<"test.png">>,
           <<"components">> => [
               #{<<"uniqueName">> => Chassis, <<"name">> => <<"Chassis">>,
@@ -56,8 +60,14 @@ inventory_and_mastery_join_test() ->
     {ok, Foundry} = wfcli_player_views:foundry(Snapshot, Catalog),
     [FoundryItem] = maps:get(<<"items">>, Foundry),
     ?assertEqual(<<"warframe">>, maps:get(<<"group">>, FoundryItem)),
+    ?assertEqual(true, maps:get(<<"vaulted">>, FoundryItem)),
+    ?assertEqual(true, maps:get(<<"subsumed">>, FoundryItem)),
     ?assertEqual(false, maps:get(<<"ready_to_build">>, FoundryItem)),
     ?assertEqual(1, maps:get(<<"components_owned">>, FoundryItem)),
+    [ChassisComponent] =
+        [Component || Component <- maps:get(<<"components">>, FoundryItem),
+                      maps:get(<<"id">>, Component) =:= Chassis],
+    ?assertEqual(true, maps:get(<<"owned_relic">>, ChassisComponent)),
 
     {ok, Mastery} = wfcli_player_views:mastery(Snapshot, Catalog),
     [MasteryItem] = maps:get(<<"items">>, Mastery),
@@ -76,7 +86,8 @@ inventory_and_mastery_join_test() ->
 
 item_catalog_compaction_test() ->
     Item = #{<<"uniqueName">> => <<"/Lotus/Test">>,
-             <<"name">> => <<"Test">>, <<"noise">> => true,
+             <<"name">> => <<"Test">>, <<"vaulted">> => true,
+             <<"noise">> => true,
              <<"components">> => [
                  #{<<"uniqueName">> => <<"/Lotus/TestPart">>,
                    <<"name">> => <<"Part">>,
@@ -90,6 +101,7 @@ item_catalog_compaction_test() ->
              ]},
     Compact = wfcli_item_catalog:compact(Item),
     ?assertNot(maps:is_key(<<"noise">>, Compact)),
+    ?assertEqual(true, maps:get(<<"vaulted">>, Compact)),
     [Component] = maps:get(<<"components">>, Compact),
     [Drop] = maps:get(<<"drops">>, Component),
     ?assertEqual(<<"/Lotus/Relic">>, maps:get(<<"uniqueName">>, Drop)).

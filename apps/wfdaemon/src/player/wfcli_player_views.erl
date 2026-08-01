@@ -29,7 +29,8 @@ foundry(Snapshot, Catalog) ->
                       maps:get(<<"stacks">>, Index, [])),
     Mastery = mastery_index(maps:get(<<"mastery">>, Index, [])),
     Pending = pending_index(maps:get(<<"pending_recipes">>, Index, []), Catalog),
-    Items = [foundry_item(Item, Owned, Mastery, Pending)
+    Subsumed = subsumed_index(maps:get(<<"raw">>, Observation, #{})),
+    Items = [foundry_item(Item, Owned, Mastery, Pending, Subsumed)
              || Item <- Catalog, mastery_item_supported(Item)],
     Sorted = lists:sort(fun name_before/2, Items),
     {ok, (base_response(Snapshot))#{
@@ -205,6 +206,15 @@ pending_index(Pending, Catalog) ->
        || Entry <- Pending, is_map(Entry),
           is_binary(maps:get(<<"item_type">>, Entry, undefined))]).
 
+subsumed_index(Raw) when is_map(Raw) ->
+    Foundry = maps:get(<<"InfestedFoundry">>, Raw, #{}),
+    Suits = maps:get(<<"ConsumedSuits">>, Foundry, []),
+    maps:from_list([{Unique, true}
+                    || Suit <- Suits, is_map(Suit),
+                       Unique <- [maps:get(<<"s">>, Suit, undefined)],
+                       is_binary(Unique)]);
+subsumed_index(_Raw) -> #{}.
+
 inventory_item(Unique, Entry, Catalog, Mastery) ->
     Name = item_name(Unique, Entry, Catalog),
     Category = maps:get(<<"category">>, Catalog,
@@ -335,6 +345,7 @@ mastery_item(Item, Owned, Mastery, Pending) ->
       <<"category">> => Category,
       <<"type">> => Type,
       <<"is_prime">> => maps:get(<<"isPrime">>, Item, false) =:= true,
+      <<"vaulted">> => maps:get(<<"vaulted">>, Item, false) =:= true,
       <<"mastery_requirement">> => number(maps:get(<<"masteryReq">>, Item, 0)),
       <<"owned">> => OwnedCount > 0,
       <<"pending">> => maps:get(Unique, Pending, false),
@@ -352,8 +363,9 @@ mastery_item(Item, Owned, Mastery, Pending) ->
       <<"components">> => Components,
       <<"asset">> => asset(Unique, maps:get(<<"imageName">>, Item, undefined))}.
 
-foundry_item(Item, Owned, Mastery, Pending) ->
+foundry_item(Item, Owned, Mastery, Pending, Subsumed) ->
     Base = mastery_item(Item, Owned, Mastery, Pending),
+    Unique = maps:get(<<"id">>, Base),
     Components = maps:get(<<"components">>, Base),
     Required = lists:sum([maps:get(<<"required">>, Component)
                           || Component <- Components]),
@@ -363,6 +375,7 @@ foundry_item(Item, Owned, Mastery, Pending) ->
     Ready = Components =/= [] andalso Available >= Required,
     Base#{<<"group">> => foundry_group(maps:get(<<"category">>, Base),
                                         maps:get(<<"type">>, Base)),
+          <<"subsumed">> => maps:get(Unique, Subsumed, false),
           <<"ready_to_build">> => Ready,
           <<"components_owned">> => Available,
           <<"components_required">> => Required}.
