@@ -63,6 +63,7 @@ private:
   void sendPendingAssets();
   void sendAssetBatch(const QJsonArray &assets);
   void sendPendingMarketQuotes();
+  void flushMarketQuoteResults();
   void write(const QJsonObject &message);
   void setConnected(bool connected);
   void setStatus(const QString &status);
@@ -104,6 +105,8 @@ private:
   QHash<QString, bool> pendingMarketQuotes_;
   QStringList pendingMarketQuoteOrder_;
   QHash<qint64, MarketQuoteRequest> activeMarketQuoteRequests_;
+  QJsonArray resolvedMarketQuotes_;
+  QJsonArray resolvedMarketMissing_;
   bool ready_ = false;
   bool pendingActivity_ = false;
   bool pendingNotificationSettings_ = true;

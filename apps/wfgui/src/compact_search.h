@@ -4,6 +4,7 @@
 #include <QWidget>
 
 class QLineEdit;
+class QVariantAnimation;
 
 class CompactSearch final : public QWidget {
 public:
@@ -14,6 +15,9 @@ public:
 private:
   void expand();
   void collapse();
+  void animateTo(int width);
 
   QLineEdit *editor_;
+  QVariantAnimation *animation_;
+  bool expanded_ = false;
 };

@@ -58,6 +58,7 @@ AppController::AppController(QObject *parent)
               foundryItems_.applyAssetPaths(changedPaths);
               inventoryItems_.applyAssetPaths(changedPaths);
               masteryItems_.applyAssetPaths(changedPaths);
+              emit assetsChanged();
             }
           });
   connect(&daemon_, &DaemonClient::requestFailed, this,
@@ -111,14 +112,17 @@ AppController::AppController(QObject *parent)
           emit notificationSettingsChanged();
         }
       });
-  connect(&daemon_, &DaemonClient::marketQuotesResolved, &inventoryItems_,
-          &PlayerItemModel::applyMarketQuotes);
+  connect(&daemon_, &DaemonClient::marketQuotesResolved, this,
+          [this](const QJsonArray &quotes, const QJsonArray &missing) {
+            foundryItems_.applyMarketQuotes(quotes, missing);
+            inventoryItems_.applyMarketQuotes(quotes, missing);
+            masteryItems_.applyMarketQuotes(quotes, missing);
+          });
   connect(&daemon_, &DaemonClient::marketQuoteRequestFailed, this,
           [this](const QStringList &items, const QString &) {
             for (const QString &item : items) {
               marketRequestedAt_.remove(item);
             }
-            inventoryItems_.markMarketUnavailable(items);
           });
 
   daemon_.start();
@@ -169,6 +173,12 @@ QJsonObject AppController::inventorySummary() const {
 
 QJsonObject AppController::masterySummary() const {
   return masteryState_.summary;
+}
+
+QJsonObject AppController::playerProfile() const { return playerProfile_; }
+
+QString AppController::assetPath(const QString &id) const {
+  return assetPaths_.value(id);
 }
 
 QJsonObject AppController::activity() const {
@@ -309,7 +319,7 @@ void AppController::resolveAssets(const QJsonArray &assets) {
 
 void AppController::resolveMarketQuotes(const QStringList &items,
                                         bool refresh) {
-  constexpr qint64 RetryAfterMs = 60'000;
+  constexpr qint64 RetryAfterMs = 15 * 60'000;
   const qint64 now = QDateTime::currentMSecsSinceEpoch();
   QStringList pending;
   for (const QString &item : items) {
@@ -410,6 +420,15 @@ void AppController::applyPlayerView(const QString &view,
     state->loaded = true;
     state->error.clear();
     state->summary = data.value("summary").toObject();
+    const QJsonObject profile = data.value("profile").toObject();
+    if (!profile.isEmpty() && profile != playerProfile_) {
+      playerProfile_ = profile;
+      emit playerProfileChanged();
+    }
+    const QJsonObject rankAsset = profile.value("rank_asset").toObject();
+    if (!rankAsset.value("id").toString().isEmpty()) {
+      resolveAssets(QJsonArray{rankAsset});
+    }
     model->setAssetPaths(assetPaths_);
   }
   emitPlayerStateChanged(view);

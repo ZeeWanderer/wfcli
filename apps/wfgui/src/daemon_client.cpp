@@ -20,6 +20,7 @@ constexpr int AssetBatchSize = 8;
 constexpr int MaxActiveAssetRequests = 2;
 constexpr int MarketCacheBatchSize = 100;
 constexpr int MaxActiveMarketQuoteRequests = 3;
+constexpr int MarketQuoteTtlSeconds = 15 * 60;
 } // namespace
 
 DaemonClient::DaemonClient(QObject *parent)
@@ -400,6 +401,7 @@ void DaemonClient::handleLine(const QByteArray &line) {
             message.value("error").toString("market quote request failed"));
       }
       sendPendingMarketQuotes();
+      flushMarketQuoteResults();
       return;
     }
     const QJsonValue dataValue = message.value("data");
@@ -411,11 +413,24 @@ void DaemonClient::handleLine(const QByteArray &line) {
             items, "daemon returned malformed market quotes");
       }
       sendPendingMarketQuotes();
+      flushMarketQuoteResults();
       return;
     }
-    emit marketQuotesResolved(data.value("quotes").toArray(),
-                              data.value("missing").toArray());
+    const QJsonArray quotes = data.value("quotes").toArray();
+    if (cacheOnly) {
+      if (!quotes.isEmpty()) {
+        emit marketQuotesResolved(quotes, {});
+      }
+    } else {
+      for (const QJsonValue &quote : quotes) {
+        resolvedMarketQuotes_.append(quote);
+      }
+      for (const QJsonValue &missing : data.value("missing").toArray()) {
+        resolvedMarketMissing_.append(missing);
+      }
+    }
     sendPendingMarketQuotes();
+    flushMarketQuoteResults();
     return;
   }
 
@@ -569,7 +584,7 @@ void DaemonClient::sendPendingMarketQuotes() {
     write({{"op", "market_quote"},
            {"id", id},
            {"items", QJsonArray::fromStringList(items)},
-           {"ttl", 60},
+           {"ttl", MarketQuoteTtlSeconds},
            {"cache_only", true}});
   }
 
@@ -597,9 +612,25 @@ void DaemonClient::sendPendingMarketQuotes() {
     write({{"op", "market_quote"},
            {"id", id},
            {"items", QJsonArray{item}},
-           {"ttl", 60},
+           {"ttl", MarketQuoteTtlSeconds},
            {"refresh", refresh}});
     ++activeFetches;
+  }
+}
+
+void DaemonClient::flushMarketQuoteResults() {
+  if (!pendingMarketQuotes_.isEmpty()) {
+    return;
+  }
+  for (const MarketQuoteRequest &request : activeMarketQuoteRequests_) {
+    if (!request.cacheOnly) {
+      return;
+    }
+  }
+  if (!resolvedMarketQuotes_.isEmpty() || !resolvedMarketMissing_.isEmpty()) {
+    emit marketQuotesResolved(resolvedMarketQuotes_, resolvedMarketMissing_);
+    resolvedMarketQuotes_ = {};
+    resolvedMarketMissing_ = {};
   }
 }
 

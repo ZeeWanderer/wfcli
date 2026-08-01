@@ -23,7 +23,6 @@ private:
   AppController *controller_;
   PlayerItemFilterModel *items_;
   PlayerItemGridWidget *grid_;
-  QLabel *summary_;
   QLabel *emptyState_;
   QProgressBar *progress_;
   QPushButton *refresh_;

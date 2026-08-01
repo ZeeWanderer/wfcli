@@ -33,6 +33,8 @@ public:
   QJsonObject foundrySummary() const;
   QJsonObject inventorySummary() const;
   QJsonObject masterySummary() const;
+  QJsonObject playerProfile() const;
+  QString assetPath(const QString &id) const;
   QJsonObject activity() const;
   QString fissureNotificationMode() const;
   bool notificationSettingsLoaded() const;
@@ -75,6 +77,8 @@ signals:
   void foundryStateChanged();
   void inventoryStateChanged();
   void masteryStateChanged();
+  void playerProfileChanged();
+  void assetsChanged();
   void activityStateChanged();
   void notificationSettingsChanged();
 
@@ -119,6 +123,7 @@ private:
   PlayerViewState foundryState_;
   PlayerViewState inventoryState_;
   PlayerViewState masteryState_;
+  QJsonObject playerProfile_;
   QJsonObject activity_;
   QString activityError_;
   QString fissureNotificationMode_ = "off";

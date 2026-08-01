@@ -4,6 +4,7 @@
 
 class AppController;
 class QLabel;
+class MasterySummaryPanel;
 class PlayerItemFilterModel;
 class PlayerItemGridWidget;
 class QProgressBar;
@@ -24,10 +25,12 @@ private:
   PlayerItemFilterModel *items_;
   PlayerItemGridWidget *grid_;
   QLabel *rank_;
-  QLabel *completion_;
-  QLabel *gameContent_;
-  QLabel *starChart_;
-  QLabel *intrinsics_;
+  QLabel *rankIcon_;
+  QLabel *completionPercent_;
+  QLabel *completionText_;
+  MasterySummaryPanel *gameContent_;
+  MasterySummaryPanel *starChart_;
+  MasterySummaryPanel *intrinsics_;
   QLabel *emptyState_;
   QProgressBar *completionBar_;
   QProgressBar *loadingBar_;

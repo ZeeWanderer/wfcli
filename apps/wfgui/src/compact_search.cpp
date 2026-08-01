@@ -4,9 +4,11 @@
 #include <QIcon>
 #include <QLineEdit>
 #include <QToolButton>
+#include <QVariantAnimation>
 
 CompactSearch::CompactSearch(const QString &placeholder, QWidget *parent)
-    : QWidget(parent), editor_(new QLineEdit) {
+    : QWidget(parent), editor_(new QLineEdit),
+      animation_(new QVariantAnimation(this)) {
   setObjectName("expandingSearch");
   setFixedWidth(40);
   auto *layout = new QHBoxLayout(this);
@@ -25,6 +27,15 @@ CompactSearch::CompactSearch(const QString &placeholder, QWidget *parent)
   editor_->setFixedWidth(125);
   editor_->hide();
   layout->addWidget(editor_);
+  animation_->setDuration(250);
+  animation_->setEasingCurve(QEasingCurve::InOutCubic);
+  connect(animation_, &QVariantAnimation::valueChanged, this,
+          [this](const QVariant &value) { setFixedWidth(value.toInt()); });
+  connect(animation_, &QVariantAnimation::finished, this, [this] {
+    if (!expanded_) {
+      editor_->hide();
+    }
+  });
   connect(button, &QToolButton::clicked, this, [this] {
     if (editor_->isVisible() && editor_->text().isEmpty()) {
       collapse();
@@ -42,12 +53,20 @@ CompactSearch::CompactSearch(const QString &placeholder, QWidget *parent)
 QLineEdit *CompactSearch::editor() const { return editor_; }
 
 void CompactSearch::expand() {
+  expanded_ = true;
   editor_->show();
-  setFixedWidth(174);
+  animateTo(174);
   editor_->setFocus(Qt::MouseFocusReason);
 }
 
 void CompactSearch::collapse() {
-  editor_->hide();
-  setFixedWidth(40);
+  expanded_ = false;
+  animateTo(40);
+}
+
+void CompactSearch::animateTo(int width) {
+  animation_->stop();
+  animation_->setStartValue(this->width());
+  animation_->setEndValue(width);
+  animation_->start();
 }

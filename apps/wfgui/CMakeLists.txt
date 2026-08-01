@@ -11,10 +11,14 @@ qt_add_library(wfgui_core STATIC
   src/daemon_client.h
   src/image_cache.cpp
   src/image_cache.h
+  src/inventory_card_layout.cpp
+  src/inventory_card_layout.h
   src/player_item_grid_widget.cpp
   src/player_item_grid_widget.h
   src/player_item_model.cpp
   src/player_item_model.h
+  src/display_scale.cpp
+  src/display_scale.h
   src/relic_card_layout.cpp
   src/relic_card_layout.h
   src/relic_grid_widget.cpp
@@ -42,8 +46,12 @@ qt_add_executable(wfgui
   src/main_window.h
   src/mastery_planner_widget.cpp
   src/mastery_planner_widget.h
+  src/player_identity_widget.cpp
+  src/player_identity_widget.h
   src/relic_planner_widget.cpp
   src/relic_planner_widget.h
+  src/title_bar_widget.cpp
+  src/title_bar_widget.h
 )
 
 qt_add_resources(wfgui "wfgui_resources"
@@ -80,6 +88,9 @@ qt_add_resources(wfgui "wfgui_resources"
     resources/ui/fissure.png
     resources/ui/helminth.png
     resources/ui/mastered.png
+    resources/ui/mastery_easy.png
+    resources/ui/mastery_rank.png
+    resources/ui/mastery_relics.png
     resources/ui/market.png
     resources/ui/nav_foundry.png
     resources/ui/nav_inventory.png
@@ -88,6 +99,8 @@ qt_add_resources(wfgui "wfgui_resources"
     resources/ui/normal.png
     resources/ui/notification.png
     resources/ui/owned.png
+    resources/ui/panel-left.png
+    resources/ui/panel-right.png
     resources/ui/pending.png
     resources/ui/refresh.png
     resources/ui/search.png
@@ -96,6 +109,12 @@ qt_add_resources(wfgui "wfgui_resources"
     resources/ui/summary_intrinsics.png
     resources/ui/summary_star.png
     resources/ui/world.png
+    resources/ui/window-close.png
+    resources/ui/window-maximize.png
+    resources/ui/window-minimize.png
+    resources/ui/window-restore.png
+    resources/ui/zoomin.png
+    resources/ui/zoomout.png
     resources/style.qss
 )
 
@@ -125,6 +144,11 @@ target_link_libraries(wfgui PRIVATE Qt6::Widgets wfgui_core)
 
 install(TARGETS wfgui RUNTIME DESTINATION bin)
 install(FILES resources/qt.conf DESTINATION bin)
+install(FILES resources/Lucide-LICENSE.txt DESTINATION share/licenses/wfcli)
+install(FILES resources/ui/nav_mastery.png
+  DESTINATION share/wfcli
+  RENAME wfgui.png
+)
 install(
   DIRECTORY "${VCPKG_INSTALLED_DIR}/${VCPKG_TARGET_TRIPLET}/lib/"
   DESTINATION lib

@@ -17,6 +17,7 @@ class PlayerItemModel final : public QAbstractListModel {
 public:
   enum Role {
     NameRole = Qt::UserRole + 1,
+    IdRole,
     GroupRole,
     CategoryRole,
     TypeRole,
@@ -31,7 +32,11 @@ public:
     PotentialXpRole,
     MissingPartsRole,
     FromRelicsRole,
+    RelicProbabilityRole,
     BuyableRole,
+    AcquisitionPlatinumRole,
+    AcquisitionPriceStateRole,
+    HasRecipeRole,
     ComponentsRole,
     AssetSpecRole,
     TradableRole,
@@ -85,14 +90,20 @@ public:
   void setGroup(const QString &group);
   void setMode(const QString &mode);
   void setFlag(const QString &name, int state);
+  void setSortMode(const QString &mode);
+  void setSortAscending(bool ascending);
 
 protected:
   bool filterAcceptsRow(int sourceRow,
                         const QModelIndex &sourceParent) const override;
+  bool lessThan(const QModelIndex &left,
+                const QModelIndex &right) const override;
 
 private:
   QString text_;
   QString group_ = "all";
   QString mode_ = "all";
+  QString sortMode_ = "name";
+  bool sortAscending_ = true;
   QHash<QString, int> flags_;
 };

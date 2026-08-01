@@ -11,7 +11,80 @@ QWidget#sidebar {
   background: #101623;
 }
 
-QStackedWidget#centerRail,
+QWidget#windowRoot {
+  background: #101623;
+  border: 1px solid #313a58;
+}
+
+QWidget#titleBar {
+  background: transparent;
+  border: none;
+}
+
+QLabel#windowTitle {
+  color: #d8dbea;
+  font-size: 11pt;
+}
+
+QToolButton#titleScaleStep {
+  background: transparent;
+  border: none;
+  border-radius: 10px;
+  min-width: 25px;
+  max-width: 25px;
+  min-height: 25px;
+  max-height: 25px;
+  padding: 0;
+}
+
+QToolButton#titleRailToggle {
+  background: transparent;
+  border: none;
+  border-radius: 6px;
+  min-width: 28px;
+  max-width: 28px;
+  min-height: 28px;
+  max-height: 28px;
+  padding: 0;
+}
+
+QToolButton#windowControl,
+QToolButton#windowClose {
+  background: transparent;
+  border: none;
+  border-radius: 6px;
+  min-width: 30px;
+  max-width: 30px;
+  min-height: 30px;
+  max-height: 30px;
+  padding: 0;
+}
+
+QToolButton#titleScaleStep:hover,
+QToolButton#titleRailToggle:hover,
+QToolButton#windowControl:hover {
+  background: #313a58;
+}
+
+QToolButton#windowClose:hover {
+  background: #a73746;
+}
+
+QLabel#titleScaleValue {
+  color: #d8dbea;
+  min-width: 38px;
+  max-width: 38px;
+  font-size: 10pt;
+}
+
+QStackedWidget#centerRail {
+  background: #171e30;
+  border-top-left-radius: 10px;
+  border-top-right-radius: 10px;
+  border-bottom-left-radius: 0;
+  border-bottom-right-radius: 0;
+}
+
 QWidget#activityRail {
   background: #171e30;
   border-radius: 10px;
@@ -30,9 +103,29 @@ QLabel {
   background: transparent;
 }
 
-QLabel#brand {
-  font-size: 13pt;
-  font-weight: 300;
+QWidget#playerIdentity {
+  background: #171e30;
+  border-radius: 8px;
+}
+
+QWidget#playerEmblem {
+  background: transparent;
+}
+
+QLabel#playerRankBadge {
+  background: rgba(0, 0, 0, 199);
+  border: none;
+  border-radius: 6px;
+  color: #ffffff;
+  font-size: 11pt;
+  font-weight: 500;
+  padding: 1px 4px;
+}
+
+QLabel#playerName {
+  color: #ffffff;
+  font-size: 10pt;
+  font-weight: 400;
 }
 
 QPushButton#navigation {
@@ -62,6 +155,13 @@ QPushButton#navigation[multiline="true"] {
   min-height: 44px;
 }
 
+QPushButton#navigation[collapsed="true"] {
+  min-height: 38px;
+  max-height: 38px;
+  padding: 0;
+  text-align: center;
+}
+
 QLabel#daemonStatus,
 QLabel#secondaryText {
   color: #8a8c95;
@@ -83,7 +183,30 @@ QLabel#pageTitle {
 QLabel#masteryRank {
   font-size: 38pt;
   font-weight: 300;
-  padding: 0 8px 0 0;
+  min-width: 48px;
+}
+
+QWidget#masteryTop {
+  background: transparent;
+}
+
+QLabel#masteryProgressLabel {
+  color: #ffffff;
+  font-size: 12pt;
+  font-weight: 400;
+}
+
+QProgressBar#masteryProgress {
+  background: #20283e;
+  border: none;
+  border-radius: 9px;
+  min-height: 19px;
+  max-height: 19px;
+}
+
+QProgressBar#masteryProgress::chunk {
+  background: #5923cb;
+  border-radius: 9px;
 }
 
 QLabel#sectionTitle {
@@ -157,12 +280,6 @@ QLabel#countdown {
   font-weight: 400;
 }
 
-QLabel#inventoryTotals {
-  background: #101623;
-  border-radius: 7px;
-  padding: 7px 9px;
-}
-
 QWidget#resurgencePill {
   background: transparent;
   min-width: 148px;
@@ -230,6 +347,10 @@ QPushButton#filterChip {
   padding: 4px 9px;
 }
 
+QPushButton#filterChip[animated="true"] {
+  text-align: left;
+}
+
 QToolButton#compactTool,
 QPushButton#compactTool {
   background: #20283e;
@@ -249,6 +370,46 @@ QPushButton#compactTool:hover {
 
 QToolButton#compactTool[active="true"] {
   background: #432289;
+}
+
+QToolButton#sortDirection {
+  background: #20283e;
+  border: none;
+  border-radius: 16px 0 0 16px;
+  min-width: 34px;
+  max-width: 34px;
+  min-height: 32px;
+  max-height: 32px;
+  padding: 0;
+}
+
+QToolButton#sortDirection:hover,
+QComboBox#sortSelect:hover {
+  background: #272f47;
+}
+
+QComboBox#sortSelect {
+  background: #20283e;
+  border: none;
+  border-left: 1px solid #313a58;
+  border-radius: 0 16px 16px 0;
+  color: #ffffff;
+  min-height: 32px;
+  min-width: 128px;
+  padding: 0 24px 0 9px;
+}
+
+QComboBox#sortSelect::drop-down {
+  border: none;
+  width: 22px;
+}
+
+QComboBox#sortSelect QAbstractItemView {
+  background: #171e30;
+  border: 1px solid #313a58;
+  color: #ffffff;
+  selection-background-color: #313a58;
+  outline: none;
 }
 
 QToolButton::menu-indicator {
@@ -304,6 +465,84 @@ QWidget#summaryPanel {
   background: #20283e;
   border: none;
   border-radius: 8px;
+}
+
+QWidget#masterySummaryPanel {
+  background: #20283e;
+  border: none;
+  border-radius: 10px;
+}
+
+QWidget#masterySummaryHeader {
+  background: #313a58;
+  border-radius: 10px 10px 0 0;
+  min-height: 40px;
+  max-height: 40px;
+}
+
+QLabel#masterySummaryHeading {
+  color: #ffffff;
+  font-size: 12pt;
+  font-weight: 400;
+}
+
+QLabel#masterySummaryPercent {
+  color: #b59dff;
+  font-size: 12pt;
+  font-weight: 400;
+}
+
+QLabel#masterySummaryRowLabel {
+  color: #ffffff;
+  font-size: 11pt;
+  font-weight: 400;
+}
+
+QLabel#masterySummaryRowValue {
+  color: #ffffff;
+  font-size: 10.5pt;
+  font-weight: 300;
+}
+
+QWidget#masteryBottom {
+  background: #101623;
+  border: none;
+  border-top-left-radius: 15px;
+  border-top-right-radius: 15px;
+  border-bottom-left-radius: 0;
+  border-bottom-right-radius: 0;
+}
+
+QLabel#masterySectionTitle {
+  color: #ffffff;
+  font-size: 13pt;
+  font-weight: 400;
+}
+
+QWidget#masteryModeGroup {
+  background: #20283e;
+  border: none;
+  border-radius: 10px;
+}
+
+QPushButton#masteryMode {
+  background: transparent;
+  border: none;
+  border-radius: 9px;
+  min-height: 26px;
+  max-height: 26px;
+  padding: 0 7px;
+  font-size: 10pt;
+  font-weight: 300;
+}
+
+QPushButton#masteryMode:hover {
+  background: #272f47;
+}
+
+QPushButton#masteryMode:checked {
+  background: #313a58;
+  color: #ffffff;
 }
 
 QWidget#summaryHeader {

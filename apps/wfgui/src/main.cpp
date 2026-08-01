@@ -5,10 +5,13 @@
 #include <QFile>
 #include <QFileInfo>
 #include <QFontDatabase>
+#include <QGuiApplication>
+#include <QIcon>
 #include <QPixmapCache>
 #include <QTimer>
 
 #include "main_window.h"
+#include "display_scale.h"
 
 #include <cstdlib>
 
@@ -26,13 +29,17 @@ QSize parseSize(const QString &value) {
 } // namespace
 
 int main(int argc, char *argv[]) {
+  QCoreApplication::setOrganizationName("wfcli");
+  QCoreApplication::setApplicationName("wfgui");
+  QGuiApplication::setDesktopFileName("wfgui");
+  wfgui::applyConfiguredUiScale();
   QApplication app(argc, argv);
+  app.setWindowIcon(QIcon(":/resources/ui/nav_mastery.png"));
   QFontDatabase::addApplicationFont(":/assets/Roboto-Bold.ttf");
   QFontDatabase::addApplicationFont(":/assets/Roboto-Light.ttf");
   QFontDatabase::addApplicationFont(":/assets/Roboto-Medium.ttf");
   QFontDatabase::addApplicationFont(":/assets/Roboto-Regular.ttf");
   QPixmapCache::setCacheLimit(64 * 1024);
-  QCoreApplication::setApplicationName("wfgui");
   QCoreApplication::setApplicationVersion(WFCLI_VERSION);
 
   QCommandLineParser parser;

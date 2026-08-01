@@ -108,6 +108,7 @@ RelicPlannerWidget::RelicPlannerWidget(AppController *controller,
   auto *contentFrame = new QWidget;
   contentFrame->setObjectName("contentFrame");
   auto *contentHost = new QWidget;
+  contentHost->setObjectName("contentHost");
   contentHost->setLayout(content_);
   content_->setContentsMargins(0, 0, 0, 0);
   content_->addWidget(scroll);

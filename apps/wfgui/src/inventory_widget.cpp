@@ -1,17 +1,22 @@
 #include "inventory_widget.h"
 
 #include <QAbstractItemModel>
+#include <QActionGroup>
 #include <QButtonGroup>
+#include <QComboBox>
 #include <QHBoxLayout>
 #include <QIcon>
-#include <QJsonObject>
 #include <QLabel>
 #include <QLineEdit>
+#include <QMenu>
 #include <QProgressBar>
 #include <QPushButton>
 #include <QStackedLayout>
+#include <QStyle>
+#include <QToolButton>
 #include <QVBoxLayout>
 
+#include <algorithm>
 #include <array>
 #include <utility>
 
@@ -43,15 +48,26 @@ void updateFilterButtons(QButtonGroup *group) {
                                                                    : QString());
   }
 }
+
+void updateActiveFilterStyle(QToolButton *button,
+                             const QList<QActionGroup *> &groups) {
+  const bool active = std::any_of(
+      groups.cbegin(), groups.cend(), [](const QActionGroup *group) {
+        return group->checkedAction() &&
+               group->checkedAction()->data().toInt() >= 0;
+      });
+  button->setProperty("active", active);
+  button->style()->unpolish(button);
+  button->style()->polish(button);
+}
 } // namespace
 
 InventoryWidget::InventoryWidget(AppController *controller, QWidget *parent)
     : QWidget(parent), controller_(controller),
       items_(new PlayerItemFilterModel(this)),
       grid_(new PlayerItemGridWidget(PlayerItemGridWidget::Kind::Inventory)),
-      summary_(new QLabel), emptyState_(new QLabel),
-      progress_(new QProgressBar), refresh_(new QPushButton),
-      content_(new QStackedLayout) {
+      emptyState_(new QLabel), progress_(new QProgressBar),
+      refresh_(new QPushButton), content_(new QStackedLayout) {
   setObjectName("page");
   items_->setSourceModel(controller_->inventoryItems());
   items_->setGroup("parts");
@@ -61,8 +77,8 @@ InventoryWidget::InventoryWidget(AppController *controller, QWidget *parent)
   layout->setContentsMargins(10, 10, 10, 0);
   layout->setSpacing(8);
 
-  auto *groups = new QHBoxLayout;
-  groups->setSpacing(6);
+  auto *toolbar = new QHBoxLayout;
+  toolbar->setSpacing(6);
   auto *groupButtons = new QButtonGroup(this);
   groupButtons->setExclusive(true);
   int id = 0;
@@ -77,18 +93,105 @@ InventoryWidget::InventoryWidget(AppController *controller, QWidget *parent)
     button->setToolTip(label);
     button->setChecked(id == 0);
     groupButtons->addButton(button, id++);
-    groups->addWidget(button);
+    toolbar->addWidget(button);
   }
-  groups->addStretch();
+  toolbar->addStretch();
   auto *compactSearch = new CompactSearch("Search inventory");
   auto *search = compactSearch->editor();
-  groups->addWidget(compactSearch);
+  toolbar->addWidget(compactSearch);
+
+  auto *filter = new QToolButton;
+  filter->setObjectName("compactTool");
+  filter->setIcon(QIcon(":/resources/ui/filter.png"));
+  filter->setIconSize({17, 17});
+  filter->setToolTip("Filter inventory");
+  filter->setPopupMode(QToolButton::InstantPopup);
+  auto *filterMenu = new QMenu(filter);
+  filter->setMenu(filterMenu);
+  struct BooleanFilter {
+    const char *title;
+    const char *key;
+    const char *yes;
+    const char *no;
+  };
+  constexpr std::array<BooleanFilter, 5> booleanFilters{{
+      {"Type", "prime", "Prime", "Normal"},
+      {"Mastery", "mastered", "Mastered", "Unmastered"},
+      {"Copies", "duplicate", "More than one", "One"},
+      {"Vaulted", "vaulted", "Vaulted", "Unvaulted"},
+      {"Set completion", "complete", "Complete", "Incomplete"},
+  }};
+  QList<QActionGroup *> filterGroups;
+  QList<QString> filterKeys;
+  for (const auto &[title, key, yes, no] : booleanFilters) {
+    auto *submenu = filterMenu->addMenu(title);
+    auto *group = new QActionGroup(filterMenu);
+    group->setExclusive(true);
+    for (const auto &[label, state] :
+         std::array<std::pair<const char *, int>, 3>{
+             {{"Any", -1}, {yes, 1}, {no, 0}}}) {
+      auto *action = submenu->addAction(label);
+      action->setCheckable(true);
+      action->setChecked(state == -1);
+      action->setData(state);
+      group->addAction(action);
+    }
+    filterGroups.append(group);
+    filterKeys.append(key);
+  }
+  for (int index = 0; index < filterGroups.size(); ++index) {
+    QActionGroup *group = filterGroups.at(index);
+    const QString key = filterKeys.at(index);
+    connect(group, &QActionGroup::triggered, this,
+            [this, key, group, filter, filterGroups](QAction *) {
+              items_->setFlag(key, group->checkedAction()->data().toInt());
+              updateActiveFilterStyle(filter, filterGroups);
+              updateContent();
+            });
+  }
+  toolbar->addWidget(filter);
+
+  auto *sortControl = new QWidget;
+  sortControl->setObjectName("sortControl");
+  auto *sortLayout = new QHBoxLayout(sortControl);
+  sortLayout->setContentsMargins(0, 0, 0, 0);
+  sortLayout->setSpacing(0);
+  auto *sortDirection = new QToolButton;
+  sortDirection->setObjectName("sortDirection");
+  sortDirection->setProperty("ascending", true);
+  sortDirection->setIcon(style()->standardIcon(QStyle::SP_ArrowUp));
+  sortDirection->setToolTip("Ascending");
+  sortLayout->addWidget(sortDirection);
+  auto *sort = new QComboBox;
+  sort->setObjectName("sortSelect");
+  sort->addItem("Name", "name");
+  sort->addItem("Platinum", "platinum");
+  sort->addItem("Ducats", "ducats");
+  sort->addItem("Amount", "amount");
+  sort->addItem("Ducats / Platinum", "ducanator");
+  sort->addItem("Set completion", "complete");
+  sortLayout->addWidget(sort);
+  toolbar->addWidget(sortControl);
+
+  connect(sort, &QComboBox::currentIndexChanged, this, [this, sort](int index) {
+    items_->setSortMode(sort->itemData(index).toString());
+  });
+  connect(sortDirection, &QToolButton::clicked, this, [this, sortDirection] {
+    const bool ascending = !sortDirection->property("ascending").toBool();
+    sortDirection->setProperty("ascending", ascending);
+    sortDirection->setIcon(
+        style()->standardIcon(ascending ? QStyle::SP_ArrowUp
+                                       : QStyle::SP_ArrowDown));
+    sortDirection->setToolTip(ascending ? "Ascending" : "Descending");
+    items_->setSortAscending(ascending);
+  });
+
   refresh_->setObjectName("compactTool");
   refresh_->setIcon(QIcon(":/resources/ui/refresh.png"));
   refresh_->setIconSize({20, 20});
   refresh_->setToolTip("Refresh inventory data");
-  groups->addWidget(refresh_);
-  layout->addLayout(groups);
+  toolbar->addWidget(refresh_);
+  layout->addLayout(toolbar);
   updateFilterButtons(groupButtons);
 
   progress_->setObjectName("priceProgress");
@@ -109,6 +212,7 @@ InventoryWidget::InventoryWidget(AppController *controller, QWidget *parent)
   loadingLayout->addStretch();
 
   auto *host = new QWidget;
+  host->setObjectName("contentHost");
   host->setLayout(content_);
   content_->setContentsMargins(0, 0, 0, 0);
   content_->addWidget(grid_);
@@ -122,9 +226,6 @@ InventoryWidget::InventoryWidget(AppController *controller, QWidget *parent)
   frameLayout->addWidget(progress_);
   frameLayout->addWidget(host, 1);
   layout->addWidget(frame, 1);
-  summary_->setObjectName("inventoryTotals");
-  summary_->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
-  layout->addWidget(summary_);
 
   connect(search, &QLineEdit::textChanged, items_,
           &PlayerItemFilterModel::setText);
@@ -157,9 +258,6 @@ InventoryWidget::InventoryWidget(AppController *controller, QWidget *parent)
 }
 
 void InventoryWidget::updateContent() {
-  const QJsonObject totals = controller_->inventorySummary();
-  summary_->setText(
-      QString("%1 item types").arg(totals.value("total").toInt()));
   const bool loading = controller_->inventoryLoading();
   progress_->setRange(0, loading ? 0 : 1);
   if (!loading) {

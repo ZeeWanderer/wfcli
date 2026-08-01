@@ -32,7 +32,11 @@ private:
   void requestVisibleAssets();
   void requestVisibleQuotes(bool refresh = false);
   std::pair<int, int> visibleRows() const;
+  void preserveScrollPosition();
+  void restoreScrollPosition();
 
   Kind kind_;
   QTimer *visibleDataTimer_;
+  int preservedScrollValue_ = -1;
+  bool scrollRestoreScheduled_ = false;
 };

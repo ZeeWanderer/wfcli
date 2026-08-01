@@ -9,7 +9,9 @@
 #include <QLabel>
 #include <QLineEdit>
 #include <QMenu>
+#include <QParallelAnimationGroup>
 #include <QProgressBar>
+#include <QPropertyAnimation>
 #include <QPushButton>
 #include <QStackedLayout>
 #include <QStyle>
@@ -43,11 +45,54 @@ constexpr std::array<Filter, 8> Groups{{
     {"Companion", "companion", ":/resources/categories/companion.png"},
 }};
 
-void updateFilterButtons(QButtonGroup *group) {
+constexpr int FilterChipCollapsedWidth = 40;
+constexpr int FilterChipAnimationDuration = 250;
+
+void updateFilterButtons(QButtonGroup *group, bool animated = true) {
+  if (auto *running = group->findChild<QParallelAnimationGroup *>(
+          "filterChipAnimation", Qt::FindDirectChildrenOnly)) {
+    running->stop();
+    delete running;
+  }
+
+  auto *animations = new QParallelAnimationGroup(group);
+  animations->setObjectName("filterChipAnimation");
   for (auto *button : group->buttons()) {
-    const QString label = button->property("label").toString();
-    button->setText(button->isChecked() || button->icon().isNull() ? label
-                                                                   : QString());
+    if (button->isChecked()) {
+      button->setText(button->property("label").toString());
+    }
+    const int target = button->isChecked()
+                           ? button->property("expandedWidth").toInt()
+                           : FilterChipCollapsedWidth;
+    if (!animated) {
+      button->setMaximumWidth(target);
+      if (!button->isChecked()) {
+        button->setText({});
+      }
+    } else if (button->maximumWidth() != target) {
+      auto *animation =
+          new QPropertyAnimation(button, "maximumWidth", animations);
+      animation->setDuration(FilterChipAnimationDuration);
+      animation->setStartValue(button->maximumWidth());
+      animation->setEndValue(target);
+      animation->setEasingCurve(QEasingCurve::InOutCubic);
+      animations->addAnimation(animation);
+    } else if (!button->isChecked()) {
+      button->setText({});
+    }
+  }
+  if (animations->animationCount() == 0) {
+    delete animations;
+  } else {
+    QObject::connect(animations, &QParallelAnimationGroup::finished, group,
+                     [group] {
+                       for (auto *button : group->buttons()) {
+                         if (!button->isChecked()) {
+                           button->setText({});
+                         }
+                       }
+                     });
+    animations->start(QAbstractAnimation::DeleteWhenStopped);
   }
 }
 
@@ -91,10 +136,15 @@ FoundryWidget::FoundryWidget(AppController *controller, QWidget *parent)
     button->setCheckable(true);
     button->setProperty("group", value);
     button->setProperty("label", label);
+    button->setProperty("animated", true);
+    button->setText(label);
     button->setIcon(QIcon(icon));
     button->setIconSize({22, 22});
     button->setToolTip(label);
     button->setChecked(id == 1);
+    button->ensurePolished();
+    button->setProperty("expandedWidth", std::max(FilterChipCollapsedWidth,
+                                                  button->sizeHint().width()));
     groups->addButton(button, id++);
     toolbar->addWidget(button);
   }
@@ -160,7 +210,7 @@ FoundryWidget::FoundryWidget(AppController *controller, QWidget *parent)
   refresh_->setToolTip("Refresh Foundry data");
   toolbar->addWidget(refresh_);
   layout->addLayout(toolbar);
-  updateFilterButtons(groups);
+  updateFilterButtons(groups, false);
 
   summary_->setObjectName("secondaryText");
 

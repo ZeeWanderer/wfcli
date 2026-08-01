@@ -5,6 +5,9 @@
 #include <QVariantList>
 #include <QVariantMap>
 
+#include <algorithm>
+#include <tuple>
+
 namespace {
 QString assetId(const QJsonObject &item) {
   return item.value("asset").toObject().value("id").toString();
@@ -17,8 +20,61 @@ int flagRole(const QString &name) {
       {"ready", PlayerItemModel::ReadyToBuildRole},
       {"prime", PlayerItemModel::IsPrimeRole},
       {"favorite", PlayerItemModel::FavoriteRole},
+      {"vaulted", PlayerItemModel::VaultedRole},
   };
   return roles.value(name, -1);
+}
+
+struct AcquisitionQuote {
+  QVariant platinum;
+  QString state;
+};
+
+AcquisitionQuote
+acquisitionQuote(const QJsonObject &item,
+                 const QHash<QString, QJsonObject> &marketQuotes,
+                 const QSet<QString> &unavailableMarketItems) {
+  bool hasMissingComponent = false;
+  bool loading = false;
+  bool requiredUnavailable = false;
+  int total = 0;
+  for (const QJsonValue &value : item.value("components").toArray()) {
+    const QJsonObject component = value.toObject();
+    const int missing = qMax(0, component.value("required").toInt() -
+                                    component.value("owned").toInt());
+    if (missing == 0) {
+      continue;
+    }
+    hasMissingComponent = true;
+    const bool required = component.value("market_required").toBool();
+    const QString marketName = component.value("market_name").toString();
+    if (marketName.isEmpty()) {
+      requiredUnavailable = requiredUnavailable || required;
+      continue;
+    }
+    const auto quote = marketQuotes.constFind(marketName);
+    if (quote == marketQuotes.cend()) {
+      if (unavailableMarketItems.contains(marketName)) {
+        requiredUnavailable = requiredUnavailable || required;
+      } else {
+        loading = true;
+      }
+      continue;
+    }
+    const QJsonValue price = quote->value("lowest_sell");
+    if (price.isDouble()) {
+      total += missing * price.toInt();
+    } else {
+      requiredUnavailable = requiredUnavailable || required;
+    }
+  }
+  if (loading) {
+    return {{}, QStringLiteral("loading")};
+  }
+  if (requiredUnavailable) {
+    return {{}, QStringLiteral("unavailable")};
+  }
+  return {QVariant(hasMissingComponent ? total : 0), QStringLiteral("ready")};
 }
 } // namespace
 
@@ -39,6 +95,8 @@ QVariant PlayerItemModel::data(const QModelIndex &index, int role) const {
   case Qt::DisplayRole:
   case Qt::ToolTipRole:
     return item.value("name").toString();
+  case IdRole:
+    return item.value("id").toString();
   case GroupRole:
     return item.value("group").toString();
   case CategoryRole:
@@ -67,8 +125,17 @@ QVariant PlayerItemModel::data(const QModelIndex &index, int role) const {
     return item.value("missing_parts").toInt();
   case FromRelicsRole:
     return item.value("from_relics").toBool();
+  case RelicProbabilityRole:
+    return item.value("relic_probability").toDouble();
   case BuyableRole:
     return item.value("buyable").toBool();
+  case AcquisitionPlatinumRole:
+    return acquisitionQuote(item, marketQuotes_, unavailableMarketItems_)
+        .platinum;
+  case AcquisitionPriceStateRole:
+    return acquisitionQuote(item, marketQuotes_, unavailableMarketItems_).state;
+  case HasRecipeRole:
+    return item.value("has_recipe").toBool();
   case ComponentsRole: {
     const auto cached = componentCache_.constFind(index.row());
     if (cached != componentCache_.cend()) {
@@ -125,7 +192,9 @@ QVariant PlayerItemModel::data(const QModelIndex &index, int role) const {
                : favorite.value();
   }
   case VaultedRole:
-    return item.value("vaulted").toBool();
+    return item.value("vaulted").isBool()
+               ? QVariant(item.value("vaulted").toBool())
+               : QVariant();
   case SubsumedRole:
     return item.value("subsumed").toBool();
   default:
@@ -154,6 +223,7 @@ bool PlayerItemModel::setData(const QModelIndex &index, const QVariant &value,
 
 QHash<int, QByteArray> PlayerItemModel::roleNames() const {
   return {{NameRole, "name"},
+          {IdRole, "id"},
           {GroupRole, "group"},
           {CategoryRole, "category"},
           {TypeRole, "type"},
@@ -168,7 +238,11 @@ QHash<int, QByteArray> PlayerItemModel::roleNames() const {
           {PotentialXpRole, "potentialXp"},
           {MissingPartsRole, "missingParts"},
           {FromRelicsRole, "fromRelics"},
+          {RelicProbabilityRole, "relicProbability"},
           {BuyableRole, "buyable"},
+          {AcquisitionPlatinumRole, "acquisitionPlatinum"},
+          {AcquisitionPriceStateRole, "acquisitionPriceState"},
+          {HasRecipeRole, "hasRecipe"},
           {ComponentsRole, "components"},
           {AssetSpecRole, "assetSpec"},
           {TradableRole, "tradable"},
@@ -275,9 +349,18 @@ void PlayerItemModel::applyMarketQuotes(const QJsonArray &quotes,
     }
     const QJsonValue quote = row.value("quote");
     if (quote.isObject()) {
-      marketQuotes_.insert(name, quote.toObject());
+      const QJsonObject next = quote.toObject();
+      if (marketQuotes_.value(name) == next &&
+          !unavailableMarketItems_.contains(name)) {
+        continue;
+      }
+      marketQuotes_.insert(name, next);
       unavailableMarketItems_.remove(name);
     } else {
+      if (!marketQuotes_.contains(name) &&
+          unavailableMarketItems_.contains(name)) {
+        continue;
+      }
       marketQuotes_.remove(name);
       unavailableMarketItems_.insert(name);
     }
@@ -286,6 +369,10 @@ void PlayerItemModel::applyMarketQuotes(const QJsonArray &quotes,
   for (const QJsonValue &value : missing) {
     const QString name = value.toString();
     if (!name.isEmpty()) {
+      if (!marketQuotes_.contains(name) &&
+          unavailableMarketItems_.contains(name)) {
+        continue;
+      }
       marketQuotes_.remove(name);
       unavailableMarketItems_.insert(name);
       changed.insert(name);
@@ -316,9 +403,14 @@ void PlayerItemModel::rebuildIndexes() {
       assetRows_.insert(itemAsset, row);
     }
     for (const QJsonValue &value : item.value("components").toArray()) {
-      const QString componentAsset = assetId(value.toObject());
+      const QJsonObject component = value.toObject();
+      const QString componentAsset = assetId(component);
       if (!componentAsset.isEmpty()) {
         assetRows_.insert(componentAsset, row);
+      }
+      const QString marketName = component.value("market_name").toString();
+      if (!marketName.isEmpty()) {
+        nameRows_.insert(marketName, row);
       }
     }
   }
@@ -333,13 +425,15 @@ void PlayerItemModel::notifyMarketRows(const QSet<QString> &names) {
   }
   for (int row : rows) {
     emit dataChanged(index(row), index(row),
-                     {PlatinumRole, BuyPlatinumRole, PriceStateRole});
+                     {PlatinumRole, BuyPlatinumRole, PriceStateRole,
+                      AcquisitionPlatinumRole, AcquisitionPriceStateRole});
   }
 }
 
 PlayerItemFilterModel::PlayerItemFilterModel(QObject *parent)
     : QSortFilterProxyModel(parent) {
   setDynamicSortFilter(true);
+  sort(0);
 }
 
 void PlayerItemFilterModel::setText(const QString &text) {
@@ -367,6 +461,7 @@ void PlayerItemFilterModel::setMode(const QString &mode) {
   beginFilterChange();
   mode_ = mode;
   endFilterChange(QSortFilterProxyModel::Direction::Rows);
+  sort(0);
 }
 
 void PlayerItemFilterModel::setFlag(const QString &name, int state) {
@@ -384,6 +479,24 @@ void PlayerItemFilterModel::setFlag(const QString &name, int state) {
     flags_.insert(name, state);
   }
   endFilterChange(QSortFilterProxyModel::Direction::Rows);
+}
+
+void PlayerItemFilterModel::setSortMode(const QString &mode) {
+  if (sortMode_ == mode) {
+    return;
+  }
+  sortMode_ = mode;
+  invalidate();
+  sort(0);
+}
+
+void PlayerItemFilterModel::setSortAscending(bool ascending) {
+  if (sortAscending_ == ascending) {
+    return;
+  }
+  sortAscending_ = ascending;
+  invalidate();
+  sort(0);
 }
 
 bool PlayerItemFilterModel::filterAcceptsRow(
@@ -404,21 +517,157 @@ bool PlayerItemFilterModel::filterAcceptsRow(
       sourceModel()->data(item, PlayerItemModel::MasteredRole).toBool();
   for (auto flag = flags_.cbegin(); flag != flags_.cend(); ++flag) {
     const int role = flagRole(flag.key());
-    if (role >= 0 &&
-        sourceModel()->data(item, role).toBool() != (flag.value() == 1)) {
+    bool actual = false;
+    if (flag.key() == "duplicate") {
+      actual = sourceModel()->data(item, PlayerItemModel::QuantityRole).toInt() > 1;
+    } else if (flag.key() == "complete") {
+      const QVariantList components =
+          sourceModel()->data(item, PlayerItemModel::ComponentsRole).toList();
+      actual = !components.isEmpty() &&
+               std::all_of(components.cbegin(), components.cend(),
+                           [](const QVariant &value) {
+                             const QVariantMap component = value.toMap();
+                             return component.value("owned").toInt() >=
+                                    component.value("required").toInt();
+                           });
+    } else if (role >= 0) {
+      const QVariant value = sourceModel()->data(item, role);
+      if (role == PlayerItemModel::VaultedRole && !value.isValid()) {
+        return false;
+      }
+      actual = value.toBool();
+    } else {
+      continue;
+    }
+    if (actual != (flag.value() == 1)) {
       return false;
     }
   }
   if (mode_ == "easy") {
-    return !mastered;
+    const bool owned =
+        sourceModel()->data(item, PlayerItemModel::OwnedRole).toBool();
+    const bool ready =
+        sourceModel()->data(item, PlayerItemModel::HasRecipeRole).toBool() &&
+        sourceModel()->data(item, PlayerItemModel::MissingPartsRole).toInt() ==
+            0;
+    return !mastered &&
+           sourceModel()->data(item, PlayerItemModel::RankRole).toInt() < 30 &&
+           (owned || ready);
   }
   if (mode_ == "relics") {
     return !mastered &&
            sourceModel()->data(item, PlayerItemModel::FromRelicsRole).toBool();
   }
   if (mode_ == "platinum") {
-    return !mastered &&
-           sourceModel()->data(item, PlayerItemModel::BuyableRole).toBool();
+    if (mastered ||
+        !sourceModel()->data(item, PlayerItemModel::BuyableRole).toBool()) {
+      return false;
+    }
+    const QString state =
+        sourceModel()
+            ->data(item, PlayerItemModel::AcquisitionPriceStateRole)
+            .toString();
+    return state == "loading" ||
+           (state == "ready" &&
+            sourceModel()
+                    ->data(item, PlayerItemModel::AcquisitionPlatinumRole)
+                    .toInt() > 0);
   }
   return true;
+}
+
+bool PlayerItemFilterModel::lessThan(const QModelIndex &left,
+                                     const QModelIndex &right) const {
+  const auto value = [this](const QModelIndex &index, int role) {
+    return sourceModel()->data(index, role);
+  };
+  const QString leftName = value(left, PlayerItemModel::NameRole).toString();
+  const QString rightName = value(right, PlayerItemModel::NameRole).toString();
+  if (mode_ == "easy") {
+    return std::tuple(!value(left, PlayerItemModel::OwnedRole).toBool(),
+                      value(left, PlayerItemModel::MissingPartsRole).toInt(),
+                      -value(left, PlayerItemModel::PotentialXpRole).toInt(),
+                      leftName.toCaseFolded()) <
+           std::tuple(!value(right, PlayerItemModel::OwnedRole).toBool(),
+                      value(right, PlayerItemModel::MissingPartsRole).toInt(),
+                      -value(right, PlayerItemModel::PotentialXpRole).toInt(),
+                      rightName.toCaseFolded());
+  }
+  if (mode_ == "relics") {
+    return std::tuple(
+               -value(left, PlayerItemModel::RelicProbabilityRole).toDouble(),
+               value(left, PlayerItemModel::MissingPartsRole).toInt(),
+               leftName.toCaseFolded()) <
+           std::tuple(
+               -value(right, PlayerItemModel::RelicProbabilityRole).toDouble(),
+               value(right, PlayerItemModel::MissingPartsRole).toInt(),
+               rightName.toCaseFolded());
+  }
+  if (mode_ == "platinum") {
+    const QVariant leftPrice =
+        value(left, PlayerItemModel::AcquisitionPlatinumRole);
+    const QVariant rightPrice =
+        value(right, PlayerItemModel::AcquisitionPlatinumRole);
+    const double leftEfficiency =
+        leftPrice.isValid() && leftPrice.toInt() > 0
+            ? -value(left, PlayerItemModel::PotentialXpRole).toDouble() /
+                  leftPrice.toInt()
+            : 0;
+    const double rightEfficiency =
+        rightPrice.isValid() && rightPrice.toInt() > 0
+            ? -value(right, PlayerItemModel::PotentialXpRole).toDouble() /
+                  rightPrice.toInt()
+            : 0;
+    return std::tuple(!leftPrice.isValid(), leftEfficiency,
+                      leftName.toCaseFolded()) <
+           std::tuple(!rightPrice.isValid(), rightEfficiency,
+                      rightName.toCaseFolded());
+  }
+  const auto sortValue = [this, &value](const QModelIndex &item) -> QVariant {
+    if (sortMode_ == "platinum") {
+      return value(item, PlayerItemModel::PlatinumRole);
+    }
+    if (sortMode_ == "ducats") {
+      return value(item, PlayerItemModel::DucatsRole);
+    }
+    if (sortMode_ == "amount") {
+      return value(item, PlayerItemModel::QuantityRole);
+    }
+    if (sortMode_ == "ducanator") {
+      const QVariant platinum = value(item, PlayerItemModel::PlatinumRole);
+      if (!platinum.isValid() || platinum.toDouble() <= 0) {
+        return {};
+      }
+      return value(item, PlayerItemModel::DucatsRole).toDouble() /
+             platinum.toDouble();
+    }
+    if (sortMode_ == "complete") {
+      const QVariantList components =
+          value(item, PlayerItemModel::ComponentsRole).toList();
+      if (components.isEmpty()) {
+        return {};
+      }
+      int complete = 0;
+      for (const QVariant &entry : components) {
+        const QVariantMap component = entry.toMap();
+        complete += component.value("owned").toInt() >=
+                    component.value("required").toInt();
+      }
+      return static_cast<double>(complete) / components.size();
+    }
+    return {};
+  };
+  if (sortMode_ != "name") {
+    const QVariant leftValue = sortValue(left);
+    const QVariant rightValue = sortValue(right);
+    if (leftValue.isValid() != rightValue.isValid()) {
+      return leftValue.isValid();
+    }
+    if (leftValue.isValid() && leftValue.toDouble() != rightValue.toDouble()) {
+      return sortAscending_ ? leftValue.toDouble() < rightValue.toDouble()
+                            : leftValue.toDouble() > rightValue.toDouble();
+    }
+  }
+  const int nameOrder = leftName.compare(rightName, Qt::CaseInsensitive);
+  return sortAscending_ ? nameOrder < 0 : nameOrder > 0;
 }
