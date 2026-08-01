@@ -40,6 +40,8 @@ public:
     ComponentsRole,
     AssetSpecRole,
     TradableRole,
+    MarketNameRole,
+    SellableRole,
     PlatinumRole,
     BuyPlatinumRole,
     PriceStateRole,

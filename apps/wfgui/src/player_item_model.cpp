@@ -13,6 +13,19 @@ QString assetId(const QJsonObject &item) {
   return item.value("asset").toObject().value("id").toString();
 }
 
+QString marketName(const QJsonObject &item) {
+  const QString explicitName = item.value("market_name").toString();
+  if (!explicitName.isEmpty()) {
+    return explicitName;
+  }
+  const QString name = item.value("name").toString();
+  if (item.value("group").toString() != "relics") {
+    return name;
+  }
+  const QStringList parts = name.split(' ', Qt::SkipEmptyParts);
+  return parts.size() >= 2 ? parts.at(0) + ' ' + parts.at(1) + " Relic" : name;
+}
+
 int flagRole(const QString &name) {
   static const QHash<QString, int> roles = {
       {"mastered", PlayerItemModel::MasteredRole},
@@ -155,21 +168,26 @@ QVariant PlayerItemModel::data(const QModelIndex &index, int role) const {
     return item.value("asset").toObject().toVariantMap();
   case TradableRole:
     return item.value("tradable").toBool();
+  case MarketNameRole:
+    return marketName(item);
+  case SellableRole:
+    return item.value("tradable").toBool() &&
+           item.value("quantity").toInt() > 0;
   case PlatinumRole: {
     const QJsonValue price =
-        marketQuotes_.value(item.value("name").toString()).value("lowest_sell");
+        marketQuotes_.value(marketName(item)).value("lowest_sell");
     return price.isDouble() ? QVariant(price.toInt()) : QVariant();
   }
   case BuyPlatinumRole: {
     const QJsonValue price =
-        marketQuotes_.value(item.value("name").toString()).value("highest_buy");
+        marketQuotes_.value(marketName(item)).value("highest_buy");
     return price.isDouble() ? QVariant(price.toInt()) : QVariant();
   }
   case PriceStateRole: {
     if (!item.value("tradable").toBool()) {
       return QStringLiteral("none");
     }
-    const QString name = item.value("name").toString();
+    const QString name = marketName(item);
     if (marketQuotes_.contains(name)) {
       return QStringLiteral("ready");
     }
@@ -246,6 +264,8 @@ QHash<int, QByteArray> PlayerItemModel::roleNames() const {
           {ComponentsRole, "components"},
           {AssetSpecRole, "assetSpec"},
           {TradableRole, "tradable"},
+          {MarketNameRole, "marketName"},
+          {SellableRole, "sellable"},
           {PlatinumRole, "platinum"},
           {BuyPlatinumRole, "buyPlatinum"},
           {PriceStateRole, "priceState"},
@@ -397,7 +417,12 @@ void PlayerItemModel::rebuildIndexes() {
   nameRows_.clear();
   for (int row = 0; row < items_.size(); ++row) {
     const QJsonObject &item = items_.at(row);
-    nameRows_.insert(item.value("name").toString(), row);
+    const QString name = item.value("name").toString();
+    nameRows_.insert(name, row);
+    const QString quoteName = marketName(item);
+    if (quoteName != name) {
+      nameRows_.insert(quoteName, row);
+    }
     const QString itemAsset = assetId(item);
     if (!itemAsset.isEmpty()) {
       assetRows_.insert(itemAsset, row);

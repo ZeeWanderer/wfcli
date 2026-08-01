@@ -388,20 +388,25 @@ void RelicModelTest::preservesFavoriteOverrides() {
 void RelicModelTest::appliesInventoryMarketQuotes() {
   PlayerItemModel model;
   QVERIFY(model.replace({
-      {"items", QJsonArray{QJsonObject{{"id", "part"},
-                                       {"name", "Saryn Prime Chassis"},
-                                       {"group", "parts"},
+      {"items", QJsonArray{QJsonObject{{"id", "relic"},
+                                       {"name", "Axi A20 Intact"},
+                                       {"market_name", "Axi A20 Relic"},
+                                       {"group", "relics"},
+                                       {"quantity", 2},
                                        {"tradable", true}}}},
   }));
   const QModelIndex item = model.index(0);
+  QCOMPARE(model.data(item, PlayerItemModel::MarketNameRole).toString(),
+           QString("Axi A20 Relic"));
+  QVERIFY(model.data(item, PlayerItemModel::SellableRole).toBool());
   QCOMPARE(model.data(item, PlayerItemModel::PriceStateRole).toString(),
            QString("loading"));
   QSignalSpy changes(&model, &QAbstractItemModel::dataChanged);
 
   model.applyMarketQuotes(
       QJsonArray{QJsonObject{
-          {"item", "Saryn Prime Chassis"},
-          {"slug", "saryn_prime_chassis"},
+          {"item", "Axi A20 Relic"},
+          {"slug", "axi_a20_relic"},
           {"quote", QJsonObject{{"lowest_sell", 17}, {"highest_buy", 14}}},
       }},
       {});
@@ -411,9 +416,18 @@ void RelicModelTest::appliesInventoryMarketQuotes() {
            QString("ready"));
   QCOMPARE(changes.count(), 1);
 
-  model.markMarketUnavailable({"Saryn Prime Chassis"});
+  model.markMarketUnavailable({"Axi A20 Relic"});
   QCOMPARE(model.data(item, PlayerItemModel::PriceStateRole).toString(),
            QString("ready"));
+
+  QVERIFY(model.replace({
+      {"items", QJsonArray{QJsonObject{{"id", "set"},
+                                       {"name", "Test Prime Set"},
+                                       {"group", "sets"},
+                                       {"quantity", 0},
+                                       {"tradable", true}}}},
+  }));
+  QVERIFY(!model.data(model.index(0), PlayerItemModel::SellableRole).toBool());
 }
 
 void RelicModelTest::sortsInventoryLocally() {
@@ -684,8 +698,9 @@ void RelicModelTest::inventoryGridRequestsVisibleQuotes() {
   PlayerItemModel model;
   QVERIFY(model.replace({
       {"items", QJsonArray{QJsonObject{{"id", "part"},
-                                       {"name", "Saryn Prime Chassis"},
-                                       {"group", "parts"},
+                                       {"name", "Axi A20 Intact"},
+                                       {"market_name", "Axi A20 Relic"},
+                                       {"group", "relics"},
                                        {"tradable", true}},
                            QJsonObject{{"id", "resource"},
                                        {"name", "Ferrite"},
@@ -701,7 +716,7 @@ void RelicModelTest::inventoryGridRequestsVisibleQuotes() {
 
   QTRY_VERIFY(!quotes.isEmpty());
   const QList<QVariant> initial = quotes.takeLast();
-  QCOMPARE(initial.at(0).toStringList(), QStringList{"Saryn Prime Chassis"});
+  QCOMPARE(initial.at(0).toStringList(), QStringList{"Axi A20 Relic"});
   QCOMPARE(initial.at(1).toBool(), false);
 
   quotes.clear();

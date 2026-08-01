@@ -335,6 +335,15 @@ public:
                              view->viewport(), status.mastered);
           return true;
         }
+        if (index.data(PlayerItemModel::TradableRole).toBool() &&
+            !index.data(PlayerItemModel::SellableRole).toBool() &&
+            layout.sell.contains(event->pos())) {
+          QToolTip::showText(event->globalPos(),
+                             isSet ? "No complete set owned"
+                                   : "No copies owned",
+                             view->viewport(), layout.sell);
+          return true;
+        }
         rects = layout.components;
       } else {
         rects = componentRects(content, static_cast<int>(components.size()),
@@ -622,7 +631,7 @@ private:
     };
     paintQuotePill(painter, layout.sell, isSet ? "SELL" : "WTS",
                    priceText(PlayerItemModel::PlatinumRole), QColor("#6f2e43"),
-                   scale);
+                   scale, !index.data(PlayerItemModel::SellableRole).toBool());
     if (!isSet) {
       paintQuotePill(painter, layout.buy, "WTB",
                      priceText(PlayerItemModel::BuyPlatinumRole),
@@ -678,11 +687,12 @@ private:
 
   static void paintQuotePill(QPainter &painter, const QRect &rect,
                              const QString &label, const QString &price,
-                             const QColor &color, qreal scale) {
+                             const QColor &color, qreal scale,
+                             bool warning = false) {
     painter.setPen(Qt::NoPen);
-    painter.setBrush(color);
+    painter.setBrush(warning ? QColor("#390d0d") : color);
     painter.drawRoundedRect(rect, rect.height() / 2, rect.height() / 2);
-    painter.setPen(QColor("#ffffff"));
+    painter.setPen(warning ? QColor("#d2d2d2") : QColor("#ffffff"));
     painter.drawText(rect.adjusted(wfgui::scaled(10, scale), 0, 0, 0),
                      Qt::AlignLeft | Qt::AlignVCenter, label);
     const int iconSize = wfgui::scaled(16, scale);
@@ -1052,7 +1062,7 @@ void PlayerItemGridWidget::requestVisibleQuotes(bool refresh) {
     const QModelIndex item = model()->index(row, 0);
     if (kind_ == Kind::Inventory &&
         item.data(PlayerItemModel::TradableRole).toBool()) {
-      items.append(item.data(PlayerItemModel::NameRole).toString());
+      items.append(item.data(PlayerItemModel::MarketNameRole).toString());
     } else if (kind_ == Kind::Mastery &&
                !item.data(PlayerItemModel::OwnedRole).toBool()) {
       for (const QVariant &value :
