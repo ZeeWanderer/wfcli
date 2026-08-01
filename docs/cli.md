@@ -1,12 +1,46 @@
 # Command-Line Client
 
-`wfcli` is the terminal and stdio MCP interface to `wfdaemon`. It parses
-arguments and formats daemon replies; network access, persistence, queries, and
-planning stay in the daemon.
+`wfcli` parses commands, submits typed requests to `wfdaemon`, and formats replies. Fetching,
+persistence, query execution, and planning remain daemon-owned.
+
+## Commands
+
+Focused commands provide common Warframe views without query syntax:
+
+```bash
+wfcli fissures
+wfcli alerts --watch
+wfcli sorties
+wfcli baro inventory
+wfcli teshin
+wfcli archimedea
+```
+
+Catalog and account commands search one domain with domain-specific output:
+
+```bash
+wfcli mods toxin
+wfcli items braton
+wfcli codex 'critical chance'
+wfcli enemies corrupted
+wfcli drops serration
+wfcli market 'saryn prime set'
+wfcli player
+```
+
+Advanced operations have dedicated guides:
+
+- [`query` and `watch`](query.md): cross-dataset expressions and subscriptions
+- [`forma-plan` and `visualize`](forma-plan.md): polarity planning
+- [`daemon`](daemon.md): service lifecycle and updates
+- [`companion`](companion.md): game observer and overlay control
+- [`mcp`](mcp.md): structured stdio integration
+
+Run `wfcli help commands` for every focused worldstate command.
 
 ## Help
 
-These forms are equivalent and contextual:
+Help is contextual; these forms are equivalent:
 
 ```bash
 wfcli help daemon autostart
@@ -15,12 +49,8 @@ wfcli daemon autostart --help
 wfcli daemon autostart -h
 ```
 
-Use `wfcli help commands` for the command list. Focused data commands provide
-common views; `query`, `forma-plan`, daemon control, and companion diagnostics
-have linked guides below.
-
-Commands narrow an operation. Options modify an operation and may be composed.
-Where both forms improve shell use, the CLI accepts both:
+Commands narrow an operation. Options modify it. Where both forms improve shell use, both are
+accepted:
 
 ```bash
 wfcli baro inventory
@@ -31,7 +61,7 @@ wfcli archimedea --deep
 
 ## Bash Completion
 
-Install completion in `~/.bashrc`:
+Install generated completion in `~/.bashrc`:
 
 ```bash
 wfcli completion install
@@ -39,35 +69,43 @@ wfcli completion status
 wfcli completion uninstall
 ```
 
-Use `--file PATH` with these commands for another Bash startup file. For the
-current shell only:
+Use `--file PATH` for another Bash startup file. For one shell:
 
 ```bash
 source <(wfcli completion bash)
 ```
 
-The generated function completes from in-memory command data and registers both
-`wfcli` and `wfclid`.
+Completion data is embedded in the generated shell function, so Tab completion does not start an
+Erlang VM.
 
-## Per-User Paths
+## Application Paths
 
 ```bash
 wfcli paths
 wfcli paths wfdaemon
-wfcli daemon paths
 wfcli companion paths
-wfdaemon paths
-wfcompanion paths
 ```
 
-The report lists each application's XDG directories without creating them. An
-exact directory symlink is shown as `PATH -> TARGET`.
+The report lists each application's XDG directories without creating them. Directory symlinks are
+shown as `PATH -> TARGET`.
 
-## Guides
+## Fissure Notifications
 
-- [Query language and watches](query.md)
+```bash
+wfcli notifications status
+wfcli notifications off
+wfcli notifications on
+wfcli notifications persistent
+```
+
+`on` watches while at least one `wfgui` connection is open. `persistent` watches whenever
+`wfdaemon` is running. The setting is shared with the desktop GUI and persists across restarts.
+
+## Related Guides
+
 - [Data sources and updates](data-sources.md)
-- [Daemon lifecycle](daemon.md)
+- [Query language and watches](query.md)
+- [Daemon control](daemon.md)
 - [Linux/Proton companion](companion.md)
-- [Forma planning](forma-plan.md)
+- [Forma planner](forma-plan.md)
 - [MCP server](mcp.md)

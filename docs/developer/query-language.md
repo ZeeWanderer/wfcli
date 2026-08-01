@@ -1,45 +1,8 @@
 # Query Language
 
-One query language covers worldstate, mods, items, Codex, enemies, and drops. Syntax is parsed
-by `wfcli_query_parse`; `wfcli_entity_query` compiles fields through datasource schemas and owns
-matching, sorting, and paging.
-
-## Grammar
-
-```text
-expression := or-expression
-or         := and-expression (OR and-expression)*
-and        := unary ((AND)? unary)*
-unary      := NOT unary | primary
-primary    := clause | "(" expression ")"
-clause     := term | key operator value ("|" value)*
-operator   := = | != | ~ | >= | <= | > | < | :
-```
-
-- Whitespace between expressions means AND.
-- Precedence is `NOT`, `AND`, `OR`; parentheses override it.
-- Boolean keywords are uppercase. Lowercase `and`, `or`, and `not` remain search terms.
-- Double quotes preserve one substring phrase and make syntax characters literal.
-- Backslash escapes the next character.
-- `|` means alternatives only inside one field filter. Expression OR is the `OR` keyword.
-- `sort=` and unified-query `dataset=` are positive top-level controls, not predicates.
-
-Examples:
-
-```text
-braton prime                         # braton AND prime
-braton OR burston
-(braton OR burston) masteryReq>=8
-NOT rarity=common
-name="Critical Delay"
-file=ExportWeapons_en.json|ExportWarframes_en.json
-```
-
-At a shell, preserve query-language quotes with an outer quote style, for example:
-
-```bash
-wfcli codex '"critical chance" OR category=Warframes'
-```
+One query language covers worldstate, exports, WFCD knowledge, player data, and Market metadata.
+The user-facing grammar and examples live in [Query language and watches](../query.md#expressions).
+This document covers implementation boundaries.
 
 ## Architecture
 
@@ -58,6 +21,9 @@ Field schemas use fixed atom mappings. Never create atoms from query input. Spec
 such as mod polarity aliases, stay in the owning entity schema rather than the generic engine.
 Worldstate projected columns are query fields through the shared schema registry; raw record
 fields remain available as `data.<path>`.
+
+`sort=` and `dataset=` are positive top-level controls, not predicates. They must not compile under
+`OR` or `NOT`. Dataset adapters validate fields and operators before evaluating any row.
 
 ## Design Sources
 

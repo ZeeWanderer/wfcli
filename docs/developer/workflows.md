@@ -2,7 +2,7 @@
 
 ## Build
 
-See [README build instructions](../../README.md#build-from-source) for staged
+See [README build instructions](../../README.md#build) for staged
 tree layout and dependencies. Contributor targets:
 
 ```bash
@@ -69,19 +69,13 @@ Preview variables and reference setup are documented in the
 
 ## Erlang Tools
 
-OTP 29 is the source and runtime baseline. ELP discovers the umbrella from root `rebar.config`.
-ELP 0.50.0 can crash its Erlang lint service on OTP 29 functions carrying
-`{unsafe,possibly}` metadata, including `socket:open/3` and `binary_to_term/2`; this is an ELP bug,
-not a parser error in the affected module. EqWAlizer is not a project gate.
-
-`rebar.config` scans application `src/` trees recursively. Run xref after
-application-boundary changes:
+OTP 29 is the source and runtime baseline. ELP discovers the umbrella from root `rebar.config`,
+which also scans application `src/` trees recursively. Run xref after application-boundary
+changes:
 
 ```bash
 rebar3 xref
 ```
-
-Native records and `compr_assign` remain experimental in OTP 29 and are not enabled.
 
 ## Packaging
 

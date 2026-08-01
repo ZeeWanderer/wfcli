@@ -1,7 +1,7 @@
 # Daemon Control
 
-`wfdaemon` owns shared fetching, parsing, persistence, query execution, planning, and watch state.
-Normal commands start it automatically, so manual control is optional.
+`wfdaemon` owns shared fetching, persistence, queries, watches, Market access, player state, and
+Forma planning. Normal client commands start it automatically.
 
 ## Lifecycle
 
@@ -11,17 +11,15 @@ wfcli daemon ensure
 wfcli daemon start
 wfcli daemon start --idle-shutdown
 wfcli daemon start --idle-timeout 1800
-wfcli daemon stop
 wfcli daemon restart
-wfcli daemon paths
+wfcli daemon stop
 ```
 
-An implicitly started daemon shuts down after ten idle minutes. Explicit `start` and `restart`
-keep it running until `stop` by default. `--idle-shutdown` enables the configured timeout;
-`--idle-timeout SECONDS` sets a custom timeout.
+Implicit startup stops the daemon after ten idle minutes. Explicit `start` and `restart` keep it
+running until `stop` unless an idle option is supplied. Starting an already-running daemon applies
+the requested idle policy. `ensure` starts an absent daemon without changing a running daemon.
 
-`start` also reapplies the requested idle policy to an already-running daemon. `ensure` starts an
-absent daemon without pinning it or changing a running daemon's policy.
+Queued work, subscriptions, and active companion connections prevent idle shutdown.
 
 ## Login Autostart
 
@@ -31,58 +29,47 @@ wfcli daemon autostart enable
 wfcli daemon autostart disable
 ```
 
-`enable` installs and starts a systemd user service. The service runs the foreground OTP release,
-uses persistent idle policy, and restarts abnormal VM exits. `disable` removes future login
-startup but leaves a running daemon alone.
+`enable` installs and starts a systemd user service. `disable` prevents login startup without
+stopping the running daemon.
 
 Development and production use separate units:
 
 - `wfdaemon-dev.service` for `wfclid`
 - `wfdaemon.service` for `wfcli`
 
-This prevents an installed unit from starting the wrong artifact. Starting one flavor stops an
-incompatible daemon before starting the requested flavor. Unit content is refreshed when the
-staged path or environment changes.
+The client refreshes stale unit content and prevents one environment from starting the other's
+release.
 
 ## Updates
 
-Every request handshake checks protocol version, artifact flavor, and a build fingerprint covering
-`wfcore` and `wfdaemon`. A stale compatible daemon is hot-loaded automatically. If hot loading
-cannot establish compatibility, the client restarts the requested release.
+Each connection checks protocol, build flavor, and a fingerprint of `wfcore` and `wfdaemon`.
+Compatible stale modules are hot-loaded automatically; incompatible releases are restarted.
 
-A running daemon also watches its staged `BUILD_ID`. Rebuilding `dev/`, replacing `prod/`, or
-switching a Homebrew `opt` symlink loads changed BEAMs without waiting for another CLI request.
-The explicit command remains available:
+A running daemon also watches the staged `BUILD_ID`, so replacing a repository or packaged build
+does not require a client request. Manual update remains available:
 
 ```bash
 wfcli daemon update
-```
-
-Stateful workers are suspended around code loading and receive `code_change/3`. Standard OTP
-versioned release packages can be applied separately:
-
-```bash
 wfcli daemon update --release RELEASE
 ```
 
-Same-version repository and package updates use the build-fingerprint path; versioned release
-upgrades use OTP `release_handler` artifacts.
-
-Crash dumps are written to `$XDG_STATE_HOME/wfcli/erl_crash.dump` (normally
-`~/.local/state/wfcli/erl_crash.dump`). Runtime logs and caches remain outside staged releases.
+The first form loads changed BEAMs from the active staged build. The second applies a versioned OTP
+release upgrade package.
 
 ## Shared Work
 
-One-off requests register, receive one response, and unregister. Watches remain subscribed. A
-watch cycle fetches and parses worldstate once, then evaluates every due subscription against that
-snapshot. Idle shutdown requires no queued requests, subscriptions, or active companion
-observation.
+One-off requests are monitored until one reply is delivered. Watches remain subscribed. If a
+client exits, its queued or active operation is cancelled without polling.
 
-Market requests use a separate serialized queue. Matching concurrent requests share cached work.
-When a client process disappears, process monitors cancel its queued or active operation.
+Worldstate watches share one fetch and parse cycle. Market requests use a separate rate-limited
+queue and coalesce matching work. Managed knowledge refreshes through its own serialized source
+queue; see [Data sources and updates](data-sources.md).
 
-Managed knowledge is checked hourly and refreshed when older than 24 hours.
-Background and explicit refreshes share one source queue. See
-[Data sources and updates](data-sources.md).
+Fissure notification policy is persisted by the daemon. Session mode runs while a GUI is
+connected; persistent mode runs for the daemon lifetime. A new watch records its first snapshot,
+then notifies about matching fissures added later.
 
-Implementation details live in [developer daemon notes](developer/daemon.md).
+Crash dumps are written to `$XDG_STATE_HOME/wfcli/erl_crash.dump`, normally
+`~/.local/state/wfcli/erl_crash.dump`. Use `wfcli daemon paths` for all daemon directories.
+
+Implementation details are in [Daemon architecture](developer/daemon.md).

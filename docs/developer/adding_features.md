@@ -1,6 +1,6 @@
 # Adding Features
 
-This is a checklist to avoid reinventing existing helpers.
+Use this checklist after choosing the owning application in [`structure.md`](structure.md).
 
 ## Worldstate-derived features
 
@@ -26,12 +26,15 @@ This is a checklist to avoid reinventing existing helpers.
 
 - Favor `languages.json` for display strings when the key exists.
 - Export data is loaded from the managed XDG cache with `apps/wfdaemon/priv` as bundled fallback.
-- Add new exports to the `?EXPORT_FILES` list in `wfcli_worldstate.erl` if needed.
+- Add managed exports to `?EXPORT_FILES` in
+  `apps/wfdaemon/src/catalog/wfcli_metadata_update.erl` and place them in only the resolver or
+  Codex scope that needs them.
 - For exports-backed commands, build entries via `wfcli_entity_exports.erl` so table rendering/search stays consistent.
 - Add managed-source requirements in `wfcli_source_manager`; never write into explicit custom
   source directories.
 
 ## Tests
 
-- Add tests in `apps/wfcli/test/wfcli_worldstate_SUITE.erl`.
-- Update `apps/wfcli/test/fixtures/worldstate_sample.json` when you need new fixture data.
+- Add focused EUnit or Common Test coverage under the owning application's test directory.
+- Update `apps/wfcli/test/fixtures/worldstate_sample.json` only when the feature needs source data
+  absent from the fixture.

@@ -15,6 +15,10 @@ Do not add fetching, persistence, processes, CLI parsing, or rendering to `wfcor
 inside one application do not justify moving code here; a stable contract needed by both
 applications does.
 
+Keep behavior inside its owning application. Prefer a focused module when behavior has one owner
+and independent tests; do not split files only to reduce line count. Avoid compatibility wrappers
+after a move unless an external contract requires one.
+
 CLI-only examples: `wfcli_tty`, `wfcli_table`, `wfcli_cli_args`.
 
 Daemon-only examples: `wfcli_data_cache`, `wfcli_query_parse`, `wfcli_entity_*`.

@@ -1,9 +1,19 @@
 # Data Sources and Updates
 
-`wfcli update` refreshes managed metadata used for name resolution and catalog
-queries.
+## Sources
 
-## Updates
+| Data | Source | Managed by |
+| --- | --- | --- |
+| Missions, cycles, alerts, fissures, and other live state | Official Warframe worldstate | Worldstate cache and watch service |
+| Mods, items, recipes, names, and Codex records | Official PublicExport files | Managed export catalog |
+| Enemies, drops, relic rewards, components, and image identities | WFCD `warframe-items` | Managed WFCD catalog |
+| Public listings and top orders | Warframe Market | Market cache and request queue |
+| Inventory, mastery, and local game state | `wfcompanion` observation | Owner-only player store |
+
+Parsers attach typed fields and resolved names without replacing source records. Unified queries
+can use normalized fields or `data.<path>` values; see [Query language and watches](query.md).
+
+## Manual Updates
 
 ```bash
 wfcli update
@@ -11,49 +21,42 @@ wfcli update --default
 wfcli update --all
 ```
 
-No flags and `--default` refresh the standard managed set: Sol nodes,
-languages, PublicExport files, and WFCD enemy/drop data. `--all` selects every
-managed source.
+No flags and `--default` refresh Sol nodes, languages, PublicExport files, and WFCD data. `--all`
+selects every managed source.
 
-Targeted options:
+Targeted metadata options:
 
 - `--nodes`, `--languages`, `--manifest`, `--exports`
 - `--recipes`, `--upgrades`, `--weapons`, `--warframes`, `--resources`
 - `--wfcd`
-- `--worldstate`, `--trader`
 
-Run `wfcli update --help` for cache-path options and the complete list.
+Live-cache options are `--worldstate` and `--trader`. Run `wfcli update --help` for path
+overrides and the complete option list.
 
 ## Automatic Refresh
 
-While running, `wfdaemon` checks managed metadata hourly and refreshes sources
-older than 24 hours. Refreshes use the source manager's serialized queue.
-Completed files are published by atomic rename. In-flight requests keep their
-loaded data; later loads observe complete replacement files.
+`wfdaemon` checks managed metadata hourly and refreshes sources older than 24 hours. Missing or
+invalid managed files are fetched when first needed. Refreshes share a serialized source queue and
+publish completed files by atomic rename, so active readers retain a complete old version until a
+new version is ready.
 
-Missing or invalid managed catalog files are also fetched on demand. Explicit
-`--knowledge-dir` and `--exports-dir` paths are strict: the daemon reports bad
-files and never writes into those directories.
+Worldstate, Market manifests and quotes, relic tables, and image assets use request-specific cache
+policies. Failed refreshes retain the last valid cached value where available.
 
-Warframe Market manifests, relic tables, quotes, and image assets have separate
-stale-on-use policies because they are request-driven.
+Explicit `--knowledge-dir` and `--exports-dir` paths are caller-owned: the daemon validates them but
+does not modify them.
 
 ## Storage
 
-Managed data lives under the directories reported by:
+Run `wfcli paths` to inspect config, cache, state, and runtime directories. Defaults follow XDG
+variables and normally resolve beneath:
 
-```bash
-wfcli paths
+```text
+~/.config/wfcli
+~/.cache/wfcli
+~/.local/state/wfcli
+$XDG_RUNTIME_DIR/wfcli
 ```
 
-Defaults follow XDG variables, normally `~/.cache/wfcli`,
-`~/.local/state/wfcli`, `~/.config/wfcli`, and
-`$XDG_RUNTIME_DIR/wfcli`. `--raw` bypasses name translation and keeps source
-identifiers and UTC timestamps.
-
-WFCD data is external community data. The managed wrapper records source URL,
-fetch time, and content SHA-256. Custom source paths remain caller-owned.
-
-`WFCDItems.json` is a compact managed projection of WFCD `All.json`. Inventory and Mastery views
-use it for names, components, mastery metadata, relic drops, and image identities. It follows the
-same periodic refresh policy as other managed WFCD data.
+Managed WFCD files record source URL, fetch time, and content SHA-256. Downloaded assets are
+content-addressed so identical images share one cached object.

@@ -12,7 +12,6 @@ audit.
 - [`daemon.md`](developer/daemon.md): lifecycle, supervision, queues, compatibility, and updates
 - [`entities.md`](developer/entities.md): normalized entities and the daemon/CLI rendering boundary
 - [`shared_utilities.md`](developer/shared_utilities.md): stable cross-application contracts
-- [`centralization.md`](developer/centralization.md): criteria for moving or splitting code
 - [`cli.md`](developer/cli.md): command dispatch, parsing, and terminal output
 - [`companion.md`](developer/companion.md): native observer, local protocol, player data, and overlay
 - [`player-data.md`](developer/player-data.md): account payload, collector, and indexing boundary

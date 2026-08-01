@@ -1,63 +1,46 @@
 # Linux/Proton Companion
 
-`wfcompanion` observes local Warframe state, publishes player data to
-`wfdaemon`, and renders Wayland overlays.
-
-Current overlays:
-
-- relic rewards with Market prices, ducats, vault and ownership state, set
-  components, and set value;
-- relic recommendations ranked from owned relics, reward tables, and Market
-  prices.
+`wfcompanion` observes local Warframe state, publishes player data to `wfdaemon`, and renders
+Wayland overlays for relic rewards and relic selection.
 
 ## Requirements
 
-Runtime:
-
-- KDE Plasma on Wayland
-- KWin screenshot support and KScreen
+- KDE Plasma on Wayland with KWin screenshot support and KScreen
 - Tesseract 5 with English language data
-- a built `wfcli` and `wfdaemon`
+- built `wfcli`, `wfdaemon`, and `wfcompanion` executables
 
-Build:
-
-```bash
-git submodule update --init
-make companion
-```
-
-Binaries are staged at `dev/bin/wfcompanion` and
-`prod/bin/wfcompanion`. `wfcompaniond` points to the development build and
-enables its diagnostic HUD.
+Source-build requirements are listed in the [repository README](../README.md#build).
 
 ## Steam Launch Mode
 
-Launch mode is preferred. It starts companion with Warframe, stops it when the
-game exits, and gives the read-only player collector the process relationship
-required by Linux ptrace policy.
-
-Set Warframe's Steam launch options:
+Launch mode starts and stops the companion with Warframe and provides the process relationship
+required by Linux read-only process access. Set **Warframe > Properties > General > Launch
+Options** in Steam to:
 
 ```bash
 /absolute/path/to/wfcli/prod/bin/wfcompanion launch -- %command%
 ```
 
-Use `dev/bin/wfcompanion` when testing a development build. Keep existing
-wrappers after `--`:
+Keep existing wrappers after `--`:
 
 ```bash
 /absolute/path/to/wfcli/prod/bin/wfcompanion launch -- gamemoderun %command%
 ```
 
-Check it from another terminal:
+The CLI can edit the launch option after Steam is closed:
 
 ```bash
-wfcli companion status
+wfcli companion install --dry-run
+wfcli companion install
+wfcli companion uninstall
 ```
+
+Use `dev/bin/wfcompanion` to test a development build. `wfcompaniond` enables the compact
+diagnostic HUD; production starts with the HUD hidden.
 
 ## Standalone Mode
 
-Standalone mode runs companion as a detached user service:
+Run the companion as a detached user process:
 
 ```bash
 wfcli companion start
@@ -66,7 +49,7 @@ wfcli companion restart
 wfcli companion stop
 ```
 
-Visibility:
+Overlay controls:
 
 ```bash
 wfcli companion show
@@ -75,59 +58,48 @@ wfcli companion hud show
 wfcli companion hud hide
 ```
 
-`show` and `hide` control the full overlay. `hud` controls only the diagnostic
-panel. Overlay pixels appear only over the recognized Warframe window.
+`show` and `hide` control all overlays. `hud` controls only the diagnostic panel. Overlay pixels
+are gated to the recognized Warframe window.
 
 ## Interaction
 
-Press `Ctrl+Tab` while a relic overlay is visible to toggle interaction mode.
-KDE may request global-shortcut permission on first use.
+Press `Ctrl+Tab` while a relic overlay is visible to toggle interaction mode. KDE may request
+global-shortcut permission on first use.
 
-Interaction mode captures pointer input over the overlay. Another
-`Ctrl+Tab`, an outside click, scene closure, or Warframe focus loss returns
-input to the game. Passive overlays remain click-through.
+Interaction mode captures pointer input over the overlay. Press `Ctrl+Tab` again, click outside,
+close the scene, or leave Warframe focus to return input to the game. Passive overlays remain
+click-through.
 
-## Data Flow
+## Relic Data
 
-Companion receives Warframe `OutputDebugString` messages through a small Wine
-DBWIN helper.
+Warframe debug output triggers capture of the relevant game region. Reward recognition uses local
+Tesseract OCR; relic selection uses era recognition. The daemon resolves items, player state,
+assets, reward tables, and batched Market prices.
 
-Relic rewards trigger one window capture. Companion detects the one-to-four
-card layout and runs local Tesseract OCR over reward names. The daemon resolves
-items, player metadata, assets, and one batched set of Market quotes.
-
-Relic selection captures only the era selector. The daemon ranks relics from
-cached player inventory, WFCD reward tables, and Market quotes.
-
-KWin captures the Warframe window directly, including while it is unfocused or
-minimized. Other windows are not included.
+Reward cards show platinum, ducats, vault and ownership state, set components, and set value.
+Selection cards rank owned relics using reward tables and current Market data.
 
 ## Diagnostics
 
 ```bash
+wfcli companion status
 wfcli companion probe
-wfcli companion paths
 wfcli companion logs
+wfcli companion paths
 wfcli companion screenshot ./capture.png
 wfcli companion relic-ocr ./capture.png
 wfcli companion relic-ocr
 ```
 
-Run the full saved-image reward pipeline:
+The screenshot command captures Warframe rather than the active desktop window. Run the full
+saved-image reward pipeline with:
 
 ```bash
 dev/bin/wfcompanion --relic-screenshot ./capture.png
 ```
 
-Incident log:
-
-```text
-$XDG_STATE_HOME/wfcli/wfcompanion.log
-```
-
-Default fallback is `~/.local/state/wfcli/wfcompanion.log`. Automatic captures
-use `$XDG_CACHE_HOME/wfcli/captures` or `~/.cache/wfcli/captures` and are
-removed after decoding.
+Incident logs use `$XDG_STATE_HOME/wfcli/wfcompanion.log`, normally
+`~/.local/state/wfcli/wfcompanion.log`.
 
 ## Previews
 
@@ -138,18 +110,16 @@ wfcli companion preview video relic-suggestions
 make previews
 ```
 
-`make previews` renders registered scenes at 1920x1080 and 2560x1440. Matching
-fixture screenshots are used as backgrounds; other outputs remain transparent.
-Select media, scene sets, scenes, or resolutions with Make variables:
+`make previews` renders registered scenes at 1920x1080 and 2560x1440. Matching fixtures provide
+backgrounds; other outputs are transparent. Filter output with Make variables:
 
 ```bash
 make previews PREVIEW_MEDIA=image
-make previews PREVIEW_MEDIA='image video' PREVIEW_SETS='companion reference'
 make previews PREVIEW_SCENES='relic-rewards relic-suggestions'
 make previews PREVIEW_RESOLUTIONS=2560x1440
 ```
 
-Animated previews require FFmpeg. Reference previews require
+Animated previews require FFmpeg. AlecaFrame reference previews require
 [`make aleca-layout-setup`](../tools/aleca-layout/README.md).
 
 ## Player Dataset
@@ -157,16 +127,9 @@ Animated previews require FFmpeg. Reference previews require
 ```bash
 wfcli player
 wfcli player source=game
-wfcli query 'dataset=player data.phase=game'
 wfcli query 'dataset=player source=inventory'
 ```
 
-Sources:
-
-- `game`: process, Proton paths, and stopped/launcher/game phase;
-- `collector`: DBWIN and fallback-log counters;
-- `inventory`: account payload plus typed inventory and mastery indexes.
-
-Player data stays in the daemon's owner-only local cache. See
-[Companion architecture](developer/companion.md) for implementation and
-protocol details.
+The dataset contains game process state, collector health, and the latest account inventory and
+mastery observation. It is stored in the daemon's owner-only local cache. Implementation and
+protocol details are in [Companion architecture](developer/companion.md).
