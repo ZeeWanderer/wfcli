@@ -6,6 +6,7 @@
 class AppController;
 class QLabel;
 class QGridLayout;
+class QPropertyAnimation;
 class QVBoxLayout;
 
 class ActivityRailWidget final : public QWidget {
@@ -19,6 +20,7 @@ private:
   void rebuild();
   void rebuildCycles(const QJsonObject &data);
   void rebuildFissures(const QJsonObject &data);
+  void setStatus(const QString &error);
   void updateCountdowns();
 
   AppController *controller_;
@@ -27,5 +29,6 @@ private:
   QLabel *resurgence_;
   QLabel *baro_;
   QLabel *status_;
+  QPropertyAnimation *statusAnimation_;
   QString mode_ = "all";
 };

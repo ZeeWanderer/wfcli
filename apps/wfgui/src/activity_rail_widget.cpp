@@ -13,6 +13,7 @@
 #include <QPaintEvent>
 #include <QPainter>
 #include <QPixmap>
+#include <QPropertyAnimation>
 #include <QPushButton>
 #include <QScrollArea>
 #include <QSizePolicy>
@@ -336,8 +337,8 @@ ActivityRailWidget::ActivityRailWidget(AppController *controller,
   auto *body = new QWidget;
   body->setObjectName("activityBody");
   auto *bodyLayout = new QVBoxLayout(body);
-  bodyLayout->setContentsMargins(4, 8, 4, 0);
-  bodyLayout->setSpacing(7);
+  bodyLayout->setContentsMargins(4, 8, 4, 4);
+  bodyLayout->setSpacing(0);
 
   auto *events = new QHBoxLayout;
   events->setContentsMargins(3, 0, 3, 0);
@@ -351,6 +352,7 @@ ActivityRailWidget::ActivityRailWidget(AppController *controller,
   events->addWidget(eventPill(QString(), baro_, "baroPill", QColor("#20283e")));
   events->addStretch();
   bodyLayout->addLayout(events);
+  bodyLayout->addSpacing(7);
 
   cycles_->setContentsMargins(0, 0, 0, 0);
   cycles_->setHorizontalSpacing(6);
@@ -358,6 +360,7 @@ ActivityRailWidget::ActivityRailWidget(AppController *controller,
   cycles_->setColumnStretch(0, 1);
   cycles_->setColumnStretch(1, 1);
   bodyLayout->addLayout(cycles_);
+  bodyLayout->addSpacing(7);
 
   auto *fissureSection = new QWidget;
   fissureSection->setObjectName("fissureSection");
@@ -430,8 +433,20 @@ ActivityRailWidget::ActivityRailWidget(AppController *controller,
   bodyLayout->addWidget(fissureSection, 1);
 
   status_->setObjectName("secondaryText");
+  status_->setContentsMargins(0, 7, 0, 0);
+  status_->setMaximumHeight(0);
+  status_->setWordWrap(true);
   bodyLayout->addWidget(status_);
   layout->addWidget(body, 1);
+
+  statusAnimation_ = new QPropertyAnimation(status_, "maximumHeight", this);
+  statusAnimation_->setDuration(160);
+  statusAnimation_->setEasingCurve(QEasingCurve::InOutCubic);
+  connect(statusAnimation_, &QPropertyAnimation::finished, this, [this] {
+    if (status_->maximumHeight() == 0) {
+      status_->clear();
+    }
+  });
 
   connect(modes, &QButtonGroup::idClicked, this, [this, modes](int buttonId) {
     mode_ = modes->button(buttonId)->property("mode").toString();
@@ -470,8 +485,27 @@ void ActivityRailWidget::rebuild() {
   const QJsonObject resurgence = data.value("resurgence").toObject();
   setEvent(resurgence_, "resurgence", "Prime Resurgence",
            resurgence.value("featured").toString(), resurgence);
-  status_->setText(data.value("error").toString());
+  setStatus(data.value("error").toString());
   updateCountdowns();
+}
+
+void ActivityRailWidget::setStatus(const QString &error) {
+  statusAnimation_->stop();
+  const int currentHeight = status_->maximumHeight();
+  int targetHeight = 0;
+  if (!error.isEmpty()) {
+    status_->setText(error);
+    targetHeight = status_->sizeHint().height();
+  }
+  if (currentHeight == targetHeight) {
+    if (targetHeight == 0) {
+      status_->clear();
+    }
+    return;
+  }
+  statusAnimation_->setStartValue(currentHeight);
+  statusAnimation_->setEndValue(targetHeight);
+  statusAnimation_->start();
 }
 
 void ActivityRailWidget::rebuildCycles(const QJsonObject &data) {

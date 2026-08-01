@@ -571,12 +571,18 @@ QLabel#cycleIcon {
 
 QWidget#fissureSection {
   background: #101623;
-  border-radius: 8px 8px 12px 12px;
+  border-top-left-radius: 8px;
+  border-top-right-radius: 8px;
+  border-bottom-left-radius: 12px;
+  border-bottom-right-radius: 12px;
 }
 
 QWidget#fissureHeader {
   background: #20283e;
-  border-radius: 8px 8px 0 0;
+  border-top-left-radius: 8px;
+  border-top-right-radius: 8px;
+  border-bottom-left-radius: 0;
+  border-bottom-right-radius: 0;
   min-height: 26px;
 }
 
@@ -614,7 +620,10 @@ QWidget#relicCardCanvas {
 QWidget#fissureList {
   background: #101623;
   border: none;
-  border-radius: 0 0 12px 12px;
+  border-top-left-radius: 0;
+  border-top-right-radius: 0;
+  border-bottom-left-radius: 12px;
+  border-bottom-right-radius: 12px;
 }
 
 QListView#playerItemGrid,
