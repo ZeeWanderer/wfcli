@@ -23,6 +23,7 @@ private slots:
   void priceUpdatesPreserveRows();
   void filtersByName();
   void filtersRelicsByOwnershipLocally();
+  void filtersRelicsByEraLocally();
   void filtersPlayerItemsLocally();
   void appliesInventoryMarketQuotes();
   void invalidatesCachedComponentAssets();
@@ -75,6 +76,7 @@ QJsonObject recommendations() {
        QJsonArray{
            QJsonObject{
                {"name", "Axi A1 Intact"},
+               {"era", "axi"},
                {"id", "relic-group:Axi A1 Relic"},
                {"amount_owned", 2},
                {"vaulted", false},
@@ -103,7 +105,8 @@ QJsonObject recommendations() {
                     {"owned", 1},
                     {"chance", 2.0},
                     {"asset", QJsonObject{{"id", "market:saryn_chassis"}}}}}}},
-           QJsonObject{{"name", "Axi B1 Intact"},
+           QJsonObject{{"name", "Lith B1 Intact"},
+                       {"era", "lith"},
                        {"amount_owned", 1},
                        {"vaulted", true},
                        {"favorite", false},
@@ -180,7 +183,7 @@ void RelicModelTest::filtersByName() {
   filter.setFilterText("b1");
   QCOMPARE(filter.rowCount(), 1);
   QCOMPARE(filter.data(filter.index(0, 0), RelicModel::NameRole).toString(),
-           QString("Axi B1 Intact"));
+           QString("Lith B1 Intact"));
 }
 
 void RelicModelTest::filtersRelicsByOwnershipLocally() {
@@ -208,6 +211,20 @@ void RelicModelTest::filtersRelicsByOwnershipLocally() {
                .toList()
                .size(),
            2);
+}
+
+void RelicModelTest::filtersRelicsByEraLocally() {
+  RelicModel model;
+  QVERIFY(model.replace(recommendations()));
+  RelicFilterModel filter;
+  filter.setSourceModel(&model);
+
+  filter.setEra("lith");
+  QCOMPARE(filter.rowCount(), 1);
+  QCOMPARE(filter.data(filter.index(0, 0), RelicModel::NameRole).toString(),
+           QString("Lith B1 Intact"));
+  filter.setEra("all");
+  QCOMPARE(filter.rowCount(), 2);
 }
 
 void RelicModelTest::filtersPlayerItemsLocally() {
@@ -255,10 +272,12 @@ void RelicModelTest::appliesInventoryMarketQuotes() {
   model.applyMarketQuotes(QJsonArray{QJsonObject{
                               {"item", "Saryn Prime Chassis"},
                               {"slug", "saryn_prime_chassis"},
-                              {"quote", QJsonObject{{"lowest_sell", 17}}},
+                              {"quote", QJsonObject{{"lowest_sell", 17},
+                                                     {"highest_buy", 14}}},
                           }},
                           {});
   QCOMPARE(model.data(item, PlayerItemModel::PlatinumRole).toInt(), 17);
+  QCOMPARE(model.data(item, PlayerItemModel::BuyPlatinumRole).toInt(), 14);
   QCOMPARE(model.data(item, PlayerItemModel::PriceStateRole).toString(),
            QString("ready"));
   QCOMPARE(changes.count(), 1);
@@ -349,7 +368,8 @@ void RelicModelTest::gridLayoutUsesStableBreakpoints() {
   QCOMPARE(wfgui::relicGridColumns(399), 1);
   QCOMPARE(wfgui::relicGridColumns(1000), 2);
   QCOMPARE(wfgui::relicGridColumns(1900), 4);
-  QCOMPARE(wfgui::relicGridColumns(2280), 5);
+  QCOMPARE(wfgui::relicGridColumns(2280), 4);
+  QCOMPARE(wfgui::relicGridColumns(2700), 5);
   QCOMPARE(wfgui::relicGridColumns(2280, 1.125), 4);
 }
 
@@ -392,7 +412,7 @@ void RelicModelTest::masteryGridUsesCompactCards() {
   grid.show();
   QCoreApplication::processEvents();
 
-  QCOMPARE(grid.gridSize().height(), 112);
+  QCOMPARE(grid.gridSize().height(), 99);
 }
 
 void RelicModelTest::inventoryGridRequestsVisibleQuotes() {

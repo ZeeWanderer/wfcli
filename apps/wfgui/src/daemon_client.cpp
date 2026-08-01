@@ -66,6 +66,7 @@ DaemonClient::DaemonClient(QObject *parent)
     for (const QString &view : std::as_const(activePlayerViews_)) {
       pendingPlayerViews_.insert(view);
     }
+    pendingActivity_ = pendingActivity_ || activeActivityRequest_ != 0;
     for (const MarketQuoteRequest &request :
          std::as_const(activeMarketQuoteRequests_)) {
       for (const QString &item : request.items) {
@@ -84,6 +85,7 @@ DaemonClient::DaemonClient(QObject *parent)
     }
     activeRelicRequests_.clear();
     activePlayerViews_.clear();
+    activeActivityRequest_ = 0;
     activeAssetRequests_.clear();
     activeMarketQuoteRequests_.clear();
     ready_ = false;
@@ -139,6 +141,13 @@ void DaemonClient::requestPlayerView(const QString &view) {
     pendingPlayerViews_.insert(view);
   }
   sendPendingPlayerViews();
+}
+
+void DaemonClient::requestActivity() {
+  if (activeActivityRequest_ == 0) {
+    pendingActivity_ = true;
+  }
+  sendPendingActivity();
 }
 
 void DaemonClient::requestAssets(const QJsonArray &assets) {
@@ -249,7 +258,8 @@ void DaemonClient::handleLine(const QByteArray &line) {
     }
     const QJsonArray capabilities = message.value("capabilities").toArray();
     const QStringList requiredCapabilities = {
-        "relic.planner", "player.inventory", "player.mastery", "market.quote"};
+        "relic.planner", "worldstate.activity", "player.foundry",
+        "player.inventory", "player.mastery", "market.quote"};
     const bool capable = std::ranges::all_of(
         requiredCapabilities, [&capabilities](const QString &capability) {
           return capabilities.contains(QJsonValue(capability));
@@ -267,6 +277,7 @@ void DaemonClient::handleLine(const QByteArray &line) {
     setStatus("Connected to wfdaemon");
     sendPendingRequests();
     sendPendingPlayerViews();
+    sendPendingActivity();
     sendPendingAssets();
     sendPendingMarketQuotes();
     return;
@@ -305,6 +316,22 @@ void DaemonClient::handleLine(const QByteArray &line) {
         message.value("data").toObject().value("assets").toArray();
     emit assetsResolved(assets);
     sendPendingAssets();
+    return;
+  }
+
+  if (id == activeActivityRequest_) {
+    activeActivityRequest_ = 0;
+    if (!message.value("ok").toBool()) {
+      emit activityFailed(
+          message.value("error").toString("activity request failed"));
+      return;
+    }
+    const QJsonValue data = message.value("data");
+    if (!data.isObject()) {
+      emit activityFailed("daemon returned malformed activity data");
+      return;
+    }
+    emit activityReady(data.toObject());
     return;
   }
 
@@ -368,7 +395,8 @@ void DaemonClient::sendHello() {
       {"pid", QCoreApplication::applicationPid()},
       {"mode", "desktop"},
       {"capabilities",
-       QJsonArray{"relic.planner", "player.inventory", "player.mastery"}},
+       QJsonArray{"relic.planner", "worldstate.activity", "player.foundry",
+                  "player.inventory", "player.mastery"}},
   });
 }
 
@@ -381,9 +409,23 @@ void DaemonClient::sendPendingPlayerViews() {
   for (const QString &view : pending) {
     const qint64 id = nextRequestId_++;
     activePlayerViews_.insert(id, view);
-    write({{"op", view == "inventory" ? "inventory_view" : "mastery_view"},
-           {"id", id}});
+    QString operation = "mastery_view";
+    if (view == "foundry") {
+      operation = "foundry_view";
+    } else if (view == "inventory") {
+      operation = "inventory_view";
+    }
+    write({{"op", operation}, {"id", id}});
   }
+}
+
+void DaemonClient::sendPendingActivity() {
+  if (!ready_ || !pendingActivity_ || activeActivityRequest_ != 0) {
+    return;
+  }
+  pendingActivity_ = false;
+  activeActivityRequest_ = nextRequestId_++;
+  write({{"op", "activity_view"}, {"id", activeActivityRequest_}});
 }
 
 void DaemonClient::sendPendingRequests() {

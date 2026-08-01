@@ -1,10 +1,13 @@
 QWidget {
   background: #101623;
   color: #ffffff;
-  font-size: 11pt;
+  font-family: "Roboto";
+  font-size: 10pt;
 }
 
-QWidget#sidebar {
+QWidget#sidebar,
+QWidget#activityRail,
+QWidget#page {
   background: #171e30;
 }
 
@@ -13,28 +16,30 @@ QLabel {
 }
 
 QLabel#brand {
-  font-size: 16pt;
+  font-size: 15pt;
   font-weight: 600;
 }
 
 QPushButton#navigation {
-  background: #313a58;
-  color: #ffffff;
-  border-radius: 4px;
+  background: transparent;
+  color: #8a8c95;
   border: none;
-  min-height: 40px;
-  padding: 0 12px;
+  border-radius: 0;
+  min-height: 34px;
+  padding: 0 8px;
   text-align: left;
   font-weight: 500;
 }
 
-QPushButton#navigation:!checked {
-  background: transparent;
-  color: #aeb5c7;
+QPushButton#navigation:hover {
+  color: #d8dbea;
+  border-right: 3px solid #d8dbea;
 }
 
-QPushButton#navigation:hover {
-  background: #272f47;
+QPushButton#navigation:checked {
+  background: transparent;
+  color: #ffffff;
+  border-right: 3px solid #ffffff;
 }
 
 QLabel#daemonStatus,
@@ -43,30 +48,69 @@ QLabel#secondaryText {
 }
 
 QLabel#daemonStatus[connected="true"] {
-  color: #8fc99a;
+  color: #7edb91;
 }
 
 QLabel#pageTitle {
-  font-size: 19pt;
+  font-size: 18pt;
   font-weight: 600;
+}
+
+QLabel#masteryRank {
+  font-size: 30pt;
+  font-weight: 400;
+  padding: 0 8px 0 0;
+}
+
+QLabel#railTitle,
+QLabel#sectionTitle {
+  font-size: 11pt;
+  font-weight: 600;
+}
+
+QLabel#cycleName,
+QLabel#fissureTier {
+  color: #aeb5c7;
+  font-size: 9pt;
+  font-weight: 600;
+}
+
+QLabel#cycleState,
+QLabel#fissureMission {
+  color: #ffffff;
+  font-weight: 600;
+}
+
+QLabel#countdown {
+  color: #ffffff;
+}
+
+QLabel#baroStatus,
+QLabel#resurgenceStatus,
+QLabel#inventoryTotals {
+  background: #101623;
+  border-radius: 7px;
+  padding: 7px 9px;
 }
 
 QLineEdit {
   background: #20283e;
   border: 1px solid #313a58;
-  border-radius: 4px;
-  padding: 7px 9px;
+  border-radius: 6px;
+  min-height: 20px;
+  padding: 5px 8px;
 }
 
 QLineEdit:focus {
-  border-color: #b59dff;
+  border-color: #8c6ee8;
 }
 
 QPushButton {
   background: #20283e;
   border: 1px solid #313a58;
-  border-radius: 4px;
-  padding: 7px 12px;
+  border-radius: 6px;
+  min-height: 20px;
+  padding: 5px 10px;
 }
 
 QPushButton:hover {
@@ -75,7 +119,7 @@ QPushButton:hover {
 
 QPushButton:checked {
   background: #432289;
-  border-color: #b59dff;
+  border-color: #8c6ee8;
   color: #ffffff;
 }
 
@@ -83,25 +127,39 @@ QPushButton:disabled {
   color: #8a8c95;
 }
 
-QWidget#contentFrame {
-  background: #171e30;
-  border: 1px solid #20283e;
-  border-radius: 6px;
+QPushButton#filterChip {
+  min-width: 24px;
+  padding: 4px 7px;
 }
 
-QWidget#summaryPanel {
-  background: #171e30;
-  border: 1px solid #20283e;
-  border-radius: 6px;
+QPushButton#railFilter {
+  min-height: 18px;
+  padding: 3px 6px;
+}
+
+QWidget#contentFrame {
+  background: transparent;
+  border: none;
+}
+
+QWidget#summaryPanel,
+QWidget#cycleCard,
+QWidget#fissureRow {
+  background: #20283e;
+  border: none;
+  border-radius: 8px;
 }
 
 QLabel#summaryValue {
-  font-size: 13pt;
-  font-weight: 600;
+  font-size: 11pt;
+  font-weight: 500;
 }
 
 QScrollArea#relicScroll,
 QScrollArea#relicScroll QWidget#qt_scrollarea_viewport,
+QScrollArea#activityScroll,
+QScrollArea#activityScroll QWidget#qt_scrollarea_viewport,
+QWidget#fissureList,
 QWidget#relicGrid,
 QWidget#relicCardCanvas {
   background: transparent;
@@ -116,16 +174,16 @@ QListView#playerItemGrid QWidget#qt_scrollarea_viewport {
 }
 
 QScrollBar:vertical {
-  background: transparent;
+  background: #101623;
   border: none;
-  width: 10px;
-  margin: 4px 2px;
+  width: 5px;
+  margin: 0;
 }
 
 QScrollBar::handle:vertical {
   background: #313a58;
-  border-radius: 4px;
-  min-height: 32px;
+  border-radius: 2px;
+  min-height: 30px;
 }
 
 QScrollBar::handle:vertical:hover {
@@ -151,8 +209,8 @@ QProgressBar {
   background: #20283e;
   border: 1px solid #313a58;
   border-radius: 3px;
-  min-height: 8px;
-  max-height: 8px;
+  min-height: 7px;
+  max-height: 7px;
 }
 
 QProgressBar::chunk {
@@ -169,4 +227,21 @@ QProgressBar#priceProgress {
 
 QProgressBar#priceProgress::chunk {
   background: #5e44af;
+}
+
+QCheckBox {
+  spacing: 5px;
+}
+
+QCheckBox::indicator {
+  width: 14px;
+  height: 14px;
+  border: 1px solid #66708f;
+  border-radius: 3px;
+  background: #20283e;
+}
+
+QCheckBox::indicator:checked {
+  background: #5e44af;
+  border-color: #8c6ee8;
 }

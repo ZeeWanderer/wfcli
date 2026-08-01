@@ -32,6 +32,8 @@ QVariant PlayerItemModel::data(const QModelIndex &index, int role) const {
     return item.value("group").toString();
   case CategoryRole:
     return item.value("category").toString();
+  case TypeRole:
+    return item.value("type").toString();
   case QuantityRole:
     return item.value("quantity").toInt();
   case DucatsRole:
@@ -80,12 +82,17 @@ QVariant PlayerItemModel::data(const QModelIndex &index, int role) const {
         marketQuotes_.value(item.value("name").toString()).value("lowest_sell");
     return price.isDouble() ? QVariant(price.toInt()) : QVariant();
   }
+  case BuyPlatinumRole: {
+    const QJsonValue price =
+        marketQuotes_.value(item.value("name").toString()).value("highest_buy");
+    return price.isDouble() ? QVariant(price.toInt()) : QVariant();
+  }
   case PriceStateRole: {
     if (!item.value("tradable").toBool()) {
       return QStringLiteral("none");
     }
     const QString name = item.value("name").toString();
-    if (marketQuotes_.value(name).value("lowest_sell").isDouble()) {
+    if (marketQuotes_.contains(name)) {
       return QStringLiteral("ready");
     }
     return unavailableMarketItems_.contains(name) ||
@@ -93,6 +100,12 @@ QVariant PlayerItemModel::data(const QModelIndex &index, int role) const {
                ? QStringLiteral("unavailable")
                : QStringLiteral("loading");
   }
+  case IsPrimeRole:
+    return item.value("is_prime").toBool();
+  case MasteryRequirementRole:
+    return item.value("mastery_requirement").toInt();
+  case ReadyToBuildRole:
+    return item.value("ready_to_build").toBool();
   default:
     return {};
   }
@@ -102,6 +115,7 @@ QHash<int, QByteArray> PlayerItemModel::roleNames() const {
   return {{NameRole, "name"},
           {GroupRole, "group"},
           {CategoryRole, "category"},
+          {TypeRole, "type"},
           {QuantityRole, "quantity"},
           {DucatsRole, "ducats"},
           {MasteredRole, "mastered"},
@@ -118,7 +132,11 @@ QHash<int, QByteArray> PlayerItemModel::roleNames() const {
           {AssetSpecRole, "assetSpec"},
           {TradableRole, "tradable"},
           {PlatinumRole, "platinum"},
-          {PriceStateRole, "priceState"}};
+          {BuyPlatinumRole, "buyPlatinum"},
+          {PriceStateRole, "priceState"},
+          {IsPrimeRole, "isPrime"},
+          {MasteryRequirementRole, "masteryRequirement"},
+          {ReadyToBuildRole, "readyToBuild"}};
 }
 
 bool PlayerItemModel::replace(const QJsonObject &data, QString *error) {
@@ -270,7 +288,8 @@ void PlayerItemModel::notifyMarketRows(const QSet<QString> &names) {
     }
   }
   for (int row : rows) {
-    emit dataChanged(index(row), index(row), {PlatinumRole, PriceStateRole});
+    emit dataChanged(index(row), index(row),
+                     {PlatinumRole, BuyPlatinumRole, PriceStateRole});
   }
 }
 

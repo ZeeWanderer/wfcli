@@ -19,6 +19,7 @@ public:
     NameRole = Qt::UserRole + 1,
     GroupRole,
     CategoryRole,
+    TypeRole,
     QuantityRole,
     DucatsRole,
     MasteredRole,
@@ -35,7 +36,11 @@ public:
     AssetSpecRole,
     TradableRole,
     PlatinumRole,
+    BuyPlatinumRole,
     PriceStateRole,
+    IsPrimeRole,
+    MasteryRequirementRole,
+    ReadyToBuildRole,
   };
 
   explicit PlayerItemModel(QObject *parent = nullptr);

@@ -122,6 +122,8 @@ QVariant RelicModel::data(const QModelIndex &index, int role) const {
     }
     return rewards;
   }
+  case EraRole:
+    return relic.era;
   default:
     return {};
   }
@@ -142,6 +144,7 @@ QHash<int, QByteArray> RelicModel::roleNames() const {
       {PriceCompleteRole, "priceComplete"},
       {RefinementsRole, "refinements"},
       {RewardsRole, "rewards"},
+      {EraRole, "era"},
   };
 }
 
@@ -227,6 +230,8 @@ QString RelicFilterModel::filterText() const { return filterText_; }
 
 bool RelicFilterModel::onlyOwned() const { return onlyOwned_; }
 
+QString RelicFilterModel::era() const { return era_; }
+
 QVariant RelicFilterModel::data(const QModelIndex &index, int role) const {
   QVariant value = QSortFilterProxyModel::data(index, role);
   if (!onlyOwned_ || role != RelicModel::RefinementsRole) {
@@ -266,11 +271,25 @@ void RelicFilterModel::setOnlyOwned(bool onlyOwned) {
   emit onlyOwnedChanged();
 }
 
+void RelicFilterModel::setEra(const QString &era) {
+  if (era_ == era) {
+    return;
+  }
+  beginFilterChange();
+  era_ = era;
+  endFilterChange(QSortFilterProxyModel::Direction::Rows);
+  emit eraChanged();
+}
+
 bool RelicFilterModel::filterAcceptsRow(int sourceRow,
                                         const QModelIndex &sourceParent) const {
   const QModelIndex index = sourceModel()->index(sourceRow, 0, sourceParent);
   if (onlyOwned_ &&
       sourceModel()->data(index, RelicModel::AmountOwnedRole).toInt() <= 0) {
+    return false;
+  }
+  if (era_ != "all" &&
+      sourceModel()->data(index, RelicModel::EraRole).toString() != era_) {
     return false;
   }
   return filterText_.isEmpty() ||

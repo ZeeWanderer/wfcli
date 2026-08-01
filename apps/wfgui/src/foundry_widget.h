@@ -10,12 +10,11 @@ class QProgressBar;
 class QPushButton;
 class QStackedLayout;
 
-class MasteryPlannerWidget final : public QWidget {
+class FoundryWidget final : public QWidget {
   Q_OBJECT
 
 public:
-  explicit MasteryPlannerWidget(AppController *controller,
-                                QWidget *parent = nullptr);
+  explicit FoundryWidget(AppController *controller, QWidget *parent = nullptr);
 
 private:
   void updateContent();
@@ -23,14 +22,9 @@ private:
   AppController *controller_;
   PlayerItemFilterModel *items_;
   PlayerItemGridWidget *grid_;
-  QLabel *rank_;
-  QLabel *completion_;
-  QLabel *gameContent_;
-  QLabel *starChart_;
-  QLabel *intrinsics_;
+  QLabel *summary_;
   QLabel *emptyState_;
-  QProgressBar *completionBar_;
-  QProgressBar *loadingBar_;
+  QProgressBar *progress_;
   QPushButton *refresh_;
   QStackedLayout *content_;
 };

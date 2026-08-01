@@ -7,6 +7,8 @@
 class QLabel;
 class QButtonGroup;
 class QStackedWidget;
+class ActivityRailWidget;
+class QResizeEvent;
 
 class MainWindow final : public QMainWindow {
   Q_OBJECT
@@ -18,9 +20,11 @@ public:
 private:
   void updateDaemonStatus();
   void selectPage(int page);
+  void resizeEvent(QResizeEvent *event) override;
 
   AppController controller_;
   QLabel *daemonStatus_;
   QButtonGroup *navigation_;
   QStackedWidget *pages_;
+  ActivityRailWidget *activityRail_;
 };

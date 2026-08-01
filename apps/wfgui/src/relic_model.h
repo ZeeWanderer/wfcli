@@ -25,6 +25,7 @@ public:
     PriceCompleteRole,
     RefinementsRole,
     RewardsRole,
+    EraRole,
   };
 
   explicit RelicModel(QObject *parent = nullptr);
@@ -54,14 +55,17 @@ public:
 
   QString filterText() const;
   bool onlyOwned() const;
+  QString era() const;
   QVariant data(const QModelIndex &index,
                 int role = Qt::DisplayRole) const override;
   void setFilterText(const QString &text);
   void setOnlyOwned(bool onlyOwned);
+  void setEra(const QString &era);
 
 signals:
   void filterTextChanged();
   void onlyOwnedChanged();
+  void eraChanged();
 
 protected:
   bool filterAcceptsRow(int sourceRow,
@@ -69,5 +73,6 @@ protected:
 
 private:
   QString filterText_;
+  QString era_ = "all";
   bool onlyOwned_ = true;
 };

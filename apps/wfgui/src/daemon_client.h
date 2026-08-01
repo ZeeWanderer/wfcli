@@ -25,6 +25,7 @@ public:
   void start();
   void requestRelics(const QString &era, bool fetchPrices);
   void requestPlayerView(const QString &view);
+  void requestActivity();
   void requestAssets(const QJsonArray &assets);
   void requestMarketQuotes(const QStringList &items, bool refresh = false);
 
@@ -35,6 +36,8 @@ signals:
                          const QJsonObject &data);
   void playerViewReady(const QString &view, const QJsonObject &data);
   void playerViewFailed(const QString &view, const QString &error);
+  void activityReady(const QJsonObject &data);
+  void activityFailed(const QString &error);
   void assetsResolved(const QJsonArray &assets);
   void assetRequestFailed(const QString &error);
   void marketQuotesResolved(const QJsonArray &quotes,
@@ -49,6 +52,7 @@ private:
   void sendHello();
   void sendPendingRequests();
   void sendPendingPlayerViews();
+  void sendPendingActivity();
   void sendPendingAssets();
   void sendAssetBatch(const QJsonArray &assets);
   void sendPendingMarketQuotes();
@@ -82,6 +86,7 @@ private:
   QHash<qint64, RelicRequest> activeRelicRequests_;
   QSet<QString> pendingPlayerViews_;
   QHash<qint64, QString> activePlayerViews_;
+  qint64 activeActivityRequest_ = 0;
   QHash<QString, QJsonObject> pendingAssets_;
   QStringList pendingAssetOrder_;
   QHash<qint64, QJsonArray> activeAssetRequests_;
@@ -92,6 +97,7 @@ private:
   QStringList pendingMarketQuoteOrder_;
   QHash<qint64, MarketQuoteRequest> activeMarketQuoteRequests_;
   bool ready_ = false;
+  bool pendingActivity_ = false;
   bool connected_ = false;
   bool ensureAttempted_ = false;
   bool updateAttempted_ = false;

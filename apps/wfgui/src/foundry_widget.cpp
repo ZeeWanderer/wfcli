@@ -1,4 +1,4 @@
-#include "inventory_widget.h"
+#include "foundry_widget.h"
 
 #include <QAbstractItemModel>
 #include <QButtonGroup>
@@ -26,13 +26,15 @@ struct Filter {
   const char *icon;
 };
 
-constexpr std::array<Filter, 6> Groups{{
-    {"All parts", "parts", ":/resources/categories/all.png"},
-    {"Relics", "relics", ":/resources/categories/relics.png"},
-    {"Mods", "mods", ":/resources/categories/mods.png"},
-    {"Arcanes", "arcanes", ":/resources/categories/arcanes.png"},
-    {"Misc", "misc", ":/resources/categories/misc.png"},
-    {"Sets", "sets", ":/resources/categories/sets.png"},
+constexpr std::array<Filter, 8> Groups{{
+    {"All", "all", ":/resources/categories/all.png"},
+    {"Warframe", "warframe", ":/resources/categories/warframe.png"},
+    {"Primary", "primary", ":/resources/categories/primary.png"},
+    {"Secondary", "secondary", ":/resources/categories/secondary.png"},
+    {"Melee", "melee", ":/resources/categories/melee.png"},
+    {"Modular", "modular", ":/resources/categories/modular.png"},
+    {"Arch", "arch", ":/resources/categories/arch.png"},
+    {"Companion", "companion", ":/resources/categories/companion.png"},
 }};
 
 void updateFilterButtons(QButtonGroup *group) {
@@ -44,26 +46,25 @@ void updateFilterButtons(QButtonGroup *group) {
 }
 } // namespace
 
-InventoryWidget::InventoryWidget(AppController *controller, QWidget *parent)
+FoundryWidget::FoundryWidget(AppController *controller, QWidget *parent)
     : QWidget(parent), controller_(controller),
       items_(new PlayerItemFilterModel(this)),
-      grid_(new PlayerItemGridWidget(PlayerItemGridWidget::Kind::Inventory)),
-      summary_(new QLabel), emptyState_(new QLabel),
-      progress_(new QProgressBar), refresh_(new QPushButton("Refresh")),
-      content_(new QStackedLayout) {
+      grid_(new PlayerItemGridWidget(PlayerItemGridWidget::Kind::Foundry)),
+      summary_(new QLabel), emptyState_(new QLabel), progress_(new QProgressBar),
+      refresh_(new QPushButton("Refresh")), content_(new QStackedLayout) {
   setObjectName("page");
-  items_->setSourceModel(controller_->inventoryItems());
-  items_->setGroup("parts");
+  items_->setSourceModel(controller_->foundryItems());
+  items_->setGroup("warframe");
   grid_->setModel(items_);
 
   auto *layout = new QVBoxLayout(this);
   layout->setContentsMargins(10, 10, 10, 0);
   layout->setSpacing(8);
 
-  auto *groups = new QHBoxLayout;
-  groups->setSpacing(6);
-  auto *groupButtons = new QButtonGroup(this);
-  groupButtons->setExclusive(true);
+  auto *toolbar = new QHBoxLayout;
+  toolbar->setSpacing(6);
+  auto *groups = new QButtonGroup(this);
+  groups->setExclusive(true);
   int id = 0;
   for (const auto &[label, value, icon] : Groups) {
     auto *button = new QPushButton;
@@ -74,19 +75,22 @@ InventoryWidget::InventoryWidget(AppController *controller, QWidget *parent)
     button->setIcon(QIcon(icon));
     button->setIconSize({22, 22});
     button->setToolTip(label);
-    button->setChecked(id == 0);
-    groupButtons->addButton(button, id++);
-    groups->addWidget(button);
+    button->setChecked(id == 1);
+    groups->addButton(button, id++);
+    toolbar->addWidget(button);
   }
-  groups->addStretch();
+  toolbar->addStretch();
   auto *search = new QLineEdit;
-  search->setPlaceholderText("Search inventory");
+  search->setPlaceholderText("Search Foundry");
   search->setClearButtonEnabled(true);
   search->setFixedWidth(150);
-  groups->addWidget(search);
-  groups->addWidget(refresh_);
-  layout->addLayout(groups);
-  updateFilterButtons(groupButtons);
+  toolbar->addWidget(search);
+  toolbar->addWidget(refresh_);
+  layout->addLayout(toolbar);
+  updateFilterButtons(groups);
+
+  summary_->setObjectName("secondaryText");
+  layout->addWidget(summary_);
 
   progress_->setObjectName("priceProgress");
   progress_->setTextVisible(false);
@@ -119,45 +123,37 @@ InventoryWidget::InventoryWidget(AppController *controller, QWidget *parent)
   frameLayout->addWidget(progress_);
   frameLayout->addWidget(host, 1);
   layout->addWidget(frame, 1);
-  summary_->setObjectName("inventoryTotals");
-  summary_->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
-  layout->addWidget(summary_);
 
   connect(search, &QLineEdit::textChanged, items_,
           &PlayerItemFilterModel::setText);
-  connect(search, &QLineEdit::textChanged, this,
-          &InventoryWidget::updateContent);
-  connect(groupButtons, &QButtonGroup::idClicked, this,
-          [this, groupButtons](int buttonId) {
-            items_->setGroup(
-                groupButtons->button(buttonId)->property("group").toString());
-            updateFilterButtons(groupButtons);
-            updateContent();
-          });
-  connect(refresh_, &QPushButton::clicked, this, [this] {
-    controller_->refreshInventory();
-    grid_->refreshVisibleQuotes();
+  connect(search, &QLineEdit::textChanged, this, &FoundryWidget::updateContent);
+  connect(groups, &QButtonGroup::idClicked, this, [this, groups](int buttonId) {
+    items_->setGroup(groups->button(buttonId)->property("group").toString());
+    updateFilterButtons(groups);
+    updateContent();
   });
+  connect(refresh_, &QPushButton::clicked, controller_,
+          &AppController::refreshFoundry);
   connect(grid_, &PlayerItemGridWidget::assetsNeeded, controller_,
           &AppController::resolveAssets);
-  connect(grid_, &PlayerItemGridWidget::quotesNeeded, controller_,
-          &AppController::resolveMarketQuotes);
-  connect(controller_, &AppController::inventoryStateChanged, this,
-          &InventoryWidget::updateContent);
+  connect(controller_, &AppController::foundryStateChanged, this,
+          &FoundryWidget::updateContent);
   connect(items_, &QAbstractItemModel::modelReset, this,
-          &InventoryWidget::updateContent);
+          &FoundryWidget::updateContent);
   connect(items_, &QAbstractItemModel::rowsInserted, this,
-          &InventoryWidget::updateContent);
+          &FoundryWidget::updateContent);
   connect(items_, &QAbstractItemModel::rowsRemoved, this,
-          &InventoryWidget::updateContent);
+          &FoundryWidget::updateContent);
   updateContent();
 }
 
-void InventoryWidget::updateContent() {
-  const QJsonObject totals = controller_->inventorySummary();
-  summary_->setText(
-      QString("%1 item types").arg(totals.value("total").toInt()));
-  const bool loading = controller_->inventoryLoading();
+void FoundryWidget::updateContent() {
+  const QJsonObject totals = controller_->foundrySummary();
+  summary_->setText(QString("%1 items  ·  %2 ready  ·  %3 owned")
+                        .arg(totals.value("total").toInt())
+                        .arg(totals.value("ready").toInt())
+                        .arg(totals.value("owned").toInt()));
+  const bool loading = controller_->foundryLoading();
   progress_->setRange(0, loading ? 0 : 1);
   if (!loading) {
     progress_->setValue(0);
@@ -165,12 +161,12 @@ void InventoryWidget::updateContent() {
   refresh_->setEnabled(!loading);
   if (items_->rowCount() > 0) {
     content_->setCurrentIndex(0);
-  } else if (loading && !controller_->inventoryLoaded()) {
+  } else if (loading && !controller_->foundryLoaded()) {
     content_->setCurrentIndex(1);
   } else {
-    emptyState_->setText(controller_->inventoryError().isEmpty()
-                             ? "No matching inventory items."
-                             : controller_->inventoryError());
+    emptyState_->setText(controller_->foundryError().isEmpty()
+                             ? "No matching Foundry items."
+                             : controller_->foundryError());
     content_->setCurrentIndex(2);
   }
 }

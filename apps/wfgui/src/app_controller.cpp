@@ -3,10 +3,11 @@
 #include <QDateTime>
 #include <QJsonObject>
 #include <QSet>
+#include <QTimer>
 
 AppController::AppController(QObject *parent)
     : QObject(parent), daemon_(this), relics_(this), filteredRelics_(this),
-      inventoryItems_(this), masteryItems_(this) {
+      inventoryItems_(this), masteryItems_(this), foundryItems_(this) {
   filteredRelics_.setSourceModel(&relics_);
   assetPaths_.insert("embedded:forma", ":/assets/forma.png");
 
@@ -20,7 +21,10 @@ AppController::AppController(QObject *parent)
           &AppController::onlyOwnedChanged);
   connect(&daemon_, &DaemonClient::relicPlannerReady, this,
           [this](const QString &era, bool prices, const QJsonObject &data) {
-            EraState &state = eras_[era];
+            if (era != "all") {
+              return;
+            }
+            EraState &state = relicState_;
             if (prices) {
               state.priced = data;
               state.hasPrices = true;
@@ -32,9 +36,7 @@ AppController::AppController(QObject *parent)
             }
             state.error.clear();
             requestAssets(data);
-            if (era == selectedEra_) {
-              applySelectedEra();
-            }
+            applySelectedEra();
           });
   connect(&daemon_, &DaemonClient::assetsResolved, this,
           [this](const QJsonArray &assets) {
@@ -53,36 +55,45 @@ AppController::AppController(QObject *parent)
             }
             if (!changedPaths.isEmpty()) {
               relics_.setAssetPaths(changedPaths);
+              foundryItems_.applyAssetPaths(changedPaths);
               inventoryItems_.applyAssetPaths(changedPaths);
               masteryItems_.applyAssetPaths(changedPaths);
             }
           });
   connect(&daemon_, &DaemonClient::requestFailed, this,
           [this](const QString &era, bool prices, const QString &requestError) {
-            EraState &state = eras_[era];
+            if (era != "all") {
+              return;
+            }
+            EraState &state = relicState_;
             state.error = requestError;
             if (prices) {
               state.pricesPending = false;
             } else {
               state.metadataPending = false;
             }
-            if (era == selectedEra_) {
-              applySelectedEra();
-            }
+            applySelectedEra();
           });
   connect(&daemon_, &DaemonClient::playerViewReady, this,
           &AppController::applyPlayerView);
   connect(&daemon_, &DaemonClient::playerViewFailed, this,
           [this](const QString &view, const QString &requestError) {
-            PlayerViewState &state =
-                view == "inventory" ? inventoryState_ : masteryState_;
-            state.pending = false;
-            state.error = requestError;
-            if (view == "inventory") {
-              emit inventoryStateChanged();
-            } else {
-              emit masteryStateChanged();
+            if (PlayerViewState *state = playerState(view)) {
+              state->pending = false;
+              state->error = requestError;
+              emitPlayerStateChanged(view);
             }
+          });
+  connect(&daemon_, &DaemonClient::activityReady, this,
+          [this](const QJsonObject &data) {
+            activity_ = data;
+            activityError_.clear();
+            emit activityStateChanged();
+          });
+  connect(&daemon_, &DaemonClient::activityFailed, this,
+          [this](const QString &requestError) {
+            activityError_ = requestError;
+            emit activityStateChanged();
           });
   connect(&daemon_, &DaemonClient::marketQuotesResolved, &inventoryItems_,
           &PlayerItemModel::applyMarketQuotes);
@@ -95,10 +106,17 @@ AppController::AppController(QObject *parent)
           });
 
   daemon_.start();
-  refresh();
+  ensureFoundry();
+  refreshActivity();
+  auto *activityTimer = new QTimer(this);
+  activityTimer->setInterval(60'000);
+  connect(activityTimer, &QTimer::timeout, this, &AppController::refreshActivity);
+  activityTimer->start();
 }
 
 QAbstractItemModel *AppController::relics() { return &filteredRelics_; }
+
+QAbstractItemModel *AppController::foundryItems() { return &foundryItems_; }
 
 QAbstractItemModel *AppController::inventoryItems() { return &inventoryItems_; }
 
@@ -121,10 +139,14 @@ bool AppController::connected() const { return daemon_.connected(); }
 bool AppController::loading() const { return loading_; }
 
 bool AppController::pricing() const {
-  return eras_.value(selectedEra_).pricesPending;
+  return relicState_.pricesPending;
 }
 
 int AppController::traceCount() const { return relics_.traceCount(); }
+
+QJsonObject AppController::foundrySummary() const {
+  return foundryState_.summary;
+}
 
 QJsonObject AppController::inventorySummary() const {
   return inventoryState_.summary;
@@ -134,13 +156,27 @@ QJsonObject AppController::masterySummary() const {
   return masteryState_.summary;
 }
 
+QJsonObject AppController::activity() const {
+  QJsonObject result = activity_;
+  if (!activityError_.isEmpty()) {
+    result.insert("error", activityError_);
+  }
+  return result;
+}
+
+QString AppController::foundryError() const { return foundryState_.error; }
+
 QString AppController::inventoryError() const { return inventoryState_.error; }
 
 QString AppController::masteryError() const { return masteryState_.error; }
 
+bool AppController::foundryLoading() const { return foundryState_.pending; }
+
 bool AppController::inventoryLoading() const { return inventoryState_.pending; }
 
 bool AppController::masteryLoading() const { return masteryState_.pending; }
+
+bool AppController::foundryLoaded() const { return foundryState_.loaded; }
 
 bool AppController::inventoryLoaded() const { return inventoryState_.loaded; }
 
@@ -162,19 +198,31 @@ void AppController::selectEra(const QString &era) {
     return;
   }
   selectedEra_ = era;
+  filteredRelics_.setEra(era);
   emit selectedEraChanged();
-  applySelectedEra();
-  requestEra(era);
 }
 
 void AppController::refresh() {
-  EraState &state = eras_[selectedEra_];
+  relicsRequested_ = true;
+  EraState &state = relicState_;
   state.metadataPending = true;
   state.pricesPending = true;
   state.error.clear();
   applySelectedEra();
-  daemon_.requestRelics(selectedEra_, false);
-  daemon_.requestRelics(selectedEra_, true);
+  daemon_.requestRelics("all", false);
+  daemon_.requestRelics("all", true);
+}
+
+void AppController::ensureRelics() {
+  if (!relicsRequested_) {
+    refresh();
+  }
+}
+
+void AppController::ensureFoundry() {
+  if (!foundryState_.loaded && !foundryState_.pending) {
+    refreshFoundry();
+  }
 }
 
 void AppController::ensureInventory() {
@@ -187,6 +235,13 @@ void AppController::ensureMastery() {
   if (!masteryState_.loaded && !masteryState_.pending) {
     refreshMastery();
   }
+}
+
+void AppController::refreshFoundry() {
+  foundryState_.pending = true;
+  foundryState_.error.clear();
+  emit foundryStateChanged();
+  daemon_.requestPlayerView("foundry");
 }
 
 void AppController::refreshInventory() {
@@ -202,6 +257,8 @@ void AppController::refreshMastery() {
   emit masteryStateChanged();
   daemon_.requestPlayerView("mastery");
 }
+
+void AppController::refreshActivity() { daemon_.requestActivity(); }
 
 void AppController::resolveAssets(const QJsonArray &assets) {
   QJsonArray missing;
@@ -248,23 +305,8 @@ void AppController::setLoading(bool loading) {
   emit loadingChanged();
 }
 
-void AppController::requestEra(const QString &era) {
-  EraState &state = eras_[era];
-  if (!state.hasMetadata && !state.metadataPending) {
-    state.metadataPending = true;
-    daemon_.requestRelics(era, false);
-  }
-  if (!state.hasPrices && !state.pricesPending) {
-    state.pricesPending = true;
-    daemon_.requestRelics(era, true);
-  }
-  if (era == selectedEra_) {
-    applySelectedEra();
-  }
-}
-
 void AppController::applySelectedEra() {
-  const EraState &state = eras_.value(selectedEra_);
+  const EraState &state = relicState_;
   const QJsonObject data = state.hasPrices ? state.priced : state.metadata;
   if (!data.isEmpty()) {
     QString parseError;
@@ -319,23 +361,57 @@ void AppController::requestAssets(const QJsonObject &data) {
 
 void AppController::applyPlayerView(const QString &view,
                                     const QJsonObject &data) {
-  PlayerViewState &state =
-      view == "inventory" ? inventoryState_ : masteryState_;
-  PlayerItemModel &model =
-      view == "inventory" ? inventoryItems_ : masteryItems_;
+  PlayerViewState *state = playerState(view);
+  PlayerItemModel *model = playerModel(view);
+  if (!state || !model) {
+    return;
+  }
   QString parseError;
-  state.pending = false;
-  if (!model.replace(data, &parseError)) {
-    state.error = parseError;
+  state->pending = false;
+  if (!model->replace(data, &parseError)) {
+    state->error = parseError;
   } else {
-    state.loaded = true;
-    state.error.clear();
-    state.summary = data.value("summary").toObject();
-    model.setAssetPaths(assetPaths_);
+    state->loaded = true;
+    state->error.clear();
+    state->summary = data.value("summary").toObject();
+    model->setAssetPaths(assetPaths_);
+  }
+  emitPlayerStateChanged(view);
+}
+
+AppController::PlayerViewState *AppController::playerState(
+    const QString &view) {
+  if (view == "foundry") {
+    return &foundryState_;
   }
   if (view == "inventory") {
+    return &inventoryState_;
+  }
+  if (view == "mastery") {
+    return &masteryState_;
+  }
+  return nullptr;
+}
+
+PlayerItemModel *AppController::playerModel(const QString &view) {
+  if (view == "foundry") {
+    return &foundryItems_;
+  }
+  if (view == "inventory") {
+    return &inventoryItems_;
+  }
+  if (view == "mastery") {
+    return &masteryItems_;
+  }
+  return nullptr;
+}
+
+void AppController::emitPlayerStateChanged(const QString &view) {
+  if (view == "foundry") {
+    emit foundryStateChanged();
+  } else if (view == "inventory") {
     emit inventoryStateChanged();
-  } else {
+  } else if (view == "mastery") {
     emit masteryStateChanged();
   }
 }

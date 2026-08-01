@@ -29,6 +29,10 @@ target_sources(wfgui_core
 )
 
 qt_add_executable(wfgui
+  src/activity_rail_widget.cpp
+  src/activity_rail_widget.h
+  src/foundry_widget.cpp
+  src/foundry_widget.h
   src/inventory_widget.cpp
   src/inventory_widget.h
   src/main.cpp
@@ -43,6 +47,19 @@ qt_add_executable(wfgui
 qt_add_resources(wfgui "wfgui_resources"
   PREFIX "/"
   FILES
+    resources/categories/all.png
+    resources/categories/arcanes.png
+    resources/categories/arch.png
+    resources/categories/companion.png
+    resources/categories/melee.png
+    resources/categories/misc.png
+    resources/categories/mods.png
+    resources/categories/modular.png
+    resources/categories/primary.png
+    resources/categories/relics.png
+    resources/categories/secondary.png
+    resources/categories/sets.png
+    resources/categories/warframe.png
     resources/style.qss
 )
 
@@ -50,6 +67,7 @@ qt_add_resources(wfgui "wfgui_shared_assets"
   PREFIX "/assets"
   BASE "${CMAKE_CURRENT_SOURCE_DIR}/../wfcompanion/assets"
   FILES
+    ../wfcompanion/assets/Roboto-Regular.ttf
     ../wfcompanion/assets/ducats.png
     ../wfcompanion/assets/forma.png
     ../wfcompanion/assets/platinum.png

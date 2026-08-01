@@ -20,8 +20,8 @@ constexpr int RewardColumns = 3;
 constexpr int MaxRefinements = 4;
 constexpr int MaxRewards = 6;
 constexpr int ValueColumnWidth = 34;
-constexpr int MinimumTrackWidth = 400;
-constexpr int TargetTrackWidth = 460;
+constexpr int MinimumTrackWidth = 420;
+constexpr int TargetTrackWidth = 520;
 } // namespace
 
 namespace wfgui {

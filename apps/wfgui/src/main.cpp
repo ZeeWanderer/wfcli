@@ -4,6 +4,7 @@
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
+#include <QFontDatabase>
 #include <QPixmapCache>
 #include <QTimer>
 
@@ -26,6 +27,7 @@ QSize parseSize(const QString &value) {
 
 int main(int argc, char *argv[]) {
   QApplication app(argc, argv);
+  QFontDatabase::addApplicationFont(":/assets/Roboto-Regular.ttf");
   QPixmapCache::setCacheLimit(64 * 1024);
   QCoreApplication::setApplicationName("wfgui");
   QCoreApplication::setApplicationVersion(WFCLI_VERSION);
@@ -40,8 +42,9 @@ int main(int argc, char *argv[]) {
                                 "WIDTHxHEIGHT");
   const QCommandLineOption screenshotDelay(
       "screenshot-delay", "Wait MS before saving a screenshot.", "MS", "8000");
-  const QCommandLineOption page("page", "Open relic, inventory, or mastery.",
-                                "NAME", "relic");
+  const QCommandLineOption page(
+      "page", "Open foundry, mastery, inventory, or relic.", "NAME",
+      "foundry");
   parser.addOptions({screenshot, size, screenshotDelay, page});
   parser.process(app);
 
@@ -52,7 +55,7 @@ int main(int argc, char *argv[]) {
 
   MainWindow window;
   if (!window.setPage(parser.value(page))) {
-    qCritical("invalid --page (use relic, inventory, or mastery)");
+    qCritical("invalid --page (use foundry, mastery, inventory, or relic)");
     return 2;
   }
   if (parser.isSet(size)) {

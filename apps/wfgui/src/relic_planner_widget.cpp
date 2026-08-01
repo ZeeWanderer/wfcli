@@ -4,6 +4,7 @@
 #include <QButtonGroup>
 #include <QCheckBox>
 #include <QHBoxLayout>
+#include <QIcon>
 #include <QLabel>
 #include <QLineEdit>
 #include <QProgressBar>
@@ -34,48 +35,43 @@ RelicPlannerWidget::RelicPlannerWidget(AppController *controller,
     : QWidget(parent), controller_(controller), traceCount_(new QLabel),
       priceProgress_(new QProgressBar), emptyState_(new QLabel),
       relics_(new RelicGridWidget), refresh_(new QPushButton("Refresh")),
-      content_(new QStackedLayout) {
+      eraGroup_(new QButtonGroup(this)), content_(new QStackedLayout) {
   setObjectName("page");
   auto *layout = new QVBoxLayout(this);
-  layout->setContentsMargins(24, 22, 24, 0);
-  layout->setSpacing(16);
+  layout->setContentsMargins(10, 10, 10, 0);
+  layout->setSpacing(8);
 
-  auto *header = new QHBoxLayout;
-  auto *heading = new QVBoxLayout;
-  auto *title = new QLabel("Relic Planner");
-  title->setObjectName("pageTitle");
+  auto *toolbar = new QHBoxLayout;
+  toolbar->setSpacing(6);
   traceCount_->setObjectName("secondaryText");
-  heading->addWidget(title);
-  heading->addWidget(traceCount_);
-  header->addLayout(heading);
-  header->addStretch();
-
-  auto *filter = new QLineEdit;
-  filter->setPlaceholderText("Filter relics");
-  filter->setClearButtonEnabled(true);
-  filter->setMinimumWidth(260);
-  filter->setMaximumWidth(360);
-  header->addWidget(filter);
-  header->addWidget(refresh_);
-  layout->addLayout(header);
-
-  auto *eras = new QHBoxLayout;
-  eras->setSpacing(6);
-  auto *eraGroup = new QButtonGroup(this);
-  eraGroup->setExclusive(true);
+  eraGroup_->setExclusive(true);
   int eraId = 0;
   for (const auto &[label, value] : Eras) {
-    auto *button = new QPushButton(label);
+    auto *button = new QPushButton;
+    button->setObjectName("filterChip");
     button->setCheckable(true);
     button->setProperty("era", value);
-    eraGroup->addButton(button, eraId++);
-    eras->addWidget(button);
+    button->setProperty("label", label);
+    button->setToolTip(label);
+    if (QString::fromLatin1(value) == "all") {
+      button->setIcon(QIcon(":/resources/categories/all.png"));
+      button->setIconSize({22, 22});
+    }
+    eraGroup_->addButton(button, eraId++);
+    toolbar->addWidget(button);
   }
-  eras->addStretch();
+  toolbar->addWidget(traceCount_);
+  toolbar->addStretch();
+  auto *filter = new QLineEdit;
+  filter->setPlaceholderText("Search relics");
+  filter->setClearButtonEnabled(true);
+  filter->setFixedWidth(150);
+  toolbar->addWidget(filter);
   auto *onlyOwned = new QCheckBox("Only owned");
   onlyOwned->setChecked(controller_->onlyOwned());
-  eras->addWidget(onlyOwned);
-  layout->addLayout(eras);
+  toolbar->addWidget(onlyOwned);
+  toolbar->addWidget(refresh_);
+  layout->addLayout(toolbar);
 
   priceProgress_->setObjectName("priceProgress");
   priceProgress_->setRange(0, 1);
@@ -127,8 +123,9 @@ RelicPlannerWidget::RelicPlannerWidget(AppController *controller,
   connect(onlyOwned, &QCheckBox::toggled, controller_,
           &AppController::setOnlyOwned);
   connect(
-      eraGroup, &QButtonGroup::idClicked, this, [controller, eraGroup](int id) {
-        controller->selectEra(eraGroup->button(id)->property("era").toString());
+      eraGroup_, &QButtonGroup::idClicked, this, [this, controller](int id) {
+        controller->selectEra(
+            eraGroup_->button(id)->property("era").toString());
       });
   connect(controller_, &AppController::selectedEraChanged, this,
           &RelicPlannerWidget::updateEra);
@@ -143,7 +140,12 @@ RelicPlannerWidget::RelicPlannerWidget(AppController *controller,
   connect(controller_, &AppController::traceCountChanged, this,
           &RelicPlannerWidget::updateContent);
   connect(controller_->relics(), &QAbstractItemModel::modelReset, this,
-          &RelicPlannerWidget::updateContent);
+          [this] {
+            updateEraIcons();
+            updateContent();
+          });
+  connect(controller_->relics(), &QAbstractItemModel::dataChanged, this,
+          [this] { updateEraIcons(); });
   connect(controller_->relics(), &QAbstractItemModel::rowsInserted, this,
           &RelicPlannerWidget::updateContent);
   connect(controller_->relics(), &QAbstractItemModel::rowsRemoved, this,
@@ -181,10 +183,30 @@ void RelicPlannerWidget::updateContent() {
 }
 
 void RelicPlannerWidget::updateEra() {
-  for (QPushButton *button : findChildren<QPushButton *>()) {
-    if (button->property("era").toString() == controller_->selectedEra()) {
-      button->setChecked(true);
-      break;
+  for (auto *button : eraGroup_->buttons()) {
+    const bool selected =
+        button->property("era").toString() == controller_->selectedEra();
+    button->setChecked(selected);
+    const QString label = button->property("label").toString();
+    button->setText(selected || button->icon().isNull() ? label : QString());
+  }
+}
+
+void RelicPlannerWidget::updateEraIcons() {
+  for (int row = 0; row < controller_->relics()->rowCount(); ++row) {
+    const QModelIndex index = controller_->relics()->index(row, 0);
+    const QString era = index.data(RelicModel::EraRole).toString();
+    const QString path = index.data(RelicModel::RelicImageRole).toString();
+    if (path.isEmpty()) {
+      continue;
+    }
+    for (auto *button : eraGroup_->buttons()) {
+      if (button->property("era").toString() == era &&
+          button->icon().isNull()) {
+        button->setIcon(QIcon(path));
+        button->setIconSize({22, 22});
+      }
     }
   }
+  updateEra();
 }

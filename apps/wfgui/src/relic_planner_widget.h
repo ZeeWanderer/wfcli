@@ -3,6 +3,7 @@
 #include <QWidget>
 
 class AppController;
+class QButtonGroup;
 class QLabel;
 class QProgressBar;
 class QPushButton;
@@ -19,6 +20,7 @@ public:
 private:
   void updateContent();
   void updateEra();
+  void updateEraIcons();
 
   AppController *controller_;
   QLabel *traceCount_;
@@ -26,5 +28,6 @@ private:
   QLabel *emptyState_;
   RelicGridWidget *relics_;
   QPushButton *refresh_;
+  QButtonGroup *eraGroup_;
   QStackedLayout *content_;
 };

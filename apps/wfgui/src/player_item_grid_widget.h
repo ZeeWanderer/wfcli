@@ -12,7 +12,7 @@ class PlayerItemGridWidget final : public QListView {
   Q_OBJECT
 
 public:
-  enum class Kind { Inventory, Mastery };
+  enum class Kind { Foundry, Inventory, Mastery };
 
   explicit PlayerItemGridWidget(Kind kind, QWidget *parent = nullptr);
   void setModel(QAbstractItemModel *model) override;

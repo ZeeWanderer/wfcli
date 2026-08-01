@@ -8,6 +8,7 @@
 #include <QLineEdit>
 #include <QProgressBar>
 #include <QPushButton>
+#include <QSizePolicy>
 #include <QStackedLayout>
 #include <QVBoxLayout>
 
@@ -34,11 +35,16 @@ constexpr std::array<std::pair<const char *, const char *>, 4> Groups{{
 QWidget *summaryPanel(const QString &title, QLabel *value) {
   auto *panel = new QWidget;
   panel->setObjectName("summaryPanel");
+  panel->setMinimumWidth(0);
+  panel->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
   auto *layout = new QVBoxLayout(panel);
-  layout->setContentsMargins(14, 10, 14, 10);
+  layout->setContentsMargins(12, 8, 12, 8);
+  layout->setSpacing(5);
   auto *heading = new QLabel(title);
   heading->setObjectName("secondaryText");
   value->setObjectName("summaryValue");
+  value->setMinimumWidth(0);
+  value->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
   layout->addWidget(heading);
   layout->addWidget(value);
   return panel;
@@ -50,8 +56,8 @@ MasteryPlannerWidget::MasteryPlannerWidget(AppController *controller,
     : QWidget(parent), controller_(controller),
       items_(new PlayerItemFilterModel(this)),
       grid_(new PlayerItemGridWidget(PlayerItemGridWidget::Kind::Mastery)),
-      rank_(new QLabel), completion_(new QLabel), warframes_(new QLabel),
-      weapons_(new QLabel), companions_(new QLabel), emptyState_(new QLabel),
+      rank_(new QLabel), completion_(new QLabel), gameContent_(new QLabel),
+      starChart_(new QLabel), intrinsics_(new QLabel), emptyState_(new QLabel),
       completionBar_(new QProgressBar), loadingBar_(new QProgressBar),
       refresh_(new QPushButton("Refresh")), content_(new QStackedLayout) {
   setObjectName("page");
@@ -60,45 +66,37 @@ MasteryPlannerWidget::MasteryPlannerWidget(AppController *controller,
   grid_->setModel(items_);
 
   auto *layout = new QVBoxLayout(this);
-  layout->setContentsMargins(24, 22, 24, 0);
-  layout->setSpacing(14);
+  layout->setContentsMargins(10, 10, 10, 0);
+  layout->setSpacing(9);
 
   auto *header = new QHBoxLayout;
-  auto *heading = new QVBoxLayout;
-  auto *title = new QLabel("Mastery Planner");
-  title->setObjectName("pageTitle");
-  rank_->setObjectName("secondaryText");
-  heading->addWidget(title);
-  heading->addWidget(rank_);
-  header->addLayout(heading);
-  header->addStretch();
+  rank_->setObjectName("masteryRank");
+  header->addWidget(rank_);
+  auto *rankProgress = new QVBoxLayout;
+  completion_->setObjectName("secondaryText");
+  rankProgress->addWidget(completion_);
+  completionBar_->setTextVisible(false);
+  completionBar_->setRange(0, 100);
+  rankProgress->addWidget(completionBar_);
+  header->addLayout(rankProgress, 1);
   auto *search = new QLineEdit;
   search->setPlaceholderText("Filter equipment");
   search->setClearButtonEnabled(true);
-  search->setMinimumWidth(260);
-  search->setMaximumWidth(360);
+  search->setFixedWidth(180);
   header->addWidget(search);
   header->addWidget(refresh_);
   layout->addLayout(header);
 
   auto *summary = new QHBoxLayout;
-  completion_->setObjectName("summaryValue");
-  auto *completionPanel = new QWidget;
-  completionPanel->setObjectName("summaryPanel");
-  auto *completionLayout = new QVBoxLayout(completionPanel);
-  completionLayout->setContentsMargins(14, 10, 14, 10);
-  auto *completionTitle = new QLabel("Equipment completion");
-  completionTitle->setObjectName("secondaryText");
-  completionBar_->setTextVisible(false);
-  completionBar_->setRange(0, 100);
-  completionLayout->addWidget(completionTitle);
-  completionLayout->addWidget(completion_);
-  completionLayout->addWidget(completionBar_);
-  summary->addWidget(completionPanel, 2);
-  summary->addWidget(summaryPanel("Warframes / Archwings", warframes_), 1);
-  summary->addWidget(summaryPanel("Weapons", weapons_), 1);
-  summary->addWidget(summaryPanel("Companions", companions_), 1);
+  summary->setSpacing(12);
+  summary->addWidget(summaryPanel("Game content", gameContent_), 1);
+  summary->addWidget(summaryPanel("Star chart", starChart_), 1);
+  summary->addWidget(summaryPanel("Intrinsics", intrinsics_), 1);
   layout->addLayout(summary);
+
+  auto *sectionTitle = new QLabel("Best ways to level up mastery");
+  sectionTitle->setObjectName("sectionTitle");
+  layout->addWidget(sectionTitle);
 
   auto *filters = new QHBoxLayout;
   filters->setSpacing(6);
@@ -195,18 +193,47 @@ void MasteryPlannerWidget::updateContent() {
   const int mastered = summary.value("mastered").toInt();
   const int total = summary.value("total").toInt();
   const int percent = summary.value("percent").toInt();
-  rank_->setText(QString("Mastery Rank %1")
-                     .arg(summary.value("player_level").toInt()));
-  completion_->setText(QString("%1% · %2 / %3").arg(percent).arg(mastered).arg(total));
+  rank_->setText(QString::number(summary.value("player_level").toInt()));
+  completion_->setText(
+      QString("%1%  ·  %2 / %3 equipment mastered")
+          .arg(percent)
+          .arg(mastered)
+          .arg(total));
   completionBar_->setValue(percent);
   const auto categoryText = [](const QJsonObject &value) {
+    const int mastered = value.value("mastered").toInt();
+    const int total = value.value("total").toInt();
+    const int percent = total > 0 ? mastered * 100 / total : 0;
+    return QString("%1%  %2 / %3").arg(percent).arg(mastered).arg(total);
+  };
+  gameContent_->setText(
+      QString("Warframes / Archwings  %1\nWeapons  %2\nCompanions  %3")
+          .arg(categoryText(summary.value("warframes").toObject()))
+          .arg(categoryText(summary.value("weapons").toObject()))
+          .arg(categoryText(summary.value("companions").toObject())));
+  const QJsonObject star = summary.value("star_chart").toObject();
+  const auto observed = [](const QJsonObject &value) {
+    const int current = value.value("current").toInt();
+    return value.value("total").isDouble()
+               ? QString("%1 / %2").arg(current).arg(value.value("total").toInt())
+               : QString::number(current);
+  };
+  starChart_->setText(
+      QString("Normal  %1\nJunctions  %2\nSteel Path  %3\nSteel junctions  %4")
+          .arg(observed(star.value("normal").toObject()))
+          .arg(observed(star.value("junctions").toObject()))
+          .arg(observed(star.value("steel").toObject()))
+          .arg(observed(star.value("steel_junctions").toObject())));
+  const QJsonObject intrinsic = summary.value("intrinsics").toObject();
+  const auto progressText = [](const QJsonObject &value) {
     return QString("%1 / %2")
-        .arg(value.value("mastered").toInt())
+        .arg(value.value("current").toInt())
         .arg(value.value("total").toInt());
   };
-  warframes_->setText(categoryText(summary.value("warframes").toObject()));
-  weapons_->setText(categoryText(summary.value("weapons").toObject()));
-  companions_->setText(categoryText(summary.value("companions").toObject()));
+  intrinsics_->setText(
+      QString("Railjack  %1\nDuviri  %2")
+          .arg(progressText(intrinsic.value("railjack").toObject()))
+          .arg(progressText(intrinsic.value("duviri").toObject())));
 
   const bool loading = controller_->masteryLoading();
   loadingBar_->setRange(0, loading ? 0 : 1);
