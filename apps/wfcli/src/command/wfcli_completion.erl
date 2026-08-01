@@ -138,6 +138,7 @@ contexts() ->
         {["query"], options(wfcli_query_cli:known_args())},
         {["player"], options(wfcli_query_cli:known_args())},
         {["market"], options(wfcli_market_cli:known_args())},
+        {["notifications"], ["status", "off", "on", "persistent" | help_flags()]},
         {["mods"], options(wfcli_exports_cli:known_args())},
         {["items"], options(wfcli_exports_cli:known_args())},
         {["codex"], options(wfcli_knowledge_cli:known_args())},
@@ -203,7 +204,8 @@ options(Args) ->
     ["help" | [Arg || [$- | _] = Arg <- Args]].
 
 help_choices() ->
-    ["commands", "data", "query", "player", "market", "companion", "mcp",
+    ["commands", "data", "query", "player", "market", "notifications",
+     "companion", "mcp",
      "watch", "format", "update", "daemon" | wfcli_cli:public_command_names()].
 
 help_flags() -> ["help", "--help", "-h"].

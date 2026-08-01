@@ -17,12 +17,14 @@ setup() ->
     CachePath = filename:join(Root, "player.term"),
     MarketCache = filename:join(Root, "market.term"),
     AssetCache = filename:join(Root, "assets"),
+    NotificationSettings = filename:join(Root, "notifications.json"),
     application:set_env(wfdaemon, local_socket, SocketPath),
     application:set_env(wfdaemon, player_cache, CachePath),
     application:set_env(wfdaemon, market_cache, MarketCache),
     application:set_env(wfdaemon, market_request_interval_ms, 0),
     application:set_env(wfdaemon, market_http_fun, fun market_http/2),
     application:set_env(wfdaemon, asset_cache_dir, AssetCache),
+    application:set_env(wfdaemon, notification_settings_file, NotificationSettings),
     application:set_env(wfdaemon, local_request_workers, 2),
     application:set_env(wfdaemon, local_request_global_workers, 2),
     application:set_env(wfdaemon, daemon_idle_shutdown, false),
@@ -30,12 +32,15 @@ setup() ->
     {ok, _Player} = wfcli_player_service:start_link(),
     {ok, _Market} = wfcli_market_service:start_link(),
     {ok, _Assets} = wfcli_asset_service:start_link(),
+    {ok, _Notifications} = wfcli_notification_service:start_link(),
     {ok, _Api} = wfcli_local_api:start_link(),
-    #{root => Root, socket => SocketPath, cache => CachePath, market_cache => MarketCache}.
+    #{root => Root, socket => SocketPath, cache => CachePath,
+      market_cache => MarketCache, notification_settings => NotificationSettings}.
 
 cleanup(#{root := Root, socket := SocketPath, cache := CachePath,
-          market_cache := MarketCache}) ->
+          market_cache := MarketCache, notification_settings := NotificationSettings}) ->
     gen_server:stop(wfcli_local_api),
+    gen_server:stop(wfcli_notification_service),
     gen_server:stop(wfcli_asset_service),
     gen_server:stop(wfcli_market_service),
     gen_server:stop(wfcli_player_service),
@@ -46,6 +51,7 @@ cleanup(#{root := Root, socket := SocketPath, cache := CachePath,
     application:unset_env(wfdaemon, market_request_interval_ms),
     application:unset_env(wfdaemon, market_http_fun),
     application:unset_env(wfdaemon, asset_cache_dir),
+    application:unset_env(wfdaemon, notification_settings_file),
     application:unset_env(wfdaemon, local_request_workers),
     application:unset_env(wfdaemon, local_request_global_workers),
     application:unset_env(wfdaemon, asset_http_fun),
@@ -55,6 +61,8 @@ cleanup(#{root := Root, socket := SocketPath, cache := CachePath,
     _ = file:delete(CachePath ++ ".tmp"),
     _ = file:delete(MarketCache),
     _ = file:delete(MarketCache ++ ".tmp"),
+    _ = file:delete(NotificationSettings),
+    _ = file:delete(NotificationSettings ++ ".tmp"),
     _ = file:del_dir_r(Root),
     ok.
 
@@ -66,6 +74,7 @@ lifecycle(#{socket := SocketPath}) ->
     reject_invalid_relic_limit(TestSocket),
     request_market_quote(TestSocket),
     request_cached_market_quote(TestSocket),
+    request_notification_settings(TestSocket),
     slow_asset_does_not_block_dataset(TestSocket),
     local_request_limit_queues_excess_work(TestSocket),
     global_local_request_limit_queues_other_clients(TestSocket, SocketPath),
@@ -237,8 +246,28 @@ connect_client(SocketPath, Client, Extra) ->
     ?assert(lists:member(<<"player.foundry">>, maps:get(<<"capabilities">>, Reply))),
     ?assert(lists:member(<<"player.inventory">>, maps:get(<<"capabilities">>, Reply))),
     ?assert(lists:member(<<"player.mastery">>, maps:get(<<"capabilities">>, Reply))),
+    ?assert(lists:member(<<"notifications.fissures">>,
+                         maps:get(<<"capabilities">>, Reply))),
     ?assert(lists:member(<<"asset.resolve">>, maps:get(<<"capabilities">>, Reply))),
     Socket.
+
+request_notification_settings(Socket) ->
+    Get = #{<<"op">> => <<"notification_settings">>, <<"id">> => 15},
+    ok = socket:send(Socket, wfcli_local_protocol:encode(Get)),
+    {ok, GetLine} = socket:recv(Socket, 0, 5000),
+    {ok, GetReply} = wfcli_local_protocol:decode(string:trim(GetLine)),
+    ?assertEqual(<<"off">>, maps:get(
+                              <<"mode">>,
+                              maps:get(<<"fissures">>, maps:get(<<"data">>, GetReply)))),
+    Set = #{<<"op">> => <<"notification_settings_set">>, <<"id">> => 16,
+            <<"fissures">> => #{<<"mode">> => <<"session">>}},
+    ok = socket:send(Socket, wfcli_local_protocol:encode(Set)),
+    {ok, SetLine} = socket:recv(Socket, 0, 5000),
+    {ok, SetReply} = wfcli_local_protocol:decode(string:trim(SetLine)),
+    ?assertEqual(true, maps:get(<<"ok">>, SetReply)),
+    ?assertEqual(<<"session">>, maps:get(
+                                  <<"mode">>,
+                                  maps:get(<<"fissures">>, maps:get(<<"data">>, SetReply)))).
 
 publish_game_running(Socket) ->
     Request = #{<<"op">> => <<"publish">>, <<"id">> => 2,

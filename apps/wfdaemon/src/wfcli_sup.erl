@@ -100,6 +100,13 @@ daemon_children() ->
                 type => worker,
                 modules => [wfcli_asset_service]
             }, #{
+                id => wfcli_notification_service,
+                start => {wfcli_notification_service, start_link, []},
+                restart => permanent,
+                shutdown => 5000,
+                type => worker,
+                modules => [wfcli_notification_service]
+            }, #{
                 id => wfcli_local_api,
                 start => {wfcli_local_api, start_link, []},
                 restart => permanent,

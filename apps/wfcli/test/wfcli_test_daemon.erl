@@ -12,6 +12,8 @@ start() ->
                      integer_to_list(erlang:unique_integer([positive]))),
     application:set_env(wfdaemon, player_cache, filename:join(TestRoot, "player.term")),
     application:set_env(wfdaemon, local_socket, filename:join(TestRoot, "wfdaemon.sock")),
+    application:set_env(wfdaemon, notification_settings_file,
+                        filename:join(TestRoot, "notifications.json")),
     persistent_term:put({?MODULE, test_root}, TestRoot),
     application:set_env(wfcli, test_local_daemon, true),
     application:set_env(wfdaemon, daemon_enabled, true),
@@ -32,12 +34,15 @@ stop() ->
     persistent_term:erase({?MODULE, test_root}),
     application:unset_env(wfdaemon, player_cache),
     application:unset_env(wfdaemon, local_socket),
+    application:unset_env(wfdaemon, notification_settings_file),
     ok.
 
 cleanup_test_root(undefined) -> ok;
 cleanup_test_root(TestRoot) ->
     _ = file:delete(filename:join(TestRoot, "player.term.tmp")),
     _ = file:delete(filename:join(TestRoot, "player.term")),
+    _ = file:delete(filename:join(TestRoot, "notifications.json.tmp")),
+    _ = file:delete(filename:join(TestRoot, "notifications.json")),
     _ = file:delete(filename:join(TestRoot, "wfdaemon.sock")),
     _ = file:del_dir(TestRoot),
     ok.

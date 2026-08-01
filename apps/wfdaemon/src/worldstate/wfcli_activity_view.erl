@@ -3,7 +3,7 @@
 %%%-------------------------------------------------------------------
 -module(wfcli_activity_view).
 
--export([project/1]).
+-export([project/1, project_fissure/2]).
 
 -doc "Project a worldstate result into JSON-safe desktop activity data.".
 -spec project(map()) -> {ok, map()} | {error, term()}.
@@ -22,6 +22,8 @@ project(#{entries := Entries} = Result) when is_list(Entries) ->
            <<"stale">> => maps:get(stale, Result, false) =:= true}};
 project(_Result) -> {error, malformed_worldstate_activity}.
 
+-doc "Project one normalized fissure for desktop and notification consumers.".
+-spec project_fissure(map(), map()) -> map().
 project_fissure(Entry, Opts) ->
     Row = wfcli_worldstate_projector:table_row_map(Entry, Opts),
     #{<<"id">> => value(maps:get(id, Row, maps:get(id, Entry, <<>>))),

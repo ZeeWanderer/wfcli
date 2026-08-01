@@ -40,6 +40,8 @@ dispatch_args(["player" | Rest], _Prompt) ->
     wfcli_player_cli:run(Rest);
 dispatch_args(["market" | Rest], _Prompt) ->
     wfcli_market_cli:run(Rest);
+dispatch_args(["notifications" | Rest], _Prompt) ->
+    wfcli_notification_cli:run(Rest);
 dispatch_args(["companion" | Rest], _Prompt) ->
     wfcli_companion_cli:run(Rest);
 dispatch_args(["mcp" | Rest], _Prompt) ->
@@ -127,6 +129,7 @@ usage() ->
         {"query", "search the indexed knowledge base"},
         {"player", "inspect or query local player data"},
         {"market", "look up Warframe Market top-order prices"},
+        {"notifications", "configure fissure notifications"},
         {"mods", "query mod exports"},
         {"items", "query export item names"},
         {"codex", "query official Codex knowledge"},
@@ -184,14 +187,16 @@ is_knowledge_command(Cmd) ->
     lists:member(Cmd, wfcli_knowledge_cli:command_names()).
 
 command_names() ->
-    ["forma-plan", "visualize", "query", "player", "market", "companion", "mcp",
+    ["forma-plan", "visualize", "query", "player", "market", "notifications",
+     "companion", "mcp",
      "daemon", "update", "completion", "paths", "help"]
     ++ wfcli_exports_cli:command_names()
     ++ wfcli_knowledge_cli:command_names()
     ++ wfcli_worldstate_cli:command_names().
 
 public_command_names() ->
-    ["forma-plan", "visualize", "query", "player", "market", "companion", "mcp",
+    ["forma-plan", "visualize", "query", "player", "market", "notifications",
+     "companion", "mcp",
      "daemon", "update", "completion", "paths", "help"]
     ++ wfcli_exports_cli:command_names()
     ++ wfcli_knowledge_cli:command_names()

@@ -15,7 +15,7 @@ registered_processes_are_declared_test() ->
        [wfcli_sup, wfcli_daemon, wfcli_worldstate_service, wfcli_exports_store,
         wfcli_source_manager, wfcli_query_service, wfcli_forma_service,
         wfcli_player_service, wfcli_market_service, wfcli_asset_service,
-        wfcli_local_api],
+        wfcli_notification_service, wfcli_local_api],
        Registered).
 
 query_worker_is_restarted_test() ->

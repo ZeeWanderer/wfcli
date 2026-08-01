@@ -20,6 +20,8 @@
     stop |
     player_snapshot |
     player_clear |
+    notification_settings |
+    {notification_settings, map()} |
     {companion_command, map()} |
     {hello, non_neg_integer()} |
     {set_idle_policy, persistent | idle | {idle, pos_integer()}} |
@@ -112,6 +114,17 @@ handle_call(player_snapshot, _From, State) ->
     {reply, wfcli_player_service:snapshot(), State};
 handle_call(player_clear, _From, State) ->
     {reply, wfcli_player_service:clear(), State};
+handle_call(notification_settings, _From, State) ->
+    {reply, safe_worker_call(wfcli_notification_service,
+                             fun wfcli_notification_service:settings/0), State};
+handle_call({notification_settings, Patch}, _From, State) when is_map(Patch) ->
+    Reply = case safe_worker_call(
+                   wfcli_notification_service,
+                   fun() -> wfcli_notification_service:update(Patch) end) of
+        {ok, Settings} -> Settings;
+        {error, _Reason} = Error -> Error
+    end,
+    {reply, Reply, State};
 handle_call({companion_command, Command}, _From, State) when is_map(Command) ->
     {reply, wfcli_local_api:companion_command(Command), State};
 handle_call({hot_update, Bundles}, From, State) when is_list(Bundles) ->

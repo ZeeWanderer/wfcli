@@ -126,7 +126,7 @@ handle_info({client_identified, Pid, ClientInfo}, State) ->
         undefined -> {noreply, State};
         Info ->
             Client = maps:get(client, ClientInfo),
-            update_client_activity(maps:get(client, Info, undefined), Client),
+            update_client_activity(Pid, maps:get(client, Info, undefined), Client),
             {noreply, State#{connections => Connections#{Pid => maps:merge(Info, ClientInfo)}}}
     end;
 handle_info({'DOWN', Monitor, process, _Pid, _Reason}, State) ->
@@ -138,7 +138,7 @@ handle_info({'DOWN', Monitor, process, _Pid, _Reason}, State) ->
                 error ->
                     {noreply, State#{monitors => Monitors}};
                 {Info, Connections} ->
-                    release_client_activity(Info),
+                    release_client_activity(Connection, Info),
                     State1 = drop_local_worker_client(Connection, State),
                     {noreply, assign_local_worker_waiters(
                                 State1#{connections => Connections,
@@ -408,6 +408,7 @@ handle_request(#{<<"op">> := <<"hello">>} = Request, State) ->
                                <<"player.foundry">>,
                                <<"player.inventory">>,
                                <<"player.mastery">>,
+                               <<"notifications.fissures">>,
                                <<"asset.resolve">>,
                                <<"companion.command">>]
     },
@@ -447,6 +448,24 @@ handle_request(#{<<"op">> := <<"activity_view">>} = Request, State) ->
             send_error(maps:get(socket, State), Id, Reason),
             {ok, State}
     end;
+handle_request(#{<<"op">> := <<"notification_settings">>} = Request, State) ->
+    send_ok(maps:get(socket, State), request_id(Request), <<"notifications">>,
+            wfcli_notification_service:settings()),
+    {ok, State};
+handle_request(#{<<"op">> := <<"notification_settings_set">>,
+                 <<"fissures">> := Fissures} = Request, State) when is_map(Fissures) ->
+    case wfcli_notification_service:update(#{<<"fissures">> => Fissures}) of
+        {ok, Settings} ->
+            send_ok(maps:get(socket, State), request_id(Request),
+                    <<"notifications">>, Settings);
+        {error, Reason} ->
+            send_error(maps:get(socket, State), request_id(Request), Reason)
+    end,
+    {ok, State};
+handle_request(#{<<"op">> := <<"notification_settings_set">>} = Request, State) ->
+    send_error(maps:get(socket, State), request_id(Request),
+               invalid_notification_settings),
+    {ok, State};
 handle_request(#{<<"op">> := <<"subscribe">>, <<"dataset">> := <<"player">>} = Request,
                State) ->
     subscribe_player(request_id(Request), State);
@@ -835,9 +854,10 @@ cleanup_connection(State) ->
     erlang:demonitor(maps:get(reader_monitor, State), [flush]),
     ok.
 
-update_client_activity(Previous, Client) when Previous =:= Client -> ok;
-update_client_activity(Previous, Client) ->
-    set_client_activity(is_active_client(Previous), is_active_client(Client)).
+update_client_activity(_Pid, Previous, Client) when Previous =:= Client -> ok;
+update_client_activity(Pid, Previous, Client) ->
+    set_client_activity(is_active_client(Previous), is_active_client(Client)),
+    set_gui_activity(Pid, Previous =:= <<"wfgui">>, Client =:= <<"wfgui">>).
 
 set_client_activity(true, false) ->
     wfcli_worldstate_service:activity_end();
@@ -845,9 +865,10 @@ set_client_activity(false, true) ->
     wfcli_worldstate_service:activity_start();
 set_client_activity(_Previous, _Client) -> ok.
 
-release_client_activity(#{client := Client}) ->
-    release_activity(is_active_client(Client));
-release_client_activity(_Info) -> ok.
+release_client_activity(Pid, #{client := Client}) ->
+    release_activity(is_active_client(Client)),
+    set_gui_activity(Pid, Client =:= <<"wfgui">>, false);
+release_client_activity(_Pid, _Info) -> ok.
 
 release_activity(true) ->
     wfcli_worldstate_service:activity_end();
@@ -856,6 +877,12 @@ release_activity(false) -> ok.
 is_active_client(<<"wfcompanion">>) -> true;
 is_active_client(<<"wfgui">>) -> true;
 is_active_client(_Client) -> false.
+
+set_gui_activity(_Pid, Previous, Current) when Previous =:= Current -> ok;
+set_gui_activity(Pid, false, true) ->
+    wfcli_notification_service:gui_connected(Pid);
+set_gui_activity(Pid, true, false) ->
+    wfcli_notification_service:gui_disconnected(Pid).
 
 valid_os_pid(Pid) when is_integer(Pid), Pid > 0 -> Pid;
 valid_os_pid(_Pid) -> undefined.
