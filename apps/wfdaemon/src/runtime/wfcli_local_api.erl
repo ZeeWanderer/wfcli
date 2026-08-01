@@ -296,6 +296,7 @@ connection(Socket, Parent) ->
     State = #{socket => Socket, parent => Parent, reader => Reader,
               reader_monitor => ReaderMonitor, buffer => <<>>,
               hello => false, subscriptions => #{}, refs => #{}, market_refs => #{},
+              activity_refs => #{},
               workers => #{}, worker_queue => queue:new(),
               worker_permits => 0, worker_permit_requests => 0,
               max_workers => local_worker_limit()},
@@ -318,7 +319,7 @@ connection_loop(State = #{reader_monitor := ReaderMonitor}) ->
             State1 = send_subscription_update(Ref, Snapshot, State),
             connection_loop(State1);
         {wfcli_daemon, Ref, Reply} ->
-            State1 = send_market_reply(Ref, Reply, State),
+            State1 = send_service_reply(Ref, Reply, State),
             connection_loop(State1);
         {local_request_result, Token, Id, Dataset, Reply} ->
             State1 = send_local_request_result(Token, Id, Dataset, Reply, State),
@@ -403,6 +404,8 @@ handle_request(#{<<"op">> := <<"hello">>} = Request, State) ->
                                <<"relic.context">>,
                                <<"relic.planner">>,
                                <<"relic.recommendations">>,
+                               <<"worldstate.activity">>,
+                               <<"player.foundry">>,
                                <<"player.inventory">>,
                                <<"player.mastery">>,
                                <<"asset.resolve">>,
@@ -420,6 +423,10 @@ handle_request(Request, State = #{hello := false}) ->
 handle_request(#{<<"op">> := <<"get">>, <<"dataset">> := Dataset} = Request, State) ->
     Id = request_id(Request),
     {ok, start_local_request(Id, Dataset, fun() -> dataset_snapshot(Dataset) end, State)};
+handle_request(#{<<"op">> := <<"foundry_view">>} = Request, State) ->
+    Id = request_id(Request),
+    {ok, start_local_request(Id, <<"foundry">>,
+                             fun wfcli_player_views:foundry/0, State)};
 handle_request(#{<<"op">> := <<"inventory_view">>} = Request, State) ->
     Id = request_id(Request),
     {ok, start_local_request(Id, <<"inventory">>,
@@ -428,6 +435,18 @@ handle_request(#{<<"op">> := <<"mastery_view">>} = Request, State) ->
     Id = request_id(Request),
     {ok, start_local_request(Id, <<"mastery">>,
                              fun wfcli_player_views:mastery/0, State)};
+handle_request(#{<<"op">> := <<"activity_view">>} = Request, State) ->
+    Id = request_id(Request),
+    WorldstateRequest = #{source => worldstate, mode => list,
+                          opts => #{ttl => 60, resolve_items => true}},
+    case wfcli_worldstate_service:submit(self(), WorldstateRequest) of
+        {ok, Ref} ->
+            Refs = maps:get(activity_refs, State),
+            {ok, State#{activity_refs => Refs#{Ref => Id}}};
+        {error, Reason} ->
+            send_error(maps:get(socket, State), Id, Reason),
+            {ok, State}
+    end;
 handle_request(#{<<"op">> := <<"subscribe">>, <<"dataset">> := <<"player">>} = Request,
                State) ->
     subscribe_player(request_id(Request), State);
@@ -633,6 +652,22 @@ send_subscription_update(Ref, Snapshot, State) ->
                         <<"dataset">> => <<"player">>,
                         <<"data">> => json_snapshot(Snapshot)}),
             State
+    end.
+
+send_service_reply(Ref, Reply, State) ->
+    case maps:take(Ref, maps:get(activity_refs, State, #{})) of
+        error -> send_market_reply(Ref, Reply, State);
+        {Id, ActivityRefs} ->
+            Projected = case Reply of
+                {ok, WorldstateData} -> wfcli_activity_view:project(WorldstateData);
+                {error, _Reason} = Error -> Error
+            end,
+            case Projected of
+                {ok, ActivityData} ->
+                    send_ok(maps:get(socket, State), Id, <<"activity">>, ActivityData);
+                {error, Reason} -> send_error(maps:get(socket, State), Id, Reason)
+            end,
+            State#{activity_refs => ActivityRefs}
     end.
 
 send_market_reply(Ref, Reply, State) ->

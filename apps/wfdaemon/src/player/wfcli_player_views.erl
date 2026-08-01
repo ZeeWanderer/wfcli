@@ -1,11 +1,16 @@
 %%%-------------------------------------------------------------------
-%% Catalog joins for desktop inventory and mastery views.
+%% Catalog joins for desktop player views.
 %%%-------------------------------------------------------------------
 -module(wfcli_player_views).
 
--export([inventory/0, mastery/0, inventory/2, mastery/2]).
+-export([foundry/0, inventory/0, mastery/0,
+         foundry/2, inventory/2, mastery/2]).
 
 -define(VIEW_CACHE, wfcli_player_view_cache).
+
+-doc "Build Foundry view from current daemon snapshot and managed item catalog.".
+-spec foundry() -> {ok, map()} | {error, term()}.
+foundry() -> with_catalog(foundry, fun foundry/2).
 
 -doc "Build inventory view from current daemon snapshot and managed item catalog.".
 -spec inventory() -> {ok, map()} | {error, term()}.
@@ -14,6 +19,23 @@ inventory() -> with_catalog(inventory, fun inventory/2).
 -doc "Build mastery view from current daemon snapshot and managed item catalog.".
 -spec mastery() -> {ok, map()} | {error, term()}.
 mastery() -> with_catalog(mastery, fun mastery/2).
+
+-doc "Build Foundry view from supplied data; exposed for deterministic tests.".
+-spec foundry(map(), [map()]) -> {ok, map()}.
+foundry(Snapshot, Catalog) ->
+    Observation = inventory_observation(Snapshot),
+    Index = maps:get(<<"index">>, Observation, #{}),
+    Owned = aggregate(maps:get(<<"equipment">>, Index, []) ++
+                      maps:get(<<"stacks">>, Index, [])),
+    Mastery = mastery_index(maps:get(<<"mastery">>, Index, [])),
+    Pending = pending_index(maps:get(<<"pending_recipes">>, Index, []), Catalog),
+    Items = [foundry_item(Item, Owned, Mastery, Pending)
+             || Item <- Catalog, mastery_item_supported(Item)],
+    Sorted = lists:sort(fun name_before/2, Items),
+    {ok, (base_response(Snapshot))#{
+        <<"items">> => Sorted,
+        <<"summary">> => foundry_summary(Sorted)
+    }}.
 
 -doc "Build inventory view from supplied data; exposed for deterministic tests.".
 -spec inventory(map(), [map()]) -> {ok, map()}.
@@ -52,7 +74,7 @@ mastery(Snapshot, Catalog) ->
     Profile = maps:get(<<"profile">>, Observation, #{}),
     {ok, (base_response(Snapshot))#{
         <<"items">> => Sorted,
-        <<"summary">> => mastery_summary(Sorted, Profile)
+        <<"summary">> => mastery_summary(Sorted, Profile, Index)
     }}.
 
 with_catalog(View, Build) ->
@@ -312,6 +334,7 @@ mastery_item(Item, Owned, Mastery, Pending) ->
       <<"group">> => mastery_group(Category, Type),
       <<"category">> => Category,
       <<"type">> => Type,
+      <<"is_prime">> => maps:get(<<"isPrime">>, Item, false) =:= true,
       <<"mastery_requirement">> => number(maps:get(<<"masteryReq">>, Item, 0)),
       <<"owned">> => OwnedCount > 0,
       <<"pending">> => maps:get(Unique, Pending, false),
@@ -328,6 +351,21 @@ mastery_item(Item, Owned, Mastery, Pending) ->
                         end, Missing),
       <<"components">> => Components,
       <<"asset">> => asset(Unique, maps:get(<<"imageName">>, Item, undefined))}.
+
+foundry_item(Item, Owned, Mastery, Pending) ->
+    Base = mastery_item(Item, Owned, Mastery, Pending),
+    Components = maps:get(<<"components">>, Base),
+    Required = lists:sum([maps:get(<<"required">>, Component)
+                          || Component <- Components]),
+    Available = lists:sum([min(maps:get(<<"owned">>, Component),
+                               maps:get(<<"required">>, Component))
+                           || Component <- Components]),
+    Ready = Components =/= [] andalso Available >= Required,
+    Base#{<<"group">> => foundry_group(maps:get(<<"category">>, Base),
+                                        maps:get(<<"type">>, Base)),
+          <<"ready_to_build">> => Ready,
+          <<"components_owned">> => Available,
+          <<"components_required">> => Required}.
 
 mastery_components(Components, Owned) ->
     [begin
@@ -352,7 +390,20 @@ has_owned_relic(Drops, Owned) ->
           maps:get(count, maps:get(Unique, Owned, #{}), 0) > 0
       end, Drops).
 
-mastery_summary(Items, Profile) ->
+foundry_summary(Items) ->
+    Groups = lists:foldl(
+      fun(Item, Acc) ->
+          Group = maps:get(<<"group">>, Item),
+          Acc#{Group => maps:get(Group, Acc, 0) + 1}
+      end, #{}, Items),
+    #{<<"total">> => length(Items),
+      <<"owned">> => count_true(<<"owned">>, Items),
+      <<"mastered">> => count_true(<<"mastered">>, Items),
+      <<"pending">> => count_true(<<"pending">>, Items),
+      <<"ready">> => count_true(<<"ready_to_build">>, Items),
+      <<"groups">> => Groups}.
+
+mastery_summary(Items, Profile, Index) ->
     Groups = [<<"warframes">>, <<"weapons">>, <<"companions">>],
     GroupSummary = maps:from_list(
       [{Group, category_summary(Group, Items)} || Group <- Groups]),
@@ -362,8 +413,76 @@ mastery_summary(Items, Profile) ->
         <<"total">> => Total,
         <<"mastered">> => Mastered,
         <<"percent">> => percent(Mastered, Total),
-        <<"player_level">> => number(maps:get(<<"player_level">>, Profile, 0))
+        <<"player_level">> => number(maps:get(<<"player_level">>, Profile, 0)),
+        <<"intrinsics">> => intrinsic_summary(maps:get(<<"player_skills">>, Index, #{})),
+        <<"star_chart">> => star_chart_summary(maps:get(<<"missions">>, Index, []))
     }.
+
+intrinsic_summary(Skills) when is_map(Skills) ->
+    Railjack = sum_keys(Skills, [<<"LPS_TACTICAL">>, <<"LPS_PILOTING">>,
+                                  <<"LPS_GUNNERY">>, <<"LPS_ENGINEERING">>,
+                                  <<"LPS_COMMAND">>]),
+    Duviri = sum_keys(Skills, [<<"LPS_DRIFT_COMBAT">>,
+                                <<"LPS_DRIFT_OPPORTUNITY">>,
+                                <<"LPS_DRIFT_RIDING">>,
+                                <<"LPS_DRIFT_ENDURANCE">>]),
+    #{<<"railjack">> => progress(Railjack, 50),
+      <<"duviri">> => progress(Duviri, 40),
+      <<"percent">> => percent(Railjack + Duviri, 90)};
+intrinsic_summary(_Skills) ->
+    #{<<"railjack">> => progress(0, 50),
+      <<"duviri">> => progress(0, 40),
+      <<"percent">> => 0}.
+
+star_chart_summary(Missions) when is_list(Missions) ->
+    Normal = length([ok || Mission <- Missions,
+                           completed_mission(Mission, normal)]),
+    Steel = length([ok || Mission <- Missions,
+                          completed_mission(Mission, steel)]),
+    Junctions = length([ok || Mission <- Missions,
+                              completed_junction(Mission, normal)]),
+    SteelJunctions = length([ok || Mission <- Missions,
+                                   completed_junction(Mission, steel)]),
+    #{<<"normal">> => observed_progress(Normal),
+      <<"steel">> => observed_progress(Steel),
+      <<"junctions">> => observed_progress(Junctions),
+      <<"steel_junctions">> => observed_progress(SteelJunctions)};
+star_chart_summary(_Missions) -> star_chart_summary([]).
+
+completed_mission(Mission, Mode) when is_map(Mission) ->
+    Tag = maps:get(<<"Tag">>, Mission, <<>>),
+    not is_junction(Tag) andalso number(maps:get(<<"Completes">>, Mission, 0)) > 0
+        andalso (Mode =:= normal orelse number(maps:get(<<"Tier">>, Mission, 0)) > 0);
+completed_mission(_Mission, _Mode) -> false.
+
+completed_junction(Mission, Mode) when is_map(Mission) ->
+    Tag = maps:get(<<"Tag">>, Mission, <<>>),
+    Completes = number(maps:get(<<"Completes">>, Mission, 0)),
+    Tier = number(maps:get(<<"Tier">>, Mission, 0)),
+    is_junction(Tag) andalso binary:match(Tag, <<"To">>) =/= nomatch andalso
+        case Mode of
+            normal -> Completes > 0;
+            steel -> Completes =:= 2 orelse (Completes >= 1 andalso Tier >= 1)
+        end;
+completed_junction(_Mission, _Mode) -> false.
+
+is_junction(Tag) when is_binary(Tag) ->
+    Suffix = <<"Junction">>,
+    byte_size(Tag) >= byte_size(Suffix) andalso
+        binary:part(Tag, byte_size(Tag) - byte_size(Suffix), byte_size(Suffix)) =:= Suffix;
+is_junction(_Tag) -> false.
+
+observed_progress(Current) -> #{<<"current">> => Current, <<"total">> => null}.
+
+progress(Current, Total) ->
+    #{<<"current">> => Current, <<"total">> => Total,
+      <<"percent">> => percent(Current, Total)}.
+
+sum_keys(Map, Keys) ->
+    lists:sum([number(maps:get(Key, Map, 0)) || Key <- Keys]).
+
+count_true(Key, Items) ->
+    length([ok || Item <- Items, maps:get(Key, Item, false) =:= true]).
 
 category_summary(Group, Items) ->
     Matching = [Item || Item <- Items, maps:get(<<"group">>, Item) =:= Group],
@@ -376,6 +495,18 @@ mastery_group(Category, _Type) when Category =:= <<"Warframes">>;
 mastery_group(Category, _Type) when Category =:= <<"Pets">>;
                                     Category =:= <<"Sentinels">> -> <<"companions">>;
 mastery_group(_Category, _Type) -> <<"weapons">>.
+
+foundry_group(<<"Warframes">>, _Type) -> <<"warframe">>;
+foundry_group(<<"Primary">>, _Type) -> <<"primary">>;
+foundry_group(<<"Secondary">>, _Type) -> <<"secondary">>;
+foundry_group(<<"Melee">>, _Type) -> <<"melee">>;
+foundry_group(Category, _Type) when Category =:= <<"Archwing">>;
+                                          Category =:= <<"Arch-Gun">>;
+                                          Category =:= <<"Arch-Melee">> -> <<"arch">>;
+foundry_group(Category, _Type) when Category =:= <<"Pets">>;
+                                          Category =:= <<"Sentinels">> -> <<"companion">>;
+foundry_group(<<"Misc">>, _Type) -> <<"modular">>;
+foundry_group(_Category, _Type) -> <<"other">>.
 
 mastery_rank(Xp, Category, Type, MaxRank) ->
     Divisor = case mastery_per_rank(Category, Type) of 200 -> 1000; 100 -> 500 end,

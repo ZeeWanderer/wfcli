@@ -14,7 +14,16 @@ inventory_and_mastery_join_test() ->
                          <<"equipment">> => [entry(Frame, 1, 100000)],
                          <<"stacks">> => [entry(Relic, 2, 0), entry(Chassis, 1, 0)],
                          <<"mastery">> => [entry(Frame, 1, 100000)],
-                         <<"pending_recipes">> => []
+                         <<"pending_recipes">> => [],
+                         <<"missions">> => [
+                             #{<<"Tag">> => <<"EarthNode">>,
+                               <<"Completes">> => 1, <<"Tier">> => 1},
+                             #{<<"Tag">> => <<"EarthToVenusJunction">>,
+                               <<"Completes">> => 2, <<"Tier">> => 1}],
+                         <<"player_skills">> => #{
+                             <<"LPS_PILOTING">> => 7,
+                             <<"LPS_GUNNERY">> => 8,
+                             <<"LPS_DRIFT_RIDING">> => 9}
                      }}}},
     Drop = #{<<"location">> => <<"Lith T1 Relic (Intact)">>,
              <<"uniqueName">> => Relic},
@@ -44,13 +53,26 @@ inventory_and_mastery_join_test() ->
                      maps:get(<<"group">>, Item) =:= <<"parts">>],
     ?assertEqual(<<"Test Prime Chassis">>, maps:get(<<"name">>, Part)),
 
+    {ok, Foundry} = wfcli_player_views:foundry(Snapshot, Catalog),
+    [FoundryItem] = maps:get(<<"items">>, Foundry),
+    ?assertEqual(<<"warframe">>, maps:get(<<"group">>, FoundryItem)),
+    ?assertEqual(false, maps:get(<<"ready_to_build">>, FoundryItem)),
+    ?assertEqual(1, maps:get(<<"components_owned">>, FoundryItem)),
+
     {ok, Mastery} = wfcli_player_views:mastery(Snapshot, Catalog),
     [MasteryItem] = maps:get(<<"items">>, Mastery),
     ?assertEqual(10, maps:get(<<"rank">>, MasteryItem)),
     ?assertEqual(4000, maps:get(<<"potential_xp">>, MasteryItem)),
     ?assert(maps:get(<<"from_relics">>, MasteryItem)),
     ?assert(maps:get(<<"buyable">>, MasteryItem)),
-    ?assertEqual(18, maps:get(<<"player_level">>, maps:get(<<"summary">>, Mastery))).
+    Summary = maps:get(<<"summary">>, Mastery),
+    ?assertEqual(18, maps:get(<<"player_level">>, Summary)),
+    Intrinsics = maps:get(<<"intrinsics">>, Summary),
+    ?assertEqual(15, maps:get(<<"current">>, maps:get(<<"railjack">>, Intrinsics))),
+    ?assertEqual(9, maps:get(<<"current">>, maps:get(<<"duviri">>, Intrinsics))),
+    StarChart = maps:get(<<"star_chart">>, Summary),
+    ?assertEqual(1, maps:get(<<"current">>, maps:get(<<"normal">>, StarChart))),
+    ?assertEqual(1, maps:get(<<"current">>, maps:get(<<"junctions">>, StarChart))).
 
 item_catalog_compaction_test() ->
     Item = #{<<"uniqueName">> => <<"/Lotus/Test">>,

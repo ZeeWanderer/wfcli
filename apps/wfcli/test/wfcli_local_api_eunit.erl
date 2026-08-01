@@ -233,6 +233,8 @@ connect_client(SocketPath, Client, Extra) ->
     ?assert(lists:member(<<"relic.recommendations">>,
                          maps:get(<<"capabilities">>, Reply))),
     ?assert(lists:member(<<"relic.planner">>, maps:get(<<"capabilities">>, Reply))),
+    ?assert(lists:member(<<"worldstate.activity">>, maps:get(<<"capabilities">>, Reply))),
+    ?assert(lists:member(<<"player.foundry">>, maps:get(<<"capabilities">>, Reply))),
     ?assert(lists:member(<<"player.inventory">>, maps:get(<<"capabilities">>, Reply))),
     ?assert(lists:member(<<"player.mastery">>, maps:get(<<"capabilities">>, Reply))),
     ?assert(lists:member(<<"asset.resolve">>, maps:get(<<"capabilities">>, Reply))),
