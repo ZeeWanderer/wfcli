@@ -16,6 +16,7 @@
 #include <utility>
 
 #include "app_controller.h"
+#include "compact_search.h"
 #include "player_item_grid_widget.h"
 #include "player_item_model.h"
 
@@ -39,7 +40,7 @@ void updateFilterButtons(QButtonGroup *group) {
   for (auto *button : group->buttons()) {
     const QString label = button->property("label").toString();
     button->setText(button->isChecked() || button->icon().isNull() ? label
-                                                                    : QString());
+                                                                   : QString());
   }
 }
 } // namespace
@@ -49,7 +50,7 @@ InventoryWidget::InventoryWidget(AppController *controller, QWidget *parent)
       items_(new PlayerItemFilterModel(this)),
       grid_(new PlayerItemGridWidget(PlayerItemGridWidget::Kind::Inventory)),
       summary_(new QLabel), emptyState_(new QLabel),
-      progress_(new QProgressBar), refresh_(new QPushButton("Refresh")),
+      progress_(new QProgressBar), refresh_(new QPushButton),
       content_(new QStackedLayout) {
   setObjectName("page");
   items_->setSourceModel(controller_->inventoryItems());
@@ -79,11 +80,13 @@ InventoryWidget::InventoryWidget(AppController *controller, QWidget *parent)
     groups->addWidget(button);
   }
   groups->addStretch();
-  auto *search = new QLineEdit;
-  search->setPlaceholderText("Search inventory");
-  search->setClearButtonEnabled(true);
-  search->setFixedWidth(150);
-  groups->addWidget(search);
+  auto *compactSearch = new CompactSearch("Search inventory");
+  auto *search = compactSearch->editor();
+  groups->addWidget(compactSearch);
+  refresh_->setObjectName("compactTool");
+  refresh_->setIcon(QIcon(":/resources/ui/refresh.png"));
+  refresh_->setIconSize({20, 20});
+  refresh_->setToolTip("Refresh inventory data");
   groups->addWidget(refresh_);
   layout->addLayout(groups);
   updateFilterButtons(groupButtons);

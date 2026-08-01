@@ -10,6 +10,8 @@
 #include <QString>
 #include <QStringList>
 
+#include <optional>
+
 class QLocalSocket;
 class QTimer;
 
@@ -26,6 +28,8 @@ public:
   void requestRelics(const QString &era, bool fetchPrices);
   void requestPlayerView(const QString &view);
   void requestActivity();
+  void requestNotificationSettings();
+  void setFissureNotificationMode(const QString &mode);
   void requestAssets(const QJsonArray &assets);
   void requestMarketQuotes(const QStringList &items, bool refresh = false);
 
@@ -38,6 +42,8 @@ signals:
   void playerViewFailed(const QString &view, const QString &error);
   void activityReady(const QJsonObject &data);
   void activityFailed(const QString &error);
+  void notificationSettingsReady(const QJsonObject &settings);
+  void notificationSettingsFailed(const QString &error);
   void assetsResolved(const QJsonArray &assets);
   void assetRequestFailed(const QString &error);
   void marketQuotesResolved(const QJsonArray &quotes,
@@ -53,6 +59,7 @@ private:
   void sendPendingRequests();
   void sendPendingPlayerViews();
   void sendPendingActivity();
+  void sendPendingNotificationSettings();
   void sendPendingAssets();
   void sendAssetBatch(const QJsonArray &assets);
   void sendPendingMarketQuotes();
@@ -87,6 +94,7 @@ private:
   QSet<QString> pendingPlayerViews_;
   QHash<qint64, QString> activePlayerViews_;
   qint64 activeActivityRequest_ = 0;
+  qint64 activeNotificationSettingsRequest_ = 0;
   QHash<QString, QJsonObject> pendingAssets_;
   QStringList pendingAssetOrder_;
   QHash<qint64, QJsonArray> activeAssetRequests_;
@@ -98,6 +106,10 @@ private:
   QHash<qint64, MarketQuoteRequest> activeMarketQuoteRequests_;
   bool ready_ = false;
   bool pendingActivity_ = false;
+  bool pendingNotificationSettings_ = true;
+  bool activeNotificationRequestIsSet_ = false;
+  std::optional<QString> desiredNotificationMode_;
+  std::optional<QString> sentNotificationMode_;
   bool connected_ = false;
   bool ensureAttempted_ = false;
   bool updateAttempted_ = false;

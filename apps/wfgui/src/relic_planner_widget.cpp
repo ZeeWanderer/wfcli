@@ -17,6 +17,7 @@
 #include <utility>
 
 #include "app_controller.h"
+#include "compact_search.h"
 #include "relic_grid_widget.h"
 #include "relic_model.h"
 
@@ -34,7 +35,7 @@ RelicPlannerWidget::RelicPlannerWidget(AppController *controller,
                                        QWidget *parent)
     : QWidget(parent), controller_(controller), traceCount_(new QLabel),
       priceProgress_(new QProgressBar), emptyState_(new QLabel),
-      relics_(new RelicGridWidget), refresh_(new QPushButton("Refresh")),
+      relics_(new RelicGridWidget), refresh_(new QPushButton),
       eraGroup_(new QButtonGroup(this)), content_(new QStackedLayout) {
   setObjectName("page");
   auto *layout = new QVBoxLayout(this);
@@ -62,14 +63,17 @@ RelicPlannerWidget::RelicPlannerWidget(AppController *controller,
   }
   toolbar->addWidget(traceCount_);
   toolbar->addStretch();
-  auto *filter = new QLineEdit;
-  filter->setPlaceholderText("Search relics");
-  filter->setClearButtonEnabled(true);
-  filter->setFixedWidth(150);
-  toolbar->addWidget(filter);
+  auto *compactSearch = new CompactSearch("Search relics");
+  auto *filter = compactSearch->editor();
+  toolbar->addWidget(compactSearch);
   auto *onlyOwned = new QCheckBox("Only owned");
+  onlyOwned->setObjectName("ownedToggle");
   onlyOwned->setChecked(controller_->onlyOwned());
   toolbar->addWidget(onlyOwned);
+  refresh_->setObjectName("compactTool");
+  refresh_->setIcon(QIcon(":/resources/ui/refresh.png"));
+  refresh_->setIconSize({20, 20});
+  refresh_->setToolTip("Refresh relic data");
   toolbar->addWidget(refresh_);
   layout->addLayout(toolbar);
 
@@ -122,11 +126,11 @@ RelicPlannerWidget::RelicPlannerWidget(AppController *controller,
           &AppController::refresh);
   connect(onlyOwned, &QCheckBox::toggled, controller_,
           &AppController::setOnlyOwned);
-  connect(
-      eraGroup_, &QButtonGroup::idClicked, this, [this, controller](int id) {
-        controller->selectEra(
-            eraGroup_->button(id)->property("era").toString());
-      });
+  connect(eraGroup_, &QButtonGroup::idClicked, this,
+          [this, controller](int id) {
+            controller->selectEra(
+                eraGroup_->button(id)->property("era").toString());
+          });
   connect(controller_, &AppController::selectedEraChanged, this,
           &RelicPlannerWidget::updateEra);
   connect(controller_, &AppController::onlyOwnedChanged, this,
@@ -139,11 +143,10 @@ RelicPlannerWidget::RelicPlannerWidget(AppController *controller,
           &RelicPlannerWidget::updateContent);
   connect(controller_, &AppController::traceCountChanged, this,
           &RelicPlannerWidget::updateContent);
-  connect(controller_->relics(), &QAbstractItemModel::modelReset, this,
-          [this] {
-            updateEraIcons();
-            updateContent();
-          });
+  connect(controller_->relics(), &QAbstractItemModel::modelReset, this, [this] {
+    updateEraIcons();
+    updateContent();
+  });
   connect(controller_->relics(), &QAbstractItemModel::dataChanged, this,
           [this] { updateEraIcons(); });
   connect(controller_->relics(), &QAbstractItemModel::rowsInserted, this,

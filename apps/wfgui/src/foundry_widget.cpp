@@ -1,21 +1,27 @@
 #include "foundry_widget.h"
 
 #include <QAbstractItemModel>
+#include <QActionGroup>
 #include <QButtonGroup>
 #include <QHBoxLayout>
 #include <QIcon>
 #include <QJsonObject>
 #include <QLabel>
 #include <QLineEdit>
+#include <QMenu>
 #include <QProgressBar>
 #include <QPushButton>
 #include <QStackedLayout>
+#include <QStyle>
+#include <QToolButton>
 #include <QVBoxLayout>
 
+#include <algorithm>
 #include <array>
 #include <utility>
 
 #include "app_controller.h"
+#include "compact_search.h"
 #include "player_item_grid_widget.h"
 #include "player_item_model.h"
 
@@ -41,8 +47,20 @@ void updateFilterButtons(QButtonGroup *group) {
   for (auto *button : group->buttons()) {
     const QString label = button->property("label").toString();
     button->setText(button->isChecked() || button->icon().isNull() ? label
-                                                                    : QString());
+                                                                   : QString());
   }
+}
+
+void updateActiveFilterStyle(QToolButton *button,
+                             const QList<QActionGroup *> &groups) {
+  const bool active = std::any_of(
+      groups.cbegin(), groups.cend(), [](const QActionGroup *group) {
+        return group->checkedAction() &&
+               group->checkedAction()->data().toInt() >= 0;
+      });
+  button->setProperty("active", active);
+  button->style()->unpolish(button);
+  button->style()->polish(button);
 }
 } // namespace
 
@@ -50,8 +68,9 @@ FoundryWidget::FoundryWidget(AppController *controller, QWidget *parent)
     : QWidget(parent), controller_(controller),
       items_(new PlayerItemFilterModel(this)),
       grid_(new PlayerItemGridWidget(PlayerItemGridWidget::Kind::Foundry)),
-      summary_(new QLabel), emptyState_(new QLabel), progress_(new QProgressBar),
-      refresh_(new QPushButton("Refresh")), content_(new QStackedLayout) {
+      summary_(new QLabel), emptyState_(new QLabel),
+      progress_(new QProgressBar), refresh_(new QPushButton),
+      content_(new QStackedLayout) {
   setObjectName("page");
   items_->setSourceModel(controller_->foundryItems());
   items_->setGroup("warframe");
@@ -62,7 +81,7 @@ FoundryWidget::FoundryWidget(AppController *controller, QWidget *parent)
   layout->setSpacing(8);
 
   auto *toolbar = new QHBoxLayout;
-  toolbar->setSpacing(6);
+  toolbar->setSpacing(10);
   auto *groups = new QButtonGroup(this);
   groups->setExclusive(true);
   int id = 0;
@@ -80,17 +99,70 @@ FoundryWidget::FoundryWidget(AppController *controller, QWidget *parent)
     toolbar->addWidget(button);
   }
   toolbar->addStretch();
-  auto *search = new QLineEdit;
-  search->setPlaceholderText("Search Foundry");
-  search->setClearButtonEnabled(true);
-  search->setFixedWidth(150);
-  toolbar->addWidget(search);
+  auto *expandingSearch = new CompactSearch("Search Foundry");
+  auto *search = expandingSearch->editor();
+  toolbar->addWidget(expandingSearch);
+
+  auto *filter = new QToolButton;
+  filter->setObjectName("compactTool");
+  filter->setIcon(QIcon(":/resources/ui/filter.png"));
+  filter->setIconSize({17, 17});
+  filter->setToolTip("Filter Foundry");
+  filter->setPopupMode(QToolButton::InstantPopup);
+  auto *filterMenu = new QMenu(filter);
+  filter->setMenu(filterMenu);
+  struct BooleanFilter {
+    const char *title;
+    const char *key;
+    const char *yes;
+    const char *no;
+  };
+  constexpr std::array<BooleanFilter, 5> booleanFilters{{
+      {"Type", "prime", "Prime", "Normal"},
+      {"Mastery", "mastered", "Mastered", "Unmastered"},
+      {"Owned", "owned", "Owned", "Not owned"},
+      {"Ready to build", "ready", "Ready", "Not ready"},
+      {"Favorite", "favorite", "Favorite", "Not favorite"},
+  }};
+  QList<QActionGroup *> filterGroups;
+  QList<QString> filterKeys;
+  for (const auto &[title, key, yes, no] : booleanFilters) {
+    auto *submenu = filterMenu->addMenu(title);
+    auto *group = new QActionGroup(filterMenu);
+    group->setExclusive(true);
+    for (const auto &[label, state] :
+         std::array<std::pair<const char *, int>, 3>{
+             {{"Any", -1}, {yes, 1}, {no, 0}}}) {
+      auto *action = submenu->addAction(label);
+      action->setCheckable(true);
+      action->setChecked(state == -1);
+      action->setData(state);
+      group->addAction(action);
+    }
+    filterGroups.append(group);
+    filterKeys.append(key);
+  }
+  for (int index = 0; index < filterGroups.size(); ++index) {
+    QActionGroup *group = filterGroups.at(index);
+    const QString key = filterKeys.at(index);
+    connect(group, &QActionGroup::triggered, this,
+            [this, key, group, filter, filterGroups](QAction *) {
+              items_->setFlag(key, group->checkedAction()->data().toInt());
+              updateActiveFilterStyle(filter, filterGroups);
+              updateContent();
+            });
+  }
+  toolbar->addWidget(filter);
+
+  refresh_->setObjectName("compactTool");
+  refresh_->setIcon(QIcon(":/resources/ui/refresh.png"));
+  refresh_->setIconSize({20, 20});
+  refresh_->setToolTip("Refresh Foundry data");
   toolbar->addWidget(refresh_);
   layout->addLayout(toolbar);
   updateFilterButtons(groups);
 
   summary_->setObjectName("secondaryText");
-  layout->addWidget(summary_);
 
   progress_->setObjectName("priceProgress");
   progress_->setTextVisible(false);
@@ -110,6 +182,7 @@ FoundryWidget::FoundryWidget(AppController *controller, QWidget *parent)
   loadingLayout->addStretch();
 
   auto *host = new QWidget;
+  host->setObjectName("contentHost");
   host->setLayout(content_);
   content_->setContentsMargins(0, 0, 0, 0);
   content_->addWidget(grid_);

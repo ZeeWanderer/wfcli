@@ -1,12 +1,15 @@
 #include <QImage>
 #include <QJsonArray>
 #include <QJsonObject>
+#include <QLineEdit>
 #include <QPainter>
 #include <QTemporaryDir>
+#include <QToolButton>
 #include <QtTest>
 
 #include <utility>
 
+#include "compact_search.h"
 #include "image_cache.h"
 #include "player_item_grid_widget.h"
 #include "player_item_model.h"
@@ -25,6 +28,8 @@ private slots:
   void filtersRelicsByOwnershipLocally();
   void filtersRelicsByEraLocally();
   void filtersPlayerItemsLocally();
+  void filtersPlayerItemFlags();
+  void preservesFavoriteOverrides();
   void appliesInventoryMarketQuotes();
   void invalidatesCachedComponentAssets();
   void rejectsMalformedPayload();
@@ -34,6 +39,7 @@ private slots:
   void masteryGridUsesCompactCards();
   void inventoryGridRequestsVisibleQuotes();
   void ownershipFilterKeepsVisibleCardsStable();
+  void compactSearchExpandsOnClick();
   void thumbnailCacheRespectsSizeAndDpr();
   void widgetThumbnailDecodeCompletesOffPaintPath();
 };
@@ -256,6 +262,71 @@ void RelicModelTest::filtersPlayerItemsLocally() {
   QCOMPARE(filter.rowCount(), 0);
 }
 
+void RelicModelTest::filtersPlayerItemFlags() {
+  PlayerItemModel model;
+  QVERIFY(model.replace({
+      {"items",
+       QJsonArray{
+           QJsonObject{{"id", "prime"},
+                       {"name", "Prime Item"},
+                       {"mastered", true},
+                       {"owned", true},
+                       {"is_prime", true},
+                       {"vaulted", true},
+                       {"subsumed", true},
+                       {"ready_to_build", false}},
+           QJsonObject{{"id", "ready"},
+                       {"name", "Ready Item"},
+                       {"mastered", false},
+                       {"owned", false},
+                       {"is_prime", false},
+                       {"ready_to_build", true}},
+       }},
+  }));
+  PlayerItemFilterModel filter;
+  filter.setSourceModel(&model);
+
+  filter.setFlag("prime", 1);
+  QCOMPARE(filter.rowCount(), 1);
+  QCOMPARE(
+      filter.data(filter.index(0, 0), PlayerItemModel::NameRole).toString(),
+      QString("Prime Item"));
+  filter.setFlag("prime", -1);
+  filter.setFlag("ready", 1);
+  QCOMPARE(filter.rowCount(), 1);
+  QCOMPARE(
+      filter.data(filter.index(0, 0), PlayerItemModel::NameRole).toString(),
+      QString("Ready Item"));
+  filter.setFlag("ready", -1);
+  QCOMPARE(filter.rowCount(), 2);
+  const QModelIndex prime = model.index(0);
+  QVERIFY(model.data(prime, PlayerItemModel::VaultedRole).toBool());
+  QVERIFY(model.data(prime, PlayerItemModel::SubsumedRole).toBool());
+}
+
+void RelicModelTest::preservesFavoriteOverrides() {
+  PlayerItemModel model;
+  const QJsonObject data = {
+      {"items",
+       QJsonArray{QJsonObject{
+           {"id", "frame"}, {"name", "Test Prime"}, {"favorite", true}}}},
+  };
+  QVERIFY(model.replace(data));
+  const QModelIndex item = model.index(0);
+  QVERIFY(model.data(item, PlayerItemModel::FavoriteRole).toBool());
+
+  QVERIFY(model.setData(item, false, PlayerItemModel::FavoriteRole));
+  QVERIFY(!model.data(item, PlayerItemModel::FavoriteRole).toBool());
+  QVERIFY(model.replace(data));
+  QVERIFY(!model.data(model.index(0), PlayerItemModel::FavoriteRole).toBool());
+
+  QVERIFY(model.setData(model.index(0), true, PlayerItemModel::FavoriteRole));
+  PlayerItemFilterModel filter;
+  filter.setSourceModel(&model);
+  filter.setFlag("favorite", 1);
+  QCOMPARE(filter.rowCount(), 1);
+}
+
 void RelicModelTest::appliesInventoryMarketQuotes() {
   PlayerItemModel model;
   QVERIFY(model.replace({
@@ -269,13 +340,13 @@ void RelicModelTest::appliesInventoryMarketQuotes() {
            QString("loading"));
   QSignalSpy changes(&model, &QAbstractItemModel::dataChanged);
 
-  model.applyMarketQuotes(QJsonArray{QJsonObject{
-                              {"item", "Saryn Prime Chassis"},
-                              {"slug", "saryn_prime_chassis"},
-                              {"quote", QJsonObject{{"lowest_sell", 17},
-                                                     {"highest_buy", 14}}},
-                          }},
-                          {});
+  model.applyMarketQuotes(
+      QJsonArray{QJsonObject{
+          {"item", "Saryn Prime Chassis"},
+          {"slug", "saryn_prime_chassis"},
+          {"quote", QJsonObject{{"lowest_sell", 17}, {"highest_buy", 14}}},
+      }},
+      {});
   QCOMPARE(model.data(item, PlayerItemModel::PlatinumRole).toInt(), 17);
   QCOMPARE(model.data(item, PlayerItemModel::BuyPlatinumRole).toInt(), 14);
   QCOMPARE(model.data(item, PlayerItemModel::PriceStateRole).toString(),
@@ -476,6 +547,24 @@ void RelicModelTest::ownershipFilterKeepsVisibleCardsStable() {
                    .size(),
                2);
   QCOMPARE(hides.count, 0);
+}
+
+void RelicModelTest::compactSearchExpandsOnClick() {
+  CompactSearch search("Search items");
+  search.show();
+  QCoreApplication::processEvents();
+  auto *button = search.findChild<QToolButton *>("compactTool");
+  QVERIFY(button);
+  QVERIFY(search.editor()->isHidden());
+  QCOMPARE(search.width(), 40);
+
+  QTest::mouseClick(button, Qt::LeftButton);
+  QTRY_VERIFY(search.editor()->isVisible());
+  QCOMPARE(search.width(), 174);
+
+  QTest::mouseClick(button, Qt::LeftButton);
+  QTRY_VERIFY(search.editor()->isHidden());
+  QCOMPARE(search.width(), 40);
 }
 
 void RelicModelTest::thumbnailCacheRespectsSizeAndDpr() {

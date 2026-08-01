@@ -34,6 +34,8 @@ public:
   QJsonObject inventorySummary() const;
   QJsonObject masterySummary() const;
   QJsonObject activity() const;
+  QString fissureNotificationMode() const;
+  bool notificationSettingsLoaded() const;
   QString foundryError() const;
   QString inventoryError() const;
   QString masteryError() const;
@@ -56,6 +58,7 @@ public:
   void refreshInventory();
   void refreshMastery();
   void refreshActivity();
+  void setFissureNotificationMode(const QString &mode);
   void resolveAssets(const QJsonArray &assets);
   void resolveMarketQuotes(const QStringList &items, bool refresh = false);
 
@@ -73,6 +76,7 @@ signals:
   void inventoryStateChanged();
   void masteryStateChanged();
   void activityStateChanged();
+  void notificationSettingsChanged();
 
 private:
   struct PlayerViewState {
@@ -117,6 +121,8 @@ private:
   PlayerViewState masteryState_;
   QJsonObject activity_;
   QString activityError_;
+  QString fissureNotificationMode_ = "off";
+  bool notificationSettingsLoaded_ = false;
   bool relicsRequested_ = false;
   bool loading_ = false;
 };

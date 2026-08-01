@@ -19,7 +19,8 @@
         "testlib",
         "thread",
         "wayland",
-        "widgets"
+        "widgets",
+        "xkb"
       ]
     }
   ]

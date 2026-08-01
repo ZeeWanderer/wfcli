@@ -144,7 +144,7 @@ protected:
     }
 
     QFont badgeFont = font();
-    badgeFont.setPointSizeF(10.5 * scale_);
+    badgeFont.setPixelSize(wfgui::scaled(15, scale_));
     badgeFont.setWeight(QFont::DemiBold);
     painter.setFont(badgeFont);
     painter.setPen(QColor("#ffffff"));
@@ -161,8 +161,8 @@ protected:
     }
 
     QFont nameFont = font();
-    nameFont.setPointSizeF(13.0 * scale_);
-    nameFont.setWeight(QFont::DemiBold);
+    nameFont.setPixelSize(wfgui::scaled(19, scale_));
+    nameFont.setWeight(QFont::Medium);
     painter.setFont(nameFont);
     painter.setPen(QColor("#ffffff"));
     const QString name = index_.data(RelicModel::NameRole).toString();

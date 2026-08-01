@@ -41,12 +41,17 @@ public:
     IsPrimeRole,
     MasteryRequirementRole,
     ReadyToBuildRole,
+    FavoriteRole,
+    VaultedRole,
+    SubsumedRole,
   };
 
   explicit PlayerItemModel(QObject *parent = nullptr);
 
   int rowCount(const QModelIndex &parent = {}) const override;
   QVariant data(const QModelIndex &index, int role) const override;
+  bool setData(const QModelIndex &index, const QVariant &value,
+               int role) override;
   QHash<int, QByteArray> roleNames() const override;
 
   bool replace(const QJsonObject &data, QString *error = nullptr);
@@ -67,6 +72,7 @@ private:
   mutable QHash<int, QVariantList> componentCache_;
   QHash<QString, QJsonObject> marketQuotes_;
   QSet<QString> unavailableMarketItems_;
+  QHash<QString, bool> favoriteOverrides_;
 };
 
 class PlayerItemFilterModel final : public QSortFilterProxyModel {
@@ -78,6 +84,7 @@ public:
   void setText(const QString &text);
   void setGroup(const QString &group);
   void setMode(const QString &mode);
+  void setFlag(const QString &name, int state);
 
 protected:
   bool filterAcceptsRow(int sourceRow,
@@ -87,4 +94,5 @@ private:
   QString text_;
   QString group_ = "all";
   QString mode_ = "all";
+  QHash<QString, int> flags_;
 };

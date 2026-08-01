@@ -3,12 +3,27 @@ QWidget {
   color: #ffffff;
   font-family: "Roboto";
   font-size: 10pt;
+  font-weight: 400;
 }
 
-QWidget#sidebar,
-QWidget#activityRail,
-QWidget#page {
+QWidget#appRoot,
+QWidget#sidebar {
+  background: #101623;
+}
+
+QStackedWidget#centerRail,
+QWidget#activityRail {
   background: #171e30;
+  border-radius: 10px;
+}
+
+QWidget#page {
+  background: transparent;
+}
+
+QWidget#contentFrame,
+QWidget#contentHost {
+  background: transparent;
 }
 
 QLabel {
@@ -16,8 +31,8 @@ QLabel {
 }
 
 QLabel#brand {
-  font-size: 15pt;
-  font-weight: 600;
+  font-size: 13pt;
+  font-weight: 300;
 }
 
 QPushButton#navigation {
@@ -26,9 +41,10 @@ QPushButton#navigation {
   border: none;
   border-radius: 0;
   min-height: 34px;
-  padding: 0 8px;
+  padding: 0 5px 0 8px;
   text-align: left;
-  font-weight: 500;
+  font-size: 11pt;
+  font-weight: 300;
 }
 
 QPushButton#navigation:hover {
@@ -42,9 +58,17 @@ QPushButton#navigation:checked {
   border-right: 3px solid #ffffff;
 }
 
+QPushButton#navigation[multiline="true"] {
+  min-height: 44px;
+}
+
 QLabel#daemonStatus,
 QLabel#secondaryText {
   color: #8a8c95;
+}
+
+QLabel#daemonStatus {
+  font-size: 9pt;
 }
 
 QLabel#daemonStatus[connected="true"] {
@@ -52,45 +76,101 @@ QLabel#daemonStatus[connected="true"] {
 }
 
 QLabel#pageTitle {
-  font-size: 18pt;
-  font-weight: 600;
+  font-size: 20pt;
+  font-weight: 300;
 }
 
 QLabel#masteryRank {
-  font-size: 30pt;
-  font-weight: 400;
+  font-size: 38pt;
+  font-weight: 300;
   padding: 0 8px 0 0;
 }
 
-QLabel#railTitle,
 QLabel#sectionTitle {
-  font-size: 11pt;
-  font-weight: 600;
+  font-size: 13pt;
+  font-weight: 400;
 }
 
-QLabel#cycleName,
-QLabel#fissureTier {
-  color: #aeb5c7;
-  font-size: 9pt;
-  font-weight: 600;
+QWidget#railTabHeader {
+  background: transparent;
+  border-bottom: 1px solid #313a58;
+  min-height: 33px;
+  max-height: 33px;
 }
 
-QLabel#cycleState,
-QLabel#fissureMission {
+QWidget#railTab {
+  background: transparent;
+  border-bottom: 3px solid transparent;
+}
+
+QWidget#railTab[selected="true"] {
+  border-bottom-color: #ffffff;
+}
+
+QLabel#railTabText {
+  color: #8a8c95;
+  font-size: 12pt;
+  font-weight: 300;
+}
+
+QLabel#railTabText[selected="true"] {
   color: #ffffff;
-  font-weight: 600;
+}
+
+QWidget#activityBody {
+  background: transparent;
+}
+
+QLabel#cycleName {
+  color: #aeb5c7;
+  font-size: 10.5pt;
+  font-weight: 300;
+}
+
+QLabel#cycleState {
+  color: #ffffff;
+  font-weight: 500;
+  font-size: 12pt;
+}
+
+QWidget#fissureName {
+  background: transparent;
+}
+
+QLabel#fissureMissionType,
+QLabel#fissureLocation {
+  color: #ffffff;
+  font-size: 10.5pt;
+}
+
+QLabel#fissureMissionType {
+  font-weight: 500;
+}
+
+QLabel#fissureLocation {
+  font-weight: 300;
 }
 
 QLabel#countdown {
   color: #ffffff;
+  font-size: 11pt;
+  font-weight: 400;
 }
 
-QLabel#baroStatus,
-QLabel#resurgenceStatus,
 QLabel#inventoryTotals {
   background: #101623;
   border-radius: 7px;
   padding: 7px 9px;
+}
+
+QWidget#resurgencePill {
+  background: transparent;
+  min-width: 148px;
+}
+
+QWidget#baroPill {
+  background: transparent;
+  min-width: 104px;
 }
 
 QLineEdit {
@@ -103,6 +183,21 @@ QLineEdit {
 
 QLineEdit:focus {
   border-color: #8c6ee8;
+}
+
+QWidget#expandingSearch {
+  background: #20283e;
+  border-radius: 16px;
+  min-height: 32px;
+  max-height: 32px;
+}
+
+QLineEdit#inlineSearch {
+  background: transparent;
+  border: none;
+  border-radius: 0;
+  min-height: 24px;
+  padding: 0 2px;
 }
 
 QPushButton {
@@ -129,12 +224,75 @@ QPushButton:disabled {
 
 QPushButton#filterChip {
   min-width: 24px;
-  padding: 4px 7px;
+  min-height: 24px;
+  border: none;
+  border-radius: 16px;
+  padding: 4px 9px;
+}
+
+QToolButton#compactTool,
+QPushButton#compactTool {
+  background: #20283e;
+  border: none;
+  border-radius: 16px;
+  min-width: 40px;
+  max-width: 40px;
+  min-height: 32px;
+  max-height: 32px;
+  padding: 0;
+}
+
+QToolButton#compactTool:hover,
+QPushButton#compactTool:hover {
+  background: #272f47;
+}
+
+QToolButton#compactTool[active="true"] {
+  background: #432289;
+}
+
+QToolButton::menu-indicator {
+  image: none;
+}
+
+QMenu {
+  background: #171e30;
+  border: 1px solid #313a58;
+  border-radius: 6px;
+  padding: 4px;
+}
+
+QMenu::item {
+  border-radius: 4px;
+  padding: 5px 22px 5px 8px;
+}
+
+QMenu::item:selected {
+  background: #272f47;
+}
+
+QMenu::indicator {
+  width: 13px;
+  height: 13px;
 }
 
 QPushButton#railFilter {
-  min-height: 18px;
-  padding: 3px 6px;
+  background: transparent;
+  border: none;
+  border-radius: 4px;
+  min-width: 23px;
+  max-width: 23px;
+  min-height: 23px;
+  max-height: 23px;
+  padding: 1px;
+}
+
+QPushButton#railFilter:hover {
+  background: #272f47;
+}
+
+QPushButton#railFilter:checked {
+  background: #313a58;
 }
 
 QWidget#contentFrame {
@@ -142,12 +300,61 @@ QWidget#contentFrame {
   border: none;
 }
 
-QWidget#summaryPanel,
-QWidget#cycleCard,
-QWidget#fissureRow {
+QWidget#summaryPanel {
   background: #20283e;
   border: none;
   border-radius: 8px;
+}
+
+QWidget#summaryHeader {
+  background: #313a58;
+  border-radius: 8px 8px 0 0;
+}
+
+QLabel#summaryHeading {
+  color: #ffffff;
+  font-size: 12pt;
+  font-weight: 500;
+}
+
+QWidget#cycleCard {
+  background: #101623;
+  border: none;
+  border-radius: 25px;
+  min-height: 50px;
+  max-height: 50px;
+}
+
+QLabel#cycleIcon {
+  background: #20283e;
+  border-radius: 24px;
+}
+
+QWidget#fissureSection {
+  background: #101623;
+  border-radius: 8px 8px 12px 12px;
+}
+
+QWidget#fissureHeader {
+  background: #20283e;
+  border-radius: 8px 8px 0 0;
+  min-height: 26px;
+}
+
+QWidget#notificationControl,
+QAbstractButton#notificationMode {
+  background: transparent;
+  border: none;
+}
+
+QWidget#fissureGroup {
+  background: #171e30;
+  border: none;
+  border-radius: 8px;
+}
+
+QWidget#fissureRow {
+  background: transparent;
 }
 
 QLabel#summaryValue {
@@ -159,11 +366,16 @@ QScrollArea#relicScroll,
 QScrollArea#relicScroll QWidget#qt_scrollarea_viewport,
 QScrollArea#activityScroll,
 QScrollArea#activityScroll QWidget#qt_scrollarea_viewport,
-QWidget#fissureList,
 QWidget#relicGrid,
 QWidget#relicCardCanvas {
   background: transparent;
   border: none;
+}
+
+QWidget#fissureList {
+  background: #101623;
+  border: none;
+  border-radius: 0 0 12px 12px;
 }
 
 QListView#playerItemGrid,
@@ -231,6 +443,12 @@ QProgressBar#priceProgress::chunk {
 
 QCheckBox {
   spacing: 5px;
+}
+
+QCheckBox#ownedToggle {
+  background: #20283e;
+  border-radius: 16px;
+  padding: 5px 9px;
 }
 
 QCheckBox::indicator {

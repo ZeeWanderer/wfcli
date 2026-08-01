@@ -3,6 +3,7 @@
 #include <QAbstractItemModel>
 #include <QButtonGroup>
 #include <QHBoxLayout>
+#include <QIcon>
 #include <QJsonObject>
 #include <QLabel>
 #include <QLineEdit>
@@ -16,6 +17,7 @@
 #include <utility>
 
 #include "app_controller.h"
+#include "compact_search.h"
 #include "player_item_grid_widget.h"
 #include "player_item_model.h"
 
@@ -32,20 +34,34 @@ constexpr std::array<std::pair<const char *, const char *>, 4> Groups{{
     {"Companions", "companions"},
 }};
 
-QWidget *summaryPanel(const QString &title, QLabel *value) {
+QWidget *summaryPanel(const QString &title, const QString &icon,
+                      QLabel *value) {
   auto *panel = new QWidget;
   panel->setObjectName("summaryPanel");
   panel->setMinimumWidth(0);
   panel->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
   auto *layout = new QVBoxLayout(panel);
-  layout->setContentsMargins(12, 8, 12, 8);
-  layout->setSpacing(5);
+  layout->setContentsMargins(0, 0, 0, 8);
+  layout->setSpacing(7);
+  auto *header = new QWidget;
+  header->setObjectName("summaryHeader");
+  auto *headerLayout = new QHBoxLayout(header);
+  headerLayout->setContentsMargins(8, 4, 8, 4);
+  headerLayout->setSpacing(6);
+  auto *iconLabel = new QLabel;
+  iconLabel->setFixedSize(18, 18);
+  iconLabel->setPixmap(QIcon(icon).pixmap(18, 18));
+  headerLayout->addWidget(iconLabel);
   auto *heading = new QLabel(title);
-  heading->setObjectName("secondaryText");
+  heading->setObjectName("summaryHeading");
+  headerLayout->addWidget(heading);
+  headerLayout->addStretch();
   value->setObjectName("summaryValue");
   value->setMinimumWidth(0);
+  value->setAlignment(Qt::AlignCenter);
+  value->setWordWrap(true);
   value->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
-  layout->addWidget(heading);
+  layout->addWidget(header);
   layout->addWidget(value);
   return panel;
 }
@@ -59,7 +75,7 @@ MasteryPlannerWidget::MasteryPlannerWidget(AppController *controller,
       rank_(new QLabel), completion_(new QLabel), gameContent_(new QLabel),
       starChart_(new QLabel), intrinsics_(new QLabel), emptyState_(new QLabel),
       completionBar_(new QProgressBar), loadingBar_(new QProgressBar),
-      refresh_(new QPushButton("Refresh")), content_(new QStackedLayout) {
+      refresh_(new QPushButton), content_(new QStackedLayout) {
   setObjectName("page");
   items_->setSourceModel(controller_->masteryItems());
   items_->setMode("easy");
@@ -79,19 +95,29 @@ MasteryPlannerWidget::MasteryPlannerWidget(AppController *controller,
   completionBar_->setRange(0, 100);
   rankProgress->addWidget(completionBar_);
   header->addLayout(rankProgress, 1);
-  auto *search = new QLineEdit;
-  search->setPlaceholderText("Filter equipment");
-  search->setClearButtonEnabled(true);
-  search->setFixedWidth(180);
-  header->addWidget(search);
+  auto *compactSearch = new CompactSearch("Filter equipment");
+  auto *search = compactSearch->editor();
+  header->addWidget(compactSearch);
+  refresh_->setObjectName("compactTool");
+  refresh_->setIcon(QIcon(":/resources/ui/refresh.png"));
+  refresh_->setIconSize({20, 20});
+  refresh_->setToolTip("Refresh mastery data");
   header->addWidget(refresh_);
   layout->addLayout(header);
 
   auto *summary = new QHBoxLayout;
   summary->setSpacing(12);
-  summary->addWidget(summaryPanel("Game content", gameContent_), 1);
-  summary->addWidget(summaryPanel("Star chart", starChart_), 1);
-  summary->addWidget(summaryPanel("Intrinsics", intrinsics_), 1);
+  summary->addWidget(summaryPanel("Game content",
+                                  ":/resources/ui/summary_game.png",
+                                  gameContent_),
+                     1);
+  summary->addWidget(
+      summaryPanel("Star chart", ":/resources/ui/summary_star.png", starChart_),
+      1);
+  summary->addWidget(summaryPanel("Intrinsics",
+                                  ":/resources/ui/summary_intrinsics.png",
+                                  intrinsics_),
+                     1);
   layout->addLayout(summary);
 
   auto *sectionTitle = new QLabel("Best ways to level up mastery");
@@ -194,11 +220,10 @@ void MasteryPlannerWidget::updateContent() {
   const int total = summary.value("total").toInt();
   const int percent = summary.value("percent").toInt();
   rank_->setText(QString::number(summary.value("player_level").toInt()));
-  completion_->setText(
-      QString("%1%  ·  %2 / %3 equipment mastered")
-          .arg(percent)
-          .arg(mastered)
-          .arg(total));
+  completion_->setText(QString("%1%  ·  %2 / %3 equipment mastered")
+                           .arg(percent)
+                           .arg(mastered)
+                           .arg(total));
   completionBar_->setValue(percent);
   const auto categoryText = [](const QJsonObject &value) {
     const int mastered = value.value("mastered").toInt();
@@ -215,7 +240,8 @@ void MasteryPlannerWidget::updateContent() {
   const auto observed = [](const QJsonObject &value) {
     const int current = value.value("current").toInt();
     return value.value("total").isDouble()
-               ? QString("%1 / %2").arg(current).arg(value.value("total").toInt())
+               ? QString("%1 / %2").arg(current).arg(
+                     value.value("total").toInt())
                : QString::number(current);
   };
   starChart_->setText(

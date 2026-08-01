@@ -5,6 +5,8 @@ qt_standard_project_setup()
 qt_add_library(wfgui_core STATIC
   src/app_controller.cpp
   src/app_controller.h
+  src/compact_search.cpp
+  src/compact_search.h
   src/daemon_client.cpp
   src/daemon_client.h
   src/image_cache.cpp
@@ -60,6 +62,40 @@ qt_add_resources(wfgui "wfgui_resources"
     resources/categories/secondary.png
     resources/categories/sets.png
     resources/categories/warframe.png
+    resources/activity/axi.png
+    resources/activity/aya.png
+    resources/activity/cambion.png
+    resources/activity/earth.png
+    resources/activity/lith.png
+    resources/activity/meso.png
+    resources/activity/neo.png
+    resources/activity/omnia.png
+    resources/activity/requiem.png
+    resources/activity/resurgence.png
+    resources/activity/vallis.png
+    resources/ui/all.png
+    resources/ui/favorite.png
+    resources/ui/favorite_active.png
+    resources/ui/filter.png
+    resources/ui/fissure.png
+    resources/ui/helminth.png
+    resources/ui/mastered.png
+    resources/ui/market.png
+    resources/ui/nav_foundry.png
+    resources/ui/nav_inventory.png
+    resources/ui/nav_mastery.png
+    resources/ui/nav_relic.png
+    resources/ui/normal.png
+    resources/ui/notification.png
+    resources/ui/owned.png
+    resources/ui/pending.png
+    resources/ui/refresh.png
+    resources/ui/search.png
+    resources/ui/steel.png
+    resources/ui/summary_game.png
+    resources/ui/summary_intrinsics.png
+    resources/ui/summary_star.png
+    resources/ui/world.png
     resources/style.qss
 )
 
@@ -67,6 +103,9 @@ qt_add_resources(wfgui "wfgui_shared_assets"
   PREFIX "/assets"
   BASE "${CMAKE_CURRENT_SOURCE_DIR}/../wfcompanion/assets"
   FILES
+    ../wfcompanion/assets/Roboto-Bold.ttf
+    ../wfcompanion/assets/Roboto-Light.ttf
+    ../wfcompanion/assets/Roboto-Medium.ttf
     ../wfcompanion/assets/Roboto-Regular.ttf
     ../wfcompanion/assets/ducats.png
     ../wfcompanion/assets/forma.png

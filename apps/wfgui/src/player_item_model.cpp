@@ -9,6 +9,17 @@ namespace {
 QString assetId(const QJsonObject &item) {
   return item.value("asset").toObject().value("id").toString();
 }
+
+int flagRole(const QString &name) {
+  static const QHash<QString, int> roles = {
+      {"mastered", PlayerItemModel::MasteredRole},
+      {"owned", PlayerItemModel::OwnedRole},
+      {"ready", PlayerItemModel::ReadyToBuildRole},
+      {"prime", PlayerItemModel::IsPrimeRole},
+      {"favorite", PlayerItemModel::FavoriteRole},
+  };
+  return roles.value(name, -1);
+}
 } // namespace
 
 PlayerItemModel::PlayerItemModel(QObject *parent)
@@ -106,9 +117,39 @@ QVariant PlayerItemModel::data(const QModelIndex &index, int role) const {
     return item.value("mastery_requirement").toInt();
   case ReadyToBuildRole:
     return item.value("ready_to_build").toBool();
+  case FavoriteRole: {
+    const auto favorite =
+        favoriteOverrides_.constFind(item.value("id").toString());
+    return favorite == favoriteOverrides_.cend()
+               ? item.value("favorite").toBool()
+               : favorite.value();
+  }
+  case VaultedRole:
+    return item.value("vaulted").toBool();
+  case SubsumedRole:
+    return item.value("subsumed").toBool();
   default:
     return {};
   }
+}
+
+bool PlayerItemModel::setData(const QModelIndex &index, const QVariant &value,
+                              int role) {
+  if (role != FavoriteRole || !index.isValid() || index.row() < 0 ||
+      index.row() >= items_.size()) {
+    return false;
+  }
+  const QString id = items_.at(index.row()).value("id").toString();
+  if (id.isEmpty()) {
+    return false;
+  }
+  const bool favorite = value.toBool();
+  if (data(index, FavoriteRole).toBool() == favorite) {
+    return false;
+  }
+  favoriteOverrides_.insert(id, favorite);
+  emit dataChanged(index, index, {FavoriteRole});
+  return true;
 }
 
 QHash<int, QByteArray> PlayerItemModel::roleNames() const {
@@ -136,7 +177,10 @@ QHash<int, QByteArray> PlayerItemModel::roleNames() const {
           {PriceStateRole, "priceState"},
           {IsPrimeRole, "isPrime"},
           {MasteryRequirementRole, "masteryRequirement"},
-          {ReadyToBuildRole, "readyToBuild"}};
+          {ReadyToBuildRole, "readyToBuild"},
+          {FavoriteRole, "favorite"},
+          {VaultedRole, "vaulted"},
+          {SubsumedRole, "subsumed"}};
 }
 
 bool PlayerItemModel::replace(const QJsonObject &data, QString *error) {
@@ -202,11 +246,11 @@ void PlayerItemModel::setAssetPaths(const QHash<QString, QString> &paths) {
   }
 }
 
-void PlayerItemModel::applyAssetPaths(
-    const QHash<QString, QString> &paths) {
+void PlayerItemModel::applyAssetPaths(const QHash<QString, QString> &paths) {
   QSet<int> affectedRows;
   for (auto path = paths.cbegin(); path != paths.cend(); ++path) {
-    if (path.value().isEmpty() || assetPaths_.value(path.key()) == path.value()) {
+    if (path.value().isEmpty() ||
+        assetPaths_.value(path.key()) == path.value()) {
       continue;
     }
     assetPaths_.insert(path.key(), path.value());
@@ -325,6 +369,23 @@ void PlayerItemFilterModel::setMode(const QString &mode) {
   endFilterChange(QSortFilterProxyModel::Direction::Rows);
 }
 
+void PlayerItemFilterModel::setFlag(const QString &name, int state) {
+  if (state < 0) {
+    if (!flags_.contains(name)) {
+      return;
+    }
+  } else if (flags_.value(name, -1) == state) {
+    return;
+  }
+  beginFilterChange();
+  if (state < 0) {
+    flags_.remove(name);
+  } else {
+    flags_.insert(name, state);
+  }
+  endFilterChange(QSortFilterProxyModel::Direction::Rows);
+}
+
 bool PlayerItemFilterModel::filterAcceptsRow(
     int sourceRow, const QModelIndex &sourceParent) const {
   const QModelIndex item = sourceModel()->index(sourceRow, 0, sourceParent);
@@ -341,6 +402,13 @@ bool PlayerItemFilterModel::filterAcceptsRow(
   }
   const bool mastered =
       sourceModel()->data(item, PlayerItemModel::MasteredRole).toBool();
+  for (auto flag = flags_.cbegin(); flag != flags_.cend(); ++flag) {
+    const int role = flagRole(flag.key());
+    if (role >= 0 &&
+        sourceModel()->data(item, role).toBool() != (flag.value() == 1)) {
+      return false;
+    }
+  }
   if (mode_ == "easy") {
     return !mastered;
   }

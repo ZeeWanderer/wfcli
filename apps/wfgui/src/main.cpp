@@ -27,6 +27,9 @@ QSize parseSize(const QString &value) {
 
 int main(int argc, char *argv[]) {
   QApplication app(argc, argv);
+  QFontDatabase::addApplicationFont(":/assets/Roboto-Bold.ttf");
+  QFontDatabase::addApplicationFont(":/assets/Roboto-Light.ttf");
+  QFontDatabase::addApplicationFont(":/assets/Roboto-Medium.ttf");
   QFontDatabase::addApplicationFont(":/assets/Roboto-Regular.ttf");
   QPixmapCache::setCacheLimit(64 * 1024);
   QCoreApplication::setApplicationName("wfgui");
@@ -43,8 +46,7 @@ int main(int argc, char *argv[]) {
   const QCommandLineOption screenshotDelay(
       "screenshot-delay", "Wait MS before saving a screenshot.", "MS", "8000");
   const QCommandLineOption page(
-      "page", "Open foundry, mastery, inventory, or relic.", "NAME",
-      "foundry");
+      "page", "Open foundry, mastery, inventory, or relic.", "NAME", "foundry");
   parser.addOptions({screenshot, size, screenshotDelay, page});
   parser.process(app);
 

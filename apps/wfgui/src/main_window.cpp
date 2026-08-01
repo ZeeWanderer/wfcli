@@ -1,8 +1,11 @@
 #include "main_window.h"
 
-#include <QHBoxLayout>
-#include <QLabel>
 #include <QButtonGroup>
+#include <QHBoxLayout>
+#include <QIcon>
+#include <QLabel>
+#include <QPainter>
+#include <QPixmap>
 #include <QPushButton>
 #include <QResizeEvent>
 #include <QSizePolicy>
@@ -11,29 +14,54 @@
 #include <QVBoxLayout>
 #include <QWidget>
 
+#include <array>
+
 #include "activity_rail_widget.h"
 #include "foundry_widget.h"
 #include "inventory_widget.h"
 #include "mastery_planner_widget.h"
 #include "relic_planner_widget.h"
 
+namespace {
+QPixmap tintedPixmap(const QString &path, const QColor &color) {
+  const QPixmap source(path);
+  QPixmap result(source.size());
+  result.fill(Qt::transparent);
+  QPainter painter(&result);
+  painter.drawPixmap(0, 0, source);
+  painter.setCompositionMode(QPainter::CompositionMode_SourceIn);
+  painter.fillRect(result.rect(), color);
+  return result;
+}
+
+QIcon navigationIcon(const QString &path) {
+  QIcon icon;
+  icon.addPixmap(tintedPixmap(path, QColor("#8a8c95")), QIcon::Normal,
+                 QIcon::Off);
+  icon.addPixmap(tintedPixmap(path, QColor("#d8dbea")), QIcon::Active,
+                 QIcon::Off);
+  icon.addPixmap(tintedPixmap(path, Qt::white), QIcon::Normal, QIcon::On);
+  return icon;
+}
+} // namespace
+
 MainWindow::MainWindow(QWidget *parent)
     : QMainWindow(parent), controller_(this), daemonStatus_(new QLabel),
-      navigation_(new QButtonGroup(this)),
-      pages_(new QStackedWidget),
+      navigation_(new QButtonGroup(this)), pages_(new QStackedWidget),
       activityRail_(new ActivityRailWidget(&controller_)) {
   setWindowTitle("wfcli");
   resize(1280, 800);
   setMinimumSize(900, 600);
 
   auto *central = new QWidget;
+  central->setObjectName("appRoot");
   auto *layout = new QHBoxLayout(central);
   layout->setContentsMargins(6, 6, 6, 0);
   layout->setSpacing(7);
 
   auto *sidebar = new QWidget;
   sidebar->setObjectName("sidebar");
-  sidebar->setFixedWidth(135);
+  sidebar->setFixedWidth(142);
   auto *sidebarLayout = new QVBoxLayout(sidebar);
   sidebarLayout->setContentsMargins(8, 14, 8, 12);
   sidebarLayout->setSpacing(8);
@@ -44,24 +72,38 @@ MainWindow::MainWindow(QWidget *parent)
   sidebarLayout->addSpacing(18);
 
   navigation_->setExclusive(true);
-  const QStringList labels = {"Foundry", "Mastery Helper", "Inventory",
-                              "Relic Planner"};
-  for (int page = 0; page < labels.size(); ++page) {
-    auto *button = new QPushButton(labels.at(page));
+  struct NavigationItem {
+    const char *label;
+    const char *icon;
+  };
+  constexpr std::array<NavigationItem, 4> items{{
+      {"Foundry", ":/resources/ui/nav_foundry.png"},
+      {"Mastery\nHelper", ":/resources/ui/nav_mastery.png"},
+      {"Inventory", ":/resources/ui/nav_inventory.png"},
+      {"Relic\nPlanner", ":/resources/ui/nav_relic.png"},
+  }};
+  for (int page = 0; page < static_cast<int>(items.size()); ++page) {
+    auto *button = new QPushButton(items.at(page).label);
     button->setObjectName("navigation");
+    button->setIcon(navigationIcon(items.at(page).icon));
+    button->setIconSize({24, 24});
     button->setCheckable(true);
     button->setChecked(page == 0);
     button->setProperty("page", page);
+    button->setProperty("multiline",
+                        QString(items.at(page).label).contains('\n'));
     navigation_->addButton(button, page);
     sidebarLayout->addWidget(button);
   }
   sidebarLayout->addStretch();
 
   daemonStatus_->setObjectName("daemonStatus");
-  daemonStatus_->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
+  daemonStatus_->setWordWrap(true);
+  daemonStatus_->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Preferred);
   sidebarLayout->addWidget(daemonStatus_);
 
   layout->addWidget(sidebar);
+  pages_->setObjectName("centerRail");
   pages_->addWidget(new FoundryWidget(&controller_));
   pages_->addWidget(new MasteryPlannerWidget(&controller_));
   pages_->addWidget(new InventoryWidget(&controller_));
@@ -72,8 +114,7 @@ MainWindow::MainWindow(QWidget *parent)
   layout->addWidget(activityRail_);
   setCentralWidget(central);
 
-  connect(navigation_, &QButtonGroup::idClicked, this,
-          &MainWindow::selectPage);
+  connect(navigation_, &QButtonGroup::idClicked, this, &MainWindow::selectPage);
 
   connect(&controller_, &AppController::statusChanged, this,
           &MainWindow::updateDaemonStatus);

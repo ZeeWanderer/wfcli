@@ -67,6 +67,7 @@ DaemonClient::DaemonClient(QObject *parent)
       pendingPlayerViews_.insert(view);
     }
     pendingActivity_ = pendingActivity_ || activeActivityRequest_ != 0;
+    pendingNotificationSettings_ = true;
     for (const MarketQuoteRequest &request :
          std::as_const(activeMarketQuoteRequests_)) {
       for (const QString &item : request.items) {
@@ -86,6 +87,9 @@ DaemonClient::DaemonClient(QObject *parent)
     activeRelicRequests_.clear();
     activePlayerViews_.clear();
     activeActivityRequest_ = 0;
+    activeNotificationSettingsRequest_ = 0;
+    activeNotificationRequestIsSet_ = false;
+    sentNotificationMode_.reset();
     activeAssetRequests_.clear();
     activeMarketQuoteRequests_.clear();
     ready_ = false;
@@ -148,6 +152,19 @@ void DaemonClient::requestActivity() {
     pendingActivity_ = true;
   }
   sendPendingActivity();
+}
+
+void DaemonClient::requestNotificationSettings() {
+  pendingNotificationSettings_ = true;
+  sendPendingNotificationSettings();
+}
+
+void DaemonClient::setFissureNotificationMode(const QString &mode) {
+  if (mode != "off" && mode != "session" && mode != "persistent") {
+    return;
+  }
+  desiredNotificationMode_ = mode;
+  sendPendingNotificationSettings();
 }
 
 void DaemonClient::requestAssets(const QJsonArray &assets) {
@@ -258,8 +275,9 @@ void DaemonClient::handleLine(const QByteArray &line) {
     }
     const QJsonArray capabilities = message.value("capabilities").toArray();
     const QStringList requiredCapabilities = {
-        "relic.planner", "worldstate.activity", "player.foundry",
-        "player.inventory", "player.mastery", "market.quote"};
+        "relic.planner",         "worldstate.activity", "player.foundry",
+        "player.inventory",      "player.mastery",      "market.quote",
+        "notifications.fissures"};
     const bool capable = std::ranges::all_of(
         requiredCapabilities, [&capabilities](const QString &capability) {
           return capabilities.contains(QJsonValue(capability));
@@ -278,6 +296,7 @@ void DaemonClient::handleLine(const QByteArray &line) {
     sendPendingRequests();
     sendPendingPlayerViews();
     sendPendingActivity();
+    sendPendingNotificationSettings();
     sendPendingAssets();
     sendPendingMarketQuotes();
     return;
@@ -332,6 +351,40 @@ void DaemonClient::handleLine(const QByteArray &line) {
       return;
     }
     emit activityReady(data.toObject());
+    return;
+  }
+
+  if (id == activeNotificationSettingsRequest_) {
+    activeNotificationSettingsRequest_ = 0;
+    const bool wasSet = activeNotificationRequestIsSet_;
+    activeNotificationRequestIsSet_ = false;
+    const std::optional<QString> sentMode = sentNotificationMode_;
+    sentNotificationMode_.reset();
+    if (!message.value("ok").toBool()) {
+      desiredNotificationMode_.reset();
+      emit notificationSettingsFailed(message.value("error").toString(
+          "notification settings request failed"));
+      return;
+    }
+    const QJsonValue data = message.value("data");
+    if (!data.isObject()) {
+      desiredNotificationMode_.reset();
+      emit notificationSettingsFailed(
+          "daemon returned malformed notification settings");
+      return;
+    }
+    pendingNotificationSettings_ = false;
+    const bool superseded =
+        wasSet && sentMode.has_value() &&
+        desiredNotificationMode_.has_value() &&
+        desiredNotificationMode_.value() != sentMode.value();
+    if (wasSet && !superseded) {
+      desiredNotificationMode_.reset();
+    }
+    if (!superseded) {
+      emit notificationSettingsReady(data.toObject());
+    }
+    sendPendingNotificationSettings();
     return;
   }
 
@@ -394,9 +447,9 @@ void DaemonClient::sendHello() {
       {"version", WFCLI_VERSION},
       {"pid", QCoreApplication::applicationPid()},
       {"mode", "desktop"},
-      {"capabilities",
-       QJsonArray{"relic.planner", "worldstate.activity", "player.foundry",
-                  "player.inventory", "player.mastery"}},
+      {"capabilities", QJsonArray{"relic.planner", "worldstate.activity",
+                                  "player.foundry", "player.inventory",
+                                  "player.mastery", "notifications.fissures"}},
   });
 }
 
@@ -426,6 +479,27 @@ void DaemonClient::sendPendingActivity() {
   pendingActivity_ = false;
   activeActivityRequest_ = nextRequestId_++;
   write({{"op", "activity_view"}, {"id", activeActivityRequest_}});
+}
+
+void DaemonClient::sendPendingNotificationSettings() {
+  if (!ready_ || activeNotificationSettingsRequest_ != 0) {
+    return;
+  }
+  if (desiredNotificationMode_.has_value()) {
+    activeNotificationSettingsRequest_ = nextRequestId_++;
+    activeNotificationRequestIsSet_ = true;
+    sentNotificationMode_ = desiredNotificationMode_;
+    write({{"op", "notification_settings_set"},
+           {"id", activeNotificationSettingsRequest_},
+           {"fissures", QJsonObject{{"mode", sentNotificationMode_.value()}}}});
+    return;
+  }
+  if (pendingNotificationSettings_) {
+    activeNotificationSettingsRequest_ = nextRequestId_++;
+    activeNotificationRequestIsSet_ = false;
+    write({{"op", "notification_settings"},
+           {"id", activeNotificationSettingsRequest_}});
+  }
 }
 
 void DaemonClient::sendPendingRequests() {

@@ -95,6 +95,22 @@ AppController::AppController(QObject *parent)
             activityError_ = requestError;
             emit activityStateChanged();
           });
+  connect(
+      &daemon_, &DaemonClient::notificationSettingsReady, this,
+      [this](const QJsonObject &settings) {
+        const QString mode =
+            settings.value("fissures").toObject().value("mode").toString("off");
+        if (mode != "off" && mode != "session" && mode != "persistent") {
+          return;
+        }
+        const bool changed =
+            fissureNotificationMode_ != mode || !notificationSettingsLoaded_;
+        fissureNotificationMode_ = mode;
+        notificationSettingsLoaded_ = true;
+        if (changed) {
+          emit notificationSettingsChanged();
+        }
+      });
   connect(&daemon_, &DaemonClient::marketQuotesResolved, &inventoryItems_,
           &PlayerItemModel::applyMarketQuotes);
   connect(&daemon_, &DaemonClient::marketQuoteRequestFailed, this,
@@ -110,7 +126,8 @@ AppController::AppController(QObject *parent)
   refreshActivity();
   auto *activityTimer = new QTimer(this);
   activityTimer->setInterval(60'000);
-  connect(activityTimer, &QTimer::timeout, this, &AppController::refreshActivity);
+  connect(activityTimer, &QTimer::timeout, this,
+          &AppController::refreshActivity);
   activityTimer->start();
 }
 
@@ -138,9 +155,7 @@ bool AppController::connected() const { return daemon_.connected(); }
 
 bool AppController::loading() const { return loading_; }
 
-bool AppController::pricing() const {
-  return relicState_.pricesPending;
-}
+bool AppController::pricing() const { return relicState_.pricesPending; }
 
 int AppController::traceCount() const { return relics_.traceCount(); }
 
@@ -162,6 +177,14 @@ QJsonObject AppController::activity() const {
     result.insert("error", activityError_);
   }
   return result;
+}
+
+QString AppController::fissureNotificationMode() const {
+  return fissureNotificationMode_;
+}
+
+bool AppController::notificationSettingsLoaded() const {
+  return notificationSettingsLoaded_;
 }
 
 QString AppController::foundryError() const { return foundryState_.error; }
@@ -259,6 +282,19 @@ void AppController::refreshMastery() {
 }
 
 void AppController::refreshActivity() { daemon_.requestActivity(); }
+
+void AppController::setFissureNotificationMode(const QString &mode) {
+  if (mode != "off" && mode != "session" && mode != "persistent") {
+    return;
+  }
+  if (notificationSettingsLoaded_ && fissureNotificationMode_ == mode) {
+    return;
+  }
+  fissureNotificationMode_ = mode;
+  notificationSettingsLoaded_ = true;
+  emit notificationSettingsChanged();
+  daemon_.setFissureNotificationMode(mode);
+}
 
 void AppController::resolveAssets(const QJsonArray &assets) {
   QJsonArray missing;
@@ -379,8 +415,8 @@ void AppController::applyPlayerView(const QString &view,
   emitPlayerStateChanged(view);
 }
 
-AppController::PlayerViewState *AppController::playerState(
-    const QString &view) {
+AppController::PlayerViewState *
+AppController::playerState(const QString &view) {
   if (view == "foundry") {
     return &foundryState_;
   }
