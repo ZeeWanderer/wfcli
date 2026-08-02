@@ -13,6 +13,8 @@
 #include <initializer_list>
 #include <utility>
 
+#include "widget_capture.h"
+
 namespace {
 int firstInt(const QJsonObject &object,
              std::initializer_list<const char *> keys, int fallback = 0) {
@@ -100,6 +102,7 @@ MarketOrderCard::MarketOrderCard(const QJsonObject &order,
   const int quantity = order.value("quantity").toInt(1);
 
   setObjectName("marketOrderCard");
+  wfgui::setCaptureItem(this);
   setMinimumWidth(370);
   setFixedHeight(107);
   setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);

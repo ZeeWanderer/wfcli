@@ -33,6 +33,20 @@ normalization_and_label_order_test() ->
     ?assertEqual(<<"braton_prime_blueprint">>, maps:get(slug, BlueprintMatch)),
     ?assertEqual(1, maps:get(distance, BlueprintMatch)).
 
+partial_query_prefers_name_matches_test() ->
+    Items = [item(<<"saryn_prime_set">>, <<"Saryn Prime Set">>, 100),
+             item(<<"saryn_prime_chassis_blueprint">>,
+                  <<"Saryn Prime Chassis Blueprint">>, 100),
+             item(<<"da_ren">>, <<"Da-Ren">>, undefined),
+             item(<<"karkina">>, <<"Karkina">>, undefined)],
+    [Prefix, Tokens] = wfcli_market_resolver:resolve(
+                         [<<"saryn">>, <<"saryn set">>], Items, 2),
+    PrefixNames = [maps:get(name, Match) || Match <- maps:get(matches, Prefix)],
+    ?assertEqual([<<"Saryn Prime Set">>, <<"Saryn Prime Chassis Blueprint">>],
+                 PrefixNames),
+    [TokenMatch | _] = maps:get(matches, Tokens),
+    ?assertEqual(<<"Saryn Prime Set">>, maps:get(name, TokenMatch)).
+
 exact_descriptors_test() ->
     Item = (item(<<"arcane_energize">>, <<"Arcane Energize">>, undefined))#{
         <<"id">> => <<"arcane-id">>, <<"bulkTradable">> => true,

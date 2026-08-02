@@ -1,14 +1,17 @@
 #pragma once
 
 #include <QDialog>
+#include <QJsonArray>
 #include <QJsonObject>
 #include <QList>
 #include <QString>
+#include <QWidget>
 
 class AppController;
 class QLabel;
 class QButtonGroup;
 class QComboBox;
+class QListWidget;
 class QProgressBar;
 class QPushButton;
 class QSpinBox;
@@ -16,16 +19,19 @@ class QTableWidget;
 class QTimer;
 class QWidget;
 
-class MarketItemDialog final : public QDialog {
+class MarketItemView final : public QWidget {
   Q_OBJECT
 
 public:
-  explicit MarketItemDialog(AppController *controller,
-                            QWidget *parent = nullptr);
+  enum class Presentation { Dialog, Rail };
+
+  explicit MarketItemView(AppController *controller, Presentation presentation,
+                          QWidget *parent = nullptr);
   void showItem(const QString &item, const QString &side = QString());
 
 signals:
   void signInRequested();
+  void titleChanged(const QString &title);
 
 private:
   void setMode(const QString &side);
@@ -35,6 +41,7 @@ private:
   void requestData(bool refresh);
   void requestVariantData(bool refresh = false);
   void copyWhisper();
+  void setCompactCopied(int row, bool copied);
   void postOrder();
   QJsonObject postingFilters() const;
   QString listingPlayer(const QJsonObject &order) const;
@@ -45,6 +52,7 @@ private:
   QLabel *status_;
   QButtonGroup *modes_;
   QTableWidget *listings_;
+  QListWidget *compactListings_;
   QProgressBar *progress_;
   QSpinBox *quantity_;
   QSpinBox *price_;
@@ -61,6 +69,7 @@ private:
   QWidget *perTradeRow_;
   QWidget *subtypeRow_;
   QTimer *variantTimer_;
+  QTimer *copyResetTimer_;
   QPushButton *copy_;
   QPushButton *post_;
   QPushButton *signIn_;
@@ -68,7 +77,25 @@ private:
   QString itemKey_;
   QJsonObject variantQuote_;
   QJsonObject variantQuoteFilters_;
+  Presentation presentation_;
   QString mode_ = "sell";
+  QString displayedTitle_;
+  int copiedRow_ = -1;
   bool posting_ = false;
   bool initializePrice_ = true;
+};
+
+class MarketItemDialog final : public QDialog {
+  Q_OBJECT
+
+public:
+  explicit MarketItemDialog(AppController *controller,
+                            QWidget *parent = nullptr);
+  void showItem(const QString &item, const QString &side = QString());
+
+signals:
+  void signInRequested();
+
+private:
+  MarketItemView *view_;
 };

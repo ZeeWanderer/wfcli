@@ -33,8 +33,10 @@ public:
   void setFissureNotificationMode(const QString &mode);
   void requestAssets(const QJsonArray &assets);
   void requestMarketQuotes(const QStringList &items, bool refresh = false);
-  void requestMarketVariantQuote(const QString &item, const QJsonObject &filters,
+  void requestMarketVariantQuote(const QString &item,
+                                 const QJsonObject &filters,
                                  bool refresh = false);
+  void requestMarketMatches(const QString &query, int limit = 5);
   void requestMarketItems(const QStringList &items);
   void requestMarketAccount();
   void marketLogin(const QString &email, const QString &password);
@@ -43,8 +45,7 @@ public:
   void marketUpdateOrder(const QString &id, const QJsonObject &patch);
   void marketDeleteOrder(const QString &id);
   void marketCloseOrder(const QString &id, int quantity);
-  void setMarketOrdersVisible(bool visible,
-                              const QString &type = QString());
+  void setMarketOrdersVisible(bool visible, const QString &type = QString());
   void setMarketPresenceMode(const QString &mode);
 
 signals:
@@ -67,9 +68,10 @@ signals:
                                const QJsonObject &data);
   void marketVariantQuoteFailed(const QString &item, const QJsonObject &filters,
                                 const QString &error);
+  void marketMatchesResolved(const QString &query, const QJsonArray &matches);
+  void marketMatchesFailed(const QString &query, const QString &error);
   void marketItemsDescribed(const QJsonArray &items, const QJsonArray &missing);
-  void marketItemDescribeFailed(const QStringList &items,
-                                const QString &error);
+  void marketItemDescribeFailed(const QStringList &items, const QString &error);
   void marketAccountReady(const QString &action, const QJsonObject &account);
   void marketAccountFailed(const QString &action, const QString &error);
   void marketPresenceReady(const QJsonObject &presence, bool requested);
@@ -89,11 +91,11 @@ private:
   void sendAssetBatch(const QJsonArray &assets);
   void sendPendingMarketQuotes();
   void sendPendingMarketVariantQuotes();
+  void sendPendingMarketResolve();
   void sendPendingMarketDescriptions();
   void sendPendingMarketAccount();
   void queueMarketAccountRequest(const QString &action,
                                  const QJsonObject &message);
-  void flushMarketQuoteResults();
   void write(const QJsonObject &message);
   void setConnected(bool connected);
   void setStatus(const QString &status);
@@ -122,6 +124,11 @@ private:
     bool refresh = false;
   };
 
+  struct MarketResolveRequest {
+    QString query;
+    int limit = 5;
+  };
+
   static QString relicRequestKey(const RelicRequest &request);
   bool relicRequestActive(const QString &key) const;
   bool assetRequestActive(const QString &id) const;
@@ -148,8 +155,8 @@ private:
   QHash<qint64, MarketQuoteRequest> activeMarketQuoteRequests_;
   QList<MarketVariantRequest> pendingMarketVariantRequests_;
   QHash<qint64, MarketVariantRequest> activeMarketVariantRequests_;
-  QJsonArray resolvedMarketQuotes_;
-  QJsonArray resolvedMarketMissing_;
+  std::optional<MarketResolveRequest> pendingMarketResolve_;
+  QHash<qint64, MarketResolveRequest> activeMarketResolveRequests_;
   QSet<QString> pendingMarketDescriptions_;
   QStringList pendingMarketDescriptionOrder_;
   QHash<qint64, QStringList> activeMarketDescriptionRequests_;

@@ -159,6 +159,10 @@ AppController::AppController(QObject *parent)
             marketVariantPending_.remove(marketVariantKey(item, filters));
             emit marketVariantQuoteFailed(item, filters, error);
           });
+  connect(&daemon_, &DaemonClient::marketMatchesResolved, this,
+          &AppController::marketSearchReady);
+  connect(&daemon_, &DaemonClient::marketMatchesFailed, this,
+          &AppController::marketSearchFailed);
   connect(&daemon_, &DaemonClient::marketItemsDescribed, this,
           [this](const QJsonArray &items, const QJsonArray &) {
             applyMarketDescriptors(items);
@@ -487,6 +491,10 @@ void AppController::requestMarketVariantQuote(const QString &item,
   }
   marketVariantPending_.insert(key);
   daemon_.requestMarketVariantQuote(item, filters, refresh);
+}
+
+void AppController::searchMarketItems(const QString &query, int limit) {
+  daemon_.requestMarketMatches(query, limit);
 }
 
 void AppController::describeMarketItems(const QStringList &items) {

@@ -25,6 +25,7 @@
 #include "image_cache.h"
 #include "relic_card_layout.h"
 #include "relic_model.h"
+#include "widget_capture.h"
 
 namespace {
 constexpr int CardHeight = 108;
@@ -47,6 +48,7 @@ public:
       QWidget *parent = nullptr)
       : QWidget(parent), marketRequest_(std::move(marketRequest)) {
     setObjectName("relicCardCanvas");
+    wfgui::setCaptureItem(this);
     setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
     setAttribute(Qt::WA_Hover);
     setScale(1.0);
@@ -122,7 +124,8 @@ protected:
          reward < std::min(static_cast<int>(layout.rewardCells.size()),
                            static_cast<int>(rewards.size()));
          ++reward) {
-      if (!layout.rewardCells.at(reward).contains(event->position().toPoint())) {
+      if (!layout.rewardCells.at(reward).contains(
+              event->position().toPoint())) {
         continue;
       }
       const QVariantMap data = rewards.at(reward).toMap();
@@ -307,6 +310,7 @@ private:
 RelicGridWidget::RelicGridWidget(QWidget *parent)
     : QWidget(parent), grid_(new QGridLayout(this)) {
   setObjectName("relicGrid");
+  wfgui::setCaptureTarget(this, "relic-planner.grid", true);
   grid_->setContentsMargins(GridMargin, GridMargin, GridMargin, GridMargin);
   grid_->setHorizontalSpacing(GridGap);
   grid_->setVerticalSpacing(0);

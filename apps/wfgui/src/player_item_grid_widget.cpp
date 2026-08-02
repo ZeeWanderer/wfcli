@@ -23,6 +23,7 @@
 #include "image_cache.h"
 #include "inventory_card_layout.h"
 #include "player_item_model.h"
+#include "widget_capture.h"
 
 namespace {
 constexpr int Gap = 8;
@@ -204,13 +205,16 @@ InventoryStatusLayout inventoryStatusLayout(const QRect &area,
                                                : QStringLiteral("Unvaulted"));
   const int quantityWidth = metrics.horizontalAdvance(quantity);
   const int vaultedWidth =
-      showVaulted ? icon + (vaultText.isEmpty() ? 0 : gap + metrics.horizontalAdvance(vaultText))
+      showVaulted ? icon + (vaultText.isEmpty()
+                                ? 0
+                                : gap + metrics.horizontalAdvance(vaultText))
                   : 0;
   const int masteredWidth = mastered ? wfgui::scaled(20, scale) : 0;
-  const int count = 1 + static_cast<int>(showVaulted) + static_cast<int>(mastered);
+  const int count =
+      1 + static_cast<int>(showVaulted) + static_cast<int>(mastered);
   const int used = quantityWidth + vaultedWidth + masteredWidth;
-  const int spacing = std::max(wfgui::scaled(2, scale),
-                               (area.width() - used) / (count + 1));
+  const int spacing =
+      std::max(wfgui::scaled(2, scale), (area.width() - used) / (count + 1));
   int x = area.left() + spacing;
   InventoryStatusLayout result;
   result.quantity = {x, area.top(), quantityWidth, area.height()};
@@ -220,8 +224,8 @@ InventoryStatusLayout inventoryStatusLayout(const QRect &area,
     x += vaultedWidth + spacing;
   }
   if (mastered) {
-    result.mastered = {x, area.center().y() - masteredWidth / 2,
-                       masteredWidth, masteredWidth};
+    result.mastered = {x, area.center().y() - masteredWidth / 2, masteredWidth,
+                       masteredWidth};
   }
   return result;
 }
@@ -331,7 +335,8 @@ public:
             index.data(PlayerItemModel::GroupRole).toString() == "relics";
         const InventoryStatusLayout status = inventoryStatusLayout(
             layout.status,
-            QString("x%1").arg(index.data(PlayerItemModel::QuantityRole).toInt()),
+            QString("x%1").arg(
+                index.data(PlayerItemModel::QuantityRole).toInt()),
             showVaulted, index.data(PlayerItemModel::VaultedRole).toBool(),
             index.data(PlayerItemModel::MasteredRole).toBool(), isSet,
             statusFont, scale);
@@ -438,7 +443,8 @@ public:
           componentAreas = componentRects(
               content, static_cast<int>(components.size()), kind_, scale);
         }
-        for (int component = 0; component < componentAreas.size(); ++component) {
+        for (int component = 0; component < componentAreas.size();
+             ++component) {
           if (!componentAreas.at(component).contains(position)) {
             continue;
           }
@@ -623,8 +629,8 @@ private:
     painter.setPen(QColor("#ffffff"));
     const QString name = index.data(PlayerItemModel::NameRole).toString();
     painter.drawText(layout.title, Qt::AlignCenter,
-                     QFontMetrics(titleFont).elidedText(
-                         name, Qt::ElideRight, layout.title.width()));
+                     QFontMetrics(titleFont).elidedText(name, Qt::ElideRight,
+                                                        layout.title.width()));
 
     QFont detailFont = baseFont;
     detailFont.setPixelSize(wfgui::scaled(14, scale));
@@ -632,15 +638,15 @@ private:
     const QString quantity =
         QString("x%1").arg(index.data(PlayerItemModel::QuantityRole).toInt());
     const QVariant vaultedValue = index.data(PlayerItemModel::VaultedRole);
-    const bool showVaulted = vaultedValue.isValid() &&
-                             (index.data(PlayerItemModel::IsPrimeRole).toBool() ||
-                              index.data(PlayerItemModel::GroupRole).toString() ==
-                                  "relics");
+    const bool showVaulted =
+        vaultedValue.isValid() &&
+        (index.data(PlayerItemModel::IsPrimeRole).toBool() ||
+         index.data(PlayerItemModel::GroupRole).toString() == "relics");
     const bool vaulted = vaultedValue.toBool();
     const bool mastered = index.data(PlayerItemModel::MasteredRole).toBool();
-    const InventoryStatusLayout status = inventoryStatusLayout(
-        layout.status, quantity, showVaulted, vaulted, mastered, isSet,
-        detailFont, scale);
+    const InventoryStatusLayout status =
+        inventoryStatusLayout(layout.status, quantity, showVaulted, vaulted,
+                              mastered, isSet, detailFont, scale);
     paintInventoryStatus(painter, status, quantity, showVaulted, vaulted,
                          mastered, isSet, detailFont, scale);
 
@@ -657,9 +663,9 @@ private:
       const int width = textWidth + gap + iconSize;
       const int left = layout.ducats.center().x() - width / 2;
       painter.setPen(QColor("#ffffff"));
-      painter.drawText(QRect(left, layout.ducats.top(), textWidth,
-                             layout.ducats.height()),
-                       Qt::AlignCenter, text);
+      painter.drawText(
+          QRect(left, layout.ducats.top(), textWidth, layout.ducats.height()),
+          Qt::AlignCenter, text);
       const QRect icon(left + textWidth + gap,
                        layout.ducats.center().y() - iconSize / 2, iconSize,
                        iconSize);
@@ -676,7 +682,8 @@ private:
       return;
     }
     painter.setFont(detailFont);
-    const QString state = index.data(PlayerItemModel::PriceStateRole).toString();
+    const QString state =
+        index.data(PlayerItemModel::PriceStateRole).toString();
     const auto priceText = [&index, &state](int role) {
       return state == "loading"
                  ? QString("...")
@@ -986,6 +993,9 @@ private:
 PlayerItemGridWidget::PlayerItemGridWidget(Kind kind, QWidget *parent)
     : QListView(parent), kind_(kind), visibleDataTimer_(new QTimer(this)) {
   setObjectName("playerItemGrid");
+  wfgui::setCaptureTarget(this, kind == Kind::Foundry     ? "foundry.grid"
+                                : kind == Kind::Inventory ? "inventory.grid"
+                                                          : "mastery.grid");
   setItemDelegate(new PlayerItemDelegate(
       kind,
       [this](const QString &item, const QString &side) {

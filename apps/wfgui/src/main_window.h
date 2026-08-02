@@ -24,6 +24,7 @@ class MainWindow final : public QMainWindow {
 public:
   explicit MainWindow(QWidget *parent = nullptr);
   bool setPage(const QString &page);
+  bool setActivityTab(const QString &tab);
   void showMarketItem(const QString &item, const QString &side = "sell");
   QWidget *screenshotTarget();
 

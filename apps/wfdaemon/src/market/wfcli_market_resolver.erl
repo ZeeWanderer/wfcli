@@ -115,14 +115,42 @@ score(Label, Candidate0 = #{name := Name, slug := Slug, normalized := Candidate}
         _ -> round(max(0.0, 1.0 - Distance / Length) * 10000) / 10000
     end,
     Candidate0#{name => Name, slug => Slug, normalized => Candidate,
+                match_class => match_class(Label, Candidate),
                 distance => Distance, confidence => Confidence}.
 
 candidate_before(Left, Right) ->
-    LeftKey = {-maps:get(confidence, Left), maps:get(distance, Left),
+    LeftKey = {maps:get(match_class, Left), -maps:get(confidence, Left),
+               maps:get(distance, Left),
                maps:get(normalized, Left), maps:get(slug, Left)},
-    RightKey = {-maps:get(confidence, Right), maps:get(distance, Right),
+    RightKey = {maps:get(match_class, Right), -maps:get(confidence, Right),
+                maps:get(distance, Right),
                 maps:get(normalized, Right), maps:get(slug, Right)},
     LeftKey < RightKey.
+
+match_class(Value, Value) -> 0;
+match_class(Label, Candidate) ->
+    case lists:prefix(Label, Candidate) of
+        true -> 1;
+        false ->
+            case token_prefix_match(string:tokens(Label, " "),
+                                    string:tokens(Candidate, " ")) of
+                true -> 2;
+                false ->
+                    case string:find(Candidate, Label) of
+                        nomatch -> 4;
+                        _ -> 3
+                    end
+            end
+    end.
+
+token_prefix_match([], _CandidateTokens) -> false;
+token_prefix_match(LabelTokens, CandidateTokens) ->
+    lists:all(
+      fun(LabelToken) ->
+          lists:any(fun(CandidateToken) -> lists:prefix(LabelToken, CandidateToken) end,
+                    CandidateTokens)
+      end,
+      LabelTokens).
 
 public_match(Candidate = #{name := Name, slug := Slug, distance := Distance,
                            confidence := Confidence}) ->

@@ -48,9 +48,10 @@ Market signs in to Warframe Market, manages regular buy and sell orders, and con
 presence. Orders can be filtered, edited, hidden, closed, deleted, or reconciled with the current
 player inventory. The open page refreshes account data once per minute.
 
-Click a tradable item, component, relic, or relic reward on another page to open current listings.
-The dialog supports exact rank, charge, star, subtype, and bulk-trade variants, copies trade
-whispers, and can create an order for a signed-in account.
+Click a tradable item, component, relic, or relic reward on another page to open current listings
+in the WFMarket rail. When the rail is collapsed, the same view opens as a dialog. It supports
+exact rank, charge, star, subtype, and bulk-trade variants, copies trade whispers, and can create
+an order for a signed-in account.
 
 The password is used only for sign-in. `wfdaemon` stores the returned session token in its
 owner-only state directory. Presence can follow Warframe automatically or remain online, in game,
@@ -58,9 +59,13 @@ or invisible.
 
 ## Activity Rail
 
-The right rail shows active world cycles, Baro and Prime Resurgence windows, and grouped fissures.
-Its fissure bell cycles between notifications off, active while a GUI is connected, and persistent
-daemon monitoring. `wfcli notifications` controls the same setting.
+The right rail has Timers & Events and WFMarket tabs. Timers shows active world cycles, Baro and
+Prime Resurgence windows, and grouped fissures. Its fissure bell cycles between notifications off,
+active while a GUI is connected, and persistent daemon monitoring. `wfcli notifications` controls
+the same setting.
+
+WFMarket searches the item catalog, shows public WTS or WTB listings, copies trade whispers, and
+posts account orders without leaving the current page.
 
 ## Screenshots
 
@@ -70,6 +75,21 @@ Render a deterministic window image without a desktop screenshot tool:
 wfgui --screenshot /tmp/wfgui.png --size 2560x1440 --page foundry
 wfgui --market-item 54a74454e779892d5e515621 --market-side sell \
   --screenshot /tmp/wfgui-market-item.png
+wfgui --activity-tab market --screenshot /tmp/wfgui-market-rail.png
 ```
 
 Valid pages are `foundry`, `mastery`, `inventory`, `relic`, and `market`.
+
+List and capture smaller UI regions at native resolution:
+
+```bash
+wfgui --list-capture-targets
+wfgui --market-item 54a74454e779892d5e515621 \
+  --capture market-item.quantity --capture-padding 12 \
+  --screenshot /tmp/wfgui-quantity.png
+wfgui --page inventory --capture inventory.grid.item \
+  --screenshot /tmp/wfgui-inventory-card.png
+```
+
+Targets ending in `.item` select the first visible cell in that grid or list. Use `--size` to
+evaluate the target under a specific window layout.

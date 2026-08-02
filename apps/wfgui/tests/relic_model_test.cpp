@@ -1,4 +1,6 @@
+#include <QAbstractItemView>
 #include <QCheckBox>
+#include <QCompleter>
 #include <QDateTime>
 #include <QFile>
 #include <QImage>
@@ -6,10 +8,12 @@
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QLineEdit>
+#include <QListWidget>
 #include <QLocalServer>
 #include <QLocalSocket>
 #include <QPainter>
 #include <QRegularExpression>
+#include <QScopeGuard>
 #include <QScrollBar>
 #include <QSet>
 #include <QTemporaryDir>
@@ -19,16 +23,19 @@
 #include <utility>
 
 #include "activity_data.h"
+#include "app_controller.h"
 #include "compact_search.h"
 #include "daemon_client.h"
 #include "image_cache.h"
 #include "inventory_card_layout.h"
 #include "market_order_card.h"
+#include "market_rail_widget.h"
 #include "player_item_grid_widget.h"
 #include "player_item_model.h"
 #include "relic_card_layout.h"
 #include "relic_grid_widget.h"
 #include "relic_model.h"
+#include "widget_capture.h"
 
 class RelicModelTest final : public QObject {
   Q_OBJECT
@@ -64,8 +71,10 @@ private slots:
   void thumbnailCacheRespectsSizeAndDpr();
   void widgetThumbnailDecodeCompletesOffPaintPath();
   void marketOrderCardUsesReferenceStructure();
+  void marketSearchKeyboardNavigation();
   void filtersExpiredFissures();
   void styleLayersAvoidImplicitSurfaces();
+  void capturesNamedUiTargets();
 };
 
 namespace {
@@ -350,11 +359,12 @@ void RelicModelTest::preservesUnknownInventoryVaultState() {
   QVERIFY(model.replace({
       {"items",
        QJsonArray{
-           QJsonObject{{"id", "vaulted"}, {"name", "Vaulted"},
-                       {"vaulted", true}},
-           QJsonObject{{"id", "unvaulted"}, {"name", "Unvaulted"},
-                       {"vaulted", false}},
-           QJsonObject{{"id", "unknown"}, {"name", "Unknown"},
+           QJsonObject{
+               {"id", "vaulted"}, {"name", "Vaulted"}, {"vaulted", true}},
+           QJsonObject{
+               {"id", "unvaulted"}, {"name", "Unvaulted"}, {"vaulted", false}},
+           QJsonObject{{"id", "unknown"},
+                       {"name", "Unknown"},
                        {"vaulted", QJsonValue(QJsonValue::Null)}},
        }},
   }));
@@ -364,12 +374,14 @@ void RelicModelTest::preservesUnknownInventoryVaultState() {
   filter.setSourceModel(&model);
   filter.setFlag("vaulted", 1);
   QCOMPARE(filter.rowCount(), 1);
-  QCOMPARE(filter.data(filter.index(0, 0), PlayerItemModel::NameRole).toString(),
-           QString("Vaulted"));
+  QCOMPARE(
+      filter.data(filter.index(0, 0), PlayerItemModel::NameRole).toString(),
+      QString("Vaulted"));
   filter.setFlag("vaulted", 0);
   QCOMPARE(filter.rowCount(), 1);
-  QCOMPARE(filter.data(filter.index(0, 0), PlayerItemModel::NameRole).toString(),
-           QString("Unvaulted"));
+  QCOMPARE(
+      filter.data(filter.index(0, 0), PlayerItemModel::NameRole).toString(),
+      QString("Unvaulted"));
 }
 
 void RelicModelTest::preservesFavoriteOverrides() {
@@ -469,14 +481,17 @@ void RelicModelTest::sortsInventoryLocally() {
   PlayerItemFilterModel filter;
   filter.setSourceModel(&model);
   filter.setSortMode("platinum");
-  QCOMPARE(filter.data(filter.index(0, 0), PlayerItemModel::NameRole).toString(),
-           QString("Cheap Prime Part"));
+  QCOMPARE(
+      filter.data(filter.index(0, 0), PlayerItemModel::NameRole).toString(),
+      QString("Cheap Prime Part"));
   filter.setSortAscending(false);
-  QCOMPARE(filter.data(filter.index(0, 0), PlayerItemModel::NameRole).toString(),
-           QString("Valuable Prime Part"));
+  QCOMPARE(
+      filter.data(filter.index(0, 0), PlayerItemModel::NameRole).toString(),
+      QString("Valuable Prime Part"));
   filter.setSortMode("amount");
-  QCOMPARE(filter.data(filter.index(0, 0), PlayerItemModel::NameRole).toString(),
-           QString("Cheap Prime Part"));
+  QCOMPARE(
+      filter.data(filter.index(0, 0), PlayerItemModel::NameRole).toString(),
+      QString("Cheap Prime Part"));
 }
 
 void RelicModelTest::appliesMasteryAcquisitionQuotes() {
@@ -633,8 +648,8 @@ void RelicModelTest::inventoryCardLayoutUsesConstraints() {
       wfgui::InventoryCardLayout::calculate({0, 0, 408, 118}, false, 0);
   const auto set =
       wfgui::InventoryCardLayout::calculate({0, 0, 408, 118}, true, 6);
-  const auto scaled = wfgui::InventoryCardLayout::calculate(
-      {0, 0, 459, 133}, false, 0, 1.125);
+  const auto scaled =
+      wfgui::InventoryCardLayout::calculate({0, 0, 459, 133}, false, 0, 1.125);
 
   QCOMPARE(card.image.width(), 90);
   QCOMPARE(card.ducats.height(), 24);
@@ -781,6 +796,7 @@ void RelicModelTest::cacheMissDoesNotBecomeMarketMiss() {
     DaemonClient client;
     QSignalSpy resolved(&client, &DaemonClient::marketQuotesResolved);
     QSignalSpy variantResolved(&client, &DaemonClient::marketVariantQuoteReady);
+    QSignalSpy matches(&client, &DaemonClient::marketMatchesResolved);
     QSignalSpy described(&client, &DaemonClient::marketItemsDescribed);
     QSignalSpy account(&client, &DaemonClient::marketAccountReady);
     client.start();
@@ -788,14 +804,15 @@ void RelicModelTest::cacheMissDoesNotBecomeMarketMiss() {
     QLocalSocket *peer = server.nextPendingConnection();
     QVERIFY(peer);
     QTRY_VERIFY(peer->canReadLine());
-    const QJsonObject hello = QJsonDocument::fromJson(peer->readLine()).object();
+    const QJsonObject hello =
+        QJsonDocument::fromJson(peer->readLine()).object();
     QCOMPARE(hello.value("op").toString(), QString("hello"));
 
     const QJsonArray capabilities{
-        "relic.planner",         "worldstate.activity", "player.foundry",
-        "player.inventory",      "player.mastery",      "market.quote",
-        "market.describe",       "market.account",      "market.orders",
-        "market.presence",       "market.quote.variant",
+        "relic.planner",          "worldstate.activity", "player.foundry",
+        "player.inventory",       "player.mastery",      "market.quote",
+        "market.resolve",         "market.describe",     "market.account",
+        "market.orders",          "market.presence",     "market.quote.variant",
         "notifications.fissures",
     };
     peer->write(QJsonDocument(QJsonObject{{"id", 1},
@@ -810,7 +827,8 @@ void RelicModelTest::cacheMissDoesNotBecomeMarketMiss() {
       peer->readLine();
     }
 
-    const QStringList itemNames{"Test Prime Blueprint", "Other Prime Blueprint"};
+    const QStringList itemNames{"Test Prime Blueprint",
+                                "Other Prime Blueprint"};
     client.requestMarketQuotes(itemNames);
     QJsonObject cacheRequest;
     QList<QJsonObject> networkRequests;
@@ -830,47 +848,48 @@ void RelicModelTest::cacheMissDoesNotBecomeMarketMiss() {
       return !cacheRequest.isEmpty() && networkRequests.size() == 2;
     })());
 
-    peer->write(
-        QJsonDocument(QJsonObject{
-                          {"id", cacheRequest.value("id")},
-                          {"ok", true},
-                          {"data", QJsonObject{
-                                       {"quotes", QJsonArray{}},
-                                       {"missing",
-                                        QJsonArray::fromStringList(itemNames)},
-                                   }},
-                      })
-            .toJson(QJsonDocument::Compact) +
-        '\n');
+    peer->write(QJsonDocument(
+                    QJsonObject{
+                        {"id", cacheRequest.value("id")},
+                        {"ok", true},
+                        {"data",
+                         QJsonObject{
+                             {"quotes", QJsonArray{}},
+                             {"missing", QJsonArray::fromStringList(itemNames)},
+                         }},
+                    })
+                    .toJson(QJsonDocument::Compact) +
+                '\n');
     peer->flush();
     QTest::qWait(20);
     QCOMPARE(resolved.count(), 0);
 
     const auto sendQuote = [peer](const QJsonObject &request, int price) {
-      const QString item =
-          request.value("items").toArray().first().toString();
+      const QString item = request.value("items").toArray().first().toString();
       const QJsonObject quote{{"item", item},
-                              {"quote",
-                               QJsonObject{{"lowest_sell", price}}}};
+                              {"quote", QJsonObject{{"lowest_sell", price}}}};
       peer->write(QJsonDocument(QJsonObject{
                                     {"id", request.value("id")},
                                     {"ok", true},
-                                    {"data", QJsonObject{
-                                                 {"quotes", QJsonArray{quote}},
-                                                 {"missing", QJsonArray{}},
-                                             }},
+                                    {"data",
+                                     QJsonObject{
+                                         {"quotes", QJsonArray{quote}},
+                                         {"missing", QJsonArray{}},
+                                     }},
                                 })
                       .toJson(QJsonDocument::Compact) +
                   '\n');
       peer->flush();
     };
     sendQuote(networkRequests.at(0), 12);
-    QTest::qWait(20);
-    QCOMPARE(resolved.count(), 0);
+    QTRY_COMPARE(resolved.count(), 1);
+    QList<QVariant> result = resolved.takeFirst();
+    QCOMPARE(result.at(0).toJsonArray().size(), 1);
+    QCOMPARE(result.at(1).toJsonArray(), QJsonArray{});
     sendQuote(networkRequests.at(1), 15);
     QTRY_COMPARE(resolved.count(), 1);
-    const QList<QVariant> result = resolved.takeFirst();
-    QCOMPARE(result.at(0).toJsonArray().size(), 2);
+    result = resolved.takeFirst();
+    QCOMPARE(result.at(0).toJsonArray().size(), 1);
     QCOMPARE(result.at(1).toJsonArray(), QJsonArray{});
 
     const QJsonObject variantFilters{{"rank", 5}, {"subtype", "blueprint"}};
@@ -891,16 +910,53 @@ void RelicModelTest::cacheMissDoesNotBecomeMarketMiss() {
         QJsonDocument(QJsonObject{
                           {"id", variantRequest.value("id")},
                           {"ok", true},
-                          {"data", QJsonObject{
-                                       {"item", "item-1"},
-                                       {"quote", QJsonObject{{"lowest_sell", 20}}},
-                                   }},
+                          {"data",
+                           QJsonObject{
+                               {"item", "item-1"},
+                               {"quote", QJsonObject{{"lowest_sell", 20}}},
+                           }},
                       })
             .toJson(QJsonDocument::Compact) +
         '\n');
     peer->flush();
     QTRY_COMPARE(variantResolved.count(), 1);
     QCOMPARE(variantResolved.takeFirst().at(1).toJsonObject(), variantFilters);
+
+    client.requestMarketMatches("saryn", 5);
+    QJsonObject resolveRequest;
+    QTRY_VERIFY(([&] {
+      while (peer->canReadLine()) {
+        const QJsonObject request =
+            QJsonDocument::fromJson(peer->readLine()).object();
+        if (request.value("op").toString() == "market_resolve") {
+          resolveRequest = request;
+        }
+      }
+      return !resolveRequest.isEmpty();
+    })());
+    QCOMPARE(resolveRequest.value("labels").toArray(), QJsonArray{"saryn"});
+    QCOMPARE(resolveRequest.value("limit").toInt(), 5);
+    const QJsonArray marketMatches{
+        QJsonObject{{"name", "Saryn Prime Set"}, {"slug", "saryn_prime_set"}}};
+    peer->write(
+        QJsonDocument(QJsonObject{
+                          {"id", resolveRequest.value("id")},
+                          {"ok", true},
+                          {"data",
+                           QJsonObject{
+                               {"resolutions", QJsonArray{QJsonObject{
+                                                   {"label", "saryn"},
+                                                   {"matches", marketMatches},
+                                               }}},
+                           }},
+                      })
+            .toJson(QJsonDocument::Compact) +
+        '\n');
+    peer->flush();
+    QTRY_COMPARE(matches.count(), 1);
+    const QList<QVariant> searchResult = matches.takeFirst();
+    QCOMPARE(searchResult.at(0).toString(), QString("saryn"));
+    QCOMPARE(searchResult.at(1).toJsonArray(), marketMatches);
 
     client.requestMarketItems({"item-1"});
     client.marketLogin("tenno@example.test", "secret");
@@ -923,34 +979,35 @@ void RelicModelTest::cacheMissDoesNotBecomeMarketMiss() {
              QString("tenno@example.test"));
     QCOMPARE(loginRequest.value("password").toString(), QString("secret"));
 
-    peer->write(
-        QJsonDocument(QJsonObject{
-                          {"id", describeRequest.value("id")},
-                          {"ok", true},
-                          {"data", QJsonObject{
+    peer->write(QJsonDocument(QJsonObject{
+                                  {"id", describeRequest.value("id")},
+                                  {"ok", true},
+                                  {"data",
+                                   QJsonObject{
                                        {"items", QJsonArray{QJsonObject{
                                                      {"id", "item-1"},
                                                      {"name", "Test Prime"},
                                                  }}},
                                        {"missing", QJsonArray{}},
                                    }},
-                      })
-            .toJson(QJsonDocument::Compact) +
-        '\n');
-    peer->write(
-        QJsonDocument(QJsonObject{
-                          {"id", loginRequest.value("id")},
-                          {"ok", true},
-                          {"data", QJsonObject{
+                              })
+                    .toJson(QJsonDocument::Compact) +
+                '\n');
+    peer->write(QJsonDocument(QJsonObject{
+                                  {"id", loginRequest.value("id")},
+                                  {"ok", true},
+                                  {"data",
+                                   QJsonObject{
                                        {"authenticated", true},
-                                       {"profile", QJsonObject{
-                                                       {"ingameName", "Tenno"},
-                                                   }},
+                                       {"profile",
+                                        QJsonObject{
+                                            {"ingameName", "Tenno"},
+                                        }},
                                        {"orders", QJsonArray{}},
                                    }},
-                      })
-            .toJson(QJsonDocument::Compact) +
-        '\n');
+                              })
+                    .toJson(QJsonDocument::Compact) +
+                '\n');
     peer->flush();
     QTRY_COMPARE(described.count(), 1);
     QTRY_COMPARE(account.count(), 1);
@@ -986,24 +1043,23 @@ void RelicModelTest::cacheMissDoesNotBecomeMarketMiss() {
       requestIds.insert(request.value("id").toInteger());
     }
     QCOMPARE(requestIds.size(), accountRequests.size());
-    QCOMPARE(accountRequests.value("market_order_create")
-                 .value("order")
-                 .toObject(),
-             createdOrder);
+    QCOMPARE(
+        accountRequests.value("market_order_create").value("order").toObject(),
+        createdOrder);
     const auto verifyMutation = [&accountRequests](const QString &operation,
                                                    const QString &orderId) {
       const QJsonObject request = accountRequests.value(operation);
       QCOMPARE(request.value("order_id").toString(), orderId);
     };
     verifyMutation("market_order_update", "order-1");
-    QCOMPARE(accountRequests.value("market_order_update")
-                 .value("patch")
-                 .toObject(),
-             QJsonObject({{"visible", true}}));
+    QCOMPARE(
+        accountRequests.value("market_order_update").value("patch").toObject(),
+        QJsonObject({{"visible", true}}));
     verifyMutation("market_order_delete", "order-2");
     verifyMutation("market_order_close", "order-3");
     QCOMPARE(
-        accountRequests.value("market_order_close").value("quantity").toInt(), 2);
+        accountRequests.value("market_order_close").value("quantity").toInt(),
+        2);
     QCOMPARE(accountRequests.value("market_orders_visibility")
                  .value("visible")
                  .toBool(),
@@ -1012,10 +1068,9 @@ void RelicModelTest::cacheMissDoesNotBecomeMarketMiss() {
                  .value("type")
                  .toString(),
              QString("sell"));
-    QCOMPARE(accountRequests.value("market_presence_set")
-                 .value("mode")
-                 .toString(),
-             QString("online"));
+    QCOMPARE(
+        accountRequests.value("market_presence_set").value("mode").toString(),
+        QString("online"));
   }
   if (oldSocket.isNull()) {
     qunsetenv("WFCLI_DAEMON_SOCKET");
@@ -1066,12 +1121,13 @@ void RelicModelTest::playerGridPreservesScrollAcrossResort() {
   QTRY_COMPARE(grid.verticalScrollBar()->value(), before);
 
   for (int row = 0; row < 16; ++row) {
-    const QString missing = QString("Prime Item %1 Blueprint")
-                                .arg(row, 2, 10, QChar('0'));
+    const QString missing =
+        QString("Prime Item %1 Blueprint").arg(row, 2, 10, QChar('0'));
     model.applyMarketQuotes({}, QJsonArray{missing});
     QCoreApplication::processEvents();
-    QVERIFY2(grid.verticalScrollBar()->value() > 0,
-             qPrintable(QString("scroll reset after resolving %1").arg(missing)));
+    QVERIFY2(
+        grid.verticalScrollBar()->value() > 0,
+        qPrintable(QString("scroll reset after resolving %1").arg(missing)));
   }
 }
 
@@ -1219,6 +1275,78 @@ void RelicModelTest::marketOrderCardUsesReferenceStructure() {
   QCOMPARE(listingCalls, 1);
 }
 
+void RelicModelTest::marketSearchKeyboardNavigation() {
+  QTemporaryDir directory;
+  QVERIFY(directory.isValid());
+  QLocalServer server;
+  QVERIFY(server.listen(directory.filePath("wfdaemon.sock")));
+  const QByteArray oldSocket = qgetenv("WFCLI_DAEMON_SOCKET");
+  qputenv("WFCLI_DAEMON_SOCKET", server.fullServerName().toUtf8());
+  const auto restoreSocket = qScopeGuard([oldSocket] {
+    if (oldSocket.isNull()) {
+      qunsetenv("WFCLI_DAEMON_SOCKET");
+    } else {
+      qputenv("WFCLI_DAEMON_SOCKET", oldSocket);
+    }
+  });
+
+  AppController controller;
+  QTRY_VERIFY(server.hasPendingConnections());
+  QVERIFY(server.nextPendingConnection());
+  MarketRailWidget rail(&controller);
+  rail.resize(420, 720);
+  rail.show();
+  QCoreApplication::processEvents();
+  rail.activateWindow();
+
+  auto *search = rail.findChild<QLineEdit *>("marketRailSearch");
+  QVERIFY(search);
+  search->setFocus();
+  QTRY_VERIFY(search->hasFocus());
+  QTest::keyClicks(search, "saryn");
+
+  controller.marketSearchReady(
+      "saryn",
+      QJsonArray{
+          QJsonObject{{"name", "Saryn Prime Set"}, {"slug", "saryn_prime_set"}},
+          QJsonObject{{"name", "Saryn Prime Systems Blueprint"},
+                      {"slug", "saryn_prime_systems_blueprint"}},
+      });
+
+  QCompleter *completer = search->completer();
+  QVERIFY(completer);
+  QAbstractItemView *popup = completer->popup();
+  QTRY_COMPARE(popup->model()->rowCount(), 2);
+
+  QTest::keyClick(search, Qt::Key_Down);
+  QTRY_VERIFY(popup->isVisible());
+  QCOMPARE(search->text(), QString("saryn"));
+  QCOMPARE(popup->currentIndex().data().toString(), QString("Saryn Prime Set"));
+  QCOMPARE(popup->model()->rowCount(), 2);
+
+  QTest::keyClick(search, Qt::Key_Down);
+  QCOMPARE(search->text(), QString("saryn"));
+  QCOMPARE(popup->currentIndex().data().toString(),
+           QString("Saryn Prime Systems Blueprint"));
+
+  QTest::keyClick(search, Qt::Key_Up);
+  QCOMPARE(search->text(), QString("saryn"));
+  QCOMPARE(popup->currentIndex().data().toString(), QString("Saryn Prime Set"));
+
+  QTest::keyClick(search, Qt::Key_Down);
+  QTest::keyClick(search, Qt::Key_Return);
+  QCOMPARE(search->text(), QString("Saryn Prime Systems Blueprint"));
+  QVERIFY(!popup->isVisible());
+
+  controller.marketSearchReady(
+      "Saryn Prime Systems Blueprint",
+      QJsonArray{QJsonObject{{"name", "Saryn Prime Systems Blueprint"},
+                             {"slug", "saryn_prime_systems_blueprint"}}});
+  QCoreApplication::processEvents();
+  QCOMPARE(popup->model()->rowCount(), 0);
+  QVERIFY(!popup->isVisible());
+}
+
 void RelicModelTest::filtersExpiredFissures() {
   const QJsonArray fissures = {
       QJsonObject{{"id", "expired"}, {"expiry", "2026-08-02T10:00:00Z"}},
@@ -1255,6 +1383,54 @@ void RelicModelTest::styleLayersAvoidImplicitSurfaces() {
       "QCheckBox::indicator:checked {\n  background: #5e44af;"));
   QVERIFY(
       controlsText.contains("image: url(:/resources/market/wfgui-check.png);"));
+}
+
+void RelicModelTest::capturesNamedUiTargets() {
+  QWidget window;
+  window.resize(240, 150);
+  auto *panel = new QWidget(&window);
+  panel->setGeometry(30, 20, 60, 36);
+  panel->setStyleSheet("background: #7653df;");
+  wfgui::setCaptureTarget(panel, "test.panel");
+
+  auto *list = new QListWidget(&window);
+  list->setGeometry(110, 20, 110, 110);
+  list->addItems({"First", "Second"});
+  wfgui::setCaptureTarget(list, "test.list");
+
+  auto *cards = new QWidget(&window);
+  cards->setGeometry(30, 75, 60, 55);
+  wfgui::setCaptureTarget(cards, "test.cards", true);
+  auto *card = new QWidget(cards);
+  card->setGeometry(5, 5, 50, 24);
+  wfgui::setCaptureItem(card);
+
+  window.show();
+  QCoreApplication::processEvents();
+
+  const QStringList names = wfgui::captureTargetNames();
+  QVERIFY(names.contains("test.panel"));
+  QVERIFY(names.contains("test.list"));
+  QVERIFY(names.contains("test.list.item"));
+  QVERIFY(names.contains("test.cards.item"));
+
+  QString error;
+  const QPixmap panelImage = wfgui::grabCaptureTarget("test.panel", 6, &error);
+  QVERIFY2(!panelImage.isNull(), qPrintable(error));
+  QCOMPARE(panelImage.deviceIndependentSize().toSize(), QSize(72, 48));
+
+  const QPixmap itemImage =
+      wfgui::grabCaptureTarget("test.list.item", 3, &error);
+  QVERIFY2(!itemImage.isNull(), qPrintable(error));
+  QVERIFY(itemImage.deviceIndependentSize().width() < list->width());
+
+  const QPixmap cardImage =
+      wfgui::grabCaptureTarget("test.cards.item", 2, &error);
+  QVERIFY2(!cardImage.isNull(), qPrintable(error));
+  QCOMPARE(cardImage.deviceIndependentSize().toSize(), QSize(54, 28));
+
+  QVERIFY(wfgui::grabCaptureTarget("test.missing", 0, &error).isNull());
+  QCOMPARE(error, QString("unknown capture target 'test.missing'"));
 }
 
 QTEST_MAIN(RelicModelTest)

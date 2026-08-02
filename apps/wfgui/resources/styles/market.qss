@@ -249,3 +249,132 @@ QComboBox {
   min-height: 24px;
   padding: 3px 6px;
 }
+
+QWidget#marketRail {
+  background: transparent;
+}
+
+QLineEdit#marketRailSearch {
+  background: #20283e;
+  border: 1px solid #313a58;
+  border-radius: 14px;
+  min-height: 28px;
+  padding: 2px 11px;
+}
+
+QLineEdit#marketRailSearch:focus {
+  border-color: #7c64d8;
+}
+
+QAbstractItemView#marketSuggestions {
+  background: #20283e;
+  border: 1px solid #313a58;
+  border-radius: 10px;
+  color: #ffffff;
+  outline: none;
+  padding: 6px;
+}
+
+QAbstractItemView#marketSuggestions::item {
+  border-radius: 16px;
+  min-height: 30px;
+  padding: 2px 8px;
+}
+
+QAbstractItemView#marketSuggestions::item:hover,
+QAbstractItemView#marketSuggestions::item:selected {
+  background: #313a58;
+}
+
+QLabel#marketRailEmpty {
+  color: #8a8c95;
+  padding: 28px;
+}
+
+QWidget#marketItemView[compact="true"] QLabel#marketItemTitle {
+  font-size: 11pt;
+  font-weight: 400;
+  padding: 0 5px;
+}
+
+QWidget#marketItemView[compact="true"] QPushButton#marketSide {
+  min-width: 58px;
+  max-width: 58px;
+  min-height: 32px;
+  border: none;
+  border-radius: 16px;
+  padding: 0;
+}
+
+QWidget#marketItemView[compact="true"] QPushButton#marketSide[side="sell"] {
+  background: #24523f;
+}
+
+QWidget#marketItemView[compact="true"] QPushButton#marketSide[side="sell"]:checked {
+  background: #2f7656;
+}
+
+QWidget#marketItemView[compact="true"] QPushButton#marketSide[side="buy"] {
+  background: #672f2f;
+}
+
+QWidget#marketItemView[compact="true"] QPushButton#marketSide[side="buy"]:checked {
+  background: #8a3e4d;
+}
+
+QWidget#marketItemView[compact="true"] QListWidget#marketListingList {
+  background: transparent;
+  border: none;
+  outline: none;
+}
+
+QWidget#marketItemView[compact="true"] QListWidget#marketListingList::item {
+  background: transparent;
+  border: none;
+  border-bottom: 1px solid rgba(255, 255, 255, 38);
+  min-height: 44px;
+}
+
+QWidget#marketItemView[compact="true"] QListWidget#marketListingList::item:hover,
+QWidget#marketItemView[compact="true"] QListWidget#marketListingList::item:selected {
+  background: rgba(255, 255, 255, 46);
+}
+
+QWidget#marketItemView[compact="true"] QWidget#marketListingRow,
+QWidget#marketItemView[compact="true"] QWidget#marketListingContent {
+  background: transparent;
+  border: none;
+}
+
+QWidget#marketItemView[compact="true"] QLabel#marketListingAmount,
+QWidget#marketItemView[compact="true"] QLabel#marketListingName {
+  color: #ffffff;
+  font-size: 10pt;
+  font-weight: 300;
+}
+
+QWidget#marketItemView[compact="true"] QLabel#marketListingVariant {
+  color: #d5d9e4;
+  font-size: 9.5pt;
+  font-weight: 300;
+}
+
+QWidget#marketItemView[compact="true"] QLabel#marketListingPrice {
+  color: #ffffff;
+  font-size: 11.5pt;
+  font-weight: 400;
+}
+
+QWidget#marketItemView[compact="true"] QLabel#marketListingCopied {
+  color: #ffffff;
+  font-size: 10pt;
+  font-weight: 300;
+}
+
+QWidget#marketItemView[compact="true"] QWidget#marketPosting {
+  border-radius: 8px;
+}
+
+QWidget#marketItemView[compact="true"] QWidget#marketField {
+  min-width: 0;
+}

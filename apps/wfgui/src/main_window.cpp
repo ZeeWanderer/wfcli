@@ -31,12 +31,13 @@
 #include "display_scale.h"
 #include "foundry_widget.h"
 #include "inventory_widget.h"
-#include "mastery_planner_widget.h"
 #include "market_item_dialog.h"
 #include "market_widget.h"
+#include "mastery_planner_widget.h"
 #include "player_identity_widget.h"
 #include "relic_planner_widget.h"
 #include "title_bar_widget.h"
+#include "widget_capture.h"
 
 namespace {
 constexpr int MinimumWindowWidth = 1024;
@@ -106,6 +107,8 @@ MainWindow::MainWindow(QWidget *parent)
   setWindowTitle("wfcli");
   resize(1280, 800);
   setMinimumSize(MinimumWindowWidth, 600);
+  wfgui::setCaptureTarget(this, "window");
+  wfgui::setCaptureTarget(titleBar_, "titlebar");
 
   auto *windowRoot = new QWidget;
   windowRoot->setObjectName("windowRoot");
@@ -120,6 +123,8 @@ MainWindow::MainWindow(QWidget *parent)
   layout->setSpacing(7);
 
   sidebar_->setObjectName("sidebar");
+  wfgui::setCaptureTarget(sidebar_, "left-rail");
+  wfgui::setCaptureTarget(playerIdentity_, "left-rail.player");
   sidebar_->setFixedWidth(142);
   auto *sidebarLayout = new QVBoxLayout(sidebar_);
   sidebarLayout->setContentsMargins(8, 14, 8, 12);
@@ -169,6 +174,13 @@ MainWindow::MainWindow(QWidget *parent)
   auto *inventory = new InventoryWidget(&controller_);
   auto *relics = new RelicPlannerWidget(&controller_);
   auto *market = new MarketWidget(&controller_);
+  wfgui::setCaptureTarget(pages_, "center-rail");
+  wfgui::setCaptureTarget(foundry, "foundry");
+  wfgui::setCaptureTarget(mastery, "mastery");
+  wfgui::setCaptureTarget(inventory, "inventory");
+  wfgui::setCaptureTarget(relics, "relic-planner");
+  wfgui::setCaptureTarget(market, "market");
+  wfgui::setCaptureTarget(activityRail_, "right-rail");
   pages_->addWidget(foundry);
   pages_->addWidget(mastery);
   pages_->addWidget(inventory);
@@ -204,14 +216,19 @@ MainWindow::MainWindow(QWidget *parent)
   connect(titleBar_, &TitleBarWidget::rightRailToggleRequested, this,
           &MainWindow::toggleRightRail);
   const auto openMarket = [this](const QString &item, const QString &side) {
-    marketDialog_->showItem(item, side);
+    showMarketItem(item, side);
   };
   connect(foundry, &FoundryWidget::marketItemRequested, this, openMarket);
-  connect(mastery, &MasteryPlannerWidget::marketItemRequested, this, openMarket);
+  connect(mastery, &MasteryPlannerWidget::marketItemRequested, this,
+          openMarket);
   connect(inventory, &InventoryWidget::marketItemRequested, this, openMarket);
   connect(relics, &RelicPlannerWidget::marketItemRequested, this, openMarket);
   connect(market, &MarketWidget::marketItemRequested, this, openMarket);
   connect(marketDialog_, &MarketItemDialog::signInRequested, this, [this] {
+    selectPage(4);
+    navigation_->button(4)->setChecked(true);
+  });
+  connect(activityRail_, &ActivityRailWidget::signInRequested, this, [this] {
     selectPage(4);
     navigation_->button(4)->setChecked(true);
   });
@@ -224,7 +241,15 @@ MainWindow::MainWindow(QWidget *parent)
 }
 
 void MainWindow::showMarketItem(const QString &item, const QString &side) {
-  marketDialog_->showItem(item, side);
+  if (activityRail_->isVisible()) {
+    activityRail_->showMarketItem(item, side);
+  } else {
+    marketDialog_->showItem(item, side);
+  }
+}
+
+bool MainWindow::setActivityTab(const QString &tab) {
+  return activityRail_->setTab(tab);
 }
 
 QWidget *MainWindow::screenshotTarget() {

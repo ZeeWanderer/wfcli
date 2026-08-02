@@ -7,27 +7,33 @@ QWidget#railTabHeader {
   max-height: 33px;
 }
 
-QWidget#railTab {
+QPushButton#railTab {
   background: transparent;
-  border-bottom: 3px solid transparent;
-}
-
-QWidget#railTab[selected="true"] {
-  border-bottom-color: #ffffff;
-}
-
-QLabel#railTabText {
   color: #8a8c95;
+  border: none;
+  border-bottom: 3px solid transparent;
+  border-radius: 0;
+  padding: 2px 5px 0 5px;
   font-size: 12pt;
   font-weight: 300;
 }
 
-QLabel#railTabText[selected="true"] {
+QPushButton#railTab:checked {
   color: #ffffff;
+  border-bottom-color: #ffffff;
+}
+
+QPushButton#railTab:hover:!checked {
+  color: #d8dbea;
 }
 
 QWidget#activityBody {
   background: transparent;
+}
+
+QStackedWidget#activityPages {
+  background: transparent;
+  border: none;
 }
 
 QLabel#cycleName {

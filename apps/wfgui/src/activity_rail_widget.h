@@ -7,7 +7,10 @@ class AppController;
 class QLabel;
 class QGridLayout;
 class QPropertyAnimation;
+class QPushButton;
+class QStackedWidget;
 class QVBoxLayout;
+class MarketRailWidget;
 
 class ActivityRailWidget final : public QWidget {
   Q_OBJECT
@@ -15,6 +18,11 @@ class ActivityRailWidget final : public QWidget {
 public:
   explicit ActivityRailWidget(AppController *controller,
                               QWidget *parent = nullptr);
+  bool setTab(const QString &tab);
+  void showMarketItem(const QString &item, const QString &side = "sell");
+
+signals:
+  void signInRequested();
 
 private:
   void rebuild();
@@ -29,6 +37,10 @@ private:
   QLabel *resurgence_;
   QLabel *baro_;
   QLabel *status_;
+  QPushButton *timersTab_;
+  QPushButton *marketTab_;
+  QStackedWidget *pages_;
+  MarketRailWidget *market_;
   QPropertyAnimation *statusAnimation_;
   QString mode_ = "all";
 };

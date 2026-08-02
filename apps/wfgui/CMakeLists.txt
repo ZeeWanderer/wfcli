@@ -17,6 +17,10 @@ qt_add_library(wfgui_core STATIC
   src/inventory_card_layout.h
   src/market_order_card.cpp
   src/market_order_card.h
+  src/market_item_dialog.cpp
+  src/market_item_dialog.h
+  src/market_rail_widget.cpp
+  src/market_rail_widget.h
   src/player_item_grid_widget.cpp
   src/player_item_grid_widget.h
   src/player_item_model.cpp
@@ -30,6 +34,8 @@ qt_add_library(wfgui_core STATIC
   src/relic_model.cpp
   src/relic_model.h
   src/display_metrics.h
+  src/widget_capture.cpp
+  src/widget_capture.h
 )
 
 target_sources(wfgui_core
@@ -48,8 +54,6 @@ qt_add_executable(wfgui
   src/main.cpp
   src/main_window.cpp
   src/main_window.h
-  src/market_item_dialog.cpp
-  src/market_item_dialog.h
   src/market_widget.cpp
   src/market_widget.h
   src/mastery_planner_widget.cpp

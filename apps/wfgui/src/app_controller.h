@@ -76,6 +76,7 @@ public:
   void requestMarketVariantQuote(const QString &item,
                                  const QJsonObject &filters,
                                  bool refresh = false);
+  void searchMarketItems(const QString &query, int limit = 5);
   void describeMarketItems(const QStringList &items);
   void ensureMarket();
   void refreshMarket();
@@ -85,8 +86,7 @@ public:
   void marketUpdateOrder(const QString &id, const QJsonObject &patch);
   void marketDeleteOrder(const QString &id);
   void marketCloseOrder(const QString &id, int quantity);
-  void setMarketOrdersVisible(bool visible,
-                              const QString &type = QString());
+  void setMarketOrdersVisible(bool visible, const QString &type = QString());
   void setMarketPresenceMode(const QString &mode);
 
 signals:
@@ -113,6 +113,8 @@ signals:
                                const QJsonObject &data);
   void marketVariantQuoteFailed(const QString &item, const QJsonObject &filters,
                                 const QString &error);
+  void marketSearchReady(const QString &query, const QJsonArray &matches);
+  void marketSearchFailed(const QString &query, const QString &error);
 
 private:
   struct PlayerViewState {

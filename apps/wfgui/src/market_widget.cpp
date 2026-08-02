@@ -35,6 +35,7 @@
 
 #include "app_controller.h"
 #include "market_order_card.h"
+#include "widget_capture.h"
 
 namespace {
 QString firstString(const QJsonObject &object,
@@ -202,6 +203,7 @@ MarketWidget::MarketWidget(AppController *controller, QWidget *parent)
   loginView_->setObjectName("marketView");
   ordersView_->setObjectName("marketView");
   orderHost_->setObjectName("marketOrderHost");
+  wfgui::setCaptureTarget(orderHost_, "market.orders", true);
   auto *pageLayout = new QVBoxLayout(this);
   pageLayout->setContentsMargins(18, 18, 18, 0);
   pageLayout->setSpacing(10);
@@ -619,8 +621,7 @@ void MarketWidget::rebuildOrders() {
             },
         .listings =
             [this, itemId, order] {
-              emit marketItemRequested(itemId,
-                                       order.value("type").toString());
+              emit marketItemRequested(itemId, order.value("type").toString());
             }};
     orderCards_.append(new MarketOrderCard(order, item, quote, owned,
                                            std::move(actions), orderHost_));

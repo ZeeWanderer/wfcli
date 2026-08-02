@@ -17,6 +17,7 @@
 #include <QPushButton>
 #include <QScrollArea>
 #include <QSizePolicy>
+#include <QStackedWidget>
 #include <QTimer>
 #include <QVBoxLayout>
 
@@ -24,6 +25,8 @@
 
 #include "activity_data.h"
 #include "app_controller.h"
+#include "market_rail_widget.h"
+#include "widget_capture.h"
 
 namespace {
 class CapsuleWidget final : public QWidget {
@@ -197,22 +200,16 @@ QLabel *imageLabel(const QString &path, int frameSize, const char *objectName,
   return label;
 }
 
-QWidget *railTab(const QString &iconPath, const QString &text, bool selected) {
-  auto *tab = new QWidget;
+QPushButton *railTab(const QString &iconPath, const QString &text,
+                     bool selected) {
+  auto *tab = new QPushButton(text);
   tab->setObjectName("railTab");
-  tab->setProperty("selected", selected);
+  tab->setCheckable(true);
+  tab->setChecked(selected);
+  tab->setIcon(maskedIcon(iconPath));
+  tab->setIconSize({18, 18});
+  tab->setCursor(Qt::PointingHandCursor);
   tab->setFixedHeight(33);
-  auto *layout = new QHBoxLayout(tab);
-  layout->setContentsMargins(5, 2, 5, 0);
-  layout->setSpacing(3);
-  layout->addStretch();
-  layout->addWidget(imageLabel(iconPath, 20, "railTabIcon", 18,
-                               selected ? Qt::white : QColor("#8a8c95")));
-  auto *label = new QLabel(text);
-  label->setObjectName("railTabText");
-  label->setProperty("selected", selected);
-  layout->addWidget(label);
-  layout->addStretch();
   return tab;
 }
 
@@ -316,8 +313,12 @@ ActivityRailWidget::ActivityRailWidget(AppController *controller,
                                        QWidget *parent)
     : QWidget(parent), controller_(controller), cycles_(new QGridLayout),
       fissures_(new QVBoxLayout), resurgence_(new QLabel), baro_(new QLabel),
-      status_(new QLabel) {
+      status_(new QLabel),
+      timersTab_(railTab(":/resources/ui/world.png", "Timers & Events", true)),
+      marketTab_(railTab(":/resources/ui/market.png", "WFMarket", false)),
+      pages_(new QStackedWidget), market_(new MarketRailWidget(controller)) {
   setObjectName("activityRail");
+  wfgui::setCaptureTarget(this, "right-rail");
   setAttribute(Qt::WA_StyledBackground, true);
   setFixedWidth(400);
 
@@ -327,17 +328,21 @@ ActivityRailWidget::ActivityRailWidget(AppController *controller,
 
   auto *header = new QWidget;
   header->setObjectName("railTabHeader");
+  wfgui::setCaptureTarget(header, "right-rail.tabs");
   auto *headerLayout = new QHBoxLayout(header);
   headerLayout->setContentsMargins(7, 0, 7, 0);
   headerLayout->setSpacing(1);
-  headerLayout->addWidget(
-      railTab(":/resources/ui/world.png", "Timers & Events", true), 1);
-  headerLayout->addWidget(
-      railTab(":/resources/ui/market.png", "WFMarket", false), 1);
+  auto *tabs = new QButtonGroup(this);
+  tabs->setExclusive(true);
+  tabs->addButton(timersTab_, 0);
+  tabs->addButton(marketTab_, 1);
+  headerLayout->addWidget(timersTab_, 1);
+  headerLayout->addWidget(marketTab_, 1);
   layout->addWidget(header);
 
   auto *body = new QWidget;
   body->setObjectName("activityBody");
+  wfgui::setCaptureTarget(body, "right-rail.timers");
   auto *bodyLayout = new QVBoxLayout(body);
   bodyLayout->setContentsMargins(4, 8, 4, 4);
   bodyLayout->setSpacing(0);
@@ -366,6 +371,7 @@ ActivityRailWidget::ActivityRailWidget(AppController *controller,
 
   auto *fissureSection = new QWidget;
   fissureSection->setObjectName("fissureSection");
+  wfgui::setCaptureTarget(fissureSection, "right-rail.timers.fissures");
   auto *fissureSectionLayout = new QVBoxLayout(fissureSection);
   fissureSectionLayout->setContentsMargins(0, 0, 0, 0);
   fissureSectionLayout->setSpacing(0);
@@ -381,6 +387,8 @@ ActivityRailWidget::ActivityRailWidget(AppController *controller,
   fissureHeaderLayout->addStretch();
   auto *notificationControl = new QWidget;
   notificationControl->setObjectName("notificationControl");
+  wfgui::setCaptureTarget(notificationControl,
+                          "right-rail.timers.notifications");
   auto *notificationLayout = new QHBoxLayout(notificationControl);
   notificationLayout->setContentsMargins(0, 0, 5, 0);
   notificationLayout->setSpacing(4);
@@ -439,7 +447,10 @@ ActivityRailWidget::ActivityRailWidget(AppController *controller,
   status_->setMaximumHeight(0);
   status_->setWordWrap(true);
   bodyLayout->addWidget(status_);
-  layout->addWidget(body, 1);
+  pages_->setObjectName("activityPages");
+  pages_->addWidget(body);
+  pages_->addWidget(market_);
+  layout->addWidget(pages_, 1);
 
   statusAnimation_ = new QPropertyAnimation(status_, "maximumHeight", this);
   statusAnimation_->setDuration(160);
@@ -455,6 +466,10 @@ ActivityRailWidget::ActivityRailWidget(AppController *controller,
     rebuildFissures(controller_->activity());
     updateCountdowns();
   });
+  connect(tabs, &QButtonGroup::idClicked, pages_,
+          &QStackedWidget::setCurrentIndex);
+  connect(market_, &MarketRailWidget::signInRequested, this,
+          &ActivityRailWidget::signInRequested);
   connect(notificationMode, &QAbstractButton::clicked, this,
           [this, notificationMode] {
             const QString next = notificationMode->mode() == "off" ? "session"
@@ -476,6 +491,27 @@ ActivityRailWidget::ActivityRailWidget(AppController *controller,
   connect(timer, &QTimer::timeout, this, &ActivityRailWidget::updateCountdowns);
   timer->start();
   rebuild();
+}
+
+bool ActivityRailWidget::setTab(const QString &tab) {
+  const QString normalized = tab.trimmed().toLower();
+  if (normalized == "timers" || normalized == "events") {
+    timersTab_->setChecked(true);
+    pages_->setCurrentIndex(0);
+    return true;
+  }
+  if (normalized == "market" || normalized == "wfmarket") {
+    marketTab_->setChecked(true);
+    pages_->setCurrentIndex(1);
+    return true;
+  }
+  return false;
+}
+
+void ActivityRailWidget::showMarketItem(const QString &item,
+                                        const QString &side) {
+  setTab("market");
+  market_->showItem(item, side);
 }
 
 void ActivityRailWidget::rebuild() {
