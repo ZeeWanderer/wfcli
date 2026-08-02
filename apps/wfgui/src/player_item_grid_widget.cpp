@@ -31,14 +31,19 @@ constexpr int MaxTrack = 620;
 constexpr int FoundryMinTrack = 270;
 constexpr int InventoryMinTrack = 420;
 constexpr int MasteryMinTrack = 370;
-constexpr int FoundryCardHeight = 190;
-constexpr int FoundryBodyTop = 35;
-constexpr int FoundryBodyHeight = 108;
+constexpr int FoundryCardHeight = 142;
+constexpr int FoundryBodyTop = 33;
+constexpr int FoundryBodyHeight = 86;
 
-struct FoundryTitleLayout {
+struct FoundryLayout {
+  QRect pending;
   QRect favorite;
   QRect title;
   QRect mastered;
+  QRect vaulted;
+  QRect image;
+  QRect mastery;
+  QRect subsumed;
 };
 
 struct MasteryTitleLayout {
@@ -52,15 +57,6 @@ struct InventoryStatusLayout {
   QRect mastered;
 };
 
-struct FoundryFooterItem {
-  QString text;
-  QString icon;
-  QColor color;
-  QColor iconBackground;
-  int frameSize = 0;
-  int imageSize = 0;
-};
-
 QFont cardTitleFont(QFont font, PlayerItemGridWidget::Kind kind, qreal scale) {
   const int pixels =
       kind == PlayerItemGridWidget::Kind::Foundry
@@ -72,31 +68,121 @@ QFont cardTitleFont(QFont font, PlayerItemGridWidget::Kind kind, qreal scale) {
   return font;
 }
 
-FoundryTitleLayout foundryTitleLayout(const QRect &content, const QString &name,
-                                      bool mastered, const QFont &font,
-                                      qreal scale) {
+bool isFoundryWarframe(const QModelIndex &index) {
+  const QString group = index.data(PlayerItemModel::GroupRole).toString();
+  return group == "warframe" || group == "warframes";
+}
+
+FoundryLayout foundryLayout(const QRect &content, const QRect &card,
+                            const QModelIndex &index, const QFont &font,
+                            qreal scale) {
+  const QString name = index.data(PlayerItemModel::NameRole).toString();
+  const bool pending = index.data(PlayerItemModel::PendingRole).toBool();
+  const bool mastered = index.data(PlayerItemModel::MasteredRole).toBool();
+  const bool showVaulted = index.data(PlayerItemModel::IsPrimeRole).toBool();
+  const bool warframe = isFoundryWarframe(index);
+  const int statusSize = wfgui::scaled(24, scale);
   const int favoriteSize = wfgui::scaled(20, scale);
   const int masteredSize = mastered ? wfgui::scaled(24, scale) : 0;
   const int gap = wfgui::scaled(5, scale);
+  const int top = content.top() + wfgui::scaled(1, scale);
+  FoundryLayout layout;
+  if (pending) {
+    layout.pending = {content.left(), top, statusSize, statusSize};
+  }
+  if (showVaulted) {
+    layout.vaulted = {content.right() - statusSize + 1, top, statusSize,
+                      statusSize};
+  }
+
+  const int availableLeft =
+      layout.pending.isNull() ? content.left() : layout.pending.right() + gap;
+  const int availableRight =
+      layout.vaulted.isNull() ? content.right() : layout.vaulted.left() - gap;
+  const QRect available(availableLeft, content.top(),
+                        std::max(0, availableRight - availableLeft + 1),
+                        wfgui::scaled(27, scale));
   const int fixed = favoriteSize + gap + (mastered ? masteredSize + gap : 0);
   const int titleWidth = std::min(QFontMetrics(font).horizontalAdvance(name) +
                                       wfgui::scaled(6, scale),
-                                  content.width() - fixed);
+                                  std::max(0, available.width() - fixed));
   const int total = fixed + titleWidth;
-  const int left = content.center().x() - total / 2;
-  const int top = content.top() + wfgui::scaled(3, scale);
-  FoundryTitleLayout layout{
-      {left, top, favoriteSize, favoriteSize},
-      {left + favoriteSize + gap, content.top(), titleWidth,
-       wfgui::scaled(27, scale)},
-      {},
-  };
+  const int left = available.center().x() - total / 2;
+  layout.favorite = {left, content.top() + wfgui::scaled(3, scale),
+                     favoriteSize, favoriteSize};
+  layout.title = {layout.favorite.right() + gap + 1, content.top(), titleWidth,
+                  wfgui::scaled(27, scale)};
   if (mastered) {
     layout.mastered = {layout.title.right() + gap + 1,
                        content.top() + wfgui::scaled(1, scale), masteredSize,
                        masteredSize};
   }
+
+  const QRect body(content.left(),
+                   content.top() + wfgui::scaled(FoundryBodyTop, scale),
+                   content.width(), wfgui::scaled(FoundryBodyHeight, scale));
+  const int imageSize =
+      wfgui::scaled(warframe ? 105 : FoundryBodyHeight, scale);
+  const int imageTop = warframe ? card.bottom() - imageSize + 1
+                                : body.center().y() - imageSize / 2;
+  layout.image = {content.left() + wfgui::scaled(3, scale), imageTop, imageSize,
+                  imageSize};
+
+  const int mastery =
+      index.data(PlayerItemModel::MasteryRequirementRole).toInt();
+  if (mastery > 1) {
+    QFont badgeFont = font;
+    badgeFont.setPixelSize(wfgui::scaled(12, scale));
+    badgeFont.setWeight(QFont::Medium);
+    const QString text = QString("MR %1").arg(mastery);
+    const int height = wfgui::scaled(21, scale);
+    const int width = QFontMetrics(badgeFont).horizontalAdvance(text) +
+                      wfgui::scaled(12, scale);
+    layout.mastery = {layout.image.left() + wfgui::scaled(2, scale),
+                      layout.image.bottom() - height - wfgui::scaled(2, scale) +
+                          1,
+                      width, height};
+  }
+  if (warframe && index.data(PlayerItemModel::SubsumedRole).toBool()) {
+    const int size = wfgui::scaled(25, scale);
+    layout.subsumed = {
+        layout.image.right() - size - wfgui::scaled(2, scale) + 1,
+        layout.image.bottom() - size - wfgui::scaled(4, scale) + 1, size, size};
+  }
   return layout;
+}
+
+void drawBottomContained(QPainter &painter, const QRectF &rect,
+                         const QPixmap &image) {
+  if (image.isNull()) {
+    return;
+  }
+  QSizeF size = image.deviceIndependentSize();
+  size.scale(rect.size(), Qt::KeepAspectRatio);
+  const QRectF target(rect.center().x() - size.width() / 2.0,
+                      rect.bottom() - size.height() + 1.0, size.width(),
+                      size.height());
+  painter.drawPixmap(target, image, QRectF(image.rect()));
+}
+
+void drawSourceContained(QPainter &painter, const QRectF &rect,
+                         const QPixmap &image, const QSize &sourceSize,
+                         const QRect &sourceContent) {
+  if (image.isNull()) {
+    return;
+  }
+  const QRectF imageRect(image.rect());
+  const QRectF source(
+      imageRect.width() * sourceContent.x() / sourceSize.width(),
+      imageRect.height() * sourceContent.y() / sourceSize.height(),
+      imageRect.width() * sourceContent.width() / sourceSize.width(),
+      imageRect.height() * sourceContent.height() / sourceSize.height());
+  QSizeF size(sourceContent.size());
+  size.scale(rect.size(), Qt::KeepAspectRatio);
+  const QRectF target(rect.center().x() - size.width() / 2.0,
+                      rect.center().y() - size.height() / 2.0, size.width(),
+                      size.height());
+  painter.drawPixmap(target, image, source);
 }
 
 QList<QRect> componentRects(const QRect &content, int componentCount,
@@ -264,9 +350,7 @@ public:
     const QRect card = option.rect.adjusted(inset, inset, -inset, -inset);
     const bool foundryOwned = kind_ == PlayerItemGridWidget::Kind::Foundry &&
                               index.data(PlayerItemModel::OwnedRole).toBool();
-    painter->setPen(foundryOwned
-                        ? QPen(QColor("#248444"), wfgui::scaled(2, scale))
-                        : Qt::NoPen);
+    painter->setPen(Qt::NoPen);
     painter->setBrush(
         foundryOwned
             ? QColor(option.state & QStyle::State_MouseOver ? "#24523f"
@@ -279,7 +363,17 @@ public:
 
     const QRect content = contentRect(option.rect, kind_, scale);
     if (kind_ == PlayerItemGridWidget::Kind::Foundry) {
-      paintFoundry(*painter, content, index, option.font, scale);
+      painter->save();
+      QPainterPath clip;
+      clip.addRoundedRect(QRectF(card), radius, radius);
+      painter->setClipPath(clip);
+      paintFoundry(*painter, content, card, index, option.font, scale);
+      painter->restore();
+      if (foundryOwned) {
+        painter->setPen(QPen(QColor("#248444"), wfgui::scaled(2, scale)));
+        painter->setBrush(Qt::NoBrush);
+        painter->drawRoundedRect(card, radius, radius);
+      }
       painter->restore();
       return;
     }
@@ -296,18 +390,52 @@ public:
                  const QStyleOptionViewItem &option,
                  const QModelIndex &index) override {
     if (event->type() == QEvent::ToolTip) {
+      const QPoint tooltipPosition =
+          view->viewport()->mapToGlobal(event->pos());
       const qreal scale = wfgui::displayScale(view);
       const QRect content = contentRect(option.rect, kind_, scale);
       if (kind_ == PlayerItemGridWidget::Kind::Foundry) {
         const QFont titleFont = cardTitleFont(
             option.font, PlayerItemGridWidget::Kind::Foundry, scale);
-        const FoundryTitleLayout title = foundryTitleLayout(
-            content, index.data(PlayerItemModel::NameRole).toString(),
-            index.data(PlayerItemModel::MasteredRole).toBool(), titleFont,
-            scale);
-        if (title.favorite.contains(event->pos())) {
-          QToolTip::showText(event->globalPos(), "Favorite", view->viewport(),
-                             title.favorite);
+        const int inset = wfgui::scaled(4, scale);
+        const QRect card = option.rect.adjusted(inset, inset, -inset, -inset);
+        const FoundryLayout layout =
+            foundryLayout(content, card, index, titleFont, scale);
+        if (layout.favorite.contains(event->pos())) {
+          QToolTip::showText(tooltipPosition, "Favorite", view->viewport(),
+                             layout.favorite);
+          return true;
+        }
+        if (layout.pending.contains(event->pos())) {
+          QToolTip::showText(tooltipPosition, "In Foundry", view->viewport(),
+                             layout.pending);
+          return true;
+        }
+        if (layout.mastered.contains(event->pos())) {
+          QToolTip::showText(tooltipPosition, "Mastered", view->viewport(),
+                             layout.mastered);
+          return true;
+        }
+        if (layout.vaulted.contains(event->pos())) {
+          QToolTip::showText(tooltipPosition,
+                             index.data(PlayerItemModel::VaultedRole).toBool()
+                                 ? "Vaulted"
+                                 : "Unvaulted",
+                             view->viewport(), layout.vaulted);
+          return true;
+        }
+        if (layout.mastery.contains(event->pos())) {
+          QToolTip::showText(
+              tooltipPosition,
+              QString("Mastery Rank %1")
+                  .arg(index.data(PlayerItemModel::MasteryRequirementRole)
+                           .toInt()),
+              view->viewport(), layout.mastery);
+          return true;
+        }
+        if (layout.subsumed.contains(event->pos())) {
+          QToolTip::showText(tooltipPosition, "Subsumed", view->viewport(),
+                             layout.subsumed);
           return true;
         }
       } else if (kind_ == PlayerItemGridWidget::Kind::Mastery) {
@@ -317,7 +445,7 @@ public:
             content, index.data(PlayerItemModel::NameRole).toString(),
             titleFont, scale);
         if (title.favorite.contains(event->pos())) {
-          QToolTip::showText(event->globalPos(), "Favorite", view->viewport(),
+          QToolTip::showText(tooltipPosition, "Favorite", view->viewport(),
                              title.favorite);
           return true;
         }
@@ -349,14 +477,14 @@ public:
             index.data(PlayerItemModel::MasteredRole).toBool(), isSet,
             statusFont, scale);
         if (status.mastered.contains(event->pos())) {
-          QToolTip::showText(event->globalPos(), "Item owned/mastered",
+          QToolTip::showText(tooltipPosition, "Item owned/mastered",
                              view->viewport(), status.mastered);
           return true;
         }
         if (index.data(PlayerItemModel::TradableRole).toBool() &&
             !index.data(PlayerItemModel::SellableRole).toBool() &&
             layout.sell.contains(event->pos())) {
-          QToolTip::showText(event->globalPos(),
+          QToolTip::showText(tooltipPosition,
                              isSet ? "No complete set owned"
                                    : "No copies owned",
                              view->viewport(), layout.sell);
@@ -380,7 +508,7 @@ public:
                       .arg(component.value("owned").toInt())
                       .arg(required);
         }
-        QToolTip::showText(event->globalPos(), text, view->viewport(),
+        QToolTip::showText(tooltipPosition, text, view->viewport(),
                            rects.at(componentIndex));
         return true;
       }
@@ -403,11 +531,12 @@ public:
           const QFont titleFont = cardTitleFont(option.font, kind_, scale);
           const QRect favorite =
               kind_ == PlayerItemGridWidget::Kind::Foundry
-                  ? foundryTitleLayout(
+                  ? foundryLayout(
                         content,
-                        index.data(PlayerItemModel::NameRole).toString(),
-                        index.data(PlayerItemModel::MasteredRole).toBool(),
-                        titleFont, scale)
+                        option.rect.adjusted(
+                            wfgui::scaled(4, scale), wfgui::scaled(4, scale),
+                            -wfgui::scaled(4, scale), -wfgui::scaled(4, scale)),
+                        index, titleFont, scale)
                         .favorite
                   : masteryTitleLayout(
                         content,
@@ -474,140 +603,104 @@ public:
 
 private:
   static void paintFoundry(QPainter &painter, const QRect &content,
-                           const QModelIndex &index, const QFont &baseFont,
-                           qreal scale) {
+                           const QRect &card, const QModelIndex &index,
+                           const QFont &baseFont, qreal scale) {
     const QFont titleFont =
         cardTitleFont(baseFont, PlayerItemGridWidget::Kind::Foundry, scale);
     painter.setFont(titleFont);
     painter.setPen(QColor("#ffffff"));
     const QString name = index.data(PlayerItemModel::NameRole).toString();
-    const bool mastered = index.data(PlayerItemModel::MasteredRole).toBool();
-    const FoundryTitleLayout title =
-        foundryTitleLayout(content, name, mastered, titleFont, scale);
-    wfgui::drawContained(painter, title.favorite,
+    const FoundryLayout layout =
+        foundryLayout(content, card, index, titleFont, scale);
+
+    if (!layout.pending.isNull()) {
+      painter.setPen(Qt::NoPen);
+      painter.setBrush(QColor("#365ca0"));
+      painter.drawEllipse(layout.pending);
+      const QRect icon = layout.pending.adjusted(
+          wfgui::scaled(5, scale), wfgui::scaled(5, scale),
+          -wfgui::scaled(5, scale), -wfgui::scaled(5, scale));
+      wfgui::drawContained(painter, icon,
+                           wfgui::cachedThumbnail(painter,
+                                                  ":/resources/ui/pending.png",
+                                                  icon.size()));
+    }
+    const int favoriteInset = wfgui::scaled(2, scale);
+    const QRect favoriteIcon = layout.favorite.adjusted(
+        favoriteInset, favoriteInset, -favoriteInset, -favoriteInset);
+    wfgui::drawContained(painter, favoriteIcon,
                          wfgui::cachedThumbnail(
                              painter,
                              index.data(PlayerItemModel::FavoriteRole).toBool()
                                  ? ":/resources/ui/favorite_active.png"
                                  : ":/resources/ui/favorite.png",
-                             title.favorite.size()));
-    painter.drawText(title.title, Qt::AlignCenter,
+                             favoriteIcon.size()));
+    painter.setPen(QColor("#ffffff"));
+    painter.drawText(layout.title, Qt::AlignCenter,
                      QFontMetrics(titleFont).elidedText(name, Qt::ElideRight,
-                                                        title.title.width()));
-    if (mastered) {
-      wfgui::drawContained(painter, title.mastered,
+                                                        layout.title.width()));
+    if (!layout.mastered.isNull()) {
+      wfgui::drawContained(painter, layout.mastered,
                            wfgui::cachedThumbnail(painter,
                                                   ":/resources/ui/mastered.png",
-                                                  title.mastered.size()));
+                                                  layout.mastered.size()));
+    }
+    if (!layout.vaulted.isNull()) {
+      const bool vaulted = index.data(PlayerItemModel::VaultedRole).toBool();
+      const QString path =
+          vaulted ? ":/assets/vaulted.png" : ":/assets/unvaulted.png";
+      // Upstream glyphs carry large transparent margins.
+      const QSize sourceSize = vaulted ? QSize(182, 173) : QSize(183, 187);
+      const QRect sourceContent =
+          vaulted ? QRect(38, 51, 106, 80) : QRect(29, 29, 122, 130);
+      const int inset = wfgui::scaled(vaulted ? 2 : 1, scale);
+      const QRect target =
+          layout.vaulted.adjusted(inset, inset, -inset, -inset);
+      const int decodeSize = wfgui::scaled(48, scale);
+      drawSourceContained(
+          painter, target,
+          wfgui::cachedThumbnail(painter, path, QSize(decodeSize, decodeSize)),
+          sourceSize, sourceContent);
     }
 
-    const int imageSize = wfgui::scaled(FoundryBodyHeight, scale);
-    const QRect imageRect(content.left() + wfgui::scaled(3, scale),
-                          content.top() + wfgui::scaled(FoundryBodyTop, scale),
-                          imageSize, imageSize);
-    wfgui::drawContained(
-        painter, imageRect,
-        wfgui::cachedThumbnail(
-            painter, index.data(PlayerItemModel::AssetPathRole).toString(),
-            imageRect.size()));
+    const QPixmap image = wfgui::cachedThumbnail(
+        painter, index.data(PlayerItemModel::AssetPathRole).toString(),
+        layout.image.size());
+    if (isFoundryWarframe(index)) {
+      drawBottomContained(painter, layout.image, image);
+    } else {
+      wfgui::drawContained(painter, layout.image, image);
+    }
     paintComponents(painter, content,
                     index.data(PlayerItemModel::ComponentsRole).toList(),
                     PlayerItemGridWidget::Kind::Foundry, scale);
 
-    QFont detailFont = baseFont;
-    detailFont.setPixelSize(wfgui::scaled(14, scale));
-    detailFont.setWeight(QFont::Light);
-    painter.setFont(detailFont);
-    const bool owned = index.data(PlayerItemModel::OwnedRole).toBool();
-    const bool pending = index.data(PlayerItemModel::PendingRole).toBool();
-    QList<FoundryFooterItem> footer;
-    if (index.data(PlayerItemModel::IsPrimeRole).toBool()) {
-      footer.append({index.data(PlayerItemModel::VaultedRole).toBool()
-                         ? "Vaulted"
-                         : "Unvaulted",
-                     ":/assets/vaulted.png",
-                     QColor("#ffffff"),
-                     {},
-                     19,
-                     23});
+    if (!layout.mastery.isNull()) {
+      painter.setPen(QPen(QColor("#566078"), wfgui::scaled(1, scale)));
+      painter.setBrush(QColor(15, 20, 32, 0xd9));
+      const int radius = layout.mastery.height() / 2;
+      painter.drawRoundedRect(layout.mastery, radius, radius);
+      QFont badgeFont = baseFont;
+      badgeFont.setPixelSize(wfgui::scaled(12, scale));
+      badgeFont.setWeight(QFont::Medium);
+      painter.setFont(badgeFont);
+      painter.setPen(QColor("#ffffff"));
+      painter.drawText(
+          layout.mastery, Qt::AlignCenter,
+          QString("MR %1").arg(
+              index.data(PlayerItemModel::MasteryRequirementRole).toInt()));
     }
-    if (pending) {
-      footer.append(
-          {{}, ":/resources/ui/pending.png", {}, QColor("#365ca0"), 23, 14});
-    }
-    if (owned) {
-      footer.append(
-          {"Owned", ":/resources/ui/owned.png", QColor("#abf5ab"), {}, 16, 16});
-    }
-    const int mastery =
-        index.data(PlayerItemModel::MasteryRequirementRole).toInt();
-    if (mastery > 1) {
-      footer.append(
-          {QString("MR %1").arg(mastery), {}, QColor("#ffffff"), {}, 0, 0});
-    }
-    if (index.data(PlayerItemModel::SubsumedRole).toBool()) {
-      footer.append({"Subsumed", ":/resources/ui/helminth.png",
-                     QColor("#ffffff"), QColor("#7e3a3a"), 23, 16});
-    }
-    paintFoundryFooter(painter, content, footer, detailFont, scale);
-  }
-
-  static void paintFoundryFooter(QPainter &painter, const QRect &content,
-                                 const QList<FoundryFooterItem> &items,
-                                 const QFont &font, qreal scale) {
-    if (items.isEmpty()) {
-      return;
-    }
-    const QFontMetrics metrics(font);
-    const int count = static_cast<int>(items.size());
-    const int iconGap = wfgui::scaled(4, scale);
-    const int minimumGap = wfgui::scaled(3, scale);
-    int used = 0;
-    for (const FoundryFooterItem &item : items) {
-      const int frame = wfgui::scaled(item.frameSize, scale);
-      const int text =
-          item.text.isEmpty() ? 0 : metrics.horizontalAdvance(item.text);
-      const int width = frame + (frame > 0 && text > 0 ? iconGap : 0) + text;
-      used += width;
-    }
-    const int edge = std::max(
-        0, (content.width() - used - minimumGap * (count - 1)) / (count + 1));
-    int x = content.left() + edge;
-    const int height = wfgui::scaled(24, scale);
-    const int top = content.bottom() - height + 1;
-    for (int index = 0; index < count; ++index) {
-      const FoundryFooterItem &item = items.at(index);
-      const int frame = wfgui::scaled(item.frameSize, scale);
-      if (frame > 0) {
-        const QRect frameRect(x, top + (height - frame) / 2, frame, frame);
-        if (item.iconBackground.isValid()) {
-          painter.setPen(Qt::NoPen);
-          painter.setBrush(item.iconBackground);
-          painter.drawEllipse(frameRect);
-        }
-        const int image = wfgui::scaled(item.imageSize, scale);
-        const QPointF center = QRectF(frameRect).center();
-        const QRectF imageRect(center.x() - image / 2.0,
-                               center.y() - image / 2.0, image, image);
-        wfgui::drawContained(
-            painter, imageRect,
-            wfgui::cachedThumbnail(painter, item.icon, QSize(image, image)));
-        x += frame;
-        if (!item.text.isEmpty()) {
-          x += iconGap;
-        }
-      }
-      if (!item.text.isEmpty()) {
-        const int width = metrics.horizontalAdvance(item.text);
-        painter.setFont(font);
-        painter.setPen(item.color);
-        painter.drawText(QRect(x, top, width, height),
-                         Qt::AlignLeft | Qt::AlignVCenter, item.text);
-        x += width;
-      }
-      if (index + 1 < count) {
-        x += minimumGap + edge;
-      }
+    if (!layout.subsumed.isNull()) {
+      painter.setPen(QPen(QColor("#b86767"), wfgui::scaled(1, scale)));
+      painter.setBrush(QColor("#7e3a3a"));
+      painter.drawEllipse(layout.subsumed);
+      const QRect icon = layout.subsumed.adjusted(
+          wfgui::scaled(4, scale), wfgui::scaled(4, scale),
+          -wfgui::scaled(4, scale), -wfgui::scaled(4, scale));
+      wfgui::drawContained(painter, icon,
+                           wfgui::cachedThumbnail(painter,
+                                                  ":/resources/ui/helminth.png",
+                                                  icon.size()));
     }
   }
 

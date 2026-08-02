@@ -3,6 +3,7 @@
 #include <QCompleter>
 #include <QDateTime>
 #include <QFile>
+#include <QHelpEvent>
 #include <QImage>
 #include <QJsonArray>
 #include <QJsonDocument>
@@ -18,6 +19,7 @@
 #include <QSet>
 #include <QTemporaryDir>
 #include <QToolButton>
+#include <QToolTip>
 #include <QtTest>
 
 #include <utility>
@@ -61,7 +63,8 @@ private slots:
   void inventoryCardLayoutUsesConstraints();
   void gridLayoutUsesStableBreakpoints();
   void playerGridUsesAvailableColumns();
-  void foundryGridUsesReferenceCardHeight();
+  void foundryGridUsesCompactCards();
+  void foundryStatusBadgesHaveTooltips();
   void masteryGridUsesCompactCards();
   void inventoryGridRequestsVisibleQuotes();
   void masteryGridRequestsComponentQuotes();
@@ -720,7 +723,7 @@ void RelicModelTest::masteryGridUsesCompactCards() {
   QCOMPARE(grid.gridSize().height(), 99);
 }
 
-void RelicModelTest::foundryGridUsesReferenceCardHeight() {
+void RelicModelTest::foundryGridUsesCompactCards() {
   PlayerItemModel model;
   QVERIFY(model.replace({
       {"items",
@@ -729,6 +732,9 @@ void RelicModelTest::foundryGridUsesReferenceCardHeight() {
            {"name", "Test Prime"},
            {"group", "warframe"},
            {"owned", true},
+           {"pending", true},
+           {"mastered", true},
+           {"mastery_requirement", 10},
            {"is_prime", true},
            {"vaulted", true},
            {"subsumed", true},
@@ -748,11 +754,68 @@ void RelicModelTest::foundryGridUsesReferenceCardHeight() {
   grid.show();
   QCoreApplication::processEvents();
 
-  QCOMPARE(grid.gridSize().height(), 198);
+  QCOMPARE(grid.gridSize().height(), 150);
   QString error;
   const QPixmap card = wfgui::grabCaptureTarget("foundry.grid.item", 0, &error);
   QVERIFY2(!card.isNull(), qPrintable(error));
-  QCOMPARE(card.deviceIndependentSize().height(), 198.0);
+  QCOMPARE(card.deviceIndependentSize().height(), 150.0);
+}
+
+void RelicModelTest::foundryStatusBadgesHaveTooltips() {
+  PlayerItemModel model;
+  QVERIFY(model.replace({
+      {"items", QJsonArray{QJsonObject{{"id", "test-prime"},
+                                       {"name", "Test Prime"},
+                                       {"group", "warframe"},
+                                       {"pending", true},
+                                       {"mastered", true},
+                                       {"mastery_requirement", 10},
+                                       {"is_prime", true},
+                                       {"vaulted", true},
+                                       {"subsumed", true}}}},
+  }));
+
+  PlayerItemGridWidget grid(PlayerItemGridWidget::Kind::Foundry);
+  grid.setModel(&model);
+  grid.resize(320, 400);
+  grid.show();
+  QCoreApplication::processEvents();
+
+  const QRect item = grid.visualRect(model.index(0));
+  const QRect card = item.adjusted(4, 4, -4, -4);
+  const QRect content = card.adjusted(8, 8, -8, -8);
+  const QRect image(content.left() + 3, card.bottom() - 105 + 1, 105, 105);
+  const auto tooltipAt = [&grid](const QPoint &position) {
+    QToolTip::hideText();
+    const QPoint expected = grid.viewport()->mapToGlobal(position);
+    QHelpEvent event(QEvent::ToolTip, position, expected + QPoint(5000, 5000));
+    QApplication::sendEvent(grid.viewport(), &event);
+    QCoreApplication::processEvents();
+    QWidget *tip = nullptr;
+    for (QWidget *widget : QApplication::topLevelWidgets()) {
+      if (widget->inherits("QTipLabel") && widget->isVisible()) {
+        tip = widget;
+        break;
+      }
+    }
+    if (tip == nullptr) {
+      return QString("missing:%1").arg(QToolTip::text());
+    }
+    const QRect vicinity(expected - QPoint(100, 100), QSize(200, 200));
+    if (!vicinity.intersects(tip->geometry())) {
+      return QString("misplaced:%1").arg(QToolTip::text());
+    }
+    return QToolTip::text();
+  };
+
+  QCOMPARE(tooltipAt(content.topLeft() + QPoint(12, 12)),
+           QString("In Foundry"));
+  QCOMPARE(tooltipAt(QPoint(content.right() - 11, content.top() + 12)),
+           QString("Vaulted"));
+  QCOMPARE(tooltipAt(QPoint(image.left() + 15, image.bottom() - 12)),
+           QString("Mastery Rank 10"));
+  QCOMPARE(tooltipAt(QPoint(image.right() - 14, image.bottom() - 14)),
+           QString("Subsumed"));
 }
 
 void RelicModelTest::inventoryGridRequestsVisibleQuotes() {

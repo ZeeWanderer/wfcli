@@ -89,7 +89,7 @@ protected:
         }
         const QString name =
             rewards.at(rewardIndex).toMap().value("name").toString();
-        QToolTip::showText(help->globalPos(), name, this,
+        QToolTip::showText(mapToGlobal(help->pos()), name, this,
                            layout.rewardCells.at(rewardIndex));
         return true;
       }

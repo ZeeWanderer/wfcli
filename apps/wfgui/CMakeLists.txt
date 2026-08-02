@@ -155,6 +155,7 @@ qt_add_resources(wfgui "wfgui_shared_assets"
     ../wfcompanion/assets/ducats.png
     ../wfcompanion/assets/forma.png
     ../wfcompanion/assets/platinum.png
+    ../wfcompanion/assets/unvaulted.png
     ../wfcompanion/assets/vaulted.png
 )
 
