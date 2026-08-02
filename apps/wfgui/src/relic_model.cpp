@@ -292,9 +292,17 @@ bool RelicFilterModel::filterAcceptsRow(int sourceRow,
       sourceModel()->data(index, RelicModel::EraRole).toString() != era_) {
     return false;
   }
-  return filterText_.isEmpty() ||
-         sourceModel()
-             ->data(index, RelicModel::NameRole)
-             .toString()
-             .contains(filterText_, Qt::CaseInsensitive);
+  if (filterText_.isEmpty() ||
+      sourceModel()
+          ->data(index, RelicModel::NameRole)
+          .toString()
+          .contains(filterText_, Qt::CaseInsensitive)) {
+    return true;
+  }
+  const QVariantList rewards =
+      sourceModel()->data(index, RelicModel::RewardsRole).toList();
+  return std::ranges::any_of(rewards, [this](const QVariant &value) {
+    return value.toMap().value("name").toString().contains(filterText_,
+                                                           Qt::CaseInsensitive);
+  });
 }

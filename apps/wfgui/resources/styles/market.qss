@@ -219,6 +219,38 @@ QPushButton#marketSide {
   min-width: 72px;
 }
 
+QPushButton#marketSide[side="sell"] {
+  background: #16251f;
+  border-color: #22392f;
+  color: #71847b;
+}
+
+QPushButton#marketSide[side="sell"]:hover {
+  background: #1d3429;
+}
+
+QPushButton#marketSide[side="sell"]:checked {
+  background: #2f7656;
+  border-color: #57a67e;
+  color: #ffffff;
+}
+
+QPushButton#marketSide[side="buy"] {
+  background: #291b20;
+  border-color: #43272f;
+  color: #8d747b;
+}
+
+QPushButton#marketSide[side="buy"]:hover {
+  background: #3d242d;
+}
+
+QPushButton#marketSide[side="buy"]:checked {
+  background: #8a3e4d;
+  border-color: #bc6574;
+  color: #ffffff;
+}
+
 QLabel#marketItemImage {
   background: #20283e;
   border-radius: 8px;
@@ -248,6 +280,39 @@ QComboBox {
   border-radius: 5px;
   min-height: 24px;
   padding: 3px 6px;
+}
+
+QSpinBox {
+  padding: 3px 22px 3px 6px;
+}
+
+QSpinBox::up-button,
+QSpinBox::down-button {
+  subcontrol-origin: border;
+  width: 18px;
+  background: transparent;
+  border: none;
+  border-left: 1px solid #313a58;
+}
+
+QSpinBox::up-button {
+  subcontrol-position: top right;
+  border-top-right-radius: 4px;
+}
+
+QSpinBox::down-button {
+  subcontrol-position: bottom right;
+  border-bottom-right-radius: 4px;
+}
+
+QSpinBox::up-button:hover,
+QSpinBox::down-button:hover {
+  background: #272f47;
+}
+
+QSpinBox::up-button:pressed,
+QSpinBox::down-button:pressed {
+  background: #432289;
 }
 
 QWidget#marketRail {
@@ -304,22 +369,6 @@ QWidget#marketItemView[compact="true"] QPushButton#marketSide {
   border: none;
   border-radius: 16px;
   padding: 0;
-}
-
-QWidget#marketItemView[compact="true"] QPushButton#marketSide[side="sell"] {
-  background: #24523f;
-}
-
-QWidget#marketItemView[compact="true"] QPushButton#marketSide[side="sell"]:checked {
-  background: #2f7656;
-}
-
-QWidget#marketItemView[compact="true"] QPushButton#marketSide[side="buy"] {
-  background: #672f2f;
-}
-
-QWidget#marketItemView[compact="true"] QPushButton#marketSide[side="buy"]:checked {
-  background: #8a3e4d;
 }
 
 QWidget#marketItemView[compact="true"] QListWidget#marketListingList {

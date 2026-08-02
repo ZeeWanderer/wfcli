@@ -35,8 +35,10 @@ RelicPlannerWidget::RelicPlannerWidget(AppController *controller,
                                        QWidget *parent)
     : QWidget(parent), controller_(controller), traceCount_(new QLabel),
       priceProgress_(new QProgressBar), emptyState_(new QLabel),
-      relics_(new RelicGridWidget), refresh_(new QPushButton),
-      eraGroup_(new QButtonGroup(this)), content_(new QStackedLayout) {
+      relics_(new RelicGridWidget),
+      search_(new CompactSearch("Search relics or rewards")),
+      refresh_(new QPushButton), eraGroup_(new QButtonGroup(this)),
+      content_(new QStackedLayout) {
   setObjectName("page");
   auto *layout = new QVBoxLayout(this);
   layout->setContentsMargins(10, 10, 10, 0);
@@ -63,9 +65,8 @@ RelicPlannerWidget::RelicPlannerWidget(AppController *controller,
   }
   toolbar->addWidget(traceCount_);
   toolbar->addStretch();
-  auto *compactSearch = new CompactSearch("Search relics");
-  auto *filter = compactSearch->editor();
-  toolbar->addWidget(compactSearch);
+  auto *filter = search_->editor();
+  toolbar->addWidget(search_);
   auto *onlyOwned = new QCheckBox("Only owned");
   onlyOwned->setObjectName("ownedToggle");
   onlyOwned->setChecked(controller_->onlyOwned());
@@ -159,6 +160,11 @@ RelicPlannerWidget::RelicPlannerWidget(AppController *controller,
 
   updateEra();
   updateContent();
+}
+
+void RelicPlannerWidget::showReward(const QString &reward) {
+  controller_->selectEra("all");
+  search_->setText(reward);
 }
 
 void RelicPlannerWidget::updateContent() {

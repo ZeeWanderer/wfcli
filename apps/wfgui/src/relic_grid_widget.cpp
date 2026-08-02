@@ -89,7 +89,7 @@ protected:
         }
         const QString name =
             rewards.at(rewardIndex).toMap().value("name").toString();
-        QToolTip::showText(mapToGlobal(help->pos()), name, this,
+        QToolTip::showText(help->globalPos(), name, this,
                            layout.rewardCells.at(rewardIndex));
         return true;
       }
@@ -130,7 +130,7 @@ protected:
       }
       const QVariantMap data = rewards.at(reward).toMap();
       marketRequest_(data.value("name").toString(),
-                     data.value("owned").toInt() > 0 ? "sell" : "buy");
+                     data.value("owned").toInt() > 0 ? "buy" : "sell");
       event->accept();
       return;
     }
@@ -138,8 +138,8 @@ protected:
     if (layout.image.contains(position) || layout.title.contains(position)) {
       marketRequest_(index_.data(RelicModel::NameRole).toString(),
                      index_.data(RelicModel::AmountOwnedRole).toInt() > 0
-                         ? "sell"
-                         : "buy");
+                         ? "buy"
+                         : "sell");
       event->accept();
       return;
     }

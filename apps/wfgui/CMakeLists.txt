@@ -19,6 +19,8 @@ qt_add_library(wfgui_core STATIC
   src/market_order_card.h
   src/market_item_dialog.cpp
   src/market_item_dialog.h
+  src/market_spin_box.cpp
+  src/market_spin_box.h
   src/market_rail_widget.cpp
   src/market_rail_widget.h
   src/player_item_grid_widget.cpp
@@ -169,6 +171,18 @@ target_include_directories(wfgui_core PUBLIC src)
 target_link_libraries(wfgui_core PUBLIC Qt6::Network Qt6::Widgets)
 target_link_libraries(wfgui PRIVATE Qt6::Widgets wfgui_core)
 
+qt_add_executable(wfgui_icon_optics
+  ../../tools/icon-optics/main.cpp
+)
+set_target_properties(wfgui_icon_optics PROPERTIES
+  OUTPUT_NAME "wfgui-icon-optics"
+)
+target_compile_features(wfgui_icon_optics PRIVATE cxx_std_23)
+target_compile_definitions(wfgui_icon_optics PRIVATE
+  WFCLI_SOURCE_DIR="${PROJECT_SOURCE_DIR}"
+)
+target_link_libraries(wfgui_icon_optics PRIVATE Qt6::Gui)
+
 install(TARGETS wfgui RUNTIME DESTINATION bin)
 install(FILES resources/qt.conf DESTINATION bin)
 install(FILES resources/Lucide-LICENSE.txt DESTINATION share/licenses/wfcli)
@@ -201,6 +215,7 @@ install(
 
 if(CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
   target_compile_options(wfgui_core PRIVATE -Wall -Wextra -Wpedantic)
+  target_compile_options(wfgui_icon_optics PRIVATE -Wall -Wextra -Wpedantic)
 endif()
 
 if(BUILD_TESTING)
@@ -214,6 +229,16 @@ if(BUILD_TESTING)
   )
   add_test(NAME wfgui-models COMMAND wfgui_tests)
   set_tests_properties(wfgui-models PROPERTIES
+    ENVIRONMENT "QT_QPA_PLATFORM=offscreen"
+  )
+  add_test(
+    NAME wfgui-icon-optics
+    COMMAND wfgui_icon_optics
+      --config "${PROJECT_SOURCE_DIR}/tools/icon-optics/foundry.json"
+      --output-dir "${CMAKE_CURRENT_BINARY_DIR}/icon-optics-test"
+      --ui-scale 1.25
+  )
+  set_tests_properties(wfgui-icon-optics PROPERTIES
     ENVIRONMENT "QT_QPA_PLATFORM=offscreen"
   )
 endif()

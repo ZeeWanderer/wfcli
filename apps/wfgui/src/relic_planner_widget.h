@@ -3,6 +3,7 @@
 #include <QWidget>
 
 class AppController;
+class CompactSearch;
 class QButtonGroup;
 class QLabel;
 class QProgressBar;
@@ -16,6 +17,7 @@ class RelicPlannerWidget final : public QWidget {
 public:
   explicit RelicPlannerWidget(AppController *controller,
                               QWidget *parent = nullptr);
+  void showReward(const QString &reward);
 
 signals:
   void marketItemRequested(const QString &item, const QString &side);
@@ -30,6 +32,7 @@ private:
   QProgressBar *priceProgress_;
   QLabel *emptyState_;
   RelicGridWidget *relics_;
+  CompactSearch *search_;
   QPushButton *refresh_;
   QButtonGroup *eraGroup_;
   QStackedLayout *content_;

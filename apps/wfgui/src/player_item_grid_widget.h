@@ -22,6 +22,7 @@ signals:
   void assetsNeeded(const QJsonArray &assets);
   void quotesNeeded(const QStringList &items, bool refresh);
   void marketItemRequested(const QString &item, const QString &side);
+  void relicRewardRequested(const QString &reward);
 
 protected:
   void resizeEvent(QResizeEvent *event) override;

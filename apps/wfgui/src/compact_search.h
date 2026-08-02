@@ -11,6 +11,7 @@ public:
   explicit CompactSearch(const QString &placeholder, QWidget *parent = nullptr);
 
   QLineEdit *editor() const;
+  void setText(const QString &text);
 
 private:
   void expand();

@@ -32,6 +32,7 @@
 #include "inventory_card_layout.h"
 #include "market_order_card.h"
 #include "market_rail_widget.h"
+#include "market_spin_box.h"
 #include "player_item_grid_widget.h"
 #include "player_item_model.h"
 #include "relic_card_layout.h"
@@ -47,6 +48,7 @@ private slots:
   void appliesResolvedAssets();
   void priceUpdatesPreserveRows();
   void filtersByName();
+  void filtersByRewardName();
   void filtersRelicsByOwnershipLocally();
   void filtersRelicsByEraLocally();
   void filtersPlayerItemsLocally();
@@ -65,6 +67,7 @@ private slots:
   void playerGridUsesAvailableColumns();
   void foundryGridUsesCompactCards();
   void foundryStatusBadgesHaveTooltips();
+  void componentClicksUseCounterpartyListings();
   void masteryGridUsesCompactCards();
   void inventoryGridRequestsVisibleQuotes();
   void masteryGridRequestsComponentQuotes();
@@ -78,6 +81,7 @@ private slots:
   void marketSearchKeyboardNavigation();
   void filtersExpiredFissures();
   void styleLayersAvoidImplicitSurfaces();
+  void marketSpinBoxPaintsVisibleArrows();
   void capturesNamedUiTargets();
 };
 
@@ -227,6 +231,18 @@ void RelicModelTest::filtersByName() {
   QCOMPARE(filter.rowCount(), 1);
   QCOMPARE(filter.data(filter.index(0, 0), RelicModel::NameRole).toString(),
            QString("Lith B1 Intact"));
+}
+
+void RelicModelTest::filtersByRewardName() {
+  RelicModel model;
+  QVERIFY(model.replace(recommendations()));
+  RelicFilterModel filter;
+  filter.setSourceModel(&model);
+
+  filter.setFilterText("saryn prime chassis");
+  QCOMPARE(filter.rowCount(), 1);
+  QCOMPARE(filter.data(filter.index(0, 0), RelicModel::NameRole).toString(),
+           QString("Axi A1 Intact"));
 }
 
 void RelicModelTest::filtersRelicsByOwnershipLocally() {
@@ -787,8 +803,9 @@ void RelicModelTest::foundryStatusBadgesHaveTooltips() {
   const QRect image(content.left() + 3, card.bottom() - 105 + 1, 105, 105);
   const auto tooltipAt = [&grid](const QPoint &position) {
     QToolTip::hideText();
-    const QPoint expected = grid.viewport()->mapToGlobal(position);
-    QHelpEvent event(QEvent::ToolTip, position, expected + QPoint(5000, 5000));
+    const QPoint expected =
+        grid.viewport()->mapToGlobal(position) + QPoint(200, 100);
+    QHelpEvent event(QEvent::ToolTip, position, expected);
     QApplication::sendEvent(grid.viewport(), &event);
     QCoreApplication::processEvents();
     QWidget *tip = nullptr;
@@ -801,7 +818,7 @@ void RelicModelTest::foundryStatusBadgesHaveTooltips() {
     if (tip == nullptr) {
       return QString("missing:%1").arg(QToolTip::text());
     }
-    const QRect vicinity(expected - QPoint(100, 100), QSize(200, 200));
+    const QRect vicinity(expected - QPoint(50, 50), QSize(100, 100));
     if (!vicinity.intersects(tip->geometry())) {
       return QString("misplaced:%1").arg(QToolTip::text());
     }
@@ -816,6 +833,68 @@ void RelicModelTest::foundryStatusBadgesHaveTooltips() {
            QString("Mastery Rank 10"));
   QCOMPARE(tooltipAt(QPoint(image.right() - 14, image.bottom() - 14)),
            QString("Subsumed"));
+}
+
+void RelicModelTest::componentClicksUseCounterpartyListings() {
+  const auto data = [](int owned) {
+    return QJsonObject{
+        {"items",
+         QJsonArray{QJsonObject{
+             {"id", "test-prime"},
+             {"name", "Test Prime"},
+             {"group", "warframe"},
+             {"components", QJsonArray{QJsonObject{
+                                {"name", "Chassis"},
+                                {"market_name", "Test Prime Chassis Blueprint"},
+                                {"required", 1},
+                                {"owned", owned},
+                                {"owned_relic", true},
+                            }}},
+         }}}};
+  };
+
+  PlayerItemModel model;
+  QVERIFY(model.replace(data(0)));
+  PlayerItemGridWidget grid(PlayerItemGridWidget::Kind::Foundry);
+  QSignalSpy market(&grid, &PlayerItemGridWidget::marketItemRequested);
+  QSignalSpy relic(&grid, &PlayerItemGridWidget::relicRewardRequested);
+  grid.setModel(&model);
+  grid.resize(320, 400);
+  grid.show();
+  QCoreApplication::processEvents();
+
+  const auto componentRect = [&grid, &model] {
+    const QRect card = grid.visualRect(model.index(0)).adjusted(4, 4, -4, -4);
+    const QRect content = card.adjusted(8, 8, -8, -8);
+    constexpr int size = 39;
+    constexpr int gap = 8;
+    constexpr int layoutWidth = 3 * size + 2 * gap;
+    const int left =
+        content.right() - layoutWidth + 1 + (layoutWidth - size) / 2;
+    const QRect body(content.left(), content.top() + 33, content.width(), 86);
+    return QRect(left, body.center().y() - size / 2, size, size);
+  };
+
+  QTest::mouseClick(grid.viewport(), Qt::LeftButton, Qt::NoModifier,
+                    componentRect().center());
+  QCOMPARE(market.count(), 1);
+  QCOMPARE(market.takeFirst().at(1).toString(), QString("sell"));
+
+  QVERIFY(model.replace(data(1)));
+  QCoreApplication::processEvents();
+  QTest::mouseClick(grid.viewport(), Qt::LeftButton, Qt::NoModifier,
+                    componentRect().center());
+  QCOMPARE(market.count(), 1);
+  QCOMPARE(market.takeFirst().at(1).toString(), QString("buy"));
+
+  const QRect component = componentRect();
+  const QRect marker(component.left() - 2, component.bottom() - 19 + 3, 19, 19);
+  QTest::mouseClick(grid.viewport(), Qt::LeftButton, Qt::NoModifier,
+                    marker.center());
+  QCOMPARE(market.count(), 0);
+  QCOMPARE(relic.count(), 1);
+  QCOMPARE(relic.takeFirst().at(0).toString(),
+           QString("Test Prime Chassis Blueprint"));
 }
 
 void RelicModelTest::inventoryGridRequestsVisibleQuotes() {
@@ -1279,6 +1358,11 @@ void RelicModelTest::compactSearchExpandsOnClick() {
   QTest::mouseClick(button, Qt::LeftButton);
   QTRY_VERIFY(search.editor()->isHidden());
   QCOMPARE(search.width(), 40);
+
+  search.setText("Saryn Prime Chassis");
+  QTRY_VERIFY(search.editor()->isVisible());
+  QTRY_COMPARE(search.width(), 174);
+  QCOMPARE(search.editor()->text(), QString("Saryn Prime Chassis"));
 }
 
 void RelicModelTest::thumbnailCacheRespectsSizeAndDpr() {
@@ -1482,6 +1566,37 @@ void RelicModelTest::styleLayersAvoidImplicitSurfaces() {
       "QCheckBox::indicator:checked {\n  background: #5e44af;"));
   QVERIFY(
       controlsText.contains("image: url(:/resources/market/wfgui-check.png);"));
+
+  QFile market(QStringLiteral(WFGUI_SOURCE_DIR "/resources/styles/market.qss"));
+  QVERIFY(market.open(QIODevice::ReadOnly));
+  const QString marketText = QString::fromUtf8(market.readAll());
+  QVERIFY(marketText.contains("QSpinBox::up-button,"));
+  QVERIFY(marketText.contains("QSpinBox::down-button"));
+  QVERIFY(marketText.contains("border-left: 1px solid #313a58;"));
+}
+
+void RelicModelTest::marketSpinBoxPaintsVisibleArrows() {
+  QFile market(QStringLiteral(WFGUI_SOURCE_DIR "/resources/styles/market.qss"));
+  QVERIFY(market.open(QIODevice::ReadOnly));
+
+  wfgui::MarketSpinBox spin;
+  spin.setStyleSheet(QString::fromUtf8(market.readAll()));
+  spin.resize(104, 32);
+  spin.show();
+  QCoreApplication::processEvents();
+
+  const QImage image =
+      spin.grab().toImage().convertToFormat(QImage::Format_RGB32);
+  int brightPixels = 0;
+  for (int y = 0; y < image.height(); ++y) {
+    for (int x = image.width() - 18; x < image.width(); ++x) {
+      const QColor pixel = image.pixelColor(x, y);
+      if (pixel.red() > 170 && pixel.green() > 170 && pixel.blue() > 170) {
+        ++brightPixels;
+      }
+    }
+  }
+  QVERIFY(brightPixels >= 12);
 }
 
 void RelicModelTest::capturesNamedUiTargets() {

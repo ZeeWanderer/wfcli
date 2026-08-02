@@ -52,6 +52,15 @@ CompactSearch::CompactSearch(const QString &placeholder, QWidget *parent)
 
 QLineEdit *CompactSearch::editor() const { return editor_; }
 
+void CompactSearch::setText(const QString &text) {
+  editor_->setText(text);
+  if (text.isEmpty()) {
+    collapse();
+  } else {
+    expand();
+  }
+}
+
 void CompactSearch::expand() {
   expanded_ = true;
   editor_->show();

@@ -219,6 +219,11 @@ MainWindow::MainWindow(QWidget *parent)
     showMarketItem(item, side);
   };
   connect(foundry, &FoundryWidget::marketItemRequested, this, openMarket);
+  connect(foundry, &FoundryWidget::relicRewardRequested, this,
+          [this, relics](const QString &reward) {
+            setPage("relic");
+            relics->showReward(reward);
+          });
   connect(mastery, &MasteryPlannerWidget::marketItemRequested, this,
           openMarket);
   connect(inventory, &InventoryWidget::marketItemRequested, this, openMarket);

@@ -13,6 +13,9 @@ PREVIEW_SETS ?= companion reference
 PREVIEW_SCENES ?= all
 PREVIEW_RESOLUTIONS ?= 1920x1080 2560x1440
 PREVIEW_DEPS = $(if $(findstring companion,$(PREVIEW_SETS)),dev-companion)
+ICON_OPTICS_SCALE ?= 1.25
+ICON_OPTICS_OUTPUT ?= $(CURDIR)/previews/optics
+ICON_OPTICS_CONFIG ?= $(CURDIR)/tools/icon-optics/foundry.json
 
 export REBAR_CACHE_DIR
 export CARGO_TARGET_DIR
@@ -21,7 +24,7 @@ export CCACHE_DIR
 .PHONY: all build dev prod erlang cli daemon mcp companion gui gui-dev gui-prod \
 	gui-configure-dev gui-configure-prod gui-reconfigure gui-reconfigure-dev gui-reconfigure-prod \
 	dev-erlang prod-erlang dev-companion prod-companion links \
-	debug-bridge native-bridges previews aleca-layout-setup fix-executables \
+	debug-bridge native-bridges previews icon-optics aleca-layout-setup fix-executables \
 	native-compile-commands test test-erlang test-companion test-gui check fmt-check xref package clean
 
 all: dev
@@ -107,6 +110,12 @@ previews: $(PREVIEW_DEPS)
 	PREVIEW_SCENES='$(PREVIEW_SCENES)' \
 	PREVIEW_RESOLUTIONS='$(PREVIEW_RESOLUTIONS)' \
 	./scripts/generate-previews
+
+icon-optics: gui-configure-dev
+	LLVM_ROOT="$(LLVM_ROOT)" cmake --build --preset gui-dev --target wfgui_icon_optics
+	QT_QPA_PLATFORM=offscreen _build/cmake/gui-dev/apps/wfgui/wfgui-icon-optics \
+		--config "$(ICON_OPTICS_CONFIG)" --ui-scale "$(ICON_OPTICS_SCALE)" \
+		--output-dir "$(ICON_OPTICS_OUTPUT)"
 
 aleca-layout-setup:
 	./scripts/setup-aleca-layout

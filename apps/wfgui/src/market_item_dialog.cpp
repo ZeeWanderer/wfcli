@@ -25,6 +25,7 @@
 #include <QVBoxLayout>
 
 #include "app_controller.h"
+#include "market_spin_box.h"
 #include "widget_capture.h"
 
 namespace {
@@ -184,14 +185,15 @@ MarketItemView::MarketItemView(AppController *controller,
                                                      : nullptr),
       compactListings_(presentation == Presentation::Rail ? new QListWidget
                                                           : nullptr),
-      progress_(new QProgressBar), quantity_(new QSpinBox),
-      price_(new QSpinBox), rank_(new QSpinBox), charges_(new QSpinBox),
-      amberStars_(new QSpinBox), cyanStars_(new QSpinBox),
-      perTrade_(new QSpinBox), subtype_(new QComboBox), rankRow_(nullptr),
-      chargesRow_(nullptr), amberStarsRow_(nullptr), cyanStarsRow_(nullptr),
-      perTradeRow_(nullptr), subtypeRow_(nullptr),
-      variantTimer_(new QTimer(this)), copyResetTimer_(new QTimer(this)),
-      copy_(new QPushButton), post_(new QPushButton), signIn_(new QPushButton),
+      progress_(new QProgressBar), quantity_(new wfgui::MarketSpinBox),
+      price_(new wfgui::MarketSpinBox), rank_(new wfgui::MarketSpinBox),
+      charges_(new wfgui::MarketSpinBox), amberStars_(new wfgui::MarketSpinBox),
+      cyanStars_(new wfgui::MarketSpinBox), perTrade_(new wfgui::MarketSpinBox),
+      subtype_(new QComboBox), rankRow_(nullptr), chargesRow_(nullptr),
+      amberStarsRow_(nullptr), cyanStarsRow_(nullptr), perTradeRow_(nullptr),
+      subtypeRow_(nullptr), variantTimer_(new QTimer(this)),
+      copyResetTimer_(new QTimer(this)), copy_(new QPushButton),
+      post_(new QPushButton), signIn_(new QPushButton),
       presentation_(presentation) {
   const bool compact = presentation_ == Presentation::Rail;
   setObjectName("marketItemView");

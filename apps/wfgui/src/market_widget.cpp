@@ -35,6 +35,7 @@
 
 #include "app_controller.h"
 #include "market_order_card.h"
+#include "market_spin_box.h"
 #include "widget_capture.h"
 
 namespace {
@@ -79,11 +80,11 @@ std::optional<QJsonObject> editOrderDialog(QWidget *parent,
   dialog.setWindowTitle("Edit Market order");
   auto *layout = new QVBoxLayout(&dialog);
   auto *form = new QFormLayout;
-  auto *quantity = new QSpinBox;
+  auto *quantity = new wfgui::MarketSpinBox;
   quantity->setRange(1, 9999);
   quantity->setValue(order.value("quantity").toInt(1));
   form->addRow("Quantity", quantity);
-  auto *price = new QSpinBox;
+  auto *price = new wfgui::MarketSpinBox;
   price->setRange(1, 900000);
   price->setValue(order.value("platinum").toInt(1));
   form->addRow("Platinum", price);
@@ -92,7 +93,7 @@ std::optional<QJsonObject> editOrderDialog(QWidget *parent,
   form->addRow("Visibility", visible);
   QSpinBox *rank = nullptr;
   if (item.value("max_rank").toInt() > 0 || order.value("rank").isDouble()) {
-    rank = new QSpinBox;
+    rank = new wfgui::MarketSpinBox;
     rank->setRange(
         0, qMax(item.value("max_rank").toInt(), order.value("rank").toInt()));
     rank->setValue(order.value("rank").toInt());
@@ -103,7 +104,7 @@ std::optional<QJsonObject> editOrderDialog(QWidget *parent,
                                                const QString &label) {
     QSpinBox *spin = nullptr;
     if (item.value(maximum).toInt() > 0 || order.value(field).isDouble()) {
-      spin = new QSpinBox;
+      spin = new wfgui::MarketSpinBox;
       spin->setRange(
           0, qMax(item.value(maximum).toInt(), order.value(field).toInt()));
       spin->setValue(order.value(field).toInt());
@@ -119,7 +120,7 @@ std::optional<QJsonObject> editOrderDialog(QWidget *parent,
   QSpinBox *perTrade = nullptr;
   if (item.value("bulk_tradable").toBool() ||
       firstInt(order, {"perTrade", "per_trade"}, 1) > 1) {
-    perTrade = new QSpinBox;
+    perTrade = new wfgui::MarketSpinBox;
     perTrade->setRange(1, 6);
     perTrade->setValue(firstInt(order, {"perTrade", "per_trade"}, 1));
     quantity->setSingleStep(perTrade->value());
