@@ -3,6 +3,8 @@ find_package(Qt6 REQUIRED COMPONENTS Network Widgets)
 qt_standard_project_setup()
 
 qt_add_library(wfgui_core STATIC
+  src/activity_data.cpp
+  src/activity_data.h
   src/app_controller.cpp
   src/app_controller.h
   src/compact_search.cpp

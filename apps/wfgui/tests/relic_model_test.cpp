@@ -1,4 +1,5 @@
 #include <QCheckBox>
+#include <QDateTime>
 #include <QFile>
 #include <QImage>
 #include <QJsonArray>
@@ -17,6 +18,7 @@
 
 #include <utility>
 
+#include "activity_data.h"
 #include "compact_search.h"
 #include "daemon_client.h"
 #include "image_cache.h"
@@ -62,6 +64,7 @@ private slots:
   void thumbnailCacheRespectsSizeAndDpr();
   void widgetThumbnailDecodeCompletesOffPaintPath();
   void marketOrderCardUsesReferenceStructure();
+  void filtersExpiredFissures();
   void styleLayersAvoidImplicitSurfaces();
 };
 
@@ -1214,6 +1217,21 @@ void RelicModelTest::marketOrderCardUsesReferenceStructure() {
   QCOMPARE(soldCalls, 1);
   QCOMPARE(removeCalls, 1);
   QCOMPARE(listingCalls, 1);
+}
+
+void RelicModelTest::filtersExpiredFissures() {
+  const QJsonArray fissures = {
+      QJsonObject{{"id", "expired"}, {"expiry", "2026-08-02T10:00:00Z"}},
+      QJsonObject{{"id", "active"}, {"expiry", "2026-08-02T10:02:00Z"}},
+      QJsonObject{{"id", "unknown"}},
+  };
+  const qint64 now = QDateTime::fromString("2026-08-02T10:01:00Z", Qt::ISODate)
+                         .toMSecsSinceEpoch();
+  const QJsonArray active = wfgui::activeFissures(fissures, now);
+
+  QCOMPARE(active.size(), 2);
+  QCOMPARE(active.at(0).toObject().value("id").toString(), QString("active"));
+  QCOMPARE(active.at(1).toObject().value("id").toString(), QString("unknown"));
 }
 
 void RelicModelTest::styleLayersAvoidImplicitSurfaces() {

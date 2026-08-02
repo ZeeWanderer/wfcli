@@ -22,6 +22,7 @@
 
 #include <algorithm>
 
+#include "activity_data.h"
 #include "app_controller.h"
 
 namespace {
@@ -120,8 +121,9 @@ qint64 isoTime(const QString &value) {
 }
 
 QString remaining(qint64 expiresAt) {
-  qint64 seconds = std::max<qint64>(
-      0, (expiresAt - QDateTime::currentMSecsSinceEpoch()) / 1000);
+  const qint64 remainingMs =
+      std::max<qint64>(0, expiresAt - QDateTime::currentMSecsSinceEpoch());
+  qint64 seconds = (remainingMs + 999) / 1000;
   const qint64 days = seconds / 86400;
   seconds %= 86400;
   const qint64 hours = seconds / 3600;
@@ -520,7 +522,9 @@ void ActivityRailWidget::rebuildCycles(const QJsonObject &data) {
 void ActivityRailWidget::rebuildFissures(const QJsonObject &data) {
   clearLayout(fissures_);
   QMap<QString, QJsonArray> groups;
-  for (const QJsonValue &value : data.value("fissures").toArray()) {
+  const QJsonArray active = wfgui::activeFissures(
+      data.value("fissures").toArray(), QDateTime::currentMSecsSinceEpoch());
+  for (const QJsonValue &value : active) {
     const QJsonObject fissure = value.toObject();
     const bool hard = fissure.value("hard").toBool();
     if ((mode_ == "normal" && hard) || (mode_ == "steel" && !hard)) {
@@ -589,6 +593,7 @@ void ActivityRailWidget::rebuildFissures(const QJsonObject &data) {
       countdown->setObjectName("countdown");
       countdown->setProperty("expiresAt",
                              isoTime(fissure.value("expiry").toString()));
+      countdown->setProperty("fissureExpiry", true);
       rowLayout->addWidget(countdown, 0, 1, Qt::AlignCenter);
       rowsLayout->addWidget(row);
     }
@@ -599,10 +604,17 @@ void ActivityRailWidget::rebuildFissures(const QJsonObject &data) {
 }
 
 void ActivityRailWidget::updateCountdowns() {
+  const qint64 now = QDateTime::currentMSecsSinceEpoch();
+  bool rebuildExpiredFissures = false;
   for (QLabel *label : findChildren<QLabel *>("countdown")) {
     const qint64 expiresAt = label->property("expiresAt").toLongLong();
+    rebuildExpiredFissures |= label->property("fissureExpiry").toBool() &&
+                              expiresAt > 0 && expiresAt <= now;
     label->setText(expiresAt > 0 ? remaining(expiresAt) : "--");
   }
   updateEvent(resurgence_);
   updateEvent(baro_);
+  if (rebuildExpiredFissures) {
+    rebuildFissures(controller_->activity());
+  }
 }
