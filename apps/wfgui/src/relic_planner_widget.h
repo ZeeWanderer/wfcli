@@ -17,6 +17,9 @@ public:
   explicit RelicPlannerWidget(AppController *controller,
                               QWidget *parent = nullptr);
 
+signals:
+  void marketItemRequested(const QString &item, const QString &side);
+
 private:
   void updateContent();
   void updateEra();

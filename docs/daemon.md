@@ -65,6 +65,10 @@ Worldstate watches share one fetch and parse cycle. Market requests use a separa
 queue and coalesce matching work. Managed knowledge refreshes through its own serialized source
 queue; see [Data sources and updates](data-sources.md).
 
+Market account mutations are serialized separately from public quotes. The session token and
+presence mode are owner-only state files; passwords are neither persisted nor returned to clients.
+An online Market presence prevents idle shutdown.
+
 Fissure notification policy is persisted by the daemon. Session mode runs while a GUI is
 connected; persistent mode runs for the daemon lifetime. A new watch records its first snapshot,
 then notifies about matching fissures added later.

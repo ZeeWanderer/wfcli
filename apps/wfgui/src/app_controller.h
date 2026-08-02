@@ -4,6 +4,7 @@
 #include <QJsonArray>
 #include <QJsonObject>
 #include <QObject>
+#include <QSet>
 #include <QString>
 #include <QStringList>
 
@@ -47,6 +48,15 @@ public:
   bool foundryLoaded() const;
   bool inventoryLoaded() const;
   bool masteryLoaded() const;
+  QJsonObject marketAccount() const;
+  QJsonObject marketItem(const QString &key) const;
+  QJsonObject marketQuote(const QString &key) const;
+  QJsonObject marketVariantQuote(const QString &item,
+                                 const QJsonObject &filters) const;
+  QString marketError() const;
+  bool marketLoaded() const;
+  bool marketBusy() const;
+  int ownedMarketQuantity(const QString &name) const;
 
   void setFilterText(const QString &text);
   void setOnlyOwned(bool onlyOwned);
@@ -63,6 +73,21 @@ public:
   void setFissureNotificationMode(const QString &mode);
   void resolveAssets(const QJsonArray &assets);
   void resolveMarketQuotes(const QStringList &items, bool refresh = false);
+  void requestMarketVariantQuote(const QString &item,
+                                 const QJsonObject &filters,
+                                 bool refresh = false);
+  void describeMarketItems(const QStringList &items);
+  void ensureMarket();
+  void refreshMarket();
+  void marketLogin(const QString &email, const QString &password);
+  void marketLogout();
+  void marketCreateOrder(const QJsonObject &order);
+  void marketUpdateOrder(const QString &id, const QJsonObject &patch);
+  void marketDeleteOrder(const QString &id);
+  void marketCloseOrder(const QString &id, int quantity);
+  void setMarketOrdersVisible(bool visible,
+                              const QString &type = QString());
+  void setMarketPresenceMode(const QString &mode);
 
 signals:
   void selectedEraChanged();
@@ -81,6 +106,13 @@ signals:
   void assetsChanged();
   void activityStateChanged();
   void notificationSettingsChanged();
+  void marketAccountChanged();
+  void marketCatalogChanged();
+  void marketQuotesChanged();
+  void marketVariantQuoteReady(const QString &item, const QJsonObject &filters,
+                               const QJsonObject &data);
+  void marketVariantQuoteFailed(const QString &item, const QJsonObject &filters,
+                                const QString &error);
 
 private:
   struct PlayerViewState {
@@ -98,6 +130,12 @@ private:
   PlayerViewState *playerState(const QString &view);
   PlayerItemModel *playerModel(const QString &view);
   void emitPlayerStateChanged(const QString &view);
+  void applyMarketDescriptors(const QJsonArray &items);
+  void beginMarketAction();
+  void finishMarketAction();
+  static QString marketKey(const QString &value);
+  static QString marketVariantKey(const QString &item,
+                                  const QJsonObject &filters);
 
   struct EraState {
     QJsonObject metadata;
@@ -120,6 +158,12 @@ private:
   EraState relicState_;
   QHash<QString, QString> assetPaths_;
   QHash<QString, qint64> marketRequestedAt_;
+  QHash<QString, QJsonObject> marketItems_;
+  QHash<QString, QJsonObject> marketQuotes_;
+  QHash<QString, QJsonObject> marketVariantQuotes_;
+  QSet<QString> marketVariantPending_;
+  QJsonObject marketAccount_;
+  QString marketError_;
   PlayerViewState foundryState_;
   PlayerViewState inventoryState_;
   PlayerViewState masteryState_;
@@ -128,6 +172,9 @@ private:
   QString activityError_;
   QString fissureNotificationMode_ = "off";
   bool notificationSettingsLoaded_ = false;
+  bool marketLoaded_ = false;
+  bool marketPending_ = false;
+  int marketActions_ = 0;
   bool relicsRequested_ = false;
   bool loading_ = false;
 };

@@ -136,6 +136,8 @@ RelicPlannerWidget::RelicPlannerWidget(AppController *controller,
           &RelicPlannerWidget::updateEra);
   connect(controller_, &AppController::onlyOwnedChanged, this,
           &RelicPlannerWidget::updateContent);
+  connect(relics_, &RelicGridWidget::marketItemRequested, this,
+          &RelicPlannerWidget::marketItemRequested);
   connect(controller_, &AppController::loadingChanged, this,
           &RelicPlannerWidget::updateContent);
   connect(controller_, &AppController::pricingChanged, this,

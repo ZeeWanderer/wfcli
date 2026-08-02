@@ -32,6 +32,10 @@ market_worker_snapshots_are_action_scoped_test() ->
     ?assertNot(maps:is_key(details, Quote)),
     ?assertNot(maps:is_key(relics, Quote)),
     ?assertNot(maps:is_key(unrelated, Quote)),
+    Variant = wfcli_market_service:worker_snapshot(#{action => quote_variant},
+                                                   Snapshot#{variant_quotes => #{}}),
+    ?assert(maps:is_key(variant_quotes, Variant)),
+    ?assertNot(maps:is_key(quotes, Variant)),
     Relic = wfcli_market_service:worker_snapshot(#{action => relic_context}, Snapshot),
     ?assert(maps:is_key(details, Relic)),
     ?assert(maps:is_key(relics, Relic)),
@@ -83,6 +87,14 @@ exercise(#{cache := Cache, counters := Counters}) ->
     ?assertEqual(1, count(Counters, items)),
     ?assertEqual(0, count(Counters, quotes)),
 
+    {ok, Described} = request(#{action => describe_items,
+                                items => [<<"saryn">>, <<"Saryn Prime Set">>,
+                                          <<"missing">>]}),
+    [SarynById, SarynByName] = maps:get(items, Described),
+    ?assertEqual(SarynById, SarynByName),
+    ?assertEqual(<<"saryn">>, maps:get(id, SarynById)),
+    ?assertEqual([<<"missing">>], maps:get(missing, Described)),
+
     {ok, Catalog} = request(#{action => query, query_ast => match_all, limit => infinity}),
     ?assertEqual(23, maps:get(total, maps:get(results, Catalog))),
     [Saryn] = [Entry || Entry <- maps:get(slice, maps:get(results, Catalog)),
@@ -125,7 +137,28 @@ exercise(#{cache := Cache, counters := Counters}) ->
     [NamedQuote] = maps:get(quotes, NamedQuotes),
     ?assertEqual(<<"Saryn Prime Set">>, maps:get(item, NamedQuote)),
     ?assertEqual(<<"saryn_prime_set">>, maps:get(slug, NamedQuote)),
+    ?assertEqual(<<"saryn">>, maps:get(id, maps:get(item_data, NamedQuote))),
     ?assertEqual(42, maps:get(lowest_sell, maps:get(quote, NamedQuote))),
+
+    {ok, IdQuotes} = request(#{action => quote_items, items => [<<"saryn">>],
+                               cache_only => true}),
+    [IdQuote] = maps:get(quotes, IdQuotes),
+    ?assertEqual(<<"saryn_prime_set">>, maps:get(slug, IdQuote)),
+    ?assertEqual([], maps:get(missing, IdQuotes)),
+
+    VariantRequest = #{action => quote_variant, item => <<"saryn">>,
+                       filters => #{rank => 5, subtype => <<"blueprint">>},
+                       refresh => false, ttl => 60},
+    QuoteCallsBeforeVariant = count(Counters, quotes),
+    {ok, VariantQuote} = request(VariantRequest),
+    ?assertEqual(42, maps:get(lowest_sell, maps:get(quote, VariantQuote))),
+    VariantUrl = ets:lookup_element(Counters, last_quote_url, 2),
+    ?assert(string:find(VariantUrl, "rank=5") =/= nomatch),
+    ?assert(string:find(VariantUrl, "subtype=blueprint") =/= nomatch),
+    {ok, CachedVariant} = request(VariantRequest),
+    ?assert(lists:member(maps:get(source, maps:get(quote, CachedVariant)),
+                         [cached, coalesced])),
+    ?assertEqual(QuoteCallsBeforeVariant + 1, count(Counters, quotes)),
 
     QuoteCallsBeforeCacheRead = count(Counters, quotes),
     {ok, CachedQuotes} = request(#{action => quote_items,
@@ -248,6 +281,7 @@ success_http_fun(Counters) ->
                 {ok, 200, jsone:encode(items_envelope())};
             false ->
                 ets:update_counter(Counters, quotes, 1),
+                ets:insert(Counters, {last_quote_url, Url}),
                 timer:sleep(30),
                 {ok, 200, jsone:encode(quote_envelope())}
         end

@@ -16,6 +16,7 @@ class ActivityRailWidget;
 class PlayerIdentityWidget;
 class QResizeEvent;
 class TitleBarWidget;
+class MarketItemDialog;
 
 class MainWindow final : public QMainWindow {
   Q_OBJECT
@@ -23,6 +24,8 @@ class MainWindow final : public QMainWindow {
 public:
   explicit MainWindow(QWidget *parent = nullptr);
   bool setPage(const QString &page);
+  void showMarketItem(const QString &item, const QString &side = "sell");
+  QWidget *screenshotTarget();
 
 private:
   void updateDaemonStatus();
@@ -46,6 +49,7 @@ private:
   QStringList navigationLabels_;
   QStackedWidget *pages_;
   ActivityRailWidget *activityRail_;
+  MarketItemDialog *marketDialog_;
   TitleBarWidget *titleBar_;
   QList<QWidget *> resizeHandles_;
   bool leftRailCollapsed_ = false;

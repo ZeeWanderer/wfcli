@@ -298,6 +298,8 @@ MasteryPlannerWidget::MasteryPlannerWidget(AppController *controller,
           &AppController::resolveAssets);
   connect(grid_, &PlayerItemGridWidget::quotesNeeded, controller_,
           &AppController::resolveMarketQuotes);
+  connect(grid_, &PlayerItemGridWidget::marketItemRequested, this,
+          &MasteryPlannerWidget::marketItemRequested);
   connect(controller_, &AppController::masteryStateChanged, this,
           &MasteryPlannerWidget::updateContent);
   connect(controller_, &AppController::assetsChanged, this,

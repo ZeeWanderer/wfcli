@@ -228,6 +228,8 @@ status(State = #{started_at := StartedAt}) ->
         query => safe_status(wfcli_query_service),
         player => safe_status(wfcli_player_service),
         market => safe_status(wfcli_market_service),
+        market_account => safe_status(wfcli_market_account_service),
+        market_presence => safe_status(wfcli_market_presence_service),
         local_api => safe_status(wfcli_local_api),
         update => update_status(State)
     }).

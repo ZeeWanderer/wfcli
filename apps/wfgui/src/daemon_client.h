@@ -4,6 +4,7 @@
 #include <QHash>
 #include <QJsonArray>
 #include <QJsonObject>
+#include <QList>
 #include <QObject>
 #include <QProcess>
 #include <QSet>
@@ -32,6 +33,19 @@ public:
   void setFissureNotificationMode(const QString &mode);
   void requestAssets(const QJsonArray &assets);
   void requestMarketQuotes(const QStringList &items, bool refresh = false);
+  void requestMarketVariantQuote(const QString &item, const QJsonObject &filters,
+                                 bool refresh = false);
+  void requestMarketItems(const QStringList &items);
+  void requestMarketAccount();
+  void marketLogin(const QString &email, const QString &password);
+  void marketLogout();
+  void marketCreateOrder(const QJsonObject &order);
+  void marketUpdateOrder(const QString &id, const QJsonObject &patch);
+  void marketDeleteOrder(const QString &id);
+  void marketCloseOrder(const QString &id, int quantity);
+  void setMarketOrdersVisible(bool visible,
+                              const QString &type = QString());
+  void setMarketPresenceMode(const QString &mode);
 
 signals:
   void connectionChanged();
@@ -49,6 +63,17 @@ signals:
   void marketQuotesResolved(const QJsonArray &quotes,
                             const QJsonArray &missing);
   void marketQuoteRequestFailed(const QStringList &items, const QString &error);
+  void marketVariantQuoteReady(const QString &item, const QJsonObject &filters,
+                               const QJsonObject &data);
+  void marketVariantQuoteFailed(const QString &item, const QJsonObject &filters,
+                                const QString &error);
+  void marketItemsDescribed(const QJsonArray &items, const QJsonArray &missing);
+  void marketItemDescribeFailed(const QStringList &items,
+                                const QString &error);
+  void marketAccountReady(const QString &action, const QJsonObject &account);
+  void marketAccountFailed(const QString &action, const QString &error);
+  void marketPresenceReady(const QJsonObject &presence, bool requested);
+  void marketPresenceFailed(const QString &error);
   void requestFailed(const QString &era, bool prices, const QString &error);
 
 private:
@@ -63,6 +88,11 @@ private:
   void sendPendingAssets();
   void sendAssetBatch(const QJsonArray &assets);
   void sendPendingMarketQuotes();
+  void sendPendingMarketVariantQuotes();
+  void sendPendingMarketDescriptions();
+  void sendPendingMarketAccount();
+  void queueMarketAccountRequest(const QString &action,
+                                 const QJsonObject &message);
   void flushMarketQuoteResults();
   void write(const QJsonObject &message);
   void setConnected(bool connected);
@@ -79,6 +109,17 @@ private:
     QStringList items;
     bool refresh = false;
     bool cacheOnly = false;
+  };
+
+  struct MarketAccountRequest {
+    QString action;
+    QJsonObject message;
+  };
+
+  struct MarketVariantRequest {
+    QString item;
+    QJsonObject filters;
+    bool refresh = false;
   };
 
   static QString relicRequestKey(const RelicRequest &request);
@@ -105,18 +146,28 @@ private:
   QHash<QString, bool> pendingMarketQuotes_;
   QStringList pendingMarketQuoteOrder_;
   QHash<qint64, MarketQuoteRequest> activeMarketQuoteRequests_;
+  QList<MarketVariantRequest> pendingMarketVariantRequests_;
+  QHash<qint64, MarketVariantRequest> activeMarketVariantRequests_;
   QJsonArray resolvedMarketQuotes_;
   QJsonArray resolvedMarketMissing_;
+  QSet<QString> pendingMarketDescriptions_;
+  QStringList pendingMarketDescriptionOrder_;
+  QHash<qint64, QStringList> activeMarketDescriptionRequests_;
+  QList<MarketAccountRequest> pendingMarketAccountRequests_;
+  QHash<qint64, QString> activeMarketAccountRequests_;
   bool ready_ = false;
   bool pendingActivity_ = false;
   bool pendingNotificationSettings_ = true;
+  bool pendingMarketAccountSnapshot_ = true;
   bool activeNotificationRequestIsSet_ = false;
   std::optional<QString> desiredNotificationMode_;
   std::optional<QString> sentNotificationMode_;
   bool connected_ = false;
   bool ensureAttempted_ = false;
   bool updateAttempted_ = false;
+  bool stopAttempted_ = false;
   bool updatingDaemon_ = false;
+  bool stoppingDaemon_ = false;
   qint64 nextRequestId_ = 10;
   QString status_ = "Connecting to wfdaemon";
 };

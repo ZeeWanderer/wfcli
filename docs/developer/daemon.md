@@ -65,9 +65,10 @@ typed fields and retain raw data paths where a parser has not added semantics.
 
 ## Market And Player Data
 
-`wfcli_market_service` owns Warframe Market manifests, quote TTLs, persistence, coalescing, and its
-daemon-wide request limiter. `wfcli_market_api` handles wire normalization;
-`wfcli_market_cache` handles versioned atomic persistence.
+`wfcli_market_service` owns Warframe Market manifests, base and variant quote TTLs, persistence,
+and coalescing. `wfcli_market_account_service` serializes authenticated order mutations;
+`wfcli_market_presence_service` owns account status. Public and authenticated HTTP work share
+`wfcli_market_limiter`. API modules handle wire normalization and caches use atomic persistence.
 
 `wfcli_player_service` owns canonical local observations by source namespace. `wfcli_local_api`
 accepts owner-only Unix socket clients, including `wfcompanion`, and removes subscriptions on

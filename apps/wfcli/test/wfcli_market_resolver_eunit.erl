@@ -33,6 +33,34 @@ normalization_and_label_order_test() ->
     ?assertEqual(<<"braton_prime_blueprint">>, maps:get(slug, BlueprintMatch)),
     ?assertEqual(1, maps:get(distance, BlueprintMatch)).
 
+exact_descriptors_test() ->
+    Item = (item(<<"arcane_energize">>, <<"Arcane Energize">>, undefined))#{
+        <<"id">> => <<"arcane-id">>, <<"bulkTradable">> => true,
+        <<"maxRank">> => 5, <<"subtypes">> => [<<"ranked">>],
+        <<"i18n">> => #{<<"en">> => #{<<"name">> => <<"Arcane Energize">>,
+                                         <<"thumb">> => <<"items/thumb.png">>}}},
+    {[ById, ByName], [<<"missing">>]} = wfcli_market_resolver:describe(
+                                        [<<"arcane-id">>, <<"ARCANE ENERGIZE">>,
+                                         <<"missing">>], [Item]),
+    ?assertEqual(ById, ByName),
+    ?assertEqual(<<"arcane-id">>, maps:get(id, ById)),
+    ?assertEqual(true, maps:get(bulk_tradable, ById)),
+    ?assertEqual(5, maps:get(max_rank, ById)),
+    ?assertEqual(true, maps:get(tradable, ById)),
+    ?assertEqual(#{id => <<"market-item:arcane-id">>, source => <<"market">>,
+                   image_name => <<"items/thumb.png">>},
+                 maps:get(asset, ById)),
+    ?assertNot(maps:is_key(ducats, ById)).
+
+unicode_exact_lookup_test() ->
+    Unicode = item(<<"albrechts_archive_scene">>,
+                   <<"Albrecht\x{2019}s Archive Scene"/utf8>>, undefined),
+    Hush = (item(<<"hush">>, <<"Hush">>, undefined))#{
+        <<"id">> => <<"54a74454e779892d5e515621">>},
+    {[Descriptor], []} = wfcli_market_resolver:describe(
+                           [<<"54a74454e779892d5e515621">>], [Unicode, Hush]),
+    ?assertEqual(<<"Hush">>, maps:get(name, Descriptor)).
+
 item(Slug, Name, Ducats) ->
     #{<<"slug">> => Slug,
       <<"ducats">> => Ducats,

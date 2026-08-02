@@ -53,8 +53,14 @@ int main(int argc, char *argv[]) {
   const QCommandLineOption screenshotDelay(
       "screenshot-delay", "Wait MS before saving a screenshot.", "MS", "8000");
   const QCommandLineOption page(
-      "page", "Open foundry, mastery, inventory, or relic.", "NAME", "foundry");
-  parser.addOptions({screenshot, size, screenshotDelay, page});
+      "page", "Open foundry, mastery, inventory, relic, or market.", "NAME",
+      "foundry");
+  const QCommandLineOption marketItem(
+      "market-item", "Open Market listings for ITEM.", "ITEM");
+  const QCommandLineOption marketSide(
+      "market-side", "Show sell or buy listings.", "SIDE", "sell");
+  parser.addOptions(
+      {screenshot, size, screenshotDelay, page, marketItem, marketSide});
   parser.process(app);
 
   QFile style(":/resources/style.qss");
@@ -64,7 +70,8 @@ int main(int argc, char *argv[]) {
 
   MainWindow window;
   if (!window.setPage(parser.value(page))) {
-    qCritical("invalid --page (use foundry, mastery, inventory, or relic)");
+    qCritical(
+        "invalid --page (use foundry, mastery, inventory, relic, or market)");
     return 2;
   }
   if (parser.isSet(size)) {
@@ -76,6 +83,14 @@ int main(int argc, char *argv[]) {
     window.resize(requested);
   }
   window.show();
+  if (parser.isSet(marketItem)) {
+    const QString side = parser.value(marketSide).toLower();
+    if (side != "sell" && side != "buy") {
+      qCritical("invalid --market-side (use sell or buy)");
+      return 2;
+    }
+    window.showMarketItem(parser.value(marketItem), side);
+  }
 
   if (parser.isSet(screenshot)) {
     bool delayOk = false;
@@ -87,7 +102,7 @@ int main(int argc, char *argv[]) {
     const QString path = QFileInfo(parser.value(screenshot)).absoluteFilePath();
     QDir().mkpath(QFileInfo(path).absolutePath());
     QTimer::singleShot(delay, &window, [&app, &window, path] {
-      if (!window.grab().save(path)) {
+      if (!window.screenshotTarget()->grab().save(path)) {
         qCritical("could not save screenshot: %s", qPrintable(path));
         app.exit(2);
         return;

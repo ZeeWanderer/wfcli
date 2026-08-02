@@ -18,8 +18,8 @@ Clients start `wfdaemon` when needed. Concurrent clients reuse its caches and ra
 
 ## Desktop GUI
 
-`wfgui` provides Foundry, Mastery Helper, Inventory, and Relic Planner views alongside live world
-timers and fissures.
+`wfgui` provides Foundry, Mastery Helper, Inventory, Relic Planner, and Market views alongside
+live world timers and fissures.
 
 ![wfgui Foundry view](docs/images/wfgui-foundry.png)
 

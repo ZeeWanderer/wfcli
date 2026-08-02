@@ -13,6 +13,8 @@ qt_add_library(wfgui_core STATIC
   src/image_cache.h
   src/inventory_card_layout.cpp
   src/inventory_card_layout.h
+  src/market_order_card.cpp
+  src/market_order_card.h
   src/player_item_grid_widget.cpp
   src/player_item_grid_widget.h
   src/player_item_model.cpp
@@ -44,6 +46,10 @@ qt_add_executable(wfgui
   src/main.cpp
   src/main_window.cpp
   src/main_window.h
+  src/market_item_dialog.cpp
+  src/market_item_dialog.h
+  src/market_widget.cpp
+  src/market_widget.h
   src/mastery_planner_widget.cpp
   src/mastery_planner_widget.h
   src/player_identity_widget.cpp
@@ -115,6 +121,14 @@ qt_add_resources(wfgui "wfgui_resources"
     resources/ui/window-restore.png
     resources/ui/zoomin.png
     resources/ui/zoomout.png
+    resources/market/wfgui-boxes.png
+    resources/market/wfgui-check.png
+    resources/market/wfgui-eye-off.png
+    resources/market/wfgui-eye.png
+    resources/market/wfgui-pencil.png
+    resources/market/wfgui-plus.png
+    resources/market/wfgui-search.png
+    resources/market/wfgui-trash.png
     resources/style.qss
 )
 

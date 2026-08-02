@@ -19,6 +19,8 @@ constexpr qint64 HelloRequestId = 1;
 constexpr int AssetBatchSize = 8;
 constexpr int MaxActiveAssetRequests = 2;
 constexpr int MarketCacheBatchSize = 100;
+constexpr int MarketDescriptionBatchSize = 100;
+constexpr int MaxActiveMarketDescriptionRequests = 2;
 constexpr int MaxActiveMarketQuoteRequests = 3;
 constexpr int MarketQuoteTtlSeconds = 15 * 60;
 } // namespace
@@ -85,6 +87,31 @@ DaemonClient::DaemonClient(QObject *parent)
         }
       }
     }
+    for (const MarketVariantRequest &request :
+         std::as_const(activeMarketVariantRequests_)) {
+      pendingMarketVariantRequests_.prepend(request);
+    }
+    for (const QStringList &items :
+         std::as_const(activeMarketDescriptionRequests_)) {
+      for (const QString &item : items) {
+        pendingMarketDescriptions_.insert(item);
+        pendingMarketDescriptionOrder_.removeAll(item);
+        pendingMarketDescriptionOrder_.append(item);
+      }
+    }
+    for (const QString &action :
+         std::as_const(activeMarketAccountRequests_)) {
+      if (action == "snapshot") {
+        pendingMarketAccountSnapshot_ = true;
+      } else if (action == "presence") {
+        emit marketPresenceFailed(
+            "wfdaemon disconnected; presence update result is unknown");
+      } else {
+        emit marketAccountFailed(
+            action, "wfdaemon disconnected; operation result is unknown");
+        pendingMarketAccountSnapshot_ = true;
+      }
+    }
     activeRelicRequests_.clear();
     activePlayerViews_.clear();
     activeActivityRequest_ = 0;
@@ -93,6 +120,9 @@ DaemonClient::DaemonClient(QObject *parent)
     sentNotificationMode_.reset();
     activeAssetRequests_.clear();
     activeMarketQuoteRequests_.clear();
+    activeMarketVariantRequests_.clear();
+    activeMarketDescriptionRequests_.clear();
+    activeMarketAccountRequests_.clear();
     ready_ = false;
     setConnected(false);
     setStatus("wfdaemon disconnected");
@@ -116,10 +146,24 @@ DaemonClient::DaemonClient(QObject *parent)
   connect(&ensureProcess_,
           qOverload<int, QProcess::ExitStatus>(&QProcess::finished), this,
           [this](int exitCode, QProcess::ExitStatus exitStatus) {
-            if (exitStatus != QProcess::NormalExit || exitCode != 0) {
-              setStatus(updatingDaemon_ ? "Could not update wfdaemon"
-                                        : "Could not start wfdaemon");
+            const bool succeeded = exitStatus == QProcess::NormalExit &&
+                                   exitCode == 0;
+            if (!succeeded) {
+              if (stoppingDaemon_) {
+                setStatus("Could not restart wfdaemon");
+              } else if (updatingDaemon_) {
+                setStatus("Could not update wfdaemon");
+              } else {
+                setStatus("Could not start wfdaemon");
+              }
             }
+            if (stoppingDaemon_ && succeeded) {
+              stoppingDaemon_ = false;
+              ensureAttempted_ = false;
+              ensureDaemon();
+              return;
+            }
+            stoppingDaemon_ = false;
             if (!reconnectTimer_->isActive()) {
               reconnectTimer_->start(250);
             }
@@ -216,6 +260,88 @@ void DaemonClient::requestMarketQuotes(const QStringList &items, bool refresh) {
   sendPendingMarketQuotes();
 }
 
+void DaemonClient::requestMarketVariantQuote(const QString &item,
+                                             const QJsonObject &filters,
+                                             bool refresh) {
+  if (item.isEmpty() || filters.isEmpty()) {
+    return;
+  }
+  pendingMarketVariantRequests_.append(
+      {.item = item, .filters = filters, .refresh = refresh});
+  sendPendingMarketVariantQuotes();
+}
+
+void DaemonClient::requestMarketItems(const QStringList &items) {
+  for (const QString &item : items) {
+    if (item.isEmpty() || pendingMarketDescriptions_.contains(item)) {
+      continue;
+    }
+    bool active = false;
+    for (const QStringList &request : activeMarketDescriptionRequests_) {
+      if (request.contains(item)) {
+        active = true;
+        break;
+      }
+    }
+    if (!active) {
+      pendingMarketDescriptions_.insert(item);
+      pendingMarketDescriptionOrder_.append(item);
+    }
+  }
+  sendPendingMarketDescriptions();
+}
+
+void DaemonClient::requestMarketAccount() {
+  pendingMarketAccountSnapshot_ = true;
+  sendPendingMarketAccount();
+}
+
+void DaemonClient::marketLogin(const QString &email, const QString &password) {
+  queueMarketAccountRequest(
+      "login", {{"op", "market_login"}, {"email", email},
+                 {"password", password}});
+}
+
+void DaemonClient::marketLogout() {
+  queueMarketAccountRequest("logout", {{"op", "market_logout"}});
+}
+
+void DaemonClient::marketCreateOrder(const QJsonObject &order) {
+  queueMarketAccountRequest(
+      "create", {{"op", "market_order_create"}, {"order", order}});
+}
+
+void DaemonClient::marketUpdateOrder(const QString &id,
+                                     const QJsonObject &patch) {
+  queueMarketAccountRequest("update", {{"op", "market_order_update"},
+                                        {"order_id", id}, {"patch", patch}});
+}
+
+void DaemonClient::marketDeleteOrder(const QString &id) {
+  queueMarketAccountRequest(
+      "delete", {{"op", "market_order_delete"}, {"order_id", id}});
+}
+
+void DaemonClient::marketCloseOrder(const QString &id, int quantity) {
+  queueMarketAccountRequest("close", {{"op", "market_order_close"},
+                                       {"order_id", id},
+                                       {"quantity", quantity}});
+}
+
+void DaemonClient::setMarketOrdersVisible(bool visible, const QString &type) {
+  QJsonObject message{{"op", "market_orders_visibility"},
+                      {"visible", visible}};
+  if (type == "buy" || type == "sell") {
+    message.insert("type", type);
+  }
+  queueMarketAccountRequest("visibility", message);
+}
+
+void DaemonClient::setMarketPresenceMode(const QString &mode) {
+  queueMarketAccountRequest(
+      "presence", {{"op", "market_presence_set"}, {"mode", mode}});
+}
+
 void DaemonClient::connectSocket() {
   if (socket_->state() != QLocalSocket::UnconnectedState) {
     return;
@@ -226,12 +352,27 @@ void DaemonClient::connectSocket() {
 }
 
 void DaemonClient::ensureDaemon(bool update) {
-  bool &attempted = update ? updateAttempted_ : ensureAttempted_;
-  if (attempted || ensureProcess_.state() != QProcess::NotRunning) {
+  if (ensureProcess_.state() != QProcess::NotRunning) {
     return;
   }
-  attempted = true;
-  updatingDaemon_ = update;
+  QString action;
+  if (!update) {
+    if (ensureAttempted_) {
+      return;
+    }
+    ensureAttempted_ = true;
+    action = "ensure";
+  } else if (!updateAttempted_) {
+    updateAttempted_ = true;
+    action = "update";
+  } else if (!stopAttempted_) {
+    stopAttempted_ = true;
+    action = "stop";
+  } else {
+    return;
+  }
+  updatingDaemon_ = action == "update";
+  stoppingDaemon_ = action == "stop";
   const QString command = wfcliCommand();
   if (command.isEmpty()) {
     setStatus("wfcli executable not found");
@@ -246,8 +387,7 @@ void DaemonClient::ensureDaemon(bool update) {
   }
   ensureProcess_.setProcessEnvironment(environment);
   ensureProcess_.setProgram(command);
-  ensureProcess_.setArguments(
-      {"daemon", update ? QStringLiteral("update") : QStringLiteral("ensure")});
+  ensureProcess_.setArguments({"daemon", action});
   ensureProcess_.setStandardOutputFile(QProcess::nullDevice());
   ensureProcess_.setStandardErrorFile(QProcess::nullDevice());
   ensureProcess_.start();
@@ -262,6 +402,11 @@ void DaemonClient::handleLine(const QByteArray &line) {
   }
 
   const QJsonObject message = document.object();
+  if (message.value("event").toString() == "market_presence" &&
+      message.value("data").isObject()) {
+    emit marketPresenceReady(message.value("data").toObject(), false);
+    return;
+  }
   const qint64 id = message.value("id").toInteger();
   if (id == HelloRequestId) {
     if (!message.value("ok").toBool() ||
@@ -278,6 +423,9 @@ void DaemonClient::handleLine(const QByteArray &line) {
     const QStringList requiredCapabilities = {
         "relic.planner",         "worldstate.activity", "player.foundry",
         "player.inventory",      "player.mastery",      "market.quote",
+        "market.describe",       "market.account",      "market.orders",
+        "market.quote.variant",
+        "market.presence",
         "notifications.fissures"};
     const bool capable = std::ranges::all_of(
         requiredCapabilities, [&capabilities](const QString &capability) {
@@ -292,6 +440,7 @@ void DaemonClient::handleLine(const QByteArray &line) {
     ready_ = true;
     ensureAttempted_ = false;
     updateAttempted_ = false;
+    stopAttempted_ = false;
     setConnected(true);
     setStatus("Connected to wfdaemon");
     sendPendingRequests();
@@ -300,6 +449,9 @@ void DaemonClient::handleLine(const QByteArray &line) {
     sendPendingNotificationSettings();
     sendPendingAssets();
     sendPendingMarketQuotes();
+    sendPendingMarketVariantQuotes();
+    sendPendingMarketDescriptions();
+    sendPendingMarketAccount();
     return;
   }
 
@@ -434,6 +586,86 @@ void DaemonClient::handleLine(const QByteArray &line) {
     return;
   }
 
+  const auto variantRequest = activeMarketVariantRequests_.find(id);
+  if (variantRequest != activeMarketVariantRequests_.end()) {
+    const MarketVariantRequest request = variantRequest.value();
+    activeMarketVariantRequests_.erase(variantRequest);
+    if (!message.value("ok").toBool()) {
+      emit marketVariantQuoteFailed(
+          request.item, request.filters,
+          message.value("error").toString("market variant quote request failed"));
+    } else if (!message.value("data").isObject()) {
+      emit marketVariantQuoteFailed(request.item, request.filters,
+                                    "daemon returned malformed variant quote");
+    } else {
+      emit marketVariantQuoteReady(request.item, request.filters,
+                                   message.value("data").toObject());
+    }
+    sendPendingMarketVariantQuotes();
+    return;
+  }
+
+  const auto describeRequest = activeMarketDescriptionRequests_.find(id);
+  if (describeRequest != activeMarketDescriptionRequests_.end()) {
+    const QStringList items = describeRequest.value();
+    activeMarketDescriptionRequests_.erase(describeRequest);
+    if (!message.value("ok").toBool()) {
+      emit marketItemDescribeFailed(
+          items, message.value("error").toString("market item request failed"));
+      sendPendingMarketDescriptions();
+      return;
+    }
+    const QJsonValue dataValue = message.value("data");
+    const QJsonObject data = dataValue.toObject();
+    if (!dataValue.isObject() || !data.value("items").isArray() ||
+        !data.value("missing").isArray()) {
+      emit marketItemDescribeFailed(
+          items, "daemon returned malformed market item data");
+      sendPendingMarketDescriptions();
+      return;
+    }
+    emit marketItemsDescribed(data.value("items").toArray(),
+                              data.value("missing").toArray());
+    sendPendingMarketDescriptions();
+    return;
+  }
+
+  const auto accountRequest = activeMarketAccountRequests_.find(id);
+  if (accountRequest != activeMarketAccountRequests_.end()) {
+    const QString action = accountRequest.value();
+    activeMarketAccountRequests_.erase(accountRequest);
+    if (!message.value("ok").toBool()) {
+      const QString error =
+          message.value("error").toString("market account request failed");
+      if (action == "presence") {
+        emit marketPresenceFailed(error);
+      } else {
+        emit marketAccountFailed(action, error);
+      }
+      sendPendingMarketAccount();
+      return;
+    }
+    const QJsonValue data = message.value("data");
+    if (!data.isObject()) {
+      if (action == "presence") {
+        emit marketPresenceFailed("daemon returned malformed Market presence");
+      } else {
+        emit marketAccountFailed(
+            action, "daemon returned malformed market account data");
+      }
+      sendPendingMarketAccount();
+      return;
+    }
+    if (action == "presence") {
+      emit marketPresenceReady(data.toObject(), true);
+    } else {
+      emit marketAccountReady(action, data.toObject());
+      pendingMarketAccountSnapshot_ = false;
+    }
+    sendPendingMarketAccount();
+    return;
+  }
+
   const auto playerRequest = activePlayerViews_.find(id);
   if (playerRequest == activePlayerViews_.end()) {
     return;
@@ -464,7 +696,11 @@ void DaemonClient::sendHello() {
       {"mode", "desktop"},
       {"capabilities", QJsonArray{"relic.planner", "worldstate.activity",
                                   "player.foundry", "player.inventory",
-                                  "player.mastery", "notifications.fissures"}},
+                                  "player.mastery", "market.quote",
+                                  "market.describe", "market.account",
+                                  "market.orders", "market.quote.variant",
+                                  "market.presence",
+                                  "notifications.fissures"}},
   });
 }
 
@@ -616,6 +852,77 @@ void DaemonClient::sendPendingMarketQuotes() {
            {"refresh", refresh}});
     ++activeFetches;
   }
+}
+
+void DaemonClient::sendPendingMarketVariantQuotes() {
+  constexpr int MaxActiveVariantQuotes = 4;
+  if (!ready_) {
+    return;
+  }
+  while (activeMarketVariantRequests_.size() < MaxActiveVariantQuotes &&
+         !pendingMarketVariantRequests_.isEmpty()) {
+    const MarketVariantRequest request = pendingMarketVariantRequests_.takeFirst();
+    const qint64 id = nextRequestId_++;
+    activeMarketVariantRequests_.insert(id, request);
+    write({{"op", "market_quote_variant"},
+           {"id", id},
+           {"item", request.item},
+           {"filters", request.filters},
+           {"refresh", request.refresh}});
+  }
+}
+
+void DaemonClient::sendPendingMarketDescriptions() {
+  if (!ready_) {
+    return;
+  }
+  while (activeMarketDescriptionRequests_.size() <
+             MaxActiveMarketDescriptionRequests &&
+         !pendingMarketDescriptionOrder_.isEmpty()) {
+    QStringList items;
+    while (items.size() < MarketDescriptionBatchSize &&
+           !pendingMarketDescriptionOrder_.isEmpty()) {
+      const QString item = pendingMarketDescriptionOrder_.takeFirst();
+      if (pendingMarketDescriptions_.remove(item)) {
+        items.append(item);
+      }
+    }
+    if (items.isEmpty()) {
+      continue;
+    }
+    const qint64 id = nextRequestId_++;
+    activeMarketDescriptionRequests_.insert(id, items);
+    write({{"op", "market_describe"},
+           {"id", id},
+           {"items", QJsonArray::fromStringList(items)}});
+  }
+}
+
+void DaemonClient::sendPendingMarketAccount() {
+  if (!ready_) {
+    return;
+  }
+  while (!pendingMarketAccountRequests_.isEmpty()) {
+    MarketAccountRequest request = pendingMarketAccountRequests_.takeFirst();
+    const qint64 id = nextRequestId_++;
+    request.message.insert("id", id);
+    activeMarketAccountRequests_.insert(id, request.action);
+    write(request.message);
+  }
+  if (!pendingMarketAccountSnapshot_ ||
+      !activeMarketAccountRequests_.isEmpty()) {
+    return;
+  }
+  pendingMarketAccountSnapshot_ = false;
+  const qint64 id = nextRequestId_++;
+  activeMarketAccountRequests_.insert(id, "snapshot");
+  write({{"op", "market_account"}, {"id", id}});
+}
+
+void DaemonClient::queueMarketAccountRequest(const QString &action,
+                                             const QJsonObject &message) {
+  pendingMarketAccountRequests_.append({.action = action, .message = message});
+  sendPendingMarketAccount();
 }
 
 void DaemonClient::flushMarketQuoteResults() {

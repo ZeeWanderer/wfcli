@@ -711,3 +711,253 @@ QCheckBox::indicator:checked {
   background: #5e44af;
   border-color: #8c6ee8;
 }
+
+QWidget#marketLoginPanel,
+QWidget#marketPosting {
+  background: #20283e;
+  border: 1px solid #313a58;
+  border-radius: 8px;
+}
+
+QWidget#marketField {
+  background: transparent;
+}
+
+QLabel#marketLoginTitle,
+QLabel#marketItemTitle {
+  color: #ffffff;
+  font-size: 18pt;
+  font-weight: 400;
+}
+
+QLabel#marketError {
+  color: #e78a96;
+}
+
+QPushButton#marketPrimary {
+  background: #432289;
+  border-color: #8c6ee8;
+  font-weight: 500;
+}
+
+QPushButton#marketPrimary:hover {
+  background: #5634a4;
+}
+
+QLabel#marketTabTitle {
+  color: #ffffff;
+  border-bottom: 3px solid #ffffff;
+  font-size: 13pt;
+  font-weight: 400;
+  padding: 0 4px 5px 4px;
+}
+
+QToolButton#marketActions,
+QComboBox#marketFilter,
+QComboBox#marketPresence {
+  background: #20283e;
+  border: 1px solid #313a58;
+  border-radius: 6px;
+  min-height: 32px;
+  padding: 0 9px;
+}
+
+QToolButton#marketActions:hover,
+QComboBox#marketFilter:hover,
+QComboBox#marketPresence:hover {
+  background: #272f47;
+}
+
+QComboBox#marketFilter::drop-down,
+QComboBox#marketPresence::drop-down {
+  border: none;
+  width: 18px;
+}
+
+QComboBox#marketFilter QAbstractItemView,
+QComboBox#marketPresence QAbstractItemView {
+  background: #171e30;
+  border: 1px solid #313a58;
+  color: #ffffff;
+  selection-background-color: #313a58;
+}
+
+QLabel#marketPresenceState {
+  color: #8bd5ad;
+  min-width: 54px;
+}
+
+QStackedWidget#marketViews,
+QWidget#marketView,
+QWidget#marketOrderHost {
+  background: transparent;
+  border: none;
+}
+
+QScrollArea#marketScroll,
+QScrollArea#marketScroll QWidget#qt_scrollarea_viewport,
+QScrollArea#marketScroll > QWidget > QWidget {
+  background: transparent;
+  border: none;
+}
+
+QWidget#marketOrderCard {
+  background: transparent;
+  border: none;
+}
+
+QWidget#marketOrderTop {
+  background: #313a58;
+  border-top-left-radius: 18px;
+  border-top-right-radius: 18px;
+}
+
+QWidget#marketOrderBody {
+  background: #20283e;
+  border-bottom-left-radius: 18px;
+  border-bottom-right-radius: 18px;
+}
+
+QWidget#marketOrderCard:hover QWidget#marketOrderBody {
+  background: #272f47;
+}
+
+QLabel#marketOrderName {
+  color: #ffffff;
+  font-size: 11pt;
+  font-weight: 400;
+  padding: 0 5px;
+}
+
+QLabel#marketOrderOwned {
+  color: #d5d9e4;
+  font-size: 10pt;
+  font-weight: 300;
+  padding-right: 7px;
+}
+
+QLabel#marketMetricText,
+QLabel#marketOrderExtra {
+  color: #ffffff;
+  font-size: 11pt;
+  font-weight: 400;
+}
+
+QLabel#marketLowestLabel {
+  color: #ffffff;
+  font-size: 10.5pt;
+  font-weight: 300;
+}
+
+QLabel#marketWarning {
+  background: #9a3737;
+  border-top-right-radius: 18px;
+  color: #ffffff;
+  font-size: 12pt;
+  font-weight: 400;
+}
+
+QWidget#marketOrderArt {
+  background: #101623;
+  border-bottom-left-radius: 18px;
+}
+
+QLabel#marketSellBadge,
+QLabel#marketBuyBadge {
+  background: rgba(0, 0, 0, 190);
+  border-radius: 8px;
+  color: #ffffff;
+  font-size: 10pt;
+  font-weight: 400;
+}
+
+QToolButton#marketVisibility {
+  background: #20283e;
+  border: none;
+  border-radius: 0;
+  border-top-left-radius: 18px;
+  padding: 0;
+}
+
+QToolButton#marketVisibility:hover {
+  background: #272f47;
+}
+
+QToolButton[marketAction="true"] {
+  background: transparent;
+  border: 1px solid rgba(255, 255, 255, 184);
+  border-radius: 6px;
+  padding: 0;
+}
+
+QToolButton#marketListings {
+  background: #273a6d;
+}
+
+QToolButton#marketListings:hover {
+  background: #374e89;
+}
+
+QToolButton#marketEdit:hover {
+  background: #2a2a2a;
+}
+
+QToolButton#marketAdd {
+  background: #1f4063;
+}
+
+QToolButton#marketAdd:hover {
+  background: #27588c;
+}
+
+QToolButton#marketSold {
+  background: #134613;
+}
+
+QToolButton#marketSold:hover {
+  background: #1b611b;
+}
+
+QToolButton#marketDelete {
+  background: #672f2f;
+}
+
+QToolButton#marketDelete:hover {
+  background: #864040;
+}
+
+QPushButton#marketSide {
+  border-radius: 0;
+  min-width: 72px;
+}
+
+QLabel#marketItemImage {
+  background: #20283e;
+  border-radius: 8px;
+}
+
+QTableWidget#marketListings {
+  background: #171e30;
+  alternate-background-color: #20283e;
+  border: 1px solid #313a58;
+  border-radius: 7px;
+  gridline-color: #313a58;
+  selection-background-color: #313a58;
+  outline: none;
+}
+
+QTableWidget#marketListings QHeaderView::section {
+  background: #20283e;
+  border: none;
+  border-bottom: 1px solid #313a58;
+  padding: 6px;
+}
+
+QSpinBox,
+QComboBox {
+  background: #171e30;
+  border: 1px solid #313a58;
+  border-radius: 5px;
+  min-height: 24px;
+  padding: 3px 6px;
+}

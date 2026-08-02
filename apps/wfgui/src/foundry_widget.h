@@ -16,6 +16,9 @@ class FoundryWidget final : public QWidget {
 public:
   explicit FoundryWidget(AppController *controller, QWidget *parent = nullptr);
 
+signals:
+  void marketItemRequested(const QString &item, const QString &side);
+
 private:
   void updateContent();
 

@@ -32,6 +32,8 @@
 #include "foundry_widget.h"
 #include "inventory_widget.h"
 #include "mastery_planner_widget.h"
+#include "market_item_dialog.h"
+#include "market_widget.h"
 #include "player_identity_widget.h"
 #include "relic_planner_widget.h"
 #include "title_bar_widget.h"
@@ -98,6 +100,7 @@ MainWindow::MainWindow(QWidget *parent)
       daemonStatus_(new QLabel), navigation_(new QButtonGroup(this)),
       pages_(new QStackedWidget),
       activityRail_(new ActivityRailWidget(&controller_)),
+      marketDialog_(new MarketItemDialog(&controller_, this)),
       titleBar_(new TitleBarWidget) {
   setWindowFlag(Qt::FramelessWindowHint);
   setWindowTitle("wfcli");
@@ -130,11 +133,12 @@ MainWindow::MainWindow(QWidget *parent)
     const char *label;
     const char *icon;
   };
-  constexpr std::array<NavigationItem, 4> items{{
+  constexpr std::array<NavigationItem, 5> items{{
       {"Foundry", ":/resources/ui/nav_foundry.png"},
       {"Mastery\nHelper", ":/resources/ui/nav_mastery.png"},
       {"Inventory", ":/resources/ui/nav_inventory.png"},
       {"Relic\nPlanner", ":/resources/ui/nav_relic.png"},
+      {"Market", ":/resources/ui/market.png"},
   }};
   for (int page = 0; page < static_cast<int>(items.size()); ++page) {
     navigationLabels_.append(items.at(page).label);
@@ -160,10 +164,16 @@ MainWindow::MainWindow(QWidget *parent)
 
   layout->addWidget(sidebar_);
   pages_->setObjectName("centerRail");
-  pages_->addWidget(new FoundryWidget(&controller_));
-  pages_->addWidget(new MasteryPlannerWidget(&controller_));
-  pages_->addWidget(new InventoryWidget(&controller_));
-  pages_->addWidget(new RelicPlannerWidget(&controller_));
+  auto *foundry = new FoundryWidget(&controller_);
+  auto *mastery = new MasteryPlannerWidget(&controller_);
+  auto *inventory = new InventoryWidget(&controller_);
+  auto *relics = new RelicPlannerWidget(&controller_);
+  auto *market = new MarketWidget(&controller_);
+  pages_->addWidget(foundry);
+  pages_->addWidget(mastery);
+  pages_->addWidget(inventory);
+  pages_->addWidget(relics);
+  pages_->addWidget(market);
   pages_->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Expanding);
   pages_->setMinimumWidth(0);
   layout->addWidget(pages_, 1);
@@ -193,6 +203,18 @@ MainWindow::MainWindow(QWidget *parent)
           &MainWindow::toggleLeftRail);
   connect(titleBar_, &TitleBarWidget::rightRailToggleRequested, this,
           &MainWindow::toggleRightRail);
+  const auto openMarket = [this](const QString &item, const QString &side) {
+    marketDialog_->showItem(item, side);
+  };
+  connect(foundry, &FoundryWidget::marketItemRequested, this, openMarket);
+  connect(mastery, &MasteryPlannerWidget::marketItemRequested, this, openMarket);
+  connect(inventory, &InventoryWidget::marketItemRequested, this, openMarket);
+  connect(relics, &RelicPlannerWidget::marketItemRequested, this, openMarket);
+  connect(market, &MarketWidget::marketItemRequested, this, openMarket);
+  connect(marketDialog_, &MarketItemDialog::signInRequested, this, [this] {
+    selectPage(4);
+    navigation_->button(4)->setChecked(true);
+  });
 
   connect(&controller_, &AppController::statusChanged, this,
           &MainWindow::updateDaemonStatus);
@@ -201,8 +223,18 @@ MainWindow::MainWindow(QWidget *parent)
   updateDaemonStatus();
 }
 
+void MainWindow::showMarketItem(const QString &item, const QString &side) {
+  marketDialog_->showItem(item, side);
+}
+
+QWidget *MainWindow::screenshotTarget() {
+  return marketDialog_->isVisible() ? static_cast<QWidget *>(marketDialog_)
+                                    : this;
+}
+
 bool MainWindow::setPage(const QString &page) {
-  const QStringList names = {"foundry", "mastery", "inventory", "relic"};
+  const QStringList names = {"foundry", "mastery", "inventory", "relic",
+                             "market"};
   const int index = names.indexOf(page.toLower());
   if (index < 0) {
     return false;
@@ -222,6 +254,8 @@ void MainWindow::selectPage(int page) {
     controller_.ensureInventory();
   } else if (page == 3) {
     controller_.ensureRelics();
+  } else if (page == 4) {
+    controller_.ensureMarket();
   }
 }
 
@@ -303,7 +337,8 @@ void MainWindow::animateRail(QWidget *rail, int targetWidth, bool hideAfter,
 }
 
 QString MainWindow::currentPageName() const {
-  static const QStringList names = {"foundry", "mastery", "inventory", "relic"};
+  static const QStringList names = {"foundry", "mastery", "inventory", "relic",
+                                    "market"};
   return names.value(pages_->currentIndex(), "foundry");
 }
 

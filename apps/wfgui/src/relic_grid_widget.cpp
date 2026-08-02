@@ -5,6 +5,7 @@
 #include <QFontMetrics>
 #include <QGridLayout>
 #include <QHelpEvent>
+#include <QMouseEvent>
 #include <QPainter>
 #include <QPainterPath>
 #include <QPersistentModelIndex>
@@ -17,6 +18,7 @@
 #include <QVariantMap>
 
 #include <algorithm>
+#include <functional>
 #include <utility>
 
 #include "display_metrics.h"
@@ -39,8 +41,11 @@ QRect overscan(const QRect &rect, int percent) {
 
 class RelicCardWidget final : public QWidget {
 public:
-  explicit RelicCardWidget(const QModelIndex &index, QWidget *parent = nullptr)
-      : QWidget(parent) {
+  explicit RelicCardWidget(
+      const QModelIndex &index,
+      std::function<void(const QString &, const QString &)> marketRequest,
+      QWidget *parent = nullptr)
+      : QWidget(parent), marketRequest_(std::move(marketRequest)) {
     setObjectName("relicCardCanvas");
     setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
     setAttribute(Qt::WA_Hover);
@@ -100,6 +105,42 @@ protected:
     hovered_ = false;
     update();
     QWidget::leaveEvent(event);
+  }
+
+  void mouseReleaseEvent(QMouseEvent *event) override {
+    if (!index_.isValid() || event->button() != Qt::LeftButton) {
+      QWidget::mouseReleaseEvent(event);
+      return;
+    }
+    const QVariantList rewards = index_.data(RelicModel::RewardsRole).toList();
+    const QVariantList refinements =
+        index_.data(RelicModel::RefinementsRole).toList();
+    const wfgui::RelicCardLayout layout = wfgui::RelicCardLayout::calculate(
+        rect(), static_cast<int>(refinements.size()),
+        static_cast<int>(rewards.size()), scale_);
+    for (int reward = 0;
+         reward < std::min(static_cast<int>(layout.rewardCells.size()),
+                           static_cast<int>(rewards.size()));
+         ++reward) {
+      if (!layout.rewardCells.at(reward).contains(event->position().toPoint())) {
+        continue;
+      }
+      const QVariantMap data = rewards.at(reward).toMap();
+      marketRequest_(data.value("name").toString(),
+                     data.value("owned").toInt() > 0 ? "sell" : "buy");
+      event->accept();
+      return;
+    }
+    const QPoint position = event->position().toPoint();
+    if (layout.image.contains(position) || layout.title.contains(position)) {
+      marketRequest_(index_.data(RelicModel::NameRole).toString(),
+                     index_.data(RelicModel::AmountOwnedRole).toInt() > 0
+                         ? "sell"
+                         : "buy");
+      event->accept();
+      return;
+    }
+    QWidget::mouseReleaseEvent(event);
   }
 
   void paintEvent(QPaintEvent *) override {
@@ -259,6 +300,7 @@ private:
   QPersistentModelIndex index_;
   qreal scale_ = 0.0;
   bool hovered_ = false;
+  std::function<void(const QString &, const QString &)> marketRequest_;
 };
 } // namespace
 
@@ -330,7 +372,12 @@ void RelicGridWidget::rebuild() {
       const QString key = index.data(RelicModel::NameRole).toString();
       auto *card = static_cast<RelicCardWidget *>(cardCache_.value(key));
       if (!card) {
-        card = new RelicCardWidget(index, this);
+        card = new RelicCardWidget(
+            index,
+            [this](const QString &item, const QString &side) {
+              emit marketItemRequested(item, side);
+            },
+            this);
         cardCache_.insert(key, card);
       } else {
         card->setIndex(index);

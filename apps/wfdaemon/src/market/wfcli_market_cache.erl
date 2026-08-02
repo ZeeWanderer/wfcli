@@ -5,7 +5,7 @@
 
 -export([path/0, empty/0, load/1, persist/2]).
 
--define(CACHE_VERSION, 3).
+-define(CACHE_VERSION, 4).
 
 -doc "Return configured market cache path.".
 -spec path() -> file:filename_all().
@@ -19,7 +19,7 @@ path() ->
 -spec empty() -> map().
 empty() ->
     #{items => [], manifest_fetched_at => undefined, manifest_attempted_at => undefined,
-      updated_at => undefined, quotes => #{}, details => #{},
+      updated_at => undefined, quotes => #{}, variant_quotes => #{}, details => #{},
       relics => #{}, relics_version => wfcli_relic_recommendations:catalog_version(),
       relics_fetched_at => undefined,
       relics_attempted_at => undefined}.
@@ -59,11 +59,14 @@ persist(Path, Snapshot) ->
 normalize(Snapshot) ->
     Quotes = maps:map(fun(_Slug, Quote) -> normalize_quote(Quote) end,
                       maps:get(quotes, Snapshot, #{})),
+    VariantQuotes = maps:map(fun(_Key, Quote) -> normalize_quote(Quote) end,
+                             maps:get(variant_quotes, Snapshot, #{})),
     #{items => maps:get(items, Snapshot, []),
       manifest_fetched_at => maps:get(manifest_fetched_at, Snapshot, undefined),
       manifest_attempted_at => maps:get(manifest_attempted_at, Snapshot, undefined),
       updated_at => maps:get(updated_at, Snapshot, undefined),
       quotes => Quotes,
+      variant_quotes => VariantQuotes,
       details => maps:get(details, Snapshot, #{}),
       relics => maps:get(relics, Snapshot, #{}),
       relics_version => maps:get(relics_version, Snapshot, undefined),

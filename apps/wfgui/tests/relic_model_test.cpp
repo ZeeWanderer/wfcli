@@ -1,3 +1,4 @@
+#include <QCheckBox>
 #include <QImage>
 #include <QJsonArray>
 #include <QJsonDocument>
@@ -7,6 +8,7 @@
 #include <QLocalSocket>
 #include <QPainter>
 #include <QScrollBar>
+#include <QSet>
 #include <QTemporaryDir>
 #include <QToolButton>
 #include <QtTest>
@@ -17,6 +19,7 @@
 #include "daemon_client.h"
 #include "image_cache.h"
 #include "inventory_card_layout.h"
+#include "market_order_card.h"
 #include "player_item_grid_widget.h"
 #include "player_item_model.h"
 #include "relic_card_layout.h"
@@ -56,6 +59,7 @@ private slots:
   void compactSearchExpandsOnClick();
   void thumbnailCacheRespectsSizeAndDpr();
   void widgetThumbnailDecodeCompletesOffPaintPath();
+  void marketOrderCardUsesReferenceStructure();
 };
 
 namespace {
@@ -770,6 +774,9 @@ void RelicModelTest::cacheMissDoesNotBecomeMarketMiss() {
   {
     DaemonClient client;
     QSignalSpy resolved(&client, &DaemonClient::marketQuotesResolved);
+    QSignalSpy variantResolved(&client, &DaemonClient::marketVariantQuoteReady);
+    QSignalSpy described(&client, &DaemonClient::marketItemsDescribed);
+    QSignalSpy account(&client, &DaemonClient::marketAccountReady);
     client.start();
     QTRY_VERIFY(server.hasPendingConnections());
     QLocalSocket *peer = server.nextPendingConnection();
@@ -781,6 +788,8 @@ void RelicModelTest::cacheMissDoesNotBecomeMarketMiss() {
     const QJsonArray capabilities{
         "relic.planner",         "worldstate.activity", "player.foundry",
         "player.inventory",      "player.mastery",      "market.quote",
+        "market.describe",       "market.account",      "market.orders",
+        "market.presence",       "market.quote.variant",
         "notifications.fissures",
     };
     peer->write(QJsonDocument(QJsonObject{{"id", 1},
@@ -857,6 +866,150 @@ void RelicModelTest::cacheMissDoesNotBecomeMarketMiss() {
     const QList<QVariant> result = resolved.takeFirst();
     QCOMPARE(result.at(0).toJsonArray().size(), 2);
     QCOMPARE(result.at(1).toJsonArray(), QJsonArray{});
+
+    const QJsonObject variantFilters{{"rank", 5}, {"subtype", "blueprint"}};
+    client.requestMarketVariantQuote("item-1", variantFilters);
+    QJsonObject variantRequest;
+    QTRY_VERIFY(([&] {
+      while (peer->canReadLine()) {
+        const QJsonObject request =
+            QJsonDocument::fromJson(peer->readLine()).object();
+        if (request.value("op").toString() == "market_quote_variant") {
+          variantRequest = request;
+        }
+      }
+      return !variantRequest.isEmpty();
+    })());
+    QCOMPARE(variantRequest.value("filters").toObject(), variantFilters);
+    peer->write(
+        QJsonDocument(QJsonObject{
+                          {"id", variantRequest.value("id")},
+                          {"ok", true},
+                          {"data", QJsonObject{
+                                       {"item", "item-1"},
+                                       {"quote", QJsonObject{{"lowest_sell", 20}}},
+                                   }},
+                      })
+            .toJson(QJsonDocument::Compact) +
+        '\n');
+    peer->flush();
+    QTRY_COMPARE(variantResolved.count(), 1);
+    QCOMPARE(variantResolved.takeFirst().at(1).toJsonObject(), variantFilters);
+
+    client.requestMarketItems({"item-1"});
+    client.marketLogin("tenno@example.test", "secret");
+    QJsonObject describeRequest;
+    QJsonObject loginRequest;
+    QTRY_VERIFY(([&] {
+      while (peer->canReadLine()) {
+        const QJsonObject request =
+            QJsonDocument::fromJson(peer->readLine()).object();
+        if (request.value("op").toString() == "market_describe") {
+          describeRequest = request;
+        } else if (request.value("op").toString() == "market_login") {
+          loginRequest = request;
+        }
+      }
+      return !describeRequest.isEmpty() && !loginRequest.isEmpty();
+    })());
+    QCOMPARE(describeRequest.value("items").toArray(), QJsonArray{"item-1"});
+    QCOMPARE(loginRequest.value("email").toString(),
+             QString("tenno@example.test"));
+    QCOMPARE(loginRequest.value("password").toString(), QString("secret"));
+
+    peer->write(
+        QJsonDocument(QJsonObject{
+                          {"id", describeRequest.value("id")},
+                          {"ok", true},
+                          {"data", QJsonObject{
+                                       {"items", QJsonArray{QJsonObject{
+                                                     {"id", "item-1"},
+                                                     {"name", "Test Prime"},
+                                                 }}},
+                                       {"missing", QJsonArray{}},
+                                   }},
+                      })
+            .toJson(QJsonDocument::Compact) +
+        '\n');
+    peer->write(
+        QJsonDocument(QJsonObject{
+                          {"id", loginRequest.value("id")},
+                          {"ok", true},
+                          {"data", QJsonObject{
+                                       {"authenticated", true},
+                                       {"profile", QJsonObject{
+                                                       {"ingameName", "Tenno"},
+                                                   }},
+                                       {"orders", QJsonArray{}},
+                                   }},
+                      })
+            .toJson(QJsonDocument::Compact) +
+        '\n');
+    peer->flush();
+    QTRY_COMPARE(described.count(), 1);
+    QTRY_COMPARE(account.count(), 1);
+    QCOMPARE(account.takeFirst().at(0).toString(), QString("login"));
+
+    const QJsonObject createdOrder{{"itemId", "item-1"},
+                                   {"type", "sell"},
+                                   {"platinum", 12},
+                                   {"quantity", 1},
+                                   {"visible", false}};
+    client.marketCreateOrder(createdOrder);
+    client.marketUpdateOrder("order-1", {{"visible", true}});
+    client.marketDeleteOrder("order-2");
+    client.marketCloseOrder("order-3", 2);
+    client.setMarketOrdersVisible(false, "sell");
+    client.setMarketPresenceMode("online");
+    client.marketLogout();
+    QHash<QString, QJsonObject> accountRequests;
+    QTRY_VERIFY(([&] {
+      while (peer->canReadLine()) {
+        const QJsonObject request =
+            QJsonDocument::fromJson(peer->readLine()).object();
+        const QString operation = request.value("op").toString();
+        if (operation.startsWith("market_")) {
+          accountRequests.insert(operation, request);
+        }
+      }
+      return accountRequests.size() == 7;
+    })());
+    QSet<qint64> requestIds;
+    for (const QJsonObject &request : std::as_const(accountRequests)) {
+      QVERIFY(request.value("id").isDouble());
+      requestIds.insert(request.value("id").toInteger());
+    }
+    QCOMPARE(requestIds.size(), accountRequests.size());
+    QCOMPARE(accountRequests.value("market_order_create")
+                 .value("order")
+                 .toObject(),
+             createdOrder);
+    const auto verifyMutation = [&accountRequests](const QString &operation,
+                                                   const QString &orderId) {
+      const QJsonObject request = accountRequests.value(operation);
+      QCOMPARE(request.value("order_id").toString(), orderId);
+    };
+    verifyMutation("market_order_update", "order-1");
+    QCOMPARE(accountRequests.value("market_order_update")
+                 .value("patch")
+                 .toObject(),
+             QJsonObject({{"visible", true}}));
+    verifyMutation("market_order_delete", "order-2");
+    verifyMutation("market_order_close", "order-3");
+    QCOMPARE(
+        accountRequests.value("market_order_close").value("quantity").toInt(), 2);
+    QCOMPARE(accountRequests.value("market_orders_visibility")
+                 .value("visible")
+                 .toBool(),
+             false);
+    QCOMPARE(accountRequests.value("market_orders_visibility")
+                 .value("type")
+                 .toString(),
+             QString("sell"));
+    QCOMPARE(accountRequests.value("market_presence_set")
+                 .value("mode")
+                 .toString(),
+             QString("online"));
   }
   if (oldSocket.isNull()) {
     qunsetenv("WFCLI_DAEMON_SOCKET");
@@ -1007,6 +1160,57 @@ void RelicModelTest::widgetThumbnailDecodeCompletesOffPaintPath() {
   probe.show();
   QTRY_VERIFY_WITH_TIMEOUT(!probe.thumbnail().isNull(), 2000);
   QCOMPARE(probe.thumbnail().deviceIndependentSize(), QSizeF(20, 10));
+}
+
+void RelicModelTest::marketOrderCardUsesReferenceStructure() {
+  int visibilityCalls = 0;
+  int editCalls = 0;
+  int addCalls = 0;
+  int soldCalls = 0;
+  int removeCalls = 0;
+  int listingCalls = 0;
+  MarketOrderCard card(QJsonObject{{"visible", true},
+                                   {"type", "sell"},
+                                   {"quantity", 5},
+                                   {"platinum", 20}},
+                       QJsonObject{{"name", "Akvasto Prime Blueprint"}},
+                       QJsonObject{{"quote", QJsonObject{{"lowest_sell", 18}}}},
+                       1,
+                       MarketOrderCardActions{
+                           .visibility = [&] { ++visibilityCalls; },
+                           .edit = [&] { ++editCalls; },
+                           .add = [&] { ++addCalls; },
+                           .close = [&] { ++soldCalls; },
+                           .remove = [&] { ++removeCalls; },
+                           .listings = [&] { ++listingCalls; },
+                       });
+  card.resize(480, card.height());
+  card.show();
+  QCoreApplication::processEvents();
+
+  QCOMPARE(card.height(), 107);
+  QCOMPARE(card.findChild<QWidget *>("marketOrderTop")->height(), 28);
+  QCOMPARE(card.findChild<QWidget *>("marketOrderBody")->height(), 79);
+  QCOMPARE(card.findChild<QWidget *>("marketOrderArt")->width(), 70);
+  QVERIFY(!card.findChild<QCheckBox *>("marketVisibility"));
+
+  const auto click = [&card](const char *name) {
+    auto *button = card.findChild<QToolButton *>(name);
+    QVERIFY(button);
+    QTest::mouseClick(button, Qt::LeftButton);
+  };
+  click("marketVisibility");
+  click("marketEdit");
+  click("marketAdd");
+  click("marketSold");
+  click("marketDelete");
+  click("marketListings");
+  QCOMPARE(visibilityCalls, 1);
+  QCOMPARE(editCalls, 1);
+  QCOMPARE(addCalls, 1);
+  QCOMPARE(soldCalls, 1);
+  QCOMPARE(removeCalls, 1);
+  QCOMPARE(listingCalls, 1);
 }
 
 QTEST_MAIN(RelicModelTest)

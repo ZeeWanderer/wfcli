@@ -1,6 +1,7 @@
 #include "app_controller.h"
 
 #include <QDateTime>
+#include <QJsonDocument>
 #include <QJsonObject>
 #include <QSet>
 #include <QTimer>
@@ -59,6 +60,7 @@ AppController::AppController(QObject *parent)
               inventoryItems_.applyAssetPaths(changedPaths);
               masteryItems_.applyAssetPaths(changedPaths);
               emit assetsChanged();
+              emit marketCatalogChanged();
             }
           });
   connect(&daemon_, &DaemonClient::requestFailed, this,
@@ -117,12 +119,101 @@ AppController::AppController(QObject *parent)
             foundryItems_.applyMarketQuotes(quotes, missing);
             inventoryItems_.applyMarketQuotes(quotes, missing);
             masteryItems_.applyMarketQuotes(quotes, missing);
+            QJsonArray descriptors;
+            for (const QJsonValue &value : quotes) {
+              const QJsonObject row = value.toObject();
+              const QJsonObject item = row.value("item_data").toObject();
+              if (!item.isEmpty()) {
+                descriptors.append(item);
+              }
+              const QStringList keys = {
+                  row.value("item").toString(), row.value("slug").toString(),
+                  item.value("id").toString(), item.value("slug").toString(),
+                  item.value("name").toString()};
+              for (const QString &key : keys) {
+                if (!key.isEmpty()) {
+                  marketQuotes_.insert(marketKey(key), row);
+                }
+              }
+            }
+            applyMarketDescriptors(descriptors);
+            emit marketQuotesChanged();
           });
   connect(&daemon_, &DaemonClient::marketQuoteRequestFailed, this,
           [this](const QStringList &items, const QString &) {
             for (const QString &item : items) {
               marketRequestedAt_.remove(item);
             }
+          });
+  connect(&daemon_, &DaemonClient::marketVariantQuoteReady, this,
+          [this](const QString &item, const QJsonObject &filters,
+                 const QJsonObject &data) {
+            const QString key = marketVariantKey(item, filters);
+            marketVariantPending_.remove(key);
+            marketVariantQuotes_.insert(key, data);
+            emit marketVariantQuoteReady(item, filters, data);
+          });
+  connect(&daemon_, &DaemonClient::marketVariantQuoteFailed, this,
+          [this](const QString &item, const QJsonObject &filters,
+                 const QString &error) {
+            marketVariantPending_.remove(marketVariantKey(item, filters));
+            emit marketVariantQuoteFailed(item, filters, error);
+          });
+  connect(&daemon_, &DaemonClient::marketItemsDescribed, this,
+          [this](const QJsonArray &items, const QJsonArray &) {
+            applyMarketDescriptors(items);
+          });
+  connect(&daemon_, &DaemonClient::marketAccountReady, this,
+          [this](const QString &action, const QJsonObject &account) {
+            if (action == "snapshot") {
+              marketPending_ = false;
+            } else {
+              finishMarketAction();
+            }
+            marketAccount_ = account;
+            marketLoaded_ = true;
+            marketError_.clear();
+            QStringList items;
+            for (const QJsonValue &value : account.value("orders").toArray()) {
+              const QString item = value.toObject().value("itemId").toString();
+              if (!item.isEmpty() && !items.contains(item)) {
+                items.append(item);
+              }
+            }
+            describeMarketItems(items);
+            resolveMarketQuotes(items);
+            emit marketAccountChanged();
+          });
+  connect(&daemon_, &DaemonClient::marketAccountFailed, this,
+          [this](const QString &action, const QString &requestError) {
+            if (action == "snapshot") {
+              marketPending_ = false;
+            } else {
+              finishMarketAction();
+            }
+            marketError_ = requestError;
+            if (requestError.contains("session expired", Qt::CaseInsensitive)) {
+              marketAccount_ = {{"authenticated", false},
+                                {"profile", QJsonValue::Null},
+                                {"orders", QJsonArray{}}};
+              marketLoaded_ = true;
+            }
+            emit marketAccountChanged();
+          });
+  connect(&daemon_, &DaemonClient::marketPresenceReady, this,
+          [this](const QJsonObject &presence, bool requested) {
+            if (requested) {
+              finishMarketAction();
+            }
+            marketAccount_.insert("presence", presence);
+            marketError_.clear();
+            emit marketAccountChanged();
+          });
+  connect(&daemon_, &DaemonClient::marketPresenceFailed, this,
+          [this](const QString &requestError) {
+            finishMarketAction();
+            marketError_ = requestError;
+            emit marketAccountChanged();
           });
 
   daemon_.start();
@@ -214,6 +305,51 @@ bool AppController::foundryLoaded() const { return foundryState_.loaded; }
 bool AppController::inventoryLoaded() const { return inventoryState_.loaded; }
 
 bool AppController::masteryLoaded() const { return masteryState_.loaded; }
+
+QJsonObject AppController::marketAccount() const { return marketAccount_; }
+
+QJsonObject AppController::marketItem(const QString &key) const {
+  return marketItems_.value(marketKey(key));
+}
+
+QJsonObject AppController::marketQuote(const QString &key) const {
+  return marketQuotes_.value(marketKey(key));
+}
+
+QJsonObject
+AppController::marketVariantQuote(const QString &item,
+                                  const QJsonObject &filters) const {
+  return marketVariantQuotes_.value(marketVariantKey(item, filters));
+}
+
+QString AppController::marketError() const { return marketError_; }
+
+bool AppController::marketLoaded() const { return marketLoaded_; }
+
+bool AppController::marketBusy() const {
+  return marketPending_ || marketActions_ > 0;
+}
+
+int AppController::ownedMarketQuantity(const QString &name) const {
+  if (!inventoryState_.loaded) {
+    return -1;
+  }
+  const QString key = marketKey(name);
+  int quantity = 0;
+  bool found = false;
+  for (int row = 0; row < inventoryItems_.rowCount(); ++row) {
+    const QModelIndex index = inventoryItems_.index(row, 0);
+    const QString marketName =
+        marketKey(index.data(PlayerItemModel::MarketNameRole).toString());
+    const QString displayName =
+        marketKey(index.data(PlayerItemModel::NameRole).toString());
+    if (marketName == key || displayName == key) {
+      quantity += index.data(PlayerItemModel::QuantityRole).toInt();
+      found = true;
+    }
+  }
+  return found ? quantity : 0;
+}
 
 void AppController::setFilterText(const QString &text) {
   filteredRelics_.setFilterText(text);
@@ -333,6 +469,91 @@ void AppController::resolveMarketQuotes(const QStringList &items,
     }
   }
   daemon_.requestMarketQuotes(pending, refresh);
+}
+
+void AppController::requestMarketVariantQuote(const QString &item,
+                                              const QJsonObject &filters,
+                                              bool refresh) {
+  const QString key = marketVariantKey(item, filters);
+  const QJsonObject cached = marketVariantQuote(item, filters);
+  if (!refresh && !cached.isEmpty()) {
+    QTimer::singleShot(0, this, [this, item, filters, cached] {
+      emit marketVariantQuoteReady(item, filters, cached);
+    });
+    return;
+  }
+  if (marketVariantPending_.contains(key)) {
+    return;
+  }
+  marketVariantPending_.insert(key);
+  daemon_.requestMarketVariantQuote(item, filters, refresh);
+}
+
+void AppController::describeMarketItems(const QStringList &items) {
+  QStringList missing;
+  for (const QString &item : items) {
+    if (!item.isEmpty() && !marketItems_.contains(marketKey(item))) {
+      missing.append(item);
+    }
+  }
+  daemon_.requestMarketItems(missing);
+}
+
+void AppController::ensureMarket() {
+  if (!marketLoaded_ && !marketPending_) {
+    refreshMarket();
+  }
+}
+
+void AppController::refreshMarket() {
+  if (marketPending_) {
+    return;
+  }
+  marketPending_ = true;
+  marketError_.clear();
+  emit marketAccountChanged();
+  daemon_.requestMarketAccount();
+}
+
+void AppController::marketLogin(const QString &email, const QString &password) {
+  beginMarketAction();
+  daemon_.marketLogin(email, password);
+}
+
+void AppController::marketLogout() {
+  beginMarketAction();
+  daemon_.marketLogout();
+}
+
+void AppController::marketCreateOrder(const QJsonObject &order) {
+  beginMarketAction();
+  daemon_.marketCreateOrder(order);
+}
+
+void AppController::marketUpdateOrder(const QString &id,
+                                      const QJsonObject &patch) {
+  beginMarketAction();
+  daemon_.marketUpdateOrder(id, patch);
+}
+
+void AppController::marketDeleteOrder(const QString &id) {
+  beginMarketAction();
+  daemon_.marketDeleteOrder(id);
+}
+
+void AppController::marketCloseOrder(const QString &id, int quantity) {
+  beginMarketAction();
+  daemon_.marketCloseOrder(id, quantity);
+}
+
+void AppController::setMarketOrdersVisible(bool visible, const QString &type) {
+  beginMarketAction();
+  daemon_.setMarketOrdersVisible(visible, type);
+}
+
+void AppController::setMarketPresenceMode(const QString &mode) {
+  beginMarketAction();
+  daemon_.setMarketPresenceMode(mode);
 }
 
 void AppController::setError(const QString &error) {
@@ -469,4 +690,53 @@ void AppController::emitPlayerStateChanged(const QString &view) {
   } else if (view == "mastery") {
     emit masteryStateChanged();
   }
+}
+
+void AppController::applyMarketDescriptors(const QJsonArray &items) {
+  QJsonArray assets;
+  bool changed = false;
+  for (const QJsonValue &value : items) {
+    const QJsonObject item = value.toObject();
+    if (item.isEmpty()) {
+      continue;
+    }
+    const QStringList keys = {item.value("id").toString(),
+                              item.value("slug").toString(),
+                              item.value("name").toString()};
+    for (const QString &key : keys) {
+      if (!key.isEmpty() && marketItems_.value(marketKey(key)) != item) {
+        marketItems_.insert(marketKey(key), item);
+        changed = true;
+      }
+    }
+    const QJsonObject asset = item.value("asset").toObject();
+    if (!asset.isEmpty()) {
+      assets.append(asset);
+    }
+  }
+  resolveAssets(assets);
+  if (changed) {
+    emit marketCatalogChanged();
+  }
+}
+
+void AppController::beginMarketAction() {
+  ++marketActions_;
+  marketError_.clear();
+  emit marketAccountChanged();
+}
+
+void AppController::finishMarketAction() {
+  marketActions_ = qMax(0, marketActions_ - 1);
+}
+
+QString AppController::marketKey(const QString &value) {
+  return value.trimmed().toCaseFolded();
+}
+
+QString AppController::marketVariantKey(const QString &item,
+                                        const QJsonObject &filters) {
+  return marketKey(item) + ':' +
+         QString::fromUtf8(
+             QJsonDocument(filters).toJson(QJsonDocument::Compact));
 }

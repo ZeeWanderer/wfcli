@@ -18,6 +18,9 @@ public:
 
   void setModel(QAbstractItemModel *model);
 
+signals:
+  void marketItemRequested(const QString &item, const QString &side);
+
 protected:
   void resizeEvent(QResizeEvent *event) override;
 

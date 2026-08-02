@@ -18,6 +18,8 @@ setup() ->
     MarketCache = filename:join(Root, "market.term"),
     AssetCache = filename:join(Root, "assets"),
     NotificationSettings = filename:join(Root, "notifications.json"),
+    MarketToken = filename:join(Root, "market-token"),
+    MarketPresence = filename:join(Root, "market-presence.json"),
     application:set_env(wfdaemon, local_socket, SocketPath),
     application:set_env(wfdaemon, player_cache, CachePath),
     application:set_env(wfdaemon, market_cache, MarketCache),
@@ -25,24 +27,36 @@ setup() ->
     application:set_env(wfdaemon, market_http_fun, fun market_http/2),
     application:set_env(wfdaemon, asset_cache_dir, AssetCache),
     application:set_env(wfdaemon, notification_settings_file, NotificationSettings),
+    application:set_env(wfdaemon, market_account_file, MarketToken),
+    application:set_env(wfdaemon, market_presence_file, MarketPresence),
     application:set_env(wfdaemon, local_request_workers, 2),
     application:set_env(wfdaemon, local_request_global_workers, 2),
     application:set_env(wfdaemon, daemon_idle_shutdown, false),
     {ok, _Worldstate} = wfcli_worldstate_service:start_link(),
     {ok, _Player} = wfcli_player_service:start_link(),
+    {ok, _MarketLimiter} = wfcli_market_limiter:start_link(),
     {ok, _Market} = wfcli_market_service:start_link(),
+    {ok, _MarketAccount} = wfcli_market_account_service:start_link(),
+    {ok, _MarketPresence} = wfcli_market_presence_service:start_link(),
     {ok, _Assets} = wfcli_asset_service:start_link(),
     {ok, _Notifications} = wfcli_notification_service:start_link(),
     {ok, _Api} = wfcli_local_api:start_link(),
     #{root => Root, socket => SocketPath, cache => CachePath,
-      market_cache => MarketCache, notification_settings => NotificationSettings}.
+      market_cache => MarketCache, market_token => MarketToken,
+      market_presence => MarketPresence,
+      notification_settings => NotificationSettings}.
 
 cleanup(#{root := Root, socket := SocketPath, cache := CachePath,
-          market_cache := MarketCache, notification_settings := NotificationSettings}) ->
+          market_cache := MarketCache, market_token := MarketToken,
+          market_presence := MarketPresence,
+          notification_settings := NotificationSettings}) ->
     gen_server:stop(wfcli_local_api),
     gen_server:stop(wfcli_notification_service),
     gen_server:stop(wfcli_asset_service),
+    gen_server:stop(wfcli_market_presence_service),
+    gen_server:stop(wfcli_market_account_service),
     gen_server:stop(wfcli_market_service),
+    gen_server:stop(wfcli_market_limiter),
     gen_server:stop(wfcli_player_service),
     gen_server:stop(wfcli_worldstate_service),
     application:unset_env(wfdaemon, local_socket),
@@ -52,6 +66,8 @@ cleanup(#{root := Root, socket := SocketPath, cache := CachePath,
     application:unset_env(wfdaemon, market_http_fun),
     application:unset_env(wfdaemon, asset_cache_dir),
     application:unset_env(wfdaemon, notification_settings_file),
+    application:unset_env(wfdaemon, market_account_file),
+    application:unset_env(wfdaemon, market_presence_file),
     application:unset_env(wfdaemon, local_request_workers),
     application:unset_env(wfdaemon, local_request_global_workers),
     application:unset_env(wfdaemon, asset_http_fun),
@@ -63,6 +79,10 @@ cleanup(#{root := Root, socket := SocketPath, cache := CachePath,
     _ = file:delete(MarketCache ++ ".tmp"),
     _ = file:delete(NotificationSettings),
     _ = file:delete(NotificationSettings ++ ".tmp"),
+    _ = file:delete(MarketToken),
+    _ = file:delete(MarketToken ++ ".tmp"),
+    _ = file:delete(MarketPresence),
+    _ = file:delete(MarketPresence ++ ".tmp"),
     _ = file:del_dir_r(Root),
     ok.
 
@@ -70,9 +90,15 @@ lifecycle(#{socket := SocketPath}) ->
     TestSocket = connect_client(SocketPath, <<"test">>, #{}),
     ?assertMatch(#{external_activity := 0}, wfcli_worldstate_service:status()),
     request_market_resolve(TestSocket),
+    request_market_describe(TestSocket),
     reject_invalid_market_resolve(TestSocket),
+    request_market_account(TestSocket),
+    request_market_presence(TestSocket),
+    reject_invalid_market_order(TestSocket),
+    route_market_order_mutations(TestSocket),
     reject_invalid_relic_limit(TestSocket),
     request_market_quote(TestSocket),
+    request_market_variant_quote(TestSocket),
     request_cached_market_quote(TestSocket),
     request_notification_settings(TestSocket),
     slow_asset_does_not_block_dataset(TestSocket),
@@ -239,6 +265,12 @@ connect_client(SocketPath, Client, Extra) ->
     ?assertEqual(true, maps:get(<<"ok">>, Reply)),
     ?assertEqual(1, maps:get(<<"id">>, Reply)),
     ?assert(lists:member(<<"market.resolve">>, maps:get(<<"capabilities">>, Reply))),
+    ?assert(lists:member(<<"market.describe">>, maps:get(<<"capabilities">>, Reply))),
+    ?assert(lists:member(<<"market.account">>, maps:get(<<"capabilities">>, Reply))),
+    ?assert(lists:member(<<"market.orders">>, maps:get(<<"capabilities">>, Reply))),
+    ?assert(lists:member(<<"market.presence">>, maps:get(<<"capabilities">>, Reply))),
+    ?assert(lists:member(<<"market.quote.variant">>,
+                         maps:get(<<"capabilities">>, Reply))),
     ?assert(lists:member(<<"relic.recommendations">>,
                          maps:get(<<"capabilities">>, Reply))),
     ?assert(lists:member(<<"relic.planner">>, maps:get(<<"capabilities">>, Reply))),
@@ -294,6 +326,20 @@ request_market_quote(Socket) ->
     Quote = maps:get(<<"quote">>, QuoteRow),
     ?assertEqual(42, maps:get(<<"lowest_sell">>, Quote)).
 
+request_market_variant_quote(Socket) ->
+    Request = #{<<"op">> => <<"market_quote_variant">>, <<"id">> => 21,
+                <<"item">> => <<"saryn_prime_set">>,
+                <<"filters">> => #{<<"rank">> => 5,
+                                     <<"subtype">> => <<"blueprint">>}},
+    ok = socket:send(Socket, wfcli_local_protocol:encode(Request)),
+    {ok, ReplyLine} = socket:recv(Socket, 0, 5000),
+    {ok, Reply} = wfcli_local_protocol:decode(string:trim(ReplyLine)),
+    ?assertEqual(true, maps:get(<<"ok">>, Reply)),
+    ?assertEqual(21, maps:get(<<"id">>, Reply)),
+    Data = maps:get(<<"data">>, Reply),
+    ?assertEqual(<<"saryn_prime_set">>, maps:get(<<"slug">>, Data)),
+    ?assertEqual(42, maps:get(<<"lowest_sell">>, maps:get(<<"quote">>, Data))).
+
 request_cached_market_quote(Socket) ->
     Request = #{<<"op">> => <<"market_quote">>, <<"id">> => 14,
                 <<"items">> => [<<"saryn_prime_set">>],
@@ -321,6 +367,85 @@ request_market_resolve(Socket) ->
     ?assertEqual(<<"Saryn Prime Set">>, maps:get(<<"name">>, Best)),
     ?assertEqual(<<"saryn_prime_set">>, maps:get(<<"slug">>, Best)),
     ?assertEqual(1, maps:get(<<"distance">>, Best)).
+
+request_market_describe(Socket) ->
+    Request = #{<<"op">> => <<"market_describe">>, <<"id">> => 17,
+                <<"items">> => [<<"saryn">>, <<"Saryn Prime Set">>]},
+    ok = socket:send(Socket, wfcli_local_protocol:encode(Request)),
+    {ok, ReplyLine} = socket:recv(Socket, 0, 5000),
+    {ok, Reply} = wfcli_local_protocol:decode(string:trim(ReplyLine)),
+    ?assertEqual(true, maps:get(<<"ok">>, Reply)),
+    [ById, ByName] = maps:get(<<"items">>, maps:get(<<"data">>, Reply)),
+    ?assertEqual(ById, ByName),
+    ?assertEqual(<<"saryn">>, maps:get(<<"id">>, ById)).
+
+request_market_account(Socket) ->
+    Request = #{<<"op">> => <<"market_account">>, <<"id">> => 18},
+    ok = socket:send(Socket, wfcli_local_protocol:encode(Request)),
+    {ok, ReplyLine} = socket:recv(Socket, 0, 5000),
+    {ok, Reply} = wfcli_local_protocol:decode(string:trim(ReplyLine)),
+    ?assertEqual(true, maps:get(<<"ok">>, Reply)),
+    Data = maps:get(<<"data">>, Reply),
+    ?assertEqual(false, maps:get(<<"authenticated">>, Data)),
+    ?assertMatch(#{<<"mode">> := <<"invisible">>}, maps:get(<<"presence">>, Data)).
+
+request_market_presence(Socket) ->
+    Request = #{<<"op">> => <<"market_presence_set">>, <<"id">> => 20,
+                <<"mode">> => <<"auto">>},
+    ok = socket:send(Socket, wfcli_local_protocol:encode(Request)),
+    Reply = receive_market_presence(Socket, undefined, false),
+    ?assertEqual(true, maps:get(<<"ok">>, Reply)),
+    ?assertEqual(<<"auto">>,
+                 maps:get(<<"mode">>, maps:get(<<"data">>, Reply))).
+
+receive_market_presence(_Socket, Reply, true) when Reply =/= undefined ->
+    Reply;
+receive_market_presence(Socket, Reply, SawEvent) ->
+    {ok, Chunk} = socket:recv(Socket, 0, 5000),
+    {NextReply, NextSawEvent} = lists:foldl(
+      fun(Line, Acc) ->
+          {ok, Message} = wfcli_local_protocol:decode(Line),
+          classify_market_presence(Message, Acc)
+      end,
+      {Reply, SawEvent},
+      binary:split(Chunk, <<"\n">>, [global, trim_all])),
+    receive_market_presence(Socket, NextReply, NextSawEvent).
+
+classify_market_presence(#{<<"id">> := 20} = Reply, {_OldReply, SawEvent}) ->
+    {Reply, SawEvent};
+classify_market_presence(#{<<"event">> := <<"market_presence">>}, {Reply, _}) ->
+    {Reply, true}.
+
+reject_invalid_market_order(Socket) ->
+    Request = #{<<"op">> => <<"market_order_create">>, <<"id">> => 19,
+                <<"order">> => #{<<"type">> => <<"sell">>}},
+    ok = socket:send(Socket, wfcli_local_protocol:encode(Request)),
+    {ok, ReplyLine} = socket:recv(Socket, 0, 5000),
+    {ok, Reply} = wfcli_local_protocol:decode(string:trim(ReplyLine)),
+    ?assertEqual(false, maps:get(<<"ok">>, Reply)),
+    ?assertEqual(<<"invalid_market_order">>, maps:get(<<"error">>, Reply)).
+
+route_market_order_mutations(Socket) ->
+    Requests = [
+        #{<<"op">> => <<"market_order_update">>, <<"id">> => 22,
+          <<"order_id">> => <<"order-1">>,
+          <<"patch">> => #{<<"visible">> => true}},
+        #{<<"op">> => <<"market_order_delete">>, <<"id">> => 23,
+          <<"order_id">> => <<"order-1">>},
+        #{<<"op">> => <<"market_order_close">>, <<"id">> => 24,
+          <<"order_id">> => <<"order-1">>, <<"quantity">> => 1}
+    ],
+    lists:foreach(
+      fun(Request) ->
+          ok = socket:send(Socket, wfcli_local_protocol:encode(Request)),
+          {ok, ReplyLine} = socket:recv(Socket, 0, 5000),
+          {ok, Reply} = wfcli_local_protocol:decode(string:trim(ReplyLine)),
+          ?assertEqual(maps:get(<<"id">>, Request), maps:get(<<"id">>, Reply)),
+          ?assertEqual(false, maps:get(<<"ok">>, Reply)),
+          ?assertEqual(<<"Sign in to Warframe.market first">>,
+                       maps:get(<<"error">>, Reply))
+      end,
+      Requests).
 
 reject_invalid_market_resolve(Socket) ->
     TooMany = [<<"label">> || _ <- lists:seq(1, 21)],

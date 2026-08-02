@@ -3,7 +3,7 @@
 %%%-------------------------------------------------------------------
 -module(wfcli_market_api).
 
--export([fetch_items/1, fetch_item/2, fetch_quote/2, context/0]).
+-export([fetch_items/1, fetch_item/2, fetch_quote/2, fetch_quote/3, context/0]).
 
 -define(ITEMS_URL, "https://api.warframe.market/v2/items").
 -define(ITEM_URL, "https://api.warframe.market/v2/item/").
@@ -40,7 +40,13 @@ fetch_item(Slug, NextRequestAt) ->
 -doc "Fetch and normalize top online orders for one exact market slug.".
 -spec fetch_quote(binary(), integer()) -> {ok, map(), integer()} | {error, term(), integer()}.
 fetch_quote(Slug, NextRequestAt) ->
-    Url = ?ORDERS_URL ++ wfcli_text:to_list(Slug) ++ "/top",
+    fetch_quote(Slug, #{}, NextRequestAt).
+
+-doc "Fetch top online orders matching exact rank, charge, star, or subtype filters.".
+-spec fetch_quote(binary(), map(), integer()) ->
+    {ok, map(), integer()} | {error, term(), integer()}.
+fetch_quote(Slug, Filters, NextRequestAt) ->
+    Url = quote_url(Slug, Filters),
     case fetch_json(Url, NextRequestAt) of
         {ok, Envelope, Next} ->
             case parse_quote(Slug, Envelope) of
@@ -50,6 +56,25 @@ fetch_quote(Slug, NextRequestAt) ->
         {error, _Reason, _Next} = Error -> Error
     end.
 
+quote_url(Slug, Filters) ->
+    Base = ?ORDERS_URL ++ wfcli_text:to_list(Slug) ++ "/top",
+    Query = uri_string:compose_query(filter_pairs(Filters)),
+    case Query of [] -> Base; _ -> Base ++ "?" ++ Query end.
+
+filter_pairs(Filters) ->
+    lists:filtermap(
+      fun({Key, Name}) ->
+          case maps:get(Key, Filters, undefined) of
+              Value when is_integer(Value) ->
+                  {true, {Name, integer_to_list(Value)}};
+              Value when is_binary(Value), byte_size(Value) > 0 ->
+                  {true, {Name, binary_to_list(Value)}};
+              _ -> false
+          end
+      end,
+      [{rank, "rank"}, {charges, "charges"}, {amber_stars, "amberStars"},
+       {cyan_stars, "cyanStars"}, {subtype, "subtype"}]).
+
 -doc "Return fixed public quote context shared by CLI and native clients.".
 -spec context() -> map().
 context() -> #{platform => <<"pc">>, crossplay => true, language => <<"en">>}.
@@ -58,6 +83,7 @@ fetch_json(Url, Next0) ->
     Now = erlang:monotonic_time(millisecond),
     Wait = case Next0 of 0 -> 0; _ -> max(0, Next0 - Now) end,
     timer:sleep(Wait),
+    ok = wfcli_market_limiter:wait(),
     Next = erlang:monotonic_time(millisecond) + request_interval(),
     Headers = [{"user-agent", "wfcli/0.1 (+https://github.com/ZeeWanderer/wfcli)"},
                {"accept", "application/json"}, {"language", "en"},

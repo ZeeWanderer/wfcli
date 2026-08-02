@@ -246,6 +246,8 @@ InventoryWidget::InventoryWidget(AppController *controller, QWidget *parent)
           &AppController::resolveAssets);
   connect(grid_, &PlayerItemGridWidget::quotesNeeded, controller_,
           &AppController::resolveMarketQuotes);
+  connect(grid_, &PlayerItemGridWidget::marketItemRequested, this,
+          &InventoryWidget::marketItemRequested);
   connect(controller_, &AppController::inventoryStateChanged, this,
           &InventoryWidget::updateContent);
   connect(items_, &QAbstractItemModel::modelReset, this,

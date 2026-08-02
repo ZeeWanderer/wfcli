@@ -296,6 +296,8 @@ connection(Socket, Parent) ->
     State = #{socket => Socket, parent => Parent, reader => Reader,
               reader_monitor => ReaderMonitor, buffer => <<>>,
               hello => false, subscriptions => #{}, refs => #{}, market_refs => #{},
+              market_account_refs => #{},
+              market_presence_ref => undefined,
               activity_refs => #{},
               workers => #{}, worker_queue => queue:new(),
               worker_permits => 0, worker_permit_requests => 0,
@@ -320,6 +322,12 @@ connection_loop(State = #{reader_monitor := ReaderMonitor}) ->
             connection_loop(State1);
         {wfcli_daemon, Ref, Reply} ->
             State1 = send_service_reply(Ref, Reply, State),
+            connection_loop(State1);
+        {wfcli_market_account, Ref, Reply} ->
+            State1 = send_market_account_reply(Ref, Reply, State),
+            connection_loop(State1);
+        {wfcli_market_presence, Ref, Snapshot} ->
+            State1 = send_market_presence_event(Ref, Snapshot, State),
             connection_loop(State1);
         {local_request_result, Token, Id, Dataset, Reply} ->
             State1 = send_local_request_result(Token, Id, Dataset, Reply, State),
@@ -400,7 +408,10 @@ handle_request(#{<<"op">> := <<"hello">>} = Request, State) ->
         <<"protocol">> => wfcli_local_protocol:protocol_version(),
         <<"capabilities">> => [<<"dataset.get">>, <<"dataset.subscribe">>,
                                <<"player.publish">>, <<"market.quote">>,
-                               <<"market.resolve">>,
+                               <<"market.quote.variant">>,
+                               <<"market.resolve">>, <<"market.describe">>,
+                               <<"market.account">>, <<"market.orders">>,
+                               <<"market.presence">>,
                                <<"relic.context">>,
                                <<"relic.planner">>,
                                <<"relic.recommendations">>,
@@ -535,6 +546,125 @@ handle_request(#{<<"op">> := <<"market_quote">>, <<"items">> := Items} = Request
 handle_request(#{<<"op">> := <<"market_quote">>} = Request, State) ->
     send_error(maps:get(socket, State), request_id(Request), invalid_market_items),
     {ok, State};
+handle_request(#{<<"op">> := <<"market_quote_variant">>, <<"item">> := Item,
+                 <<"filters">> := Filters} = Request, State)
+  when is_binary(Item), byte_size(Item) > 0, is_map(Filters) ->
+    case market_variant_filters(Filters) of
+        {ok, Normalized} ->
+            submit_market(request_id(Request),
+                          #{source => market, action => quote_variant,
+                            item => Item, filters => Normalized, ttl => 60,
+                            refresh => maps:get(<<"refresh">>, Request, false) =:= true},
+                          State);
+        error ->
+            send_error(maps:get(socket, State), request_id(Request),
+                       invalid_market_quote_filters),
+            {ok, State}
+    end;
+handle_request(#{<<"op">> := <<"market_quote_variant">>} = Request, State) ->
+    send_error(maps:get(socket, State), request_id(Request),
+               invalid_market_quote_filters),
+    {ok, State};
+handle_request(#{<<"op">> := <<"market_describe">>,
+                 <<"items">> := Items} = Request, State)
+  when is_list(Items), length(Items) =< 100 ->
+    case valid_market_items(Items) of
+        true -> submit_market(
+                  request_id(Request),
+                  #{source => market, action => describe_items, items => Items}, State);
+        false ->
+            send_error(maps:get(socket, State), request_id(Request), invalid_market_items),
+            {ok, State}
+    end;
+handle_request(#{<<"op">> := <<"market_describe">>} = Request, State) ->
+    send_error(maps:get(socket, State), request_id(Request), invalid_market_items),
+    {ok, State};
+handle_request(#{<<"op">> := <<"market_account">>} = Request, State) ->
+    submit_market_account(request_id(Request), #{action => snapshot},
+                          ensure_market_presence_subscription(State));
+handle_request(#{<<"op">> := <<"market_presence">>} = Request, State) ->
+    State1 = ensure_market_presence_subscription(State),
+    send_ok(maps:get(socket, State1), request_id(Request), <<"market_presence">>,
+            wfcli_market_presence_service:snapshot()),
+    {ok, State1};
+handle_request(#{<<"op">> := <<"market_presence_set">>,
+                 <<"mode">> := Mode} = Request, State) when is_binary(Mode) ->
+    State1 = ensure_market_presence_subscription(State),
+    case wfcli_market_presence_service:set_mode(Mode) of
+        {ok, Presence} ->
+            send_ok(maps:get(socket, State1), request_id(Request),
+                    <<"market_presence">>, Presence);
+        {error, Reason} -> send_error(maps:get(socket, State1), request_id(Request), Reason)
+    end,
+    {ok, State1};
+handle_request(#{<<"op">> := <<"market_presence_set">>} = Request, State) ->
+    send_error(maps:get(socket, State), request_id(Request),
+               invalid_market_presence_mode),
+    {ok, State};
+handle_request(#{<<"op">> := <<"market_login">>, <<"email">> := Email,
+                 <<"password">> := Password} = Request, State)
+  when is_binary(Email), byte_size(Email) > 0, byte_size(Email) =< 256,
+       is_binary(Password), byte_size(Password) > 0, byte_size(Password) =< 256 ->
+    submit_market_account(request_id(Request),
+                          #{action => login, email => Email, password => Password}, State);
+handle_request(#{<<"op">> := <<"market_login">>} = Request, State) ->
+    send_error(maps:get(socket, State), request_id(Request), invalid_market_credentials),
+    {ok, State};
+handle_request(#{<<"op">> := <<"market_logout">>} = Request, State) ->
+    submit_market_account(request_id(Request), #{action => logout}, State);
+handle_request(#{<<"op">> := <<"market_order_create">>,
+                 <<"order">> := Order} = Request, State) when is_map(Order) ->
+    case valid_market_order(Order) of
+        true -> submit_market_account(request_id(Request),
+                                      #{action => create_order, order => Order}, State);
+        false ->
+            send_error(maps:get(socket, State), request_id(Request), invalid_market_order),
+            {ok, State}
+    end;
+handle_request(#{<<"op">> := <<"market_order_update">>, <<"order_id">> := OrderId,
+                 <<"patch">> := Patch} = Request, State)
+  when is_binary(OrderId), byte_size(OrderId) > 0, is_map(Patch) ->
+    case valid_market_order_patch(Patch) of
+        true -> submit_market_account(request_id(Request),
+                                      #{action => update_order, id => OrderId,
+                                        patch => Patch}, State);
+        false ->
+            send_error(maps:get(socket, State), request_id(Request),
+                       invalid_market_order_patch),
+            {ok, State}
+    end;
+handle_request(#{<<"op">> := <<"market_order_delete">>,
+                 <<"order_id">> := OrderId} = Request, State)
+  when is_binary(OrderId), byte_size(OrderId) > 0 ->
+    submit_market_account(request_id(Request),
+                          #{action => delete_order, id => OrderId}, State);
+handle_request(#{<<"op">> := <<"market_order_close">>, <<"order_id">> := OrderId,
+                 <<"quantity">> := Quantity} = Request, State)
+  when is_binary(OrderId), byte_size(OrderId) > 0,
+       is_integer(Quantity), Quantity >= 1, Quantity =< 9999 ->
+    submit_market_account(request_id(Request),
+                          #{action => close_order, id => OrderId,
+                            quantity => Quantity}, State);
+handle_request(#{<<"op">> := <<"market_orders_visibility">>,
+                 <<"visible">> := Visible} = Request, State) when is_boolean(Visible) ->
+    Type = maps:get(<<"type">>, Request, undefined),
+    case Type =:= undefined orelse Type =:= <<"buy">> orelse Type =:= <<"sell">> of
+        true -> submit_market_account(request_id(Request),
+                                      #{action => set_visibility, visible => Visible,
+                                        type => Type}, State);
+        false ->
+            send_error(maps:get(socket, State), request_id(Request),
+                       invalid_market_order_type),
+            {ok, State}
+    end;
+handle_request(#{<<"op">> := MarketOperation} = Request, State)
+  when MarketOperation =:= <<"market_order_create">>;
+       MarketOperation =:= <<"market_order_update">>;
+       MarketOperation =:= <<"market_order_delete">>;
+       MarketOperation =:= <<"market_order_close">>;
+       MarketOperation =:= <<"market_orders_visibility">> ->
+    send_error(maps:get(socket, State), request_id(Request), invalid_market_order_request),
+    {ok, State};
 handle_request(#{<<"op">> := <<"relic_context">>,
                  <<"items">> := Items} = Request, State)
   when is_list(Items), length(Items) =< 8 ->
@@ -629,6 +759,68 @@ valid_market_labels(_Labels) -> false.
 valid_market_limit(Limit) ->
     is_integer(Limit) andalso Limit >= 1 andalso Limit =< ?MAX_MARKET_RESOLVE_LIMIT.
 
+valid_market_items(Items) ->
+    lists:all(fun(Item) -> is_binary(Item) andalso byte_size(Item) > 0 end, Items).
+
+market_variant_filters(Filters) ->
+    Allowed = #{<<"rank">> => {rank, 100}, <<"charges">> => {charges, 100000},
+                <<"amberStars">> => {amber_stars, 100},
+                <<"cyanStars">> => {cyan_stars, 100}},
+    maps:fold(
+      fun(_Key, _Value, error) -> error;
+         (<<"subtype">>, Value, {ok, Acc}) when is_binary(Value),
+                                                byte_size(Value) > 0,
+                                                byte_size(Value) =< 128 ->
+              {ok, Acc#{subtype => Value}};
+         (Key, Value, {ok, Acc}) when is_integer(Value), Value >= 0 ->
+              case maps:get(Key, Allowed, undefined) of
+                  {Name, Max} when Value =< Max -> {ok, Acc#{Name => Value}};
+                  _ -> error
+              end;
+         (_Key, _Value, {ok, _Acc}) -> error
+      end,
+      {ok, #{}}, Filters).
+
+valid_market_order(Order) ->
+    valid_nonempty_binary(maps:get(<<"itemId">>, Order, undefined)) andalso
+    valid_market_order_type(maps:get(<<"type">>, Order, undefined)) andalso
+    valid_integer(maps:get(<<"platinum">>, Order, undefined), 1, 900000) andalso
+    valid_integer(maps:get(<<"quantity">>, Order, undefined), 1, 9999) andalso
+    valid_optional_boolean(maps:get(<<"visible">>, Order, undefined)) andalso
+    valid_order_options(Order).
+
+valid_market_order_patch(Patch) when map_size(Patch) > 0 ->
+    Allowed = [<<"platinum">>, <<"quantity">>, <<"visible">>, <<"perTrade">>,
+               <<"rank">>, <<"charges">>, <<"subtype">>, <<"amberStars">>,
+               <<"cyanStars">>],
+    lists:all(fun(Key) -> lists:member(Key, Allowed) end, maps:keys(Patch)) andalso
+    valid_optional_integer(maps:get(<<"platinum">>, Patch, undefined), 1, 900000) andalso
+    valid_optional_integer(maps:get(<<"quantity">>, Patch, undefined), 1, 9999) andalso
+    valid_optional_boolean(maps:get(<<"visible">>, Patch, undefined)) andalso
+    valid_order_options(Patch);
+valid_market_order_patch(_Patch) -> false.
+
+valid_order_options(Order) ->
+    valid_optional_integer(maps:get(<<"perTrade">>, Order, undefined), 1, 6) andalso
+    valid_optional_integer(maps:get(<<"rank">>, Order, undefined), 0, 100) andalso
+    valid_optional_integer(maps:get(<<"charges">>, Order, undefined), 0, 100000) andalso
+    valid_optional_integer(maps:get(<<"amberStars">>, Order, undefined), 0, 100) andalso
+    valid_optional_integer(maps:get(<<"cyanStars">>, Order, undefined), 0, 100) andalso
+    valid_optional_binary(maps:get(<<"subtype">>, Order, undefined)).
+
+valid_market_order_type(<<"buy">>) -> true;
+valid_market_order_type(<<"sell">>) -> true;
+valid_market_order_type(_Type) -> false.
+
+valid_nonempty_binary(Value) -> is_binary(Value) andalso byte_size(Value) > 0.
+valid_optional_binary(undefined) -> true;
+valid_optional_binary(Value) -> valid_nonempty_binary(Value).
+valid_optional_boolean(undefined) -> true;
+valid_optional_boolean(Value) -> is_boolean(Value).
+valid_integer(Value, Min, Max) -> is_integer(Value) andalso Value >= Min andalso Value =< Max.
+valid_optional_integer(undefined, _Min, _Max) -> true;
+valid_optional_integer(Value, Min, Max) -> valid_integer(Value, Min, Max).
+
 relic_limit(Request, Default) ->
     case maps:get(<<"limit">>, Request, Default) of
         <<"all">> -> {ok, all};
@@ -698,6 +890,59 @@ send_market_reply(Ref, Reply, State) ->
                 {error, Reason} -> send_error(maps:get(socket, State), Id, Reason)
             end,
             State#{market_refs => MarketRefs}
+    end.
+
+send_market_account_reply(Ref, Reply, State) ->
+    case maps:take(Ref, maps:get(market_account_refs, State, #{})) of
+        error -> State;
+        {Id, AccountRefs} ->
+            case Reply of
+                {ok, Data} ->
+                    Account = Data#{<<"presence">> =>
+                                        wfcli_market_presence_service:snapshot()},
+                    send_ok(maps:get(socket, State), Id,
+                            <<"market_account">>, Account);
+                {error, Reason} -> send_error(maps:get(socket, State), Id, Reason)
+            end,
+            State#{market_account_refs => AccountRefs}
+    end.
+
+send_market_presence_event(Ref, Snapshot, State) ->
+    case maps:get(market_presence_ref, State, undefined) of
+        Ref ->
+            send_json(maps:get(socket, State),
+                      #{<<"event">> => <<"market_presence">>,
+                        <<"data">> => Snapshot}),
+            State;
+        _ -> State
+    end.
+
+ensure_market_presence_subscription(State = #{market_presence_ref := Ref})
+  when is_reference(Ref) -> State;
+ensure_market_presence_subscription(State) ->
+    case wfcli_market_presence_service:subscribe(self()) of
+        {ok, Ref, _Snapshot} -> State#{market_presence_ref => Ref};
+        _ -> State
+    end.
+
+submit_market(Id, MarketRequest, State) ->
+    case wfcli_market_service:submit(self(), MarketRequest) of
+        {ok, Ref} ->
+            Refs = maps:get(market_refs, State),
+            {ok, State#{market_refs => Refs#{Ref => Id}}};
+        {error, Reason} ->
+            send_error(maps:get(socket, State), Id, Reason),
+            {ok, State}
+    end.
+
+submit_market_account(Id, AccountRequest, State) ->
+    case wfcli_market_account_service:submit(self(), AccountRequest) of
+        {ok, Ref} ->
+            Refs = maps:get(market_account_refs, State),
+            {ok, State#{market_account_refs => Refs#{Ref => Id}}};
+        {error, Reason} ->
+            send_error(maps:get(socket, State), Id, Reason),
+            {ok, State}
     end.
 
 start_local_request(Id, Dataset, Work, State) ->
@@ -850,6 +1095,11 @@ cleanup_connection(State) ->
           erlang:demonitor(Monitor, [flush])
       end,
       maps:get(workers, State, #{})),
+    case maps:get(market_presence_ref, State, undefined) of
+        Ref when is_reference(Ref) ->
+            _ = wfcli_market_presence_service:unsubscribe(Ref);
+        _ -> ok
+    end,
     exit(maps:get(reader, State), shutdown),
     erlang:demonitor(maps:get(reader_monitor, State), [flush]),
     ok.

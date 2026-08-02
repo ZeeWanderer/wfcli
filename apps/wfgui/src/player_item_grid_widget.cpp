@@ -16,6 +16,7 @@
 #include <QVariantMap>
 
 #include <algorithm>
+#include <functional>
 #include <utility>
 
 #include "display_metrics.h"
@@ -227,8 +228,12 @@ InventoryStatusLayout inventoryStatusLayout(const QRect &area,
 
 class PlayerItemDelegate final : public QStyledItemDelegate {
 public:
-  explicit PlayerItemDelegate(PlayerItemGridWidget::Kind kind, QObject *parent)
-      : QStyledItemDelegate(parent), kind_(kind) {}
+  explicit PlayerItemDelegate(
+      PlayerItemGridWidget::Kind kind,
+      std::function<void(const QString &, const QString &)> marketRequest,
+      QObject *parent)
+      : QStyledItemDelegate(parent), kind_(kind),
+        marketRequest_(std::move(marketRequest)) {}
 
   QSize sizeHint(const QStyleOptionViewItem &,
                  const QModelIndex &) const override {
@@ -373,30 +378,80 @@ public:
   bool editorEvent(QEvent *event, QAbstractItemModel *model,
                    const QStyleOptionViewItem &option,
                    const QModelIndex &index) override {
-    if ((kind_ == PlayerItemGridWidget::Kind::Foundry ||
-         kind_ == PlayerItemGridWidget::Kind::Mastery) &&
-        event->type() == QEvent::MouseButtonRelease) {
+    if (event->type() == QEvent::MouseButtonRelease) {
       const auto *mouse = static_cast<QMouseEvent *>(event);
       if (mouse->button() == Qt::LeftButton) {
         const qreal scale =
             wfgui::displayScale(qobject_cast<const QWidget *>(parent()));
         const QRect content = contentRect(option.rect, kind_, scale);
-        const QFont titleFont = cardTitleFont(option.font, kind_, scale);
-        const QRect favorite =
-            kind_ == PlayerItemGridWidget::Kind::Foundry
-                ? foundryTitleLayout(
-                      content, index.data(PlayerItemModel::NameRole).toString(),
-                      index.data(PlayerItemModel::MasteredRole).toBool(),
-                      titleFont, scale)
-                      .favorite
-                : masteryTitleLayout(
-                      content, index.data(PlayerItemModel::NameRole).toString(),
-                      titleFont, scale)
-                      .favorite;
-        if (favorite.contains(mouse->position().toPoint())) {
-          return model->setData(
-              index, !index.data(PlayerItemModel::FavoriteRole).toBool(),
-              PlayerItemModel::FavoriteRole);
+        const QPoint position = mouse->position().toPoint();
+        if (kind_ == PlayerItemGridWidget::Kind::Foundry ||
+            kind_ == PlayerItemGridWidget::Kind::Mastery) {
+          const QFont titleFont = cardTitleFont(option.font, kind_, scale);
+          const QRect favorite =
+              kind_ == PlayerItemGridWidget::Kind::Foundry
+                  ? foundryTitleLayout(
+                        content,
+                        index.data(PlayerItemModel::NameRole).toString(),
+                        index.data(PlayerItemModel::MasteredRole).toBool(),
+                        titleFont, scale)
+                        .favorite
+                  : masteryTitleLayout(
+                        content,
+                        index.data(PlayerItemModel::NameRole).toString(),
+                        titleFont, scale)
+                        .favorite;
+          if (favorite.contains(position)) {
+            return model->setData(
+                index, !index.data(PlayerItemModel::FavoriteRole).toBool(),
+                PlayerItemModel::FavoriteRole);
+          }
+        }
+
+        QVariantList components =
+            index.data(PlayerItemModel::ComponentsRole).toList();
+        QList<QRect> componentAreas;
+        if (kind_ == PlayerItemGridWidget::Kind::Inventory) {
+          const bool isSet =
+              index.data(PlayerItemModel::GroupRole).toString() == "sets";
+          const wfgui::InventoryCardLayout layout =
+              wfgui::InventoryCardLayout::calculate(
+                  content, isSet, static_cast<int>(components.size()), scale);
+          if (index.data(PlayerItemModel::TradableRole).toBool()) {
+            const QString item =
+                index.data(PlayerItemModel::MarketNameRole).toString();
+            if (!item.isEmpty() && layout.sell.contains(position)) {
+              marketRequest_(item, "sell");
+              return true;
+            }
+            if (!item.isEmpty() && !isSet && layout.buy.contains(position)) {
+              marketRequest_(item, "buy");
+              return true;
+            }
+          }
+          componentAreas = layout.components;
+        } else {
+          if (kind_ == PlayerItemGridWidget::Kind::Mastery &&
+              index.data(PlayerItemModel::OwnedRole).toBool()) {
+            components.clear();
+          }
+          componentAreas = componentRects(
+              content, static_cast<int>(components.size()), kind_, scale);
+        }
+        for (int component = 0; component < componentAreas.size(); ++component) {
+          if (!componentAreas.at(component).contains(position)) {
+            continue;
+          }
+          const QVariantMap data = components.at(component).toMap();
+          const QString item = data.value("market_name").toString().isEmpty()
+                                   ? data.value("name").toString()
+                                   : data.value("market_name").toString();
+          if (!item.isEmpty()) {
+            const int owned = data.value("owned").toInt();
+            const int required = data.value("required").toInt();
+            marketRequest_(item, owned >= qMax(1, required) ? "sell" : "buy");
+            return true;
+          }
         }
       }
     }
@@ -924,13 +979,19 @@ private:
   }
 
   PlayerItemGridWidget::Kind kind_;
+  std::function<void(const QString &, const QString &)> marketRequest_;
 };
 } // namespace
 
 PlayerItemGridWidget::PlayerItemGridWidget(Kind kind, QWidget *parent)
     : QListView(parent), kind_(kind), visibleDataTimer_(new QTimer(this)) {
   setObjectName("playerItemGrid");
-  setItemDelegate(new PlayerItemDelegate(kind, this));
+  setItemDelegate(new PlayerItemDelegate(
+      kind,
+      [this](const QString &item, const QString &side) {
+        emit marketItemRequested(item, side);
+      },
+      this));
   setViewMode(QListView::IconMode);
   setFlow(QListView::LeftToRight);
   setWrapping(true);

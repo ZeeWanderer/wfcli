@@ -259,6 +259,8 @@ FoundryWidget::FoundryWidget(AppController *controller, QWidget *parent)
           &AppController::refreshFoundry);
   connect(grid_, &PlayerItemGridWidget::assetsNeeded, controller_,
           &AppController::resolveAssets);
+  connect(grid_, &PlayerItemGridWidget::marketItemRequested, this,
+          &FoundryWidget::marketItemRequested);
   connect(controller_, &AppController::foundryStateChanged, this,
           &FoundryWidget::updateContent);
   connect(items_, &QAbstractItemModel::modelReset, this,

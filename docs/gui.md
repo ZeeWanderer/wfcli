@@ -42,6 +42,20 @@ count. Hovering a reward shows its name.
 Each era keeps independent state. Metadata appears first; prices and images update in place.
 Changing era never displays another era's results while data is pending.
 
+### Market
+
+Market signs in to Warframe Market, manages regular buy and sell orders, and controls account
+presence. Orders can be filtered, edited, hidden, closed, deleted, or reconciled with the current
+player inventory. The open page refreshes account data once per minute.
+
+Click a tradable item, component, relic, or relic reward on another page to open current listings.
+The dialog supports exact rank, charge, star, subtype, and bulk-trade variants, copies trade
+whispers, and can create an order for a signed-in account.
+
+The password is used only for sign-in. `wfdaemon` stores the returned session token in its
+owner-only state directory. Presence can follow Warframe automatically or remain online, in game,
+or invisible.
+
 ## Activity Rail
 
 The right rail shows active world cycles, Baro and Prime Resurgence windows, and grouped fissures.
@@ -54,6 +68,8 @@ Render a deterministic window image without a desktop screenshot tool:
 
 ```bash
 wfgui --screenshot /tmp/wfgui.png --size 2560x1440 --page foundry
+wfgui --market-item 54a74454e779892d5e515621 --market-side sell \
+  --screenshot /tmp/wfgui-market-item.png
 ```
 
-Valid pages are `foundry`, `mastery`, `inventory`, and `relic`.
+Valid pages are `foundry`, `mastery`, `inventory`, `relic`, and `market`.

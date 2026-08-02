@@ -18,7 +18,14 @@ start_link() ->
 -doc "Start any daemon children added by a hot update without restarting existing workers.".
 -spec ensure_children() -> ok | {error, term()}.
 ensure_children() ->
-    ensure_children(daemon_children()).
+    case daemon_children() of
+        [] -> ok;
+        Children ->
+            case application:ensure_all_started(gun) of
+                {ok, _Started} -> ensure_children(Children);
+                {error, Reason} -> {error, {dependency, gun, Reason}}
+            end
+    end.
 
 %% sup_flags() = #{strategy => strategy(),         % optional
 %%                 intensity => non_neg_integer(), % optional
@@ -86,12 +93,33 @@ daemon_children() ->
                 type => worker,
                 modules => [wfcli_player_service]
             }, #{
+                id => wfcli_market_limiter,
+                start => {wfcli_market_limiter, start_link, []},
+                restart => permanent,
+                shutdown => 5000,
+                type => worker,
+                modules => [wfcli_market_limiter]
+            }, #{
                 id => wfcli_market_service,
                 start => {wfcli_market_service, start_link, []},
                 restart => permanent,
                 shutdown => 5000,
                 type => worker,
                 modules => [wfcli_market_service]
+            }, #{
+                id => wfcli_market_account_service,
+                start => {wfcli_market_account_service, start_link, []},
+                restart => permanent,
+                shutdown => 5000,
+                type => worker,
+                modules => [wfcli_market_account_service]
+            }, #{
+                id => wfcli_market_presence_service,
+                start => {wfcli_market_presence_service, start_link, []},
+                restart => permanent,
+                shutdown => 5000,
+                type => worker,
+                modules => [wfcli_market_presence_service]
             }, #{
                 id => wfcli_asset_service,
                 start => {wfcli_asset_service, start_link, []},

@@ -188,7 +188,7 @@ apply_validated(Bundles, BuildIdentity) ->
     Changed = Changed0,
     Result = case Changed of
         [] ->
-            {ok, #{loaded => [], unchanged => module_names(Unchanged), migrated => []}};
+            reconcile_unchanged(Unchanged);
         _ ->
             case purge_previous_versions(Changed) of
                 ok -> apply_changed(Changed, Unchanged);
@@ -201,6 +201,19 @@ apply_validated(Bundles, BuildIdentity) ->
             Result;
         {error, _ResultReason} ->
             Result
+    end.
+
+reconcile_unchanged(Unchanged) ->
+    case ensure_supervised_children() of
+        ok ->
+            Result = #{loaded => [], unchanged => module_names(Unchanged), migrated => []},
+            case restart_supervised_child(wfcli_local_api) of
+                ok -> {ok, Result};
+                {error, Reason} ->
+                    {error, {runtime_restart_failed, wfcli_local_api, Reason}}
+            end;
+        {error, Reason} ->
+            {error, {supervisor_reconcile_failed, Reason}}
     end.
 
 maybe_store_build_identity(Bundles, BuildIdentity) ->
@@ -350,7 +363,10 @@ stateful_candidates() ->
         {wfcli_query_service, wfcli_query_service},
         {wfcli_forma_service, wfcli_forma_service},
         {wfcli_player_service, wfcli_player_service},
+        {wfcli_market_limiter, wfcli_market_limiter},
         {wfcli_market_service, wfcli_market_service},
+        {wfcli_market_account_service, wfcli_market_account_service},
+        {wfcli_market_presence_service, wfcli_market_presence_service},
         {wfcli_asset_service, wfcli_asset_service},
         {wfcli_local_api, wfcli_local_api},
         {wfcli_daemon, wfcli_daemon}

@@ -3,7 +3,7 @@
 %%%-------------------------------------------------------------------
 -module(wfcli_market_resolver).
 
--export([resolve/3]).
+-export([resolve/3, describe/2]).
 
 -doc "Resolve each label to ranked Market items using normalized edit distance.".
 -spec resolve([binary()], [map()], 1..5) -> [map()].
@@ -12,6 +12,21 @@ resolve(Labels, Items, Limit) ->
                                 Candidate <- [candidate(Item)],
                                 Candidate =/= undefined],
     [#{label => Label, matches => matches(Label, Candidates, Limit)} || Label <- Labels].
+
+-doc "Return exact Market metadata by item ID, slug, or English name.".
+-spec describe([binary()], [map()]) -> {[map()], [binary()]}.
+describe(Values, Items) ->
+    Lookup = lists:foldl(fun add_lookup/2, #{}, Items),
+    {Found0, Missing0} = lists:foldl(
+      fun(Value, {Found, Missing}) ->
+          Key = normalize_exact(Value),
+          case maps:get(Key, Lookup, undefined) of
+              undefined -> {Found, [Value | Missing]};
+              Item -> {[descriptor(Item) | Found], Missing}
+          end
+      end,
+      {[], []}, Values),
+    {lists:reverse(Found0), lists:reverse(Missing0)}.
 
 candidate(Item) ->
     Slug = maps:get(<<"slug">>, Item, <<>>),
@@ -28,6 +43,57 @@ candidate(Item) ->
                thumb => maps:get(<<"thumb">>, English, undefined),
                sub_icon => maps:get(<<"subIcon">>, English, undefined)}
     end.
+
+add_lookup(Item, Lookup) ->
+    Id = maps:get(<<"id">>, Item, <<>>),
+    Slug = maps:get(<<"slug">>, Item, <<>>),
+    Name = item_name(Item),
+    lists:foldl(
+      fun(Value, Acc) ->
+          case normalize_exact(Value) of
+              <<>> -> Acc;
+              Key -> Acc#{Key => Item}
+          end
+      end,
+      Lookup, [Id, Slug, Name]).
+
+descriptor(Item) ->
+    English = maps:get(<<"en">>, maps:get(<<"i18n">>, Item, #{}), #{}),
+    Base = #{id => maps:get(<<"id">>, Item, null),
+             slug => maps:get(<<"slug">>, Item, <<>>),
+             name => item_name(Item), tradable => true},
+    Descriptor = copy_fields(
+      [{<<"gameRef">>, game_ref}, {<<"tags">>, tags}, {<<"ducats">>, ducats},
+       {<<"bulkTradable">>, bulk_tradable}, {<<"maxRank">>, max_rank},
+       {<<"maxCharges">>, max_charges}, {<<"maxAmberStars">>, max_amber_stars},
+       {<<"maxCyanStars">>, max_cyan_stars}, {<<"subtypes">>, subtypes},
+       {<<"setRoot">>, set_root}],
+      Item,
+      copy_fields([{<<"icon">>, icon}, {<<"thumb">>, thumb},
+                   {<<"subIcon">>, sub_icon}], English, Base)),
+    add_asset(Descriptor).
+
+add_asset(Descriptor = #{id := Id}) when is_binary(Id) ->
+    case maps:get(thumb, Descriptor, maps:get(icon, Descriptor, undefined)) of
+        Image when is_binary(Image), byte_size(Image) > 0 ->
+            Descriptor#{asset => #{id => <<"market-item:", Id/binary>>,
+                                   source => <<"market">>,
+                                   image_name => Image}};
+        _ -> Descriptor
+    end;
+add_asset(Descriptor) -> Descriptor.
+
+copy_fields(Fields, Source, Target) ->
+    lists:foldl(
+      fun({SourceKey, TargetKey}, Acc) ->
+          case maps:find(SourceKey, Source) of
+              {ok, undefined} -> Acc;
+              {ok, null} -> Acc;
+              {ok, Value} -> Acc#{TargetKey => Value};
+              error -> Acc
+          end
+      end,
+      Target, Fields).
 
 item_name(Item) ->
     I18n = maps:get(<<"i18n">>, Item, #{}),
@@ -81,6 +147,10 @@ normalize(Value) ->
     Normalized = re:replace(Lower, "[^\\p{L}\\p{N}]+", " ",
                             [global, unicode, ucp, {return, list}]),
     string:trim(Normalized).
+
+normalize_exact(Value) ->
+    unicode:characters_to_binary(
+      string:casefold(string:trim(wfcli_text:to_list(Value)))).
 
 levenshtein(Left, Right) when length(Left) < length(Right) ->
     levenshtein(Right, Left);

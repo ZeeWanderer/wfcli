@@ -1,12 +1,13 @@
 # AlecaFrame Layout Reference
 
-This development tool renders AlecaFrame relic overlays and desktop planner in headless Chromium and
+This development tool renders AlecaFrame views in headless Chromium and
 writes transparent reference images plus measured DOM geometry.
 
 ```bash
 make aleca-layout-setup
 make previews PREVIEW_MEDIA=image PREVIEW_SETS=reference
 make previews PREVIEW_MEDIA=video PREVIEW_SETS=reference PREVIEW_SCENES=relic-suggestions
+npm --prefix tools/aleca-layout run render:market
 ```
 
 Setup queries Overwolf's official installer metadata, downloads the latest

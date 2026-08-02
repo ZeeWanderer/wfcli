@@ -80,6 +80,7 @@ handle_call(status, _From, State) ->
               concurrent_reads => map_size(maps:get(reads, State, #{})),
               items => length(maps:get(items, Snapshot, [])),
               cached_quotes => map_size(maps:get(quotes, Snapshot, #{})),
+              cached_variant_quotes => map_size(maps:get(variant_quotes, Snapshot, #{})),
               cached_details => map_size(maps:get(details, Snapshot, #{})),
               cached_relics => map_size(maps:get(relics, Snapshot, #{})),
               manifest_fetched_at => maps:get(manifest_fetched_at, Snapshot, undefined),
@@ -186,7 +187,7 @@ code_change(_OldVsn, State, _Extra) ->
                 persist_timer => maps:get(persist_timer, State, undefined)}}.
 
 immediate_request(#{action := Action}, Snapshot)
-  when Action =:= query; Action =:= resolve_labels ->
+  when Action =:= query; Action =:= resolve_labels; Action =:= describe_items ->
     maps:get(items, Snapshot, []) =/= [];
 immediate_request(#{action := quote_items, cache_only := true}, Snapshot) ->
     maps:get(items, Snapshot, []) =/= [];
@@ -252,6 +253,9 @@ execute_read(#{action := query, query_ast := Ast} = Request, Snapshot) ->
 execute_read(#{action := resolve_labels} = Request, Snapshot) ->
     {Reply, _Snapshot, _Next} = resolve_labels(Request, Snapshot, 0),
     Reply;
+execute_read(#{action := describe_items} = Request, Snapshot) ->
+    {Reply, _Snapshot, _Next} = describe_items(Request, Snapshot, 0),
+    Reply;
 execute_read(#{action := quote_items, items := Items, cache_only := true} = Request,
              Snapshot) ->
     {Reply, _Snapshot, _Next} = quote_items_cached(Items, Request, Snapshot, 0),
@@ -294,8 +298,13 @@ execute_action(#{action := quote_items, items := Items, cache_only := true} = Re
 execute_action(#{action := quote_items, items := Items} = Request, SubmittedAt,
                Snapshot, Next) when is_list(Items) ->
     quote_items(Items, Request, SubmittedAt, Snapshot, Next);
+execute_action(#{action := quote_variant, item := Item, filters := Filters} = Request,
+               SubmittedAt, Snapshot, Next) ->
+    quote_variant(Item, Filters, Request, SubmittedAt, Snapshot, Next);
 execute_action(#{action := resolve_labels} = Request, _SubmittedAt, Snapshot, Next) ->
     resolve_labels(Request, Snapshot, Next);
+execute_action(#{action := describe_items} = Request, _SubmittedAt, Snapshot, Next) ->
+    describe_items(Request, Snapshot, Next);
 execute_action(#{action := relic_context} = Request, SubmittedAt, Snapshot, Next) ->
     relic_context(Request, SubmittedAt, Snapshot, Next);
 execute_action(#{action := relic_recommendations} = Request, SubmittedAt, Snapshot, Next) ->
@@ -320,6 +329,64 @@ resolve_labels(Request, Snapshot, Next) ->
 valid_resolve_labels(Labels) when is_list(Labels), length(Labels) =< ?MAX_RESOLVE_LABELS ->
     lists:all(fun(Label) -> is_binary(Label) andalso byte_size(Label) > 0 end, Labels);
 valid_resolve_labels(_Labels) -> false.
+
+describe_items(Request, Snapshot, Next) ->
+    Values = maps:get(items, Request, undefined),
+    case valid_describe_items(Values) of
+        false -> {{error, invalid_market_items}, Snapshot, Next};
+        true ->
+            {Items, Missing} = wfcli_market_resolver:describe(
+                                 Values, maps:get(items, Snapshot, [])),
+            {{ok, #{context => wfcli_market_api:context(), items => Items,
+                    missing => Missing}}, Snapshot, Next}
+    end.
+
+valid_describe_items(Items) when is_list(Items), length(Items) =< ?HARD_MAX_QUOTES ->
+    lists:all(fun(Item) -> is_binary(Item) andalso byte_size(Item) > 0 end, Items);
+valid_describe_items(_Items) -> false.
+
+quote_variant(Item, Filters, Request, SubmittedAt, Snapshot, Next) ->
+    case resolve_items([Item], maps:get(items, Snapshot, [])) of
+        {[{Item, Slug}], []} ->
+            Key = {Slug, Filters},
+            Quotes = maps:get(variant_quotes, Snapshot, #{}),
+            Cached = maps:get(Key, Quotes, undefined),
+            case quote_cache_state(Cached, Request, SubmittedAt) of
+                fresh ->
+                    Source = case maps:get(quoted_at, Cached, 0) >= SubmittedAt of
+                        true -> coalesced;
+                        false -> cached
+                    end,
+                    Quote = Cached#{source => Source, stale => false},
+                    {variant_reply(Item, Slug, Filters, Quote), Snapshot, Next};
+                stale ->
+                    {variant_reply(Item, Slug, Filters, Cached), Snapshot, Next};
+                fetch ->
+                    fetch_variant_quote(Item, Slug, Filters, Key, Cached,
+                                        Snapshot, Next)
+            end;
+        _ -> {{error, market_item_not_found}, Snapshot, Next}
+    end.
+
+fetch_variant_quote(Item, Slug, Filters, Key, Cached, Snapshot, Next) ->
+    case wfcli_market_api:fetch_quote(Slug, Filters, Next) of
+        {ok, Quote, Next1} ->
+            Quotes = maps:get(variant_quotes, Snapshot, #{}),
+            Updated = Snapshot#{variant_quotes => Quotes#{Key => Quote},
+                                updated_at => erlang:system_time(millisecond)},
+            {variant_reply(Item, Slug, Filters, Quote), Updated, Next1};
+        {error, Reason, Next1} when is_map(Cached) ->
+            Stale = Cached#{stale => true, source => stale,
+                            stale_reason => wfcli_text:to_list(Reason),
+                            last_attempt_at => erlang:system_time(millisecond)},
+            Quotes = maps:get(variant_quotes, Snapshot, #{}),
+            Updated = Snapshot#{variant_quotes => Quotes#{Key => Stale}},
+            {variant_reply(Item, Slug, Filters, Stale), Updated, Next1};
+        {error, Reason, Next1} -> {{error, Reason}, Snapshot, Next1}
+    end.
+
+variant_reply(Item, Slug, Filters, Quote) ->
+    {ok, #{item => Item, slug => Slug, quote => Quote, filters => Filters}}.
 
 relic_context(Request, SubmittedAt, Snapshot0, Next0) ->
     Slugs = maps:get(items, Request, undefined),
@@ -482,7 +549,11 @@ quote_items(Items, Request, SubmittedAt, Snapshot0, Next0) ->
             {Snapshot, Next, Errors} = fetch_quotes(
                 Slugs, Request, SubmittedAt, Snapshot0, Next0, #{}),
             Quotes = maps:get(quotes, Snapshot),
+            Descriptors = descriptors_by_slug(
+                            [Slug || {_Item, Slug} <- Resolved],
+                            maps:get(items, Snapshot, [])),
             Rows = [#{item => Item, slug => Slug,
+                      item_data => maps:get(Slug, Descriptors, undefined),
                       quote => maps:get(Slug, Quotes, undefined),
                       error => maps:get(Slug, Errors, undefined)}
                     || {Item, Slug} <- Resolved],
@@ -498,11 +569,17 @@ quote_items_cached(Items, _Request, Snapshot, Next) ->
              Snapshot, Next};
         false ->
             Quotes = maps:get(quotes, Snapshot, #{}),
+            Descriptors = descriptors_by_slug(
+                            [Slug || {_Item, Slug} <- Resolved],
+                            maps:get(items, Snapshot, [])),
             Rows = lists:filtermap(
                      fun({Item, Slug}) ->
                          case maps:find(Slug, Quotes) of
                              {ok, Quote} ->
-                                 {true, #{item => Item, slug => Slug, quote => Quote}};
+                                 {true, #{item => Item, slug => Slug,
+                                          item_data => maps:get(
+                                                         Slug, Descriptors, undefined),
+                                          quote => Quote}};
                              error -> false
                          end
                      end,
@@ -513,6 +590,10 @@ quote_items_cached(Items, _Request, Snapshot, Next) ->
     end.
 
 resolve_items(Values, Items) ->
+    ById = maps:from_list([{string:lowercase(wfcli_text:to_list(
+                               maps:get(<<"id">>, Item))),
+                            maps:get(<<"slug">>, Item)}
+                           || Item <- Items, maps:is_key(<<"id">>, Item)]),
     BySlug = maps:from_list([{string:lowercase(wfcli_text:to_list(
                                  maps:get(<<"slug">>, Item))),
                               maps:get(<<"slug">>, Item)} || Item <- Items]),
@@ -520,12 +601,18 @@ resolve_items(Values, Items) ->
                               maps:get(<<"slug">>, Item)} || Item <- Items]),
     {Found0, Missing0} = lists:foldl(fun(Value, {Found, Missing}) ->
         Key = string:lowercase(string:trim(wfcli_text:to_list(Value))),
-        case maps:get(Key, BySlug, maps:get(Key, ByName, undefined)) of
+        case maps:get(Key, ById,
+                      maps:get(Key, BySlug, maps:get(Key, ByName, undefined))) of
             undefined -> {Found, [Value | Missing]};
             Slug -> {[{Value, Slug} | Found], Missing}
         end
     end, {[], []}, Values),
     {lists:reverse(Found0), lists:reverse(Missing0)}.
+
+descriptors_by_slug(Slugs, Items) ->
+    {Descriptors, _Missing} = wfcli_market_resolver:describe(
+                                Slugs, Items),
+    maps:from_list([{maps:get(slug, Item), Item} || Item <- Descriptors]).
 
 fetch_quotes([], _Request, _SubmittedAt, Snapshot, Next, Errors) ->
     {Snapshot, Next, Errors};
@@ -693,6 +780,8 @@ worker_snapshot(Request, Snapshot) ->
         query -> [quotes];
         quote_query -> [quotes];
         quote_items -> [quotes];
+        quote_variant -> [variant_quotes];
+        describe_items -> [];
         relic_context -> [quotes, details | relic_keys()];
         relic_recommendations -> [quotes | relic_keys()];
         _ -> []
