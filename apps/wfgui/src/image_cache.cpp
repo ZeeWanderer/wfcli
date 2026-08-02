@@ -16,6 +16,7 @@
 #include <QtMath>
 
 #include <algorithm>
+#include <atomic>
 #include <limits>
 #include <utility>
 
@@ -57,19 +58,25 @@ public:
     pool_.setMaxThreadCount(std::clamp(QThread::idealThreadCount(), 1, 4));
     QPixmapCache::setCacheLimit(
         std::max(QPixmapCache::cacheLimit(), 64 * 1024));
+    connect(QApplication::instance(), &QCoreApplication::aboutToQuit, this,
+            [this] { stop(); });
+  }
+
+  ~ThumbnailLoader() override {
+    stop();
+    pool_.waitForDone();
   }
 
   void request(const QString &key, const QString &path,
                const QSize &pixelBounds, qreal dpr, QWidget *target) {
-    if (failed_.contains(key)) {
+    if (stopping_.load() || failed_.contains(key)) {
       return;
     }
 
     auto &waiters = waiters_[key];
     const auto targetAlreadyQueued =
-        std::any_of(waiters.cbegin(), waiters.cend(), [target](const auto &item) {
-          return item == target;
-        });
+        std::any_of(waiters.cbegin(), waiters.cend(),
+                    [target](const auto &item) { return item == target; });
     if (!targetAlreadyQueued) {
       waiters.append(target);
     }
@@ -82,13 +89,13 @@ public:
     pool_.start(
         [loader, key, path, pixelBounds, dpr] {
           QImage image = decodeThumbnail(path, pixelBounds);
-          if (!loader) {
+          if (!loader || loader->stopping_.load()) {
             return;
           }
           QMetaObject::invokeMethod(
               loader,
               [loader, key, image = std::move(image), dpr]() mutable {
-                if (loader) {
+                if (loader && !loader->stopping_.load()) {
                   loader->finish(key, std::move(image), dpr);
                 }
               },
@@ -98,6 +105,15 @@ public:
   }
 
 private:
+  void stop() {
+    if (stopping_.exchange(true)) {
+      return;
+    }
+    pool_.clear();
+    pending_.clear();
+    waiters_.clear();
+  }
+
   int nextPriority() {
     if (priority_ == std::numeric_limits<int>::max()) {
       priority_ = 0;
@@ -124,6 +140,7 @@ private:
   QSet<QString> pending_;
   QSet<QString> failed_;
   QHash<QString, QList<QPointer<QWidget>>> waiters_;
+  std::atomic_bool stopping_ = false;
   int priority_ = 0;
 };
 

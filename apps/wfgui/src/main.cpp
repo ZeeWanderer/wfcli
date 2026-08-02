@@ -7,6 +7,7 @@
 #include <QGuiApplication>
 #include <QIcon>
 #include <QPixmapCache>
+#include <QStandardPaths>
 #include <QTextStream>
 #include <QTimer>
 
@@ -33,7 +34,11 @@ QSize parseSize(const QString &value) {
 int main(int argc, char *argv[]) {
   QCoreApplication::setOrganizationName("wfcli");
   QCoreApplication::setApplicationName("wfgui");
-  QGuiApplication::setDesktopFileName("wfgui");
+  if (!QStandardPaths::locate(QStandardPaths::ApplicationsLocation,
+                              "wfgui.desktop")
+           .isEmpty()) {
+    QGuiApplication::setDesktopFileName("wfgui");
+  }
   wfgui::applyConfiguredUiScale();
   QApplication app(argc, argv);
   app.setWindowIcon(QIcon(":/resources/ui/nav_mastery.png"));
