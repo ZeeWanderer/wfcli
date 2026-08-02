@@ -61,6 +61,7 @@ private slots:
   void inventoryCardLayoutUsesConstraints();
   void gridLayoutUsesStableBreakpoints();
   void playerGridUsesAvailableColumns();
+  void foundryGridUsesReferenceCardHeight();
   void masteryGridUsesCompactCards();
   void inventoryGridRequestsVisibleQuotes();
   void masteryGridRequestsComponentQuotes();
@@ -717,6 +718,41 @@ void RelicModelTest::masteryGridUsesCompactCards() {
   QCoreApplication::processEvents();
 
   QCOMPARE(grid.gridSize().height(), 99);
+}
+
+void RelicModelTest::foundryGridUsesReferenceCardHeight() {
+  PlayerItemModel model;
+  QVERIFY(model.replace({
+      {"items",
+       QJsonArray{QJsonObject{
+           {"id", "test-prime"},
+           {"name", "Test Prime"},
+           {"group", "warframe"},
+           {"owned", true},
+           {"is_prime", true},
+           {"vaulted", true},
+           {"subsumed", true},
+           {"components",
+            QJsonArray{
+                QJsonObject{
+                    {"name", "Blueprint"}, {"required", 1}, {"owned", 1}},
+                QJsonObject{{"name", "Chassis"}, {"required", 1}, {"owned", 1}},
+                QJsonObject{{"name", "Systems"}, {"required", 1}, {"owned", 0}},
+            }},
+       }}},
+  }));
+
+  PlayerItemGridWidget grid(PlayerItemGridWidget::Kind::Foundry);
+  grid.setModel(&model);
+  grid.resize(320, 400);
+  grid.show();
+  QCoreApplication::processEvents();
+
+  QCOMPARE(grid.gridSize().height(), 198);
+  QString error;
+  const QPixmap card = wfgui::grabCaptureTarget("foundry.grid.item", 0, &error);
+  QVERIFY2(!card.isNull(), qPrintable(error));
+  QCOMPARE(card.deviceIndependentSize().height(), 198.0);
 }
 
 void RelicModelTest::inventoryGridRequestsVisibleQuotes() {
@@ -1395,7 +1431,7 @@ void RelicModelTest::capturesNamedUiTargets() {
 
   auto *list = new QListWidget(&window);
   list->setGeometry(110, 20, 110, 110);
-  list->addItems({"First", "Second"});
+  list->addItems({"First", "Second", "Third", "Fourth", "Fifth", "Sixth"});
   wfgui::setCaptureTarget(list, "test.list");
 
   auto *cards = new QWidget(&window);
@@ -1406,6 +1442,9 @@ void RelicModelTest::capturesNamedUiTargets() {
   wfgui::setCaptureItem(card);
 
   window.show();
+  QCoreApplication::processEvents();
+  list->scrollToItem(list->item(2), QAbstractItemView::PositionAtTop);
+  list->verticalScrollBar()->setValue(list->verticalScrollBar()->value() + 5);
   QCoreApplication::processEvents();
 
   const QStringList names = wfgui::captureTargetNames();
@@ -1420,9 +1459,11 @@ void RelicModelTest::capturesNamedUiTargets() {
   QCOMPARE(panelImage.deviceIndependentSize().toSize(), QSize(72, 48));
 
   const QPixmap itemImage =
-      wfgui::grabCaptureTarget("test.list.item", 3, &error);
+      wfgui::grabCaptureTarget("test.list.item", 0, &error);
   QVERIFY2(!itemImage.isNull(), qPrintable(error));
   QVERIFY(itemImage.deviceIndependentSize().width() < list->width());
+  QCOMPARE(itemImage.deviceIndependentSize().height(),
+           list->visualItemRect(list->item(3)).height());
 
   const QPixmap cardImage =
       wfgui::grabCaptureTarget("test.cards.item", 2, &error);

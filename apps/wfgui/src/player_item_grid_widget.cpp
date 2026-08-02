@@ -31,6 +31,9 @@ constexpr int MaxTrack = 620;
 constexpr int FoundryMinTrack = 270;
 constexpr int InventoryMinTrack = 420;
 constexpr int MasteryMinTrack = 370;
+constexpr int FoundryCardHeight = 190;
+constexpr int FoundryBodyTop = 35;
+constexpr int FoundryBodyHeight = 108;
 
 struct FoundryTitleLayout {
   QRect favorite;
@@ -110,7 +113,12 @@ QList<QRect> componentRects(const QRect &content, int componentCount,
     const int columns = 3;
     const int width = columns * size + (columns - 1) * gap;
     const int areaStart = content.right() - width + 1;
-    const int top = content.top() + wfgui::scaled(38, scale);
+    const int rows = (count + columns - 1) / columns;
+    const int totalHeight = rows * size + std::max(0, rows - 1) * gap;
+    const QRect body(content.left(),
+                     content.top() + wfgui::scaled(FoundryBodyTop, scale),
+                     content.width(), wfgui::scaled(FoundryBodyHeight, scale));
+    const int top = body.center().y() - totalHeight / 2;
     QList<QRect> result;
     result.reserve(count);
     for (int row = 0, index = 0; index < count; ++row) {
@@ -493,10 +501,10 @@ private:
                                                   title.mastered.size()));
     }
 
-    const int imageSize = wfgui::scaled(108, scale);
+    const int imageSize = wfgui::scaled(FoundryBodyHeight, scale);
     const QRect imageRect(content.left() + wfgui::scaled(3, scale),
-                          content.top() + wfgui::scaled(31, scale), imageSize,
-                          imageSize);
+                          content.top() + wfgui::scaled(FoundryBodyTop, scale),
+                          imageSize, imageSize);
     wfgui::drawContained(
         painter, imageRect,
         wfgui::cachedThumbnail(
@@ -1079,9 +1087,10 @@ void PlayerItemGridWidget::updateGrid() {
   const int track =
       std::min(wfgui::scaled(MaxTrack, scale),
                std::max(1, (width - 1 - columns * gap) / columns));
-  const int height = wfgui::scaled(
-      kind_ == Kind::Foundry ? 198 : (kind_ == Kind::Mastery ? 91 : 130),
-      scale);
+  const int height = wfgui::scaled(kind_ == Kind::Foundry
+                                       ? FoundryCardHeight
+                                       : (kind_ == Kind::Mastery ? 91 : 130),
+                                   scale);
   setGridSize({track + gap, height + gap});
   scheduleDelayedItemsLayout();
   scheduleVisibleData();

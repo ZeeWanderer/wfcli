@@ -46,6 +46,11 @@ bool regionVisible(const CaptureRegion &region) {
          !clippedGlobalRect(region, 0).isEmpty();
 }
 
+bool regionFullyVisible(const CaptureRegion &region) {
+  return clippedGlobalRect(region, 0) ==
+         globalRect(region.surface, region.rect);
+}
+
 bool before(const CaptureRegion &left, const CaptureRegion &right) {
   const QRect leftRect = clippedGlobalRect(left, 0);
   const QRect rightRect = clippedGlobalRect(right, 0);
@@ -75,6 +80,7 @@ std::optional<CaptureRegion> viewItemRegion(QAbstractItemView *view) {
     return std::nullopt;
   }
   std::optional<CaptureRegion> best;
+  std::optional<CaptureRegion> partial;
   const QModelIndex root = view->rootIndex();
   const int rows = view->model()->rowCount(root);
   for (int row = 0; row < rows; ++row) {
@@ -91,15 +97,17 @@ std::optional<CaptureRegion> viewItemRegion(QAbstractItemView *view) {
     if (!rect.isValid() || !regionVisible(candidate)) {
       continue;
     }
-    if (!best || before(candidate, *best)) {
-      best = candidate;
+    auto &target = regionFullyVisible(candidate) ? best : partial;
+    if (!target || before(candidate, *target)) {
+      target = candidate;
     }
   }
-  return best;
+  return best ? best : partial;
 }
 
 std::optional<CaptureRegion> childItemRegion(QWidget *container) {
   std::optional<CaptureRegion> best;
+  std::optional<CaptureRegion> partial;
   for (QWidget *widget : container->findChildren<QWidget *>()) {
     if (!widget->property(ItemProperty).toBool()) {
       continue;
@@ -108,11 +116,12 @@ std::optional<CaptureRegion> childItemRegion(QWidget *container) {
     if (!regionVisible(candidate)) {
       continue;
     }
-    if (!best || before(candidate, *best)) {
-      best = candidate;
+    auto &target = regionFullyVisible(candidate) ? best : partial;
+    if (!target || before(candidate, *target)) {
+      target = candidate;
     }
   }
-  return best;
+  return best ? best : partial;
 }
 
 std::optional<CaptureRegion> itemRegion(const QString &containerName) {
