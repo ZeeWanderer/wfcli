@@ -58,6 +58,8 @@ qt_add_executable(wfgui
   src/relic_planner_widget.h
   src/title_bar_widget.cpp
   src/title_bar_widget.h
+  src/style_loader.cpp
+  src/style_loader.h
 )
 
 qt_add_resources(wfgui "wfgui_resources"
@@ -129,7 +131,11 @@ qt_add_resources(wfgui "wfgui_resources"
     resources/market/wfgui-plus.png
     resources/market/wfgui-search.png
     resources/market/wfgui-trash.png
-    resources/style.qss
+    resources/styles/activity.qss
+    resources/styles/content.qss
+    resources/styles/controls.qss
+    resources/styles/foundation.qss
+    resources/styles/market.qss
 )
 
 qt_add_resources(wfgui "wfgui_shared_assets"
@@ -196,6 +202,9 @@ if(BUILD_TESTING)
     tests/relic_model_test.cpp
   )
   target_link_libraries(wfgui_tests PRIVATE Qt6::Test wfgui_core)
+  target_compile_definitions(wfgui_tests PRIVATE
+    WFGUI_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}"
+  )
   add_test(NAME wfgui-models COMMAND wfgui_tests)
   set_tests_properties(wfgui-models PROPERTIES
     ENVIRONMENT "QT_QPA_PLATFORM=offscreen"

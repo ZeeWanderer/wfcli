@@ -2,7 +2,6 @@
 #include <QCommandLineParser>
 #include <QCoreApplication>
 #include <QDir>
-#include <QFile>
 #include <QFileInfo>
 #include <QFontDatabase>
 #include <QGuiApplication>
@@ -10,8 +9,9 @@
 #include <QPixmapCache>
 #include <QTimer>
 
-#include "main_window.h"
 #include "display_scale.h"
+#include "main_window.h"
+#include "style_loader.h"
 
 #include <cstdlib>
 
@@ -63,10 +63,7 @@ int main(int argc, char *argv[]) {
       {screenshot, size, screenshotDelay, page, marketItem, marketSide});
   parser.process(app);
 
-  QFile style(":/resources/style.qss");
-  if (style.open(QIODevice::ReadOnly)) {
-    app.setStyleSheet(QString::fromUtf8(style.readAll()));
-  }
+  app.setStyleSheet(wfgui::applicationStyleSheet());
 
   MainWindow window;
   if (!window.setPage(parser.value(page))) {

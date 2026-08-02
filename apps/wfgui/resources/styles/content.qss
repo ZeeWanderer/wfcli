@@ -1,0 +1,101 @@
+/* Shared content surfaces and Mastery page chrome. */
+
+QWidget#contentFrame {
+  background: transparent;
+  border: none;
+}
+
+QWidget#summaryPanel {
+  background: #20283e;
+  border: none;
+  border-radius: 8px;
+}
+
+QWidget#masterySummaryPanel {
+  background: #20283e;
+  border: none;
+  border-radius: 10px;
+}
+
+QWidget#masterySummaryHeader {
+  background: #313a58;
+  border-radius: 10px 10px 0 0;
+  min-height: 40px;
+  max-height: 40px;
+}
+
+QLabel#masterySummaryHeading {
+  color: #ffffff;
+  font-size: 12pt;
+  font-weight: 400;
+}
+
+QLabel#masterySummaryPercent {
+  color: #b59dff;
+  font-size: 12pt;
+  font-weight: 400;
+}
+
+QLabel#masterySummaryRowLabel {
+  color: #ffffff;
+  font-size: 11pt;
+  font-weight: 400;
+}
+
+QLabel#masterySummaryRowValue {
+  color: #ffffff;
+  font-size: 10.5pt;
+  font-weight: 300;
+}
+
+QWidget#masteryBottom {
+  background: #101623;
+  border: none;
+  border-top-left-radius: 15px;
+  border-top-right-radius: 15px;
+  border-bottom-left-radius: 0;
+  border-bottom-right-radius: 0;
+}
+
+QLabel#masterySectionTitle {
+  color: #ffffff;
+  font-size: 13pt;
+  font-weight: 400;
+}
+
+QWidget#masteryModeGroup {
+  background: #20283e;
+  border: none;
+  border-radius: 10px;
+}
+
+QPushButton#masteryMode {
+  background: transparent;
+  border: none;
+  border-radius: 9px;
+  min-height: 26px;
+  max-height: 26px;
+  padding: 0 7px;
+  font-size: 10pt;
+  font-weight: 300;
+}
+
+QPushButton#masteryMode:hover {
+  background: #272f47;
+}
+
+QPushButton#masteryMode:checked {
+  background: #313a58;
+  color: #ffffff;
+}
+
+QWidget#summaryHeader {
+  background: #313a58;
+  border-radius: 8px 8px 0 0;
+}
+
+QLabel#summaryHeading {
+  color: #ffffff;
+  font-size: 12pt;
+  font-weight: 500;
+}

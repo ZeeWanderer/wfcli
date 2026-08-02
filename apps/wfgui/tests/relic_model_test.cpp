@@ -1,4 +1,5 @@
 #include <QCheckBox>
+#include <QFile>
 #include <QImage>
 #include <QJsonArray>
 #include <QJsonDocument>
@@ -7,6 +8,7 @@
 #include <QLocalServer>
 #include <QLocalSocket>
 #include <QPainter>
+#include <QRegularExpression>
 #include <QScrollBar>
 #include <QSet>
 #include <QTemporaryDir>
@@ -60,6 +62,7 @@ private slots:
   void thumbnailCacheRespectsSizeAndDpr();
   void widgetThumbnailDecodeCompletesOffPaintPath();
   void marketOrderCardUsesReferenceStructure();
+  void styleLayersAvoidImplicitSurfaces();
 };
 
 namespace {
@@ -1211,6 +1214,29 @@ void RelicModelTest::marketOrderCardUsesReferenceStructure() {
   QCOMPARE(soldCalls, 1);
   QCOMPARE(removeCalls, 1);
   QCOMPARE(listingCalls, 1);
+}
+
+void RelicModelTest::styleLayersAvoidImplicitSurfaces() {
+  QFile foundation(
+      QStringLiteral(WFGUI_SOURCE_DIR "/resources/styles/foundation.qss"));
+  QVERIFY(foundation.open(QIODevice::ReadOnly));
+  const QString foundationText = QString::fromUtf8(foundation.readAll());
+  const QRegularExpression widgetRule(
+      R"((?:^|\n)QWidget\s*\{([^}]*)\})",
+      QRegularExpression::DotMatchesEverythingOption);
+  const QRegularExpressionMatch widgetMatch = widgetRule.match(foundationText);
+  QVERIFY(widgetMatch.hasMatch());
+  QVERIFY(!widgetMatch.captured(1).contains("background"));
+  QVERIFY(foundationText.contains(".QWidget {\n  background: transparent;"));
+
+  QFile controls(
+      QStringLiteral(WFGUI_SOURCE_DIR "/resources/styles/controls.qss"));
+  QVERIFY(controls.open(QIODevice::ReadOnly));
+  const QString controlsText = QString::fromUtf8(controls.readAll());
+  QVERIFY(controlsText.contains(
+      "QCheckBox::indicator:checked {\n  background: #5e44af;"));
+  QVERIFY(
+      controlsText.contains("image: url(:/resources/market/wfgui-check.png);"));
 }
 
 QTEST_MAIN(RelicModelTest)

@@ -1,0 +1,148 @@
+/* Right activity rail, world cycles, and fissure list. */
+
+QWidget#railTabHeader {
+  background: transparent;
+  border-bottom: 1px solid #313a58;
+  min-height: 33px;
+  max-height: 33px;
+}
+
+QWidget#railTab {
+  background: transparent;
+  border-bottom: 3px solid transparent;
+}
+
+QWidget#railTab[selected="true"] {
+  border-bottom-color: #ffffff;
+}
+
+QLabel#railTabText {
+  color: #8a8c95;
+  font-size: 12pt;
+  font-weight: 300;
+}
+
+QLabel#railTabText[selected="true"] {
+  color: #ffffff;
+}
+
+QWidget#activityBody {
+  background: transparent;
+}
+
+QLabel#cycleName {
+  color: #aeb5c7;
+  font-size: 10.5pt;
+  font-weight: 300;
+}
+
+QLabel#cycleState {
+  color: #ffffff;
+  font-weight: 500;
+  font-size: 12pt;
+}
+
+QWidget#fissureName {
+  background: transparent;
+}
+
+QLabel#fissureMissionType,
+QLabel#fissureLocation {
+  color: #ffffff;
+  font-size: 10.5pt;
+}
+
+QLabel#fissureMissionType {
+  font-weight: 500;
+}
+
+QLabel#fissureLocation {
+  font-weight: 300;
+}
+
+QLabel#countdown {
+  color: #ffffff;
+  font-size: 11pt;
+  font-weight: 400;
+}
+
+QWidget#resurgencePill {
+  background: transparent;
+  min-width: 148px;
+}
+
+QWidget#baroPill {
+  background: transparent;
+  min-width: 104px;
+}
+
+
+QWidget#cycleCard {
+  background: #101623;
+  border: none;
+  border-radius: 25px;
+  min-height: 50px;
+  max-height: 50px;
+}
+
+QLabel#cycleIcon {
+  background: #20283e;
+  border-radius: 24px;
+}
+
+QWidget#fissureSection {
+  background: #101623;
+  border-top-left-radius: 8px;
+  border-top-right-radius: 8px;
+  border-bottom-left-radius: 12px;
+  border-bottom-right-radius: 12px;
+}
+
+QWidget#fissureHeader {
+  background: #20283e;
+  border-top-left-radius: 8px;
+  border-top-right-radius: 8px;
+  border-bottom-left-radius: 0;
+  border-bottom-right-radius: 0;
+  min-height: 26px;
+}
+
+QWidget#notificationControl,
+QAbstractButton#notificationMode {
+  background: transparent;
+  border: none;
+}
+
+QWidget#fissureGroup {
+  background: #171e30;
+  border: none;
+  border-radius: 8px;
+}
+
+QWidget#fissureRow {
+  background: transparent;
+}
+
+QLabel#summaryValue {
+  font-size: 11pt;
+  font-weight: 500;
+}
+
+QScrollArea#relicScroll,
+QScrollArea#relicScroll QWidget#qt_scrollarea_viewport,
+QScrollArea#activityScroll,
+QScrollArea#activityScroll QWidget#qt_scrollarea_viewport,
+QWidget#relicGrid,
+QWidget#relicCardCanvas {
+  background: transparent;
+  border: none;
+}
+
+QWidget#fissureList {
+  background: #101623;
+  border: none;
+  border-top-left-radius: 0;
+  border-top-right-radius: 0;
+  border-bottom-left-radius: 12px;
+  border-bottom-right-radius: 12px;
+}
