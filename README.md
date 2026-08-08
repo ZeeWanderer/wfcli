@@ -23,6 +23,15 @@ live world timers and fissures.
 
 ![wfgui Foundry view](docs/images/wfgui-foundry.png)
 
+## In-game Overlays
+
+`wfcompanion` augments relic rewards with Market values and collection progress, then ranks owned
+relics during selection.
+
+![Relic reward overlay](docs/images/wfcompanion-relic-rewards.webp)
+
+![Owned relic recommendations](docs/images/wfcompanion-relic-suggestions.webp)
+
 ## Build
 
 Required toolchains:
