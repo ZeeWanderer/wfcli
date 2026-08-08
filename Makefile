@@ -72,11 +72,13 @@ gui-reconfigure-prod:
 
 dev-erlang:
 	$(REBAR3) escriptize
+	rm -rf _build/default/rel/wfdaemon
 	$(REBAR3) release
 	./scripts/stage-erlang dev
 
 prod-erlang:
 	$(REBAR3) as prod escriptize
+	rm -rf _build/prod/rel/wfdaemon
 	$(REBAR3) as prod release
 	./scripts/stage-erlang prod
 
