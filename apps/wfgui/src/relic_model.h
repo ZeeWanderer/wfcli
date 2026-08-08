@@ -1,9 +1,10 @@
 #pragma once
 
 #include <QAbstractListModel>
-#include <QJsonObject>
-#include <QSortFilterProxyModel>
 #include <QHash>
+#include <QJsonObject>
+#include <QSet>
+#include <QSortFilterProxyModel>
 
 #include <memory>
 
@@ -42,12 +43,17 @@ public:
   void clear();
   void setPricesLoading(bool loading);
   void setAssets(const wfgui::AssetMap &assets);
+  void applyAssets(const wfgui::AssetMap &assets);
   int traceCount() const;
 
 private:
+  void rebuildAssetIndex();
+  void notifyAssetRows(const QSet<int> &rows);
+
   struct Storage;
   std::unique_ptr<Storage> storage_;
   wfgui::AssetMap assets_;
+  QMultiHash<QString, int> assetRows_;
   bool pricesLoading_ = false;
 };
 

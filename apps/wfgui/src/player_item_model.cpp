@@ -341,15 +341,15 @@ void PlayerItemModel::setAssets(const wfgui::AssetMap &assets) {
   assets_ = assets;
   for (int row : affectedRows) {
     componentCache_.remove(row);
-    emit dataChanged(index(row), index(row),
-                     {AssetPathRole, AssetRefRole, ComponentsRole});
   }
+  notifyRows(affectedRows, {AssetPathRole, AssetRefRole, ComponentsRole});
 }
 
 void PlayerItemModel::applyAssets(const wfgui::AssetMap &assets) {
   QSet<int> affectedRows;
   for (auto asset = assets.cbegin(); asset != assets.cend(); ++asset) {
-    if (!asset.value().isValid() || assets_.value(asset.key()) == asset.value()) {
+    if (!asset.value().isValid() ||
+        assets_.value(asset.key()) == asset.value()) {
       continue;
     }
     assets_.insert(asset.key(), asset.value());
@@ -359,9 +359,8 @@ void PlayerItemModel::applyAssets(const wfgui::AssetMap &assets) {
   }
   for (int row : affectedRows) {
     componentCache_.remove(row);
-    emit dataChanged(index(row), index(row),
-                     {AssetPathRole, AssetRefRole, ComponentsRole});
   }
+  notifyRows(affectedRows, {AssetPathRole, AssetRefRole, ComponentsRole});
 }
 
 void PlayerItemModel::applyMarketQuotes(const QJsonArray &quotes,
@@ -454,10 +453,22 @@ void PlayerItemModel::notifyMarketRows(const QSet<QString> &names) {
       rows.insert(row);
     }
   }
-  for (int row : rows) {
-    emit dataChanged(index(row), index(row),
-                     {PlatinumRole, BuyPlatinumRole, PriceStateRole,
-                      AcquisitionPlatinumRole, AcquisitionPriceStateRole});
+  notifyRows(rows, {PlatinumRole, BuyPlatinumRole, PriceStateRole,
+                    AcquisitionPlatinumRole, AcquisitionPriceStateRole});
+}
+
+void PlayerItemModel::notifyRows(const QSet<int> &rows,
+                                 const QList<int> &roles) {
+  QList<int> sorted = rows.values();
+  std::sort(sorted.begin(), sorted.end());
+  for (qsizetype first = 0; first < sorted.size();) {
+    qsizetype last = first;
+    while (last + 1 < sorted.size() &&
+           sorted.at(last + 1) == sorted.at(last) + 1) {
+      ++last;
+    }
+    emit dataChanged(index(sorted.at(first)), index(sorted.at(last)), roles);
+    first = last + 1;
   }
 }
 
@@ -649,9 +660,6 @@ bool PlayerItemFilterModel::lessThan(const QModelIndex &left,
                rightName.toCaseFolded());
   }
   if (mode_ == "platinum") {
-    if (pricesLoading_) {
-      return leftName.compare(rightName, Qt::CaseInsensitive) < 0;
-    }
     const QVariant leftPrice =
         value(left, PlayerItemModel::AcquisitionPlatinumRole);
     const QVariant rightPrice =

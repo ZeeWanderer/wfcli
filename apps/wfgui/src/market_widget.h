@@ -35,6 +35,7 @@ protected:
 
 private:
   void updateState();
+  void scheduleRebuild();
   void rebuildOrders();
   void relayoutOrders();
   void setView(QWidget *view);
@@ -70,9 +71,11 @@ private:
   QWidget *orderHost_;
   QGridLayout *orderGrid_;
   QTimer *refreshTimer_;
+  QTimer *rebuildTimer_;
   QList<QWidget *> orderCards_;
   QList<QJsonObject> filteredOrders_;
   QString category_ = "all";
   bool descending_ = false;
+  bool rebuildPending_ = false;
   int columns_ = 0;
 };

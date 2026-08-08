@@ -5,13 +5,17 @@
 #include <QHash>
 #include <QImageReader>
 #include <QList>
+#include <QMutex>
+#include <QMutexLocker>
 #include <QPaintDevice>
 #include <QPainter>
 #include <QPixmapCache>
 #include <QPointer>
+#include <QQueue>
 #include <QSet>
 #include <QThread>
 #include <QThreadPool>
+#include <QTimer>
 #include <QWidget>
 #include <QtMath>
 
@@ -24,15 +28,15 @@
 
 namespace {
 constexpr int MemoryCacheKiB = 64 * 1024;
+constexpr int ReadyBatchSize = 4;
 constexpr qint64 MaximumSourcePixels = 64 * 1024 * 1024;
 constexpr int MaximumSourceDimension = 16384;
 
 bool oversized(const QSize &size) {
-  return size.isValid() &&
-         (size.width() > MaximumSourceDimension ||
-          size.height() > MaximumSourceDimension ||
-          static_cast<qint64>(size.width()) * size.height() >
-              MaximumSourcePixels);
+  return size.isValid() && (size.width() > MaximumSourceDimension ||
+                            size.height() > MaximumSourceDimension ||
+                            static_cast<qint64>(size.width()) * size.height() >
+                                MaximumSourcePixels);
 }
 
 QImage normalized(QImage image) {
@@ -54,13 +58,25 @@ QImage decodeThumbnail(const QString &path, const QSize &pixelBounds) {
     return {};
   }
 
+  QSize targetSize;
+  if (source.isValid()) {
+    targetSize = source.scaled(pixelBounds, Qt::KeepAspectRatio);
+    targetSize.setWidth(std::max(1, targetSize.width()));
+    targetSize.setHeight(std::max(1, targetSize.height()));
+    if (targetSize != source) {
+      reader.setScaledSize(targetSize);
+    }
+  }
+
   QImage decoded = reader.read();
   if (decoded.isNull() || oversized(decoded.size())) {
     return {};
   }
-  QSize targetSize = decoded.size().scaled(pixelBounds, Qt::KeepAspectRatio);
-  targetSize.setWidth(std::max(1, targetSize.width()));
-  targetSize.setHeight(std::max(1, targetSize.height()));
+  if (!targetSize.isValid()) {
+    targetSize = decoded.size().scaled(pixelBounds, Qt::KeepAspectRatio);
+    targetSize.setWidth(std::max(1, targetSize.width()));
+    targetSize.setHeight(std::max(1, targetSize.height()));
+  }
   decoded = normalized(std::move(decoded));
   if (decoded.size() != targetSize) {
     decoded = decoded.scaled(targetSize, Qt::IgnoreAspectRatio,
@@ -86,8 +102,11 @@ wfgui::DerivativeCache &derivativeCache() {
 class ThumbnailLoader final : public QObject {
 public:
   explicit ThumbnailLoader(QObject *parent) : QObject(parent) {
-    pool_.setMaxThreadCount(std::clamp(QThread::idealThreadCount(), 1, 4));
+    const int cores = std::max(1, QThread::idealThreadCount());
+    pool_.setMaxThreadCount(std::clamp(cores - 1, 1, 3));
+    pool_.setThreadPriority(QThread::LowPriority);
     writer_.setMaxThreadCount(1);
+    writer_.setThreadPriority(QThread::LowestPriority);
     QPixmapCache::setCacheLimit(
         std::max(QPixmapCache::cacheLimit(), MemoryCacheKiB));
     connect(QApplication::instance(), &QCoreApplication::aboutToQuit, this,
@@ -98,10 +117,6 @@ public:
     stop();
     pool_.waitForDone();
     writer_.waitForDone();
-  }
-
-  void registerAsset(const wfgui::AssetRef &asset) {
-    derivativeCache().registerAsset(asset);
   }
 
   void request(const QString &key, const wfgui::AssetRef &asset,
@@ -133,6 +148,7 @@ public:
           if (!loader || loader->stopping_.load()) {
             return;
           }
+          derivativeCache().registerAsset(asset);
           QImage image = derivativeCache().load(asset, pixelBounds);
           const bool needsStore = image.isNull() && asset.isPersistent();
           if (image.isNull()) {
@@ -146,14 +162,7 @@ public:
           if (!loader || loader->stopping_.load()) {
             return;
           }
-          QMetaObject::invokeMethod(
-              loader,
-              [loader, key, image = std::move(image), dpr]() mutable {
-                if (loader && !loader->stopping_.load()) {
-                  loader->finish(key, std::move(image), dpr);
-                }
-              },
-              Qt::QueuedConnection);
+          loader->enqueueResult(key, std::move(image), dpr);
         },
         nextPriority());
   }
@@ -164,6 +173,12 @@ public:
   }
 
 private:
+  struct ReadyResult {
+    QString key;
+    QImage image;
+    qreal dpr;
+  };
+
   struct Failure {
     int attempts = 0;
     qint64 retryAt = 0;
@@ -177,6 +192,9 @@ private:
     writer_.clear();
     pending_.clear();
     waiters_.clear();
+    const QMutexLocker lock(&readyMutex_);
+    ready_.clear();
+    drainScheduled_ = false;
   }
 
   int nextPriority() {
@@ -198,7 +216,55 @@ private:
         -1);
   }
 
-  void finish(const QString &key, QImage image, qreal dpr) {
+  void enqueueResult(QString key, QImage image, qreal dpr) {
+    bool schedule = false;
+    {
+      const QMutexLocker lock(&readyMutex_);
+      if (stopping_.load()) {
+        return;
+      }
+      ready_.enqueue(ReadyResult{std::move(key), std::move(image), dpr});
+      if (!drainScheduled_) {
+        drainScheduled_ = true;
+        schedule = true;
+      }
+    }
+    if (schedule) {
+      QMetaObject::invokeMethod(
+          this, [this] { drainResults(); }, Qt::QueuedConnection);
+    }
+  }
+
+  void drainResults() {
+    QQueue<ReadyResult> batch;
+    bool more = false;
+    {
+      const QMutexLocker lock(&readyMutex_);
+      for (int count = 0; count < ReadyBatchSize && !ready_.isEmpty();
+           ++count) {
+        batch.enqueue(ready_.dequeue());
+      }
+      more = !ready_.isEmpty();
+      if (!more) {
+        drainScheduled_ = false;
+      }
+    }
+
+    QSet<QWidget *> targets;
+    while (!batch.isEmpty()) {
+      ReadyResult result = batch.dequeue();
+      finish(result.key, std::move(result.image), result.dpr, targets);
+    }
+    for (QWidget *target : std::as_const(targets)) {
+      target->update();
+    }
+    if (more) {
+      QTimer::singleShot(0, this, [this] { drainResults(); });
+    }
+  }
+
+  void finish(const QString &key, QImage image, qreal dpr,
+              QSet<QWidget *> &targets) {
     pending_.remove(key);
     if (image.isNull()) {
       Failure &failure = failures_[key];
@@ -212,7 +278,7 @@ private:
     const auto waiters = waiters_.take(key);
     for (const QPointer<QWidget> &target : waiters) {
       if (target) {
-        target->update();
+        targets.insert(target.data());
       }
     }
   }
@@ -222,7 +288,10 @@ private:
   QSet<QString> pending_;
   QHash<QString, Failure> failures_;
   QHash<QString, QList<QPointer<QWidget>>> waiters_;
+  QMutex readyMutex_;
+  QQueue<ReadyResult> ready_;
   std::atomic_bool stopping_ = false;
+  bool drainScheduled_ = false;
   int priority_ = 0;
 };
 
@@ -236,8 +305,7 @@ ThumbnailLoader *thumbnailLoader() {
 
 QString memoryKey(const wfgui::AssetRef &asset, const QSize &pixelBounds,
                   qreal dpr) {
-  const QString identity =
-      asset.digest.isEmpty() ? asset.path : asset.digest;
+  const QString identity = asset.digest.isEmpty() ? asset.path : asset.digest;
   return QString("wfgui-thumb:contain-v1:%1:%2x%3@%4")
       .arg(identity)
       .arg(pixelBounds.width())
@@ -273,7 +341,6 @@ QPixmap cachedThumbnail(QPainter &painter, const AssetRef &asset,
   QWidget *target = dynamic_cast<QWidget *>(painter.device());
   if (target && !asset.path.startsWith(":/")) {
     ThumbnailLoader *loader = thumbnailLoader();
-    loader->registerAsset(asset);
     loader->request(key, asset, pixelBounds, dpr, target);
     return {};
   }
@@ -289,9 +356,7 @@ DerivativeCacheStats derivativeCacheStats() {
   return derivativeCache().stats();
 }
 
-bool clearDerivativeCache() {
-  return derivativeCache().clear();
-}
+bool clearDerivativeCache() { return derivativeCache().clear(); }
 
 void clearThumbnailMemoryCache() { thumbnailLoader()->clearMemory(); }
 

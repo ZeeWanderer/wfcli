@@ -197,7 +197,7 @@ MarketWidget::MarketWidget(AppController *controller, QWidget *parent)
       inventory_(new QComboBox), sort_(new QComboBox),
       direction_(new QToolButton), scroll_(new QScrollArea),
       orderHost_(new QWidget), orderGrid_(new QGridLayout(orderHost_)),
-      refreshTimer_(new QTimer(this)) {
+      refreshTimer_(new QTimer(this)), rebuildTimer_(new QTimer(this)) {
   setObjectName("page");
   views_->setObjectName("marketViews");
   loadingView_->setObjectName("marketView");
@@ -420,11 +420,16 @@ MarketWidget::MarketWidget(AppController *controller, QWidget *parent)
   connect(controller_, &AppController::marketAccountChanged, this,
           &MarketWidget::updateState);
   connect(controller_, &AppController::marketCatalogChanged, this,
-          &MarketWidget::rebuildOrders);
+          &MarketWidget::scheduleRebuild);
   connect(controller_, &AppController::marketQuotesChanged, this,
-          &MarketWidget::rebuildOrders);
+          &MarketWidget::scheduleRebuild);
   connect(controller_, &AppController::inventoryStateChanged, this,
-          &MarketWidget::rebuildOrders);
+          &MarketWidget::scheduleRebuild);
+  connect(controller_, &AppController::assetsChanged, this,
+          [this](const QStringList &) { scheduleRebuild(); });
+  rebuildTimer_->setSingleShot(true);
+  rebuildTimer_->setInterval(16);
+  connect(rebuildTimer_, &QTimer::timeout, this, &MarketWidget::rebuildOrders);
   refreshTimer_->setInterval(60'000);
   connect(refreshTimer_, &QTimer::timeout, this, [this] {
     if (controller_->marketAccount().value("authenticated").toBool() &&
@@ -445,6 +450,9 @@ bool MarketWidget::eventFilter(QObject *watched, QEvent *event) {
 void MarketWidget::showEvent(QShowEvent *event) {
   QWidget::showEvent(event);
   refreshTimer_->start();
+  if (rebuildPending_) {
+    scheduleRebuild();
+  }
   controller_->ensureInventory();
   controller_->ensureMarket();
 }
@@ -510,7 +518,20 @@ void MarketWidget::updateState() {
   rebuildOrders();
 }
 
+void MarketWidget::scheduleRebuild() {
+  if (!isVisible()) {
+    rebuildPending_ = true;
+    return;
+  }
+  rebuildTimer_->start();
+}
+
 void MarketWidget::rebuildOrders() {
+  if (!isVisible()) {
+    rebuildPending_ = true;
+    return;
+  }
+  rebuildPending_ = false;
   if (!controller_->marketAccount().value("authenticated").toBool()) {
     return;
   }

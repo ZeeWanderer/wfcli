@@ -46,6 +46,7 @@ private:
   QPushButton *refresh_;
   QStackedLayout *content_;
   QTimer *priceUpdateTimer_;
+  QString rankIconPath_;
   QString mode_ = "easy";
   bool priceLoading_ = false;
 };

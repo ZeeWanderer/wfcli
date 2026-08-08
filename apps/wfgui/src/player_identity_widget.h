@@ -1,5 +1,6 @@
 #pragma once
 
+#include <QString>
 #include <QWidget>
 
 class AppController;
@@ -22,5 +23,6 @@ private:
   QLabel *icon_;
   QLabel *rank_;
   QLabel *name_;
+  QString rankIconPath_;
   QString playerName_;
 };

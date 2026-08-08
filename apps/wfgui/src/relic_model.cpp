@@ -5,7 +5,9 @@
 #include <QVariantList>
 #include <QVariantMap>
 
+#include <algorithm>
 #include <ranges>
+#include <utility>
 
 import wfgui.relic_data;
 
@@ -159,6 +161,7 @@ void RelicModel::clear() {
   }
   beginResetModel();
   storage_->data = {};
+  assetRows_.clear();
   endResetModel();
 }
 
@@ -176,25 +179,40 @@ void RelicModel::setAssets(const wfgui::AssetMap &assets) {
   if (assets_ == assets) {
     return;
   }
-  QList<int> changedRows;
-  for (int row = 0; row < rowCount(); ++row) {
-    const wfgui::Relic &relic =
-        storage_->data.relics[static_cast<std::size_t>(row)];
-    bool changed = assets_.value(relic.assetId) != assets.value(relic.assetId);
-    changed = changed || std::ranges::any_of(
-                             relic.rewards, [this, &assets](const auto &reward) {
-                               return assets_.value(reward.assetId) !=
-                                      assets.value(reward.assetId);
-                             });
-    if (changed) {
-      changedRows.append(row);
+  QSet<int> changedRows;
+  QSet<QString> ids;
+  for (auto asset = assets_.cbegin(); asset != assets_.cend(); ++asset) {
+    if (assets.value(asset.key()) != asset.value()) {
+      ids.insert(asset.key());
+    }
+  }
+  for (auto asset = assets.cbegin(); asset != assets.cend(); ++asset) {
+    if (assets_.value(asset.key()) != asset.value()) {
+      ids.insert(asset.key());
+    }
+  }
+  for (const QString &id : std::as_const(ids)) {
+    for (int row : assetRows_.values(id)) {
+      changedRows.insert(row);
     }
   }
   assets_ = assets;
-  for (const int row : changedRows) {
-    emit dataChanged(index(row), index(row),
-                     {RelicImageRole, RelicAssetRole, RewardsRole});
+  notifyAssetRows(changedRows);
+}
+
+void RelicModel::applyAssets(const wfgui::AssetMap &assets) {
+  QSet<int> changedRows;
+  for (auto asset = assets.cbegin(); asset != assets.cend(); ++asset) {
+    if (!asset.value().isValid() ||
+        assets_.value(asset.key()) == asset.value()) {
+      continue;
+    }
+    assets_.insert(asset.key(), asset.value());
+    for (int row : assetRows_.values(asset.key())) {
+      changedRows.insert(row);
+    }
   }
+  notifyAssetRows(changedRows);
 }
 
 bool RelicModel::replace(const QJsonObject &data, QString *error) {
@@ -215,6 +233,7 @@ bool RelicModel::replace(const QJsonObject &data, QString *error) {
       current = std::move(updated);
     }
     storage_->data.traceCount = next.traceCount;
+    rebuildAssetIndex();
     if (rowCount() > 0) {
       emit dataChanged(index(0), index(rowCount() - 1));
     }
@@ -223,8 +242,40 @@ bool RelicModel::replace(const QJsonObject &data, QString *error) {
 
   beginResetModel();
   storage_->data = std::move(next);
+  rebuildAssetIndex();
   endResetModel();
   return true;
+}
+
+void RelicModel::rebuildAssetIndex() {
+  assetRows_.clear();
+  for (int row = 0; row < rowCount(); ++row) {
+    const wfgui::Relic &relic =
+        storage_->data.relics[static_cast<std::size_t>(row)];
+    if (!relic.assetId.isEmpty()) {
+      assetRows_.insert(relic.assetId, row);
+    }
+    for (const wfgui::Relic::Reward &reward : relic.rewards) {
+      if (!reward.assetId.isEmpty()) {
+        assetRows_.insert(reward.assetId, row);
+      }
+    }
+  }
+}
+
+void RelicModel::notifyAssetRows(const QSet<int> &rows) {
+  QList<int> sorted = rows.values();
+  std::sort(sorted.begin(), sorted.end());
+  for (qsizetype first = 0; first < sorted.size();) {
+    qsizetype last = first;
+    while (last + 1 < sorted.size() &&
+           sorted.at(last + 1) == sorted.at(last) + 1) {
+      ++last;
+    }
+    emit dataChanged(index(sorted.at(first)), index(sorted.at(last)),
+                     {RelicImageRole, RelicAssetRole, RewardsRole});
+    first = last + 1;
+  }
 }
 
 int RelicModel::traceCount() const { return storage_->data.traceCount; }

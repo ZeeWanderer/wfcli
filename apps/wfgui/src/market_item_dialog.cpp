@@ -401,6 +401,20 @@ MarketItemView::MarketItemView(AppController *controller,
   });
   connect(controller_, &AppController::marketCatalogChanged, this,
           &MarketItemView::updateContent);
+  connect(controller_, &AppController::assetsChanged, this,
+          [this](const QStringList &ids) {
+            if (!isVisible() || itemKey_.isEmpty()) {
+              return;
+            }
+            const QString assetId = controller_->marketItem(itemKey_)
+                                        .value("asset")
+                                        .toObject()
+                                        .value("id")
+                                        .toString();
+            if (ids.contains(assetId)) {
+              updateContent();
+            }
+          });
   connect(controller_, &AppController::marketQuotesChanged, this,
           &MarketItemView::updateContent);
   connect(controller_, &AppController::marketVariantQuoteReady, this,

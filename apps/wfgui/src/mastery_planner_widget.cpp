@@ -315,8 +315,20 @@ MasteryPlannerWidget::MasteryPlannerWidget(AppController *controller,
       updateContent();
     }
   });
-  connect(controller_, &AppController::assetsChanged, this,
+  connect(controller_, &AppController::playerProfileChanged, this,
           &MasteryPlannerWidget::updateContent);
+  connect(controller_, &AppController::assetsChanged, this,
+          [this](const QStringList &ids) {
+            const QString rankAssetId = controller_->playerProfile()
+                                            .value("rank_asset")
+                                            .toObject()
+                                            .value("id")
+                                            .toString();
+            if (ids.contains(rankAssetId)) {
+              rankIconPath_.clear();
+              updateContent();
+            }
+          });
   priceUpdateTimer_->setInterval(33);
   priceUpdateTimer_->setSingleShot(true);
   connect(priceUpdateTimer_, &QTimer::timeout, this,
@@ -401,8 +413,11 @@ void MasteryPlannerWidget::updateContent() {
   const QString iconPath = rankAssetPath.isEmpty()
                                ? ":/resources/ui/mastery_rank.png"
                                : rankAssetPath;
-  rankIcon_->setPixmap(QPixmap(iconPath).scaled(60, 60, Qt::KeepAspectRatio,
-                                                Qt::SmoothTransformation));
+  if (rankIconPath_ != iconPath) {
+    rankIconPath_ = iconPath;
+    rankIcon_->setPixmap(QPixmap(iconPath).scaled(60, 60, Qt::KeepAspectRatio,
+                                                  Qt::SmoothTransformation));
+  }
   const QJsonObject rankProgress = summary.value("rank_progress").toObject();
   const bool hasRankProgress = rankProgress.value("available").toBool() &&
                                rankProgress.value("current").isDouble() &&
@@ -428,18 +443,7 @@ void MasteryPlannerWidget::updateContent() {
   intrinsics_->setData(summary.value("intrinsics").toObject());
 
   const bool loading = controller_->masteryLoading();
-  int pendingPrices = 0;
-  const int priceTotal = mode_ == "platinum" ? items_->rowCount() : 0;
-  if (priceLoading_ && !loading) {
-    for (int row = 0; row < priceTotal; ++row) {
-      if (items_->index(row, 0)
-              .data(PlayerItemModel::AcquisitionPriceStateRole)
-              .toString() == "loading") {
-        ++pendingPrices;
-      }
-    }
-  }
-  const bool pricing = priceLoading_ && pendingPrices > 0;
+  const bool pricing = priceLoading_ && !loading;
   loadingBar_->setVisible(loading || pricing);
   if (loading) {
     loadingBar_->setRange(0, 0);

@@ -70,6 +70,7 @@ private slots:
   void keepsMasteryRowsStableWhilePricesLoad();
   void keepsInventoryRowsStableWhilePricesLoad();
   void invalidatesCachedComponentAssets();
+  void batchesContiguousAssetUpdates();
   void rejectsMalformedPayload();
   void cardLayoutUsesConstraints();
   void inventoryCardLayoutUsesConstraints();
@@ -209,11 +210,15 @@ void RelicModelTest::parsesRecommendations() {
 void RelicModelTest::appliesResolvedAssets() {
   RelicModel model;
   QVERIFY(model.replace(recommendations()));
-  model.setAssets(
+  QSignalSpy changes(&model, &QAbstractItemModel::dataChanged);
+  model.applyAssets(
       {{"relic:axi-a1",
         wfgui::AssetRef::embedded("relic:axi-a1", "/tmp/relic.png")},
        {"market:saryn_chassis",
         wfgui::AssetRef::embedded("market:saryn_chassis", "/tmp/reward.png")}});
+  QCOMPARE(changes.count(), 1);
+  QCOMPARE(qvariant_cast<QModelIndex>(changes.at(0).at(0)).row(), 0);
+  QCOMPARE(qvariant_cast<QModelIndex>(changes.at(0).at(1)).row(), 0);
 
   const QModelIndex first = model.index(0);
   QCOMPARE(model.data(first, RelicModel::RelicImageRole).toString(),
@@ -632,7 +637,7 @@ void RelicModelTest::keepsMasteryRowsStableWhilePricesLoad() {
                {"name", "Beta Prime"},
                {"mastered", false},
                {"buyable", true},
-               {"potential_xp", 3000},
+               {"potential_xp", 6000},
                {"components", QJsonArray{QJsonObject{
                                   {"market_name", "Beta Prime Blueprint"},
                                   {"market_required", true},
@@ -642,6 +647,18 @@ void RelicModelTest::keepsMasteryRowsStableWhilePricesLoad() {
            },
        }},
   }));
+  model.applyMarketQuotes(
+      QJsonArray{
+          QJsonObject{
+              {"item", "Alpha Prime Blueprint"},
+              {"quote", QJsonObject{{"lowest_sell", 10}}},
+          },
+          QJsonObject{
+              {"item", "Beta Prime Blueprint"},
+              {"quote", QJsonObject{{"lowest_sell", 15}}},
+          },
+      },
+      {});
   PlayerItemFilterModel filter;
   filter.setSourceModel(&model);
   filter.setPricesLoading(true);
@@ -649,24 +666,33 @@ void RelicModelTest::keepsMasteryRowsStableWhilePricesLoad() {
 
   QCOMPARE(filter.rowCount(), 2);
   QCOMPARE(filter.index(0, 0).data(PlayerItemModel::NameRole).toString(),
-           QString("Alpha Prime"));
+           QString("Beta Prime"));
   QSignalSpy layoutChanges(&filter, &QAbstractItemModel::layoutChanged);
-  model.applyMarketQuotes(QJsonArray{QJsonObject{
-                              {"item", "Beta Prime Blueprint"},
-                              {"quote", QJsonObject{{"lowest_sell", 20}}},
-                          }},
-                          QJsonArray{"Alpha Prime Blueprint"});
+  model.applyMarketQuotes(
+      QJsonArray{
+          QJsonObject{
+              {"item", "Alpha Prime Blueprint"},
+              {"quote", QJsonObject{{"lowest_sell", 5}}},
+          },
+          QJsonObject{
+              {"item", "Beta Prime Blueprint"},
+              {"quote", QJsonObject{{"lowest_sell", 20}}},
+          },
+      },
+      {});
 
+  QCOMPARE(filter.rowCount(), 2);
+  QCOMPARE(filter.index(0, 0).data(PlayerItemModel::NameRole).toString(),
+           QString("Beta Prime"));
+  QCOMPARE(filter.index(1, 0).data(PlayerItemModel::NameRole).toString(),
+           QString("Alpha Prime"));
+  QCOMPARE(layoutChanges.count(), 0);
+
+  filter.setPricesLoading(false);
   QCOMPARE(filter.rowCount(), 2);
   QCOMPARE(filter.index(0, 0).data(PlayerItemModel::NameRole).toString(),
            QString("Alpha Prime"));
   QCOMPARE(filter.index(1, 0).data(PlayerItemModel::NameRole).toString(),
-           QString("Beta Prime"));
-  QCOMPARE(layoutChanges.count(), 0);
-
-  filter.setPricesLoading(false);
-  QCOMPARE(filter.rowCount(), 1);
-  QCOMPARE(filter.index(0, 0).data(PlayerItemModel::NameRole).toString(),
            QString("Beta Prime"));
 }
 
@@ -753,6 +779,32 @@ void RelicModelTest::invalidatesCachedComponentAssets() {
               .value("image")
               .toString()
               .isEmpty());
+}
+
+void RelicModelTest::batchesContiguousAssetUpdates() {
+  PlayerItemModel model;
+  QVERIFY(model.replace({
+      {"items",
+       QJsonArray{
+           QJsonObject{{"id", "first"},
+                       {"name", "First"},
+                       {"asset", QJsonObject{{"id", "shared"}}}},
+           QJsonObject{{"id", "second"},
+                       {"name", "Second"},
+                       {"asset", QJsonObject{{"id", "shared"}}}},
+           QJsonObject{{"id", "third"},
+                       {"name", "Third"},
+                       {"asset", QJsonObject{{"id", "other"}}}},
+       }},
+  }));
+
+  QSignalSpy changes(&model, &QAbstractItemModel::dataChanged);
+  model.applyAssets(
+      {{"shared", wfgui::AssetRef::embedded("shared", "/tmp/shared.png")}});
+
+  QCOMPARE(changes.count(), 1);
+  QCOMPARE(qvariant_cast<QModelIndex>(changes.at(0).at(0)).row(), 0);
+  QCOMPARE(qvariant_cast<QModelIndex>(changes.at(0).at(1)).row(), 1);
 }
 
 void RelicModelTest::rejectsMalformedPayload() {

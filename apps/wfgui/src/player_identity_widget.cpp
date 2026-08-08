@@ -43,7 +43,17 @@ PlayerIdentityWidget::PlayerIdentityWidget(AppController *controller,
   connect(controller_, &AppController::playerProfileChanged, this,
           [this] { updateProfile(); });
   connect(controller_, &AppController::assetsChanged, this,
-          [this] { updateProfile(); });
+          [this](const QStringList &ids) {
+            const QString rankAssetId = controller_->playerProfile()
+                                            .value("rank_asset")
+                                            .toObject()
+                                            .value("id")
+                                            .toString();
+            if (ids.contains(rankAssetId)) {
+              rankIconPath_.clear();
+              updateProfile();
+            }
+          });
   updateProfile();
 }
 
@@ -68,8 +78,11 @@ void PlayerIdentityWidget::updateProfile() {
   const QString iconPath = rankAssetPath.isEmpty()
                                ? ":/resources/ui/mastery_rank.png"
                                : rankAssetPath;
-  icon_->setPixmap(QPixmap(iconPath).scaled(
-      50, 50, Qt::KeepAspectRatio, Qt::SmoothTransformation));
+  if (rankIconPath_ != iconPath) {
+    rankIconPath_ = iconPath;
+    icon_->setPixmap(QPixmap(iconPath).scaled(50, 50, Qt::KeepAspectRatio,
+                                              Qt::SmoothTransformation));
+  }
   name_->setToolTip(playerName_);
   updateName();
 }

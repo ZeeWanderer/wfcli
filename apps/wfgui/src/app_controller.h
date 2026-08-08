@@ -108,7 +108,7 @@ signals:
   void inventoryStateChanged();
   void masteryStateChanged();
   void playerProfileChanged();
-  void assetsChanged();
+  void assetsChanged(const QStringList &ids);
   void activityStateChanged();
   void notificationSettingsChanged();
   void marketAccountChanged();

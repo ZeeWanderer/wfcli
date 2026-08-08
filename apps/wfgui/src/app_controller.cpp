@@ -61,12 +61,13 @@ AppController::AppController(QObject *parent)
               }
             }
             if (!changedAssets.isEmpty()) {
-              relics_.setAssets(assets_);
+              relics_.applyAssets(changedAssets);
               foundryItems_.applyAssets(changedAssets);
               inventoryItems_.applyAssets(changedAssets);
               masteryItems_.applyAssets(changedAssets);
-              emit assetsChanged();
-              emit marketCatalogChanged();
+              QStringList ids = changedAssets.keys();
+              ids.sort();
+              emit assetsChanged(ids);
             }
           });
   connect(&daemon_, &DaemonClient::assetRequestFailed, this,

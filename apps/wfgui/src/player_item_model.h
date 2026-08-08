@@ -73,6 +73,7 @@ public:
 
 private:
   void rebuildIndexes();
+  void notifyRows(const QSet<int> &rows, const QList<int> &roles);
   void notifyMarketRows(const QSet<QString> &names);
 
   QList<QJsonObject> items_;
