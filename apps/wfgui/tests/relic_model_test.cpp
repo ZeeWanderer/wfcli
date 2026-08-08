@@ -647,6 +647,15 @@ void RelicModelTest::keepsMasteryRowsStableWhilePricesLoad() {
            },
        }},
   }));
+  PlayerItemFilterModel filter;
+  filter.setSourceModel(&model);
+  filter.setPricesLoading(true);
+  filter.setMode("platinum");
+
+  QCOMPARE(filter.rowCount(), 2);
+  QCOMPARE(filter.index(0, 0).data(PlayerItemModel::NameRole).toString(),
+           QString("Alpha Prime"));
+  QSignalSpy layoutChanges(&filter, &QAbstractItemModel::layoutChanged);
   model.applyMarketQuotes(
       QJsonArray{
           QJsonObject{
@@ -659,15 +668,14 @@ void RelicModelTest::keepsMasteryRowsStableWhilePricesLoad() {
           },
       },
       {});
-  PlayerItemFilterModel filter;
-  filter.setSourceModel(&model);
-  filter.setPricesLoading(true);
-  filter.setMode("platinum");
 
-  QCOMPARE(filter.rowCount(), 2);
+  QCOMPARE(layoutChanges.count(), 0);
+  QCOMPARE(filter.index(0, 0).data(PlayerItemModel::NameRole).toString(),
+           QString("Alpha Prime"));
+  filter.sort(0);
   QCOMPARE(filter.index(0, 0).data(PlayerItemModel::NameRole).toString(),
            QString("Beta Prime"));
-  QSignalSpy layoutChanges(&filter, &QAbstractItemModel::layoutChanged);
+  layoutChanges.clear();
   model.applyMarketQuotes(
       QJsonArray{
           QJsonObject{
@@ -1301,6 +1309,8 @@ void RelicModelTest::cacheMissDoesNotBecomeMarketMiss() {
   {
     DaemonClient client;
     QSignalSpy resolved(&client, &DaemonClient::marketQuotesResolved);
+    QSignalSpy cacheSettled(&client, &DaemonClient::marketQuoteCacheSettled);
+    QSignalSpy fetchSettled(&client, &DaemonClient::marketQuoteFetchSettled);
     QSignalSpy variantResolved(&client, &DaemonClient::marketVariantQuoteReady);
     QSignalSpy matches(&client, &DaemonClient::marketMatchesResolved);
     QSignalSpy described(&client, &DaemonClient::marketItemsDescribed);
@@ -1369,6 +1379,8 @@ void RelicModelTest::cacheMissDoesNotBecomeMarketMiss() {
     peer->flush();
     QTest::qWait(20);
     QCOMPARE(resolved.count(), 0);
+    QTRY_COMPARE(cacheSettled.count(), 1);
+    QCOMPARE(fetchSettled.count(), 0);
 
     const auto sendQuote = [peer](const QJsonObject &request, int price) {
       const QString item = request.value("items").toArray().first().toString();
@@ -1389,6 +1401,7 @@ void RelicModelTest::cacheMissDoesNotBecomeMarketMiss() {
     };
     sendQuote(networkRequests.at(0), 12);
     QTRY_COMPARE(resolved.count(), 1);
+    QCOMPARE(fetchSettled.count(), 0);
     QList<QVariant> result = resolved.takeFirst();
     QCOMPARE(result.at(0).toJsonArray().size(), 1);
     QCOMPARE(result.at(1).toJsonArray(), QJsonArray{});
@@ -1397,6 +1410,7 @@ void RelicModelTest::cacheMissDoesNotBecomeMarketMiss() {
     result = resolved.takeFirst();
     QCOMPARE(result.at(0).toJsonArray().size(), 1);
     QCOMPARE(result.at(1).toJsonArray(), QJsonArray{});
+    QTRY_COMPARE(fetchSettled.count(), 1);
 
     const QJsonObject variantFilters{{"rank", 5}, {"subtype", "blueprint"}};
     client.requestMarketVariantQuote("item-1", variantFilters);

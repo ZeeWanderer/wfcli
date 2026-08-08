@@ -56,6 +56,7 @@ public:
   QString marketError() const;
   bool marketLoaded() const;
   bool marketBusy() const;
+  bool marketQuoteFetchBusy() const;
   int ownedMarketQuantity(const QString &name) const;
   QJsonObject sourceAssetCache() const;
   QString sourceAssetCacheError() const;
@@ -114,6 +115,8 @@ signals:
   void marketAccountChanged();
   void marketCatalogChanged();
   void marketQuotesChanged();
+  void marketQuoteCacheSettled();
+  void marketQuoteFetchSettled();
   void marketVariantQuoteReady(const QString &item, const QJsonObject &filters,
                                const QJsonObject &data);
   void marketVariantQuoteFailed(const QString &item, const QJsonObject &filters,

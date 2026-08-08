@@ -12,6 +12,7 @@
 #include <QStringList>
 #include <QTimer>
 
+#include <algorithm>
 #include <ranges>
 #include <utility>
 
@@ -187,6 +188,10 @@ DaemonClient::DaemonClient(QObject *parent)
 bool DaemonClient::connected() const { return connected_; }
 
 QString DaemonClient::status() const { return status_; }
+
+bool DaemonClient::marketQuoteFetchBusy() const {
+  return marketQuotePhaseBusy(false);
+}
 
 void DaemonClient::start() { connectSocket(); }
 
@@ -594,13 +599,23 @@ void DaemonClient::handleLine(const QByteArray &line) {
     const QStringList items = marketRequest->items;
     const bool cacheOnly = marketRequest->cacheOnly;
     activeMarketQuoteRequests_.erase(marketRequest);
+    const auto settle = [this, cacheOnly] {
+      sendPendingMarketQuotes();
+      if (!marketQuotePhaseBusy(cacheOnly)) {
+        if (cacheOnly) {
+          emit marketQuoteCacheSettled();
+        } else {
+          emit marketQuoteFetchSettled();
+        }
+      }
+    };
     if (!message.value("ok").toBool()) {
       if (!cacheOnly) {
         emit marketQuoteRequestFailed(
             items,
             message.value("error").toString("market quote request failed"));
       }
-      sendPendingMarketQuotes();
+      settle();
       return;
     }
     const QJsonValue dataValue = message.value("data");
@@ -611,7 +626,7 @@ void DaemonClient::handleLine(const QByteArray &line) {
         emit marketQuoteRequestFailed(
             items, "daemon returned malformed market quotes");
       }
-      sendPendingMarketQuotes();
+      settle();
       return;
     }
     const QJsonArray quotes = data.value("quotes").toArray();
@@ -619,7 +634,7 @@ void DaemonClient::handleLine(const QByteArray &line) {
     if (!quotes.isEmpty() || (!cacheOnly && !missing.isEmpty())) {
       emit marketQuotesResolved(quotes, cacheOnly ? QJsonArray{} : missing);
     }
-    sendPendingMarketQuotes();
+    settle();
     return;
   }
 
@@ -1104,4 +1119,15 @@ bool DaemonClient::marketQuoteActive(const QString &item,
     }
   }
   return false;
+}
+
+bool DaemonClient::marketQuotePhaseBusy(bool cacheOnly) const {
+  if (cacheOnly ? !pendingMarketCacheQuotes_.isEmpty()
+                : !pendingMarketQuotes_.isEmpty()) {
+    return true;
+  }
+  return std::ranges::any_of(activeMarketQuoteRequests_,
+                             [cacheOnly](const MarketQuoteRequest &request) {
+                               return request.cacheOnly == cacheOnly;
+                             });
 }

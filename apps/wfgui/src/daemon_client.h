@@ -24,6 +24,7 @@ public:
 
   bool connected() const;
   QString status() const;
+  bool marketQuoteFetchBusy() const;
 
   void start();
   void requestRelics(const QString &era, bool fetchPrices);
@@ -68,6 +69,8 @@ signals:
   void marketQuotesResolved(const QJsonArray &quotes,
                             const QJsonArray &missing);
   void marketQuoteRequestFailed(const QStringList &items, const QString &error);
+  void marketQuoteCacheSettled();
+  void marketQuoteFetchSettled();
   void marketVariantQuoteReady(const QString &item, const QJsonObject &filters,
                                const QJsonObject &data);
   void marketVariantQuoteFailed(const QString &item, const QJsonObject &filters,
@@ -138,6 +141,7 @@ private:
   bool relicRequestActive(const QString &key) const;
   bool assetRequestActive(const QString &id) const;
   bool marketQuoteActive(const QString &item, bool cacheOnly) const;
+  bool marketQuotePhaseBusy(bool cacheOnly) const;
 
   QLocalSocket *socket_;
   QTimer *reconnectTimer_;

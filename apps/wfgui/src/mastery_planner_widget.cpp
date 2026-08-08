@@ -339,6 +339,17 @@ MasteryPlannerWidget::MasteryPlannerWidget(AppController *controller,
       priceUpdateTimer_->start();
     }
   });
+  connect(controller_, &AppController::marketQuoteCacheSettled, this, [this] {
+    if (mode_ == "platinum" && priceLoading_) {
+      items_->sort(0);
+      updateContent();
+    }
+  });
+  connect(controller_, &AppController::marketQuoteFetchSettled, this, [this] {
+    if (mode_ == "platinum" && priceLoading_) {
+      updatePriceLoad();
+    }
+  });
   connect(items_, &QAbstractItemModel::modelReset, this, [this] {
     if (mode_ == "platinum") {
       beginPriceLoad();
@@ -379,7 +390,8 @@ void MasteryPlannerWidget::beginPriceLoad() {
 }
 
 void MasteryPlannerWidget::updatePriceLoad() {
-  if (mode_ != "platinum" || controller_->masteryLoading()) {
+  if (mode_ != "platinum" || controller_->masteryLoading() ||
+      controller_->marketQuoteFetchBusy()) {
     updateContent();
     return;
   }

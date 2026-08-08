@@ -26,6 +26,10 @@ AppController::AppController(QObject *parent)
           &AppController::connectedChanged);
   connect(&daemon_, &DaemonClient::statusChanged, this,
           &AppController::statusChanged);
+  connect(&daemon_, &DaemonClient::marketQuoteCacheSettled, this,
+          &AppController::marketQuoteCacheSettled);
+  connect(&daemon_, &DaemonClient::marketQuoteFetchSettled, this,
+          &AppController::marketQuoteFetchSettled);
   connect(&filteredRelics_, &RelicFilterModel::filterTextChanged, this,
           &AppController::filterTextChanged);
   connect(&filteredRelics_, &RelicFilterModel::onlyOwnedChanged, this,
@@ -377,6 +381,10 @@ bool AppController::marketLoaded() const { return marketLoaded_; }
 
 bool AppController::marketBusy() const {
   return marketPending_ || marketActions_ > 0;
+}
+
+bool AppController::marketQuoteFetchBusy() const {
+  return daemon_.marketQuoteFetchBusy();
 }
 
 int AppController::ownedMarketQuantity(const QString &name) const {
