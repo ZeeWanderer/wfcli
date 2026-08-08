@@ -8,6 +8,7 @@
 #include <QPainterPath>
 #include <QResizeEvent>
 #include <QScrollBar>
+#include <QShowEvent>
 #include <QStyleOptionViewItem>
 #include <QStyledItemDelegate>
 #include <QTimer>
@@ -713,7 +714,8 @@ private:
     }
 
     const QPixmap image = wfgui::cachedThumbnail(
-        painter, index.data(PlayerItemModel::AssetPathRole).toString(),
+        painter,
+        index.data(PlayerItemModel::AssetRefRole).value<wfgui::AssetRef>(),
         layout.image.size());
     if (isFoundryWarframe(index)) {
       drawBottomContained(painter, layout.image, image);
@@ -770,7 +772,8 @@ private:
     wfgui::drawContained(
         painter, imageRect,
         wfgui::cachedThumbnail(
-            painter, index.data(PlayerItemModel::AssetPathRole).toString(),
+            painter,
+            index.data(PlayerItemModel::AssetRefRole).value<wfgui::AssetRef>(),
             imageRect.size()));
 
     const QFont titleFont =
@@ -934,7 +937,8 @@ private:
     wfgui::drawContained(
         painter, imageRect,
         wfgui::cachedThumbnail(
-            painter, index.data(PlayerItemModel::AssetPathRole).toString(),
+            painter,
+            index.data(PlayerItemModel::AssetRefRole).value<wfgui::AssetRef>(),
             imageRect.size()));
 
     const int xpHeight = wfgui::scaled(21, scale);
@@ -1086,8 +1090,9 @@ private:
       const QRect imageRect = circle.adjusted(2, 2, -2, -2);
       wfgui::drawContained(
           painter, imageRect,
-          wfgui::cachedThumbnail(painter, component.value("image").toString(),
-                                 imageRect.size()));
+          wfgui::cachedThumbnail(
+              painter, component.value("assetRef").value<wfgui::AssetRef>(),
+              imageRect.size()));
       painter.restore();
       if (kind == PlayerItemGridWidget::Kind::Foundry ||
           kind == PlayerItemGridWidget::Kind::Inventory) {
@@ -1199,6 +1204,11 @@ void PlayerItemGridWidget::setModel(QAbstractItemModel *itemModel) {
     connect(itemModel, &QAbstractItemModel::rowsRemoved, this,
             &PlayerItemGridWidget::restoreScrollPosition);
   }
+}
+
+void PlayerItemGridWidget::showEvent(QShowEvent *event) {
+  QListView::showEvent(event);
+  scheduleVisibleData();
 }
 
 void PlayerItemGridWidget::preserveScrollPosition() {

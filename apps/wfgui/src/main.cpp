@@ -15,9 +15,11 @@
 #include "main_window.h"
 #include "style_loader.h"
 #include "tooltip.h"
+#include "wfgui_paths.h"
 #include "widget_capture.h"
 
 #include <cstdlib>
+#include <cstring>
 
 namespace {
 QSize parseSize(const QString &value) {
@@ -30,11 +32,26 @@ QSize parseSize(const QString &value) {
              ? QSize(width, height)
              : QSize{};
 }
+
+bool hasArgument(int argc, char *argv[], const char *expected) {
+  for (int index = 1; index < argc; ++index) {
+    if (std::strcmp(argv[index], expected) == 0) {
+      return true;
+    }
+  }
+  return false;
+}
 } // namespace
 
 int main(int argc, char *argv[]) {
   QCoreApplication::setOrganizationName("wfcli");
   QCoreApplication::setApplicationName("wfgui");
+  QCoreApplication::setApplicationVersion(WFCLI_VERSION);
+  if (hasArgument(argc, argv, "--paths-json")) {
+    QCoreApplication app(argc, argv);
+    QTextStream(stdout) << QString::fromUtf8(wfgui::pathReportJson()) << '\n';
+    return 0;
+  }
   if (!QStandardPaths::locate(QStandardPaths::ApplicationsLocation,
                               "wfgui.desktop")
            .isEmpty()) {
@@ -50,8 +67,6 @@ int main(int argc, char *argv[]) {
   QFontDatabase::addApplicationFont(":/assets/Roboto-Medium.ttf");
   QFontDatabase::addApplicationFont(":/assets/Roboto-Regular.ttf");
   QPixmapCache::setCacheLimit(64 * 1024);
-  QCoreApplication::setApplicationVersion(WFCLI_VERSION);
-
   QCommandLineParser parser;
   parser.setApplicationDescription("wfcli desktop client");
   parser.addHelpOption();
@@ -70,9 +85,11 @@ int main(int argc, char *argv[]) {
       "Include PX of surrounding UI around a capture target.", "PX", "0");
   const QCommandLineOption listCaptureTargets(
       "list-capture-targets", "List named UI capture targets and exit.");
+  const QCommandLineOption pathsJson(
+      "paths-json", "Report per-user directories as JSON and exit.");
   const QCommandLineOption page(
-      "page", "Open foundry, mastery, inventory, relic, or market.", "NAME",
-      "foundry");
+      "page", "Open foundry, mastery, inventory, relic, market, or settings.",
+      "NAME", "foundry");
   const QCommandLineOption marketItem("market-item",
                                       "Open Market listings for ITEM.", "ITEM");
   const QCommandLineOption marketSide(
@@ -81,8 +98,8 @@ int main(int argc, char *argv[]) {
       "activity-tab", "Open timers or market in the right rail.", "NAME",
       "timers");
   parser.addOptions({screenshot, size, screenshotDelay, capture, capturePadding,
-                     listCaptureTargets, page, marketItem, marketSide,
-                     activityTab});
+                     listCaptureTargets, pathsJson, page, marketItem,
+                     marketSide, activityTab});
   parser.process(app);
 
   if (parser.isSet(capture) && !parser.isSet(screenshot)) {
@@ -94,8 +111,8 @@ int main(int argc, char *argv[]) {
 
   MainWindow window;
   if (!window.setPage(parser.value(page))) {
-    qCritical(
-        "invalid --page (use foundry, mastery, inventory, relic, or market)");
+    qCritical("invalid --page (use foundry, mastery, inventory, relic, market, "
+              "or settings)");
     return 2;
   }
   if (parser.isSet(size)) {

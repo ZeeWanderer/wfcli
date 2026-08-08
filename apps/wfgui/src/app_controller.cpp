@@ -6,11 +6,21 @@
 #include <QSet>
 #include <QTimer>
 
+namespace {
+constexpr int AssetRefreshIntervalMs = 30 * 60'000;
+
+QString assetRequestIdentity(const QJsonObject &spec) {
+  return spec.value("source").toString("wfcd") + QChar::Null +
+         spec.value("image_name").toString();
+}
+} // namespace
+
 AppController::AppController(QObject *parent)
     : QObject(parent), daemon_(this), relics_(this), filteredRelics_(this),
       inventoryItems_(this), masteryItems_(this), foundryItems_(this) {
   filteredRelics_.setSourceModel(&relics_);
-  assetPaths_.insert("embedded:forma", ":/assets/forma.png");
+  assets_.insert("embedded:forma", wfgui::AssetRef::embedded(
+                                       "embedded:forma", ":/assets/forma.png"));
 
   connect(&daemon_, &DaemonClient::connectionChanged, this,
           &AppController::connectedChanged);
@@ -41,27 +51,41 @@ AppController::AppController(QObject *parent)
           });
   connect(&daemon_, &DaemonClient::assetsResolved, this,
           [this](const QJsonArray &assets) {
-            QHash<QString, QString> changedPaths;
+            wfgui::AssetMap changedAssets;
             for (const QJsonValue &value : assets) {
-              const QJsonObject asset = value.toObject();
-              if (asset.value("ok").toBool()) {
-                const QString id = asset.value("id").toString();
-                const QString path = asset.value("path").toString();
-                if (!id.isEmpty() && !path.isEmpty() &&
-                    assetPaths_.value(id) != path) {
-                  assetPaths_.insert(id, path);
-                  changedPaths.insert(id, path);
-                }
+              const wfgui::AssetRef asset =
+                  wfgui::AssetRef::fromJson(value.toObject());
+              if (asset.isValid() && assets_.value(asset.id) != asset) {
+                assets_.insert(asset.id, asset);
+                changedAssets.insert(asset.id, asset);
               }
             }
-            if (!changedPaths.isEmpty()) {
-              relics_.setAssetPaths(changedPaths);
-              foundryItems_.applyAssetPaths(changedPaths);
-              inventoryItems_.applyAssetPaths(changedPaths);
-              masteryItems_.applyAssetPaths(changedPaths);
+            if (!changedAssets.isEmpty()) {
+              relics_.setAssets(assets_);
+              foundryItems_.applyAssets(changedAssets);
+              inventoryItems_.applyAssets(changedAssets);
+              masteryItems_.applyAssets(changedAssets);
               emit assetsChanged();
               emit marketCatalogChanged();
             }
+          });
+  connect(&daemon_, &DaemonClient::assetRequestFailed, this,
+          [this] { assetRequestedAt_.clear(); });
+  connect(&daemon_, &DaemonClient::assetCacheStatusReady, this,
+          [this](const QJsonObject &status) {
+            sourceAssetCache_ = status;
+            if (status.value("objects").toInteger() == 0) {
+              assetRequestedAt_.clear();
+            }
+            sourceAssetCacheError_.clear();
+            sourceAssetCacheBusy_ = false;
+            emit sourceAssetCacheChanged();
+          });
+  connect(&daemon_, &DaemonClient::assetCacheRequestFailed, this,
+          [this](const QString &requestError) {
+            sourceAssetCacheError_ = requestError;
+            sourceAssetCacheBusy_ = false;
+            emit sourceAssetCacheChanged();
           });
   connect(&daemon_, &DaemonClient::requestFailed, this,
           [this](const QString &era, bool prices, const QString &requestError) {
@@ -232,6 +256,22 @@ AppController::AppController(QObject *parent)
   connect(activityTimer, &QTimer::timeout, this,
           &AppController::refreshActivity);
   activityTimer->start();
+
+  auto *assetRefreshTimer = new QTimer(this);
+  assetRefreshTimer->setInterval(AssetRefreshIntervalMs);
+  connect(assetRefreshTimer, &QTimer::timeout, this, [this] {
+    QJsonArray specs;
+    for (auto asset = assets_.cbegin(); asset != assets_.cend(); ++asset) {
+      if (!asset->isPersistent()) {
+        continue;
+      }
+      specs.append(QJsonObject{{"id", asset->id},
+                               {"source", asset->source},
+                               {"image_name", asset->imageName}});
+    }
+    resolveAssets(specs);
+  });
+  assetRefreshTimer->start();
 }
 
 QAbstractItemModel *AppController::relics() { return &filteredRelics_; }
@@ -277,7 +317,7 @@ QJsonObject AppController::masterySummary() const {
 QJsonObject AppController::playerProfile() const { return playerProfile_; }
 
 QString AppController::assetPath(const QString &id) const {
-  return assetPaths_.value(id);
+  return assets_.value(id).path;
 }
 
 QJsonObject AppController::activity() const {
@@ -359,6 +399,18 @@ int AppController::ownedMarketQuantity(const QString &name) const {
   return found ? quantity : 0;
 }
 
+QJsonObject AppController::sourceAssetCache() const {
+  return sourceAssetCache_;
+}
+
+QString AppController::sourceAssetCacheError() const {
+  return sourceAssetCacheError_;
+}
+
+bool AppController::sourceAssetCacheBusy() const {
+  return sourceAssetCacheBusy_;
+}
+
 void AppController::setFilterText(const QString &text) {
   filteredRelics_.setFilterText(text);
 }
@@ -393,6 +445,10 @@ void AppController::refresh() {
 void AppController::ensureRelics() {
   if (!relicsRequested_) {
     refresh();
+  } else if (relicState_.hasPrices) {
+    requestAssets(relicState_.priced);
+  } else if (relicState_.hasMetadata) {
+    requestAssets(relicState_.metadata);
   }
 }
 
@@ -451,14 +507,25 @@ void AppController::setFissureNotificationMode(const QString &mode) {
 }
 
 void AppController::resolveAssets(const QJsonArray &assets) {
-  QJsonArray missing;
+  const qint64 now = QDateTime::currentMSecsSinceEpoch();
+  QJsonArray pending;
   for (const QJsonValue &value : assets) {
-    const QString id = value.toObject().value("id").toString();
-    if (!id.isEmpty() && !assetPaths_.contains(id)) {
-      missing.append(value);
+    const QJsonObject spec = value.toObject();
+    const QString id = spec.value("id").toString();
+    if (id.isEmpty()) {
+      continue;
+    }
+    const bool missing = !assets_.contains(id);
+    const QString identity = assetRequestIdentity(spec);
+    const bool changed = assetRequestedIdentity_.value(id) != identity;
+    if (missing || changed ||
+        now - assetRequestedAt_.value(id, 0) >= AssetRefreshIntervalMs) {
+      pending.append(value);
+      assetRequestedAt_.insert(id, now);
+      assetRequestedIdentity_.insert(id, identity);
     }
   }
-  daemon_.requestAssets(missing);
+  daemon_.requestAssets(pending);
 }
 
 void AppController::resolveMarketQuotes(const QStringList &items,
@@ -568,6 +635,26 @@ void AppController::setMarketPresenceMode(const QString &mode) {
   daemon_.setMarketPresenceMode(mode);
 }
 
+void AppController::refreshSourceAssetCache() {
+  if (sourceAssetCacheBusy_) {
+    return;
+  }
+  sourceAssetCacheBusy_ = true;
+  sourceAssetCacheError_.clear();
+  emit sourceAssetCacheChanged();
+  daemon_.requestAssetCacheStatus();
+}
+
+void AppController::clearSourceAssetCache() {
+  if (sourceAssetCacheBusy_) {
+    return;
+  }
+  sourceAssetCacheBusy_ = true;
+  sourceAssetCacheError_.clear();
+  emit sourceAssetCacheChanged();
+  daemon_.clearAssetCache();
+}
+
 void AppController::setError(const QString &error) {
   if (error_ == error) {
     return;
@@ -601,7 +688,7 @@ void AppController::applySelectedEra() {
     emit traceCountChanged();
   }
   relics_.setPricesLoading(state.pricesPending);
-  relics_.setAssetPaths(assetPaths_);
+  relics_.setAssets(assets_);
   setLoading(!state.hasMetadata && state.metadataPending);
   emit pricingChanged();
 }
@@ -613,14 +700,14 @@ void AppController::requestAssets(const QJsonObject &data) {
     const QJsonObject item = itemValue.toObject();
     const QJsonObject relicAsset = item.value("asset").toObject();
     const QString relicId = relicAsset.value("id").toString();
-    if (!relicId.isEmpty() && !assetPaths_.contains(relicId)) {
+    if (!relicId.isEmpty()) {
       relicAssets.append(relicAsset);
     }
     for (const QJsonValue &rewardValue : item.value("rewards").toArray()) {
       const QJsonObject rewardAsset =
           rewardValue.toObject().value("asset").toObject();
       const QString rewardId = rewardAsset.value("id").toString();
-      if (!rewardId.isEmpty() && !assetPaths_.contains(rewardId)) {
+      if (!rewardId.isEmpty()) {
         rewardAssets.append(rewardAsset);
       }
     }
@@ -629,13 +716,13 @@ void AppController::requestAssets(const QJsonObject &data) {
       const QJsonObject componentAsset =
           componentValue.toObject().value("asset").toObject();
       const QString componentId = componentAsset.value("id").toString();
-      if (!componentId.isEmpty() && !assetPaths_.contains(componentId)) {
+      if (!componentId.isEmpty()) {
         rewardAssets.append(componentAsset);
       }
     }
   }
-  daemon_.requestAssets(relicAssets);
-  daemon_.requestAssets(rewardAssets);
+  resolveAssets(relicAssets);
+  resolveAssets(rewardAssets);
 }
 
 void AppController::applyPlayerView(const QString &view,
@@ -662,7 +749,7 @@ void AppController::applyPlayerView(const QString &view,
     if (!rankAsset.value("id").toString().isEmpty()) {
       resolveAssets(QJsonArray{rankAsset});
     }
-    model->setAssetPaths(assetPaths_);
+    model->setAssets(assets_);
   }
   emitPlayerStateChanged(view);
 }

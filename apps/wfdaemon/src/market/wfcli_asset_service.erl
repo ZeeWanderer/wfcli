@@ -5,7 +5,7 @@
 
 -behaviour(gen_server).
 
--export([start_link/0, resolve/1, prewarm/1, status/0]).
+-export([start_link/0, resolve/1, prewarm/1, status/0, clear/0]).
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2,
          terminate/2, code_change/3]).
 
@@ -61,6 +61,11 @@ prewarm(Assets) ->
 status() ->
     gen_server:call(?SERVER, status).
 
+-doc "Remove cached source assets when no fetch or resolve call is active.".
+-spec clear() -> {ok, map()} | {error, term()}.
+clear() ->
+    gen_server:call(?SERVER, clear, 120000).
+
 -spec init([]) -> {ok, state()}.
 init([]) ->
     Root = cache_root(),
@@ -75,13 +80,16 @@ handle_call({resolve, Assets}, From, State)
 handle_call({resolve, _Assets}, _From, State) ->
     {reply, {error, invalid_assets}, State};
 handle_call(status, _From, State) ->
-    {reply, #{cache_root => maps:get(root, State),
-              objects => map_size(maps:get(entries, State)),
-              queued => queue:len(maps:get(foreground, State)) +
-                        queue:len(maps:get(background, State)),
-              pending => map_size(maps:get(pending, State)),
-              fetching => map_size(maps:get(workers, State)),
-              waiting_calls => map_size(maps:get(calls, State))}, State};
+    {reply, cache_status(State), State};
+handle_call(clear, _From, State) ->
+    case cache_idle(State) of
+        false -> {reply, {error, asset_cache_busy}, State};
+        true ->
+            case clear_cache(State) of
+                {ok, State1} -> {reply, {ok, cache_status(State1)}, State1};
+                {error, Reason} -> {reply, {error, Reason}, State}
+            end
+    end;
 handle_call(Request, _From, State) ->
     {reply, {error, {unknown_request, Request}}, State}.
 
@@ -135,6 +143,59 @@ new_state(Root, IndexPath, Entries) ->
       workers => #{}, calls => #{}, call_monitors => #{},
       max_workers => worker_limit(), dirty => false, persist_timer => undefined,
       maintenance_timer => undefined}.
+
+cache_status(State) ->
+    Entries = maps:get(entries, State),
+    {Objects, Bytes} = cache_usage(Entries),
+    #{cache_root => maps:get(root, State), entries => map_size(Entries),
+      objects => Objects, bytes => Bytes,
+      queued => queue:len(maps:get(foreground, State)) +
+                queue:len(maps:get(background, State)),
+      pending => map_size(maps:get(pending, State)),
+      fetching => map_size(maps:get(workers, State)),
+      waiting_calls => map_size(maps:get(calls, State))}.
+
+cache_usage(Entries) ->
+    Objects = maps:fold(
+                fun(_Key, Entry, Acc) ->
+                    case maps:get(path, Entry, undefined) of
+                        Path when is_binary(Path) ->
+                            Acc#{Path => maps:get(size, Entry, 0)};
+                        _ -> Acc
+                    end
+                end,
+                #{}, Entries),
+    {map_size(Objects), lists:sum(maps:values(Objects))}.
+
+cache_idle(State) ->
+    map_size(maps:get(pending, State)) =:= 0
+    andalso map_size(maps:get(workers, State)) =:= 0
+    andalso map_size(maps:get(calls, State)) =:= 0.
+
+clear_cache(State) ->
+    Root = maps:get(root, State),
+    Objects = filename:join(Root, "objects"),
+    Trash = Objects ++ ".clear-" ++
+            integer_to_list(erlang:unique_integer([positive])),
+    case move_objects(Objects, Trash) of
+        {error, Reason} -> {error, {asset_cache_clear_failed, Reason}};
+        Moved ->
+            case Moved of
+                true -> spawn(fun() -> _ = file:del_dir_r(Trash) end);
+                false -> ok
+            end,
+            cancel_timer(maps:get(persist_timer, State, undefined)),
+            State1 = State#{entries => #{}, dirty => true,
+                            persist_timer => undefined},
+            {ok, flush_index(State1)}
+    end.
+
+move_objects(Objects, Trash) ->
+    case file:rename(Objects, Trash) of
+        ok -> true;
+        {error, enoent} -> false;
+        {error, Reason} -> {error, Reason}
+    end.
 
 start_resolve(Assets, From, State) ->
     CallRef = make_ref(),

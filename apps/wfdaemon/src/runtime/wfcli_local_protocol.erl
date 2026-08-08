@@ -5,7 +5,7 @@
 
 -export([decode/1, encode/1, protocol_version/0]).
 
--define(PROTOCOL_VERSION, 8).
+-define(PROTOCOL_VERSION, 9).
 
 -doc "Native companion protocol version.".
 -spec protocol_version() -> pos_integer().

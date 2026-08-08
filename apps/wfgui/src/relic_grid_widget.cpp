@@ -170,7 +170,8 @@ protected:
                             wfgui::scaled(12, scale_));
 
     const QPixmap relicPixmap = wfgui::cachedThumbnail(
-        painter, index_.data(RelicModel::RelicImageRole).toString(),
+        painter,
+        index_.data(RelicModel::RelicAssetRole).value<wfgui::AssetRef>(),
         layout.relicArt.size());
     if (relicPixmap.isNull()) {
       painter.setPen(QPen(QColor("#8a8c95"), 1.5 * scale_));
@@ -276,7 +277,8 @@ protected:
       const QRect rewardImageRect =
           rewardRect.adjusted(imageInset, imageInset, -imageInset, -imageInset);
       const QPixmap rewardImage = wfgui::cachedThumbnail(
-          painter, reward.value("image").toString(), rewardImageRect.size());
+          painter, reward.value("assetRef").value<wfgui::AssetRef>(),
+          rewardImageRect.size());
       if (rewardImage.isNull()) {
         painter.setPen(QPen(QColor("#8a8c95"), wfgui::scaled(1, scale_)));
         const int placeholderInset = wfgui::scaled(9, scale_);

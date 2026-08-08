@@ -57,6 +57,11 @@ The password is used only for sign-in. `wfdaemon` stores the returned session to
 owner-only state directory. Presence can follow Warframe automatically or remain online, in game,
 or invisible.
 
+### Settings
+
+Settings shows daemon connection state and source-image, rendered-image, and in-memory cache usage.
+Each cache can be cleared independently; downloaded source images are fetched again when needed.
+
 ## Activity Rail
 
 The right rail has Timers & Events and WFMarket tabs. Timers shows active world cycles, Baro and
@@ -78,7 +83,7 @@ wfgui --market-item 54a74454e779892d5e515621 --market-side sell \
 wfgui --activity-tab market --screenshot /tmp/wfgui-market-rail.png
 ```
 
-Valid pages are `foundry`, `mastery`, `inventory`, `relic`, and `market`.
+Valid pages are `foundry`, `mastery`, `inventory`, `relic`, `market`, and `settings`.
 
 List and capture smaller UI regions at native resolution:
 

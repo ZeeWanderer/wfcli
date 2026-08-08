@@ -123,7 +123,9 @@ QVariant PlayerItemModel::data(const QModelIndex &index, int role) const {
   case MasteredRole:
     return item.value("mastered").toBool();
   case AssetPathRole:
-    return assetPaths_.value(assetId(item));
+    return assets_.value(assetId(item)).path;
+  case AssetRefRole:
+    return QVariant::fromValue(assets_.value(assetId(item)));
   case OwnedRole:
     return item.value("owned").toBool();
   case PendingRole:
@@ -158,7 +160,9 @@ QVariant PlayerItemModel::data(const QModelIndex &index, int role) const {
     for (const QJsonValue &value : item.value("components").toArray()) {
       const QJsonObject component = value.toObject();
       QVariantMap converted = component.toVariantMap();
-      converted.insert("image", assetPaths_.value(assetId(component)));
+      const wfgui::AssetRef asset = assets_.value(assetId(component));
+      converted.insert("image", asset.path);
+      converted.insert("assetRef", QVariant::fromValue(asset));
       result.append(converted);
     }
     componentCache_.insert(index.row(), result);
@@ -274,7 +278,8 @@ QHash<int, QByteArray> PlayerItemModel::roleNames() const {
           {ReadyToBuildRole, "readyToBuild"},
           {FavoriteRole, "favorite"},
           {VaultedRole, "vaulted"},
-          {SubsumedRole, "subsumed"}};
+          {SubsumedRole, "subsumed"},
+          {AssetRefRole, "assetRef"}};
 }
 
 bool PlayerItemModel::replace(const QJsonObject &data, QString *error) {
@@ -312,49 +317,50 @@ void PlayerItemModel::clear() {
   endResetModel();
 }
 
-void PlayerItemModel::setAssetPaths(const QHash<QString, QString> &paths) {
-  if (assetPaths_ == paths) {
+void PlayerItemModel::setAssets(const wfgui::AssetMap &assets) {
+  if (assets_ == assets) {
     return;
   }
 
   QSet<int> affectedRows;
-  for (auto path = assetPaths_.cbegin(); path != assetPaths_.cend(); ++path) {
-    if (paths.value(path.key()) != path.value()) {
-      for (int row : assetRows_.values(path.key())) {
+  for (auto asset = assets_.cbegin(); asset != assets_.cend(); ++asset) {
+    if (assets.value(asset.key()) != asset.value()) {
+      for (int row : assetRows_.values(asset.key())) {
         affectedRows.insert(row);
       }
     }
   }
-  for (auto path = paths.cbegin(); path != paths.cend(); ++path) {
-    if (assetPaths_.value(path.key()) != path.value()) {
-      for (int row : assetRows_.values(path.key())) {
+  for (auto asset = assets.cbegin(); asset != assets.cend(); ++asset) {
+    if (assets_.value(asset.key()) != asset.value()) {
+      for (int row : assetRows_.values(asset.key())) {
         affectedRows.insert(row);
       }
     }
   }
 
-  assetPaths_ = paths;
+  assets_ = assets;
   for (int row : affectedRows) {
     componentCache_.remove(row);
-    emit dataChanged(index(row), index(row), {AssetPathRole, ComponentsRole});
+    emit dataChanged(index(row), index(row),
+                     {AssetPathRole, AssetRefRole, ComponentsRole});
   }
 }
 
-void PlayerItemModel::applyAssetPaths(const QHash<QString, QString> &paths) {
+void PlayerItemModel::applyAssets(const wfgui::AssetMap &assets) {
   QSet<int> affectedRows;
-  for (auto path = paths.cbegin(); path != paths.cend(); ++path) {
-    if (path.value().isEmpty() ||
-        assetPaths_.value(path.key()) == path.value()) {
+  for (auto asset = assets.cbegin(); asset != assets.cend(); ++asset) {
+    if (!asset.value().isValid() || assets_.value(asset.key()) == asset.value()) {
       continue;
     }
-    assetPaths_.insert(path.key(), path.value());
-    for (int row : assetRows_.values(path.key())) {
+    assets_.insert(asset.key(), asset.value());
+    for (int row : assetRows_.values(asset.key())) {
       affectedRows.insert(row);
     }
   }
   for (int row : affectedRows) {
     componentCache_.remove(row);
-    emit dataChanged(index(row), index(row), {AssetPathRole, ComponentsRole});
+    emit dataChanged(index(row), index(row),
+                     {AssetPathRole, AssetRefRole, ComponentsRole});
   }
 }
 

@@ -7,6 +7,7 @@
 #include <utility>
 
 class QTimer;
+class QShowEvent;
 
 class PlayerItemGridWidget final : public QListView {
   Q_OBJECT
@@ -27,6 +28,7 @@ signals:
 
 protected:
   void resizeEvent(QResizeEvent *event) override;
+  void showEvent(QShowEvent *event) override;
 
 private:
   void updateGrid();

@@ -99,3 +99,69 @@ QLabel#summaryHeading {
   font-size: 12pt;
   font-weight: 500;
 }
+
+QWidget#settingsGroup {
+  background: #20283e;
+  border: none;
+  border-radius: 9px;
+}
+
+QWidget#settingsRow {
+  background: transparent;
+  border: none;
+}
+
+QFrame#settingsSeparator {
+  background: #313a58;
+  border: none;
+  min-height: 1px;
+  max-height: 1px;
+  margin-left: 16px;
+}
+
+QLabel#settingsSectionHeading {
+  color: #8a8c95;
+  font-size: 9pt;
+  font-weight: 500;
+  padding: 0 2px;
+}
+
+QLabel#settingsHeading {
+  color: #ffffff;
+  font-size: 11pt;
+  font-weight: 500;
+}
+
+QLabel#settingsDescription {
+  color: #8a8c95;
+  font-size: 9.5pt;
+}
+
+QLabel#settingsValue {
+  color: #d8dbea;
+}
+
+QLabel#settingsDaemonStatus {
+  color: #ff8796;
+  font-weight: 500;
+  max-width: 280px;
+}
+
+QLabel#settingsDaemonStatus[connected="true"] {
+  color: #7edb91;
+}
+
+QLabel#settingsPath {
+  color: #8a8c95;
+  font-size: 9pt;
+}
+
+QLabel#settingsError {
+  color: #ff8796;
+}
+
+QPushButton#clearMemoryCache,
+QPushButton#clearDerivativeCache,
+QPushButton#clearSourceCache {
+  min-width: 64px;
+}

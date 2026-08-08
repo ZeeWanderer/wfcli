@@ -2,6 +2,7 @@
 #include <QCheckBox>
 #include <QCompleter>
 #include <QDateTime>
+#include <QDirIterator>
 #include <QFile>
 #include <QHelpEvent>
 #include <QImage>
@@ -14,6 +15,7 @@
 #include <QLocalServer>
 #include <QLocalSocket>
 #include <QPainter>
+#include <QPushButton>
 #include <QRegularExpression>
 #include <QScopeGuard>
 #include <QScrollBar>
@@ -29,6 +31,8 @@
 #include "app_controller.h"
 #include "compact_search.h"
 #include "daemon_client.h"
+#include "derivative_cache.h"
+#include "display_scale.h"
 #include "image_cache.h"
 #include "inventory_card_layout.h"
 #include "market_order_card.h"
@@ -39,7 +43,9 @@
 #include "relic_card_layout.h"
 #include "relic_grid_widget.h"
 #include "relic_model.h"
+#include "settings_widget.h"
 #include "tooltip.h"
+#include "wfgui_paths.h"
 #include "widget_capture.h"
 
 class RelicModelTest final : public QObject {
@@ -78,13 +84,19 @@ private slots:
   void inventoryGridRequestsVisibleQuotes();
   void masteryGridRequestsComponentQuotes();
   void masteryGridRequestsAllComponentQuotes();
+  void playerGridRequestsAssetsWhenShown();
   void cacheMissDoesNotBecomeMarketMiss();
   void playerGridPreservesScrollAcrossResort();
   void busyProgressAnimates();
   void ownershipFilterKeepsVisibleCardsStable();
   void compactSearchExpandsOnClick();
+  void normalizesUiScaleInFivePercentSteps();
   void thumbnailCacheRespectsSizeAndDpr();
+  void alignsFractionalDprThumbnailsToDevicePixels();
   void widgetThumbnailDecodeCompletesOffPaintPath();
+  void derivativeCacheTracksUpstreamIdentity();
+  void settingsExposeIndependentCacheControls();
+  void pathReportIsStructured();
   void marketOrderCardUsesReferenceStructure();
   void marketSearchKeyboardNavigation();
   void filtersExpiredFissures();
@@ -197,8 +209,11 @@ void RelicModelTest::parsesRecommendations() {
 void RelicModelTest::appliesResolvedAssets() {
   RelicModel model;
   QVERIFY(model.replace(recommendations()));
-  model.setAssetPaths({{"relic:axi-a1", "/tmp/relic.png"},
-                       {"market:saryn_chassis", "/tmp/reward.png"}});
+  model.setAssets(
+      {{"relic:axi-a1",
+        wfgui::AssetRef::embedded("relic:axi-a1", "/tmp/relic.png")},
+       {"market:saryn_chassis",
+        wfgui::AssetRef::embedded("market:saryn_chassis", "/tmp/reward.png")}});
 
   const QModelIndex first = model.index(0);
   QCOMPARE(model.data(first, RelicModel::RelicImageRole).toString(),
@@ -710,7 +725,8 @@ void RelicModelTest::invalidatesCachedComponentAssets() {
   }));
   const QModelIndex item = model.index(0);
 
-  model.setAssetPaths({{"part", "/tmp/first.png"}});
+  model.setAssets(
+      {{"part", wfgui::AssetRef::embedded("part", "/tmp/first.png")}});
   QCOMPARE(model.data(item, PlayerItemModel::ComponentsRole)
                .toList()
                .front()
@@ -719,7 +735,8 @@ void RelicModelTest::invalidatesCachedComponentAssets() {
                .toString(),
            QString("/tmp/first.png"));
 
-  model.setAssetPaths({{"part", "/tmp/second.png"}});
+  model.setAssets(
+      {{"part", wfgui::AssetRef::embedded("part", "/tmp/second.png")}});
   QCOMPARE(model.data(item, PlayerItemModel::ComponentsRole)
                .toList()
                .front()
@@ -728,7 +745,7 @@ void RelicModelTest::invalidatesCachedComponentAssets() {
                .toString(),
            QString("/tmp/second.png"));
 
-  model.setAssetPaths({});
+  model.setAssets({});
   QVERIFY(model.data(item, PlayerItemModel::ComponentsRole)
               .toList()
               .front()
@@ -847,6 +864,32 @@ void RelicModelTest::masteryGridUsesCompactCards() {
   QCoreApplication::processEvents();
 
   QCOMPARE(grid.gridSize().height(), 99);
+}
+
+void RelicModelTest::playerGridRequestsAssetsWhenShown() {
+  PlayerItemModel model;
+  QVERIFY(model.replace(
+      {{"items",
+        QJsonArray{QJsonObject{
+            {"id", "test-item"},
+            {"name", "Test Item"},
+            {"group", "parts"},
+            {"asset", QJsonObject{{"id", "asset:test-item"},
+                                  {"source", "wfcd"},
+                                  {"image_name", "test-item.png"}}}}}}}));
+
+  PlayerItemGridWidget grid(PlayerItemGridWidget::Kind::Inventory);
+  grid.setModel(&model);
+  grid.resize(800, 600);
+  QSignalSpy assets(&grid, &PlayerItemGridWidget::assetsNeeded);
+  grid.show();
+  QTRY_VERIFY_WITH_TIMEOUT(!assets.isEmpty(), 1000);
+
+  grid.hide();
+  QCoreApplication::processEvents();
+  assets.clear();
+  grid.show();
+  QTRY_VERIFY_WITH_TIMEOUT(!assets.isEmpty(), 1000);
 }
 
 void RelicModelTest::foundryGridUsesCompactCards() {
@@ -1224,7 +1267,7 @@ void RelicModelTest::cacheMissDoesNotBecomeMarketMiss() {
         "player.inventory",       "player.mastery",      "market.quote",
         "market.resolve",         "market.describe",     "market.account",
         "market.orders",          "market.presence",     "market.quote.variant",
-        "notifications.fissures",
+        "notifications.fissures", "asset.cache",
     };
     peer->write(QJsonDocument(QJsonObject{{"id", 1},
                                           {"ok", true},
@@ -1645,6 +1688,15 @@ void RelicModelTest::compactSearchExpandsOnClick() {
   QCOMPARE(search.editor()->text(), QString("Saryn Prime Chassis"));
 }
 
+void RelicModelTest::normalizesUiScaleInFivePercentSteps() {
+  QCOMPARE(wfgui::normalizedUiScalePercent(25), 25);
+  QCOMPARE(wfgui::normalizedUiScalePercent(102), 100);
+  QCOMPARE(wfgui::normalizedUiScalePercent(103), 105);
+  QCOMPARE(wfgui::normalizedUiScalePercent(127), 125);
+  QCOMPARE(wfgui::normalizedUiScalePercent(128), 130);
+  QCOMPARE(wfgui::normalizedUiScalePercent(999), 175);
+}
+
 void RelicModelTest::thumbnailCacheRespectsSizeAndDpr() {
   QTemporaryDir directory;
   QVERIFY(directory.isValid());
@@ -1670,6 +1722,48 @@ void RelicModelTest::thumbnailCacheRespectsSizeAndDpr() {
   QCOMPARE(highDpi.deviceIndependentSize(), QSizeF(20, 10));
   QCOMPARE(highDpi.devicePixelRatio(), 2.0);
   QVERIFY(highDpi.cacheKey() != first.cacheKey());
+
+  QImage fractionalTarget(80, 80, QImage::Format_ARGB32_Premultiplied);
+  fractionalTarget.setDevicePixelRatio(1.25);
+  QPainter fractionalPainter(&fractionalTarget);
+  const QPixmap fractional =
+      wfgui::cachedThumbnail(fractionalPainter, path, QSize(20, 20));
+  QCOMPARE(fractional.size(), QSize(25, 12));
+  QCOMPARE(fractional.devicePixelRatio(), 1.25);
+  QVERIFY(fractional.cacheKey() != first.cacheKey());
+  QVERIFY(fractional.cacheKey() != highDpi.cacheKey());
+}
+
+void RelicModelTest::alignsFractionalDprThumbnailsToDevicePixels() {
+  QImage pixels(4, 4, QImage::Format_ARGB32_Premultiplied);
+  for (int y = 0; y < pixels.height(); ++y) {
+    for (int x = 0; x < pixels.width(); ++x) {
+      pixels.setPixelColor(x, y, (x + y) % 2 == 0 ? Qt::red : Qt::blue);
+    }
+  }
+  QPixmap thumbnail = QPixmap::fromImage(pixels);
+  thumbnail.setDevicePixelRatio(1.25);
+
+  QImage target(12, 12, QImage::Format_ARGB32_Premultiplied);
+  target.setDevicePixelRatio(1.25);
+  target.fill(Qt::transparent);
+  QPainter painter(&target);
+  painter.setRenderHint(QPainter::SmoothPixmapTransform);
+  wfgui::drawContained(painter, QRectF(1, 1, 4, 4), thumbnail);
+  painter.end();
+
+  int painted = 0;
+  for (int y = 0; y < target.height(); ++y) {
+    for (int x = 0; x < target.width(); ++x) {
+      const QColor color = target.pixelColor(x, y);
+      if (color.alpha() == 0) {
+        continue;
+      }
+      ++painted;
+      QVERIFY(color == QColor(Qt::red) || color == QColor(Qt::blue));
+    }
+  }
+  QCOMPARE(painted, 16);
 }
 
 void RelicModelTest::widgetThumbnailDecodeCompletesOffPaintPath() {
@@ -1685,6 +1779,99 @@ void RelicModelTest::widgetThumbnailDecodeCompletesOffPaintPath() {
   probe.show();
   QTRY_VERIFY_WITH_TIMEOUT(!probe.thumbnail().isNull(), 2000);
   QCOMPARE(probe.thumbnail().deviceIndependentSize(), QSizeF(20, 10));
+}
+
+void RelicModelTest::derivativeCacheTracksUpstreamIdentity() {
+  QTemporaryDir directory;
+  QVERIFY(directory.isValid());
+  wfgui::DerivativeCache cache(directory.filePath("derivatives"));
+  const wfgui::AssetRef first{
+      .id = "item:first",
+      .source = "wfcd",
+      .imageName = "shared.png",
+      .path = directory.filePath("source.png"),
+      .digest = "digest-one",
+      .mediaType = "image/png",
+      .size = 100,
+      .stale = false,
+  };
+  QImage image(24, 12, QImage::Format_ARGB32_Premultiplied);
+  image.fill(Qt::green);
+
+  cache.registerAsset(first);
+  QVERIFY(cache.store(first, QSize(32, 32), image));
+  QCOMPARE(cache.stats().files, 1);
+  QCOMPARE(cache.load(first, QSize(32, 32)).size(), image.size());
+
+  wfgui::AssetRef replacement = first;
+  replacement.id = "item:second";
+  replacement.digest = "digest-two";
+  cache.registerAsset(replacement);
+  QCOMPARE(cache.stats().files, 0);
+  QVERIFY(!cache.store(first, QSize(32, 32), image));
+  QVERIFY(cache.store(replacement, QSize(32, 32), image));
+  QCOMPARE(cache.stats().files, 1);
+
+  QDirIterator files(cache.root(), {"*.png"}, QDir::Files,
+                     QDirIterator::Subdirectories);
+  QVERIFY(files.hasNext());
+  QFile corrupt(files.next());
+  QVERIFY(corrupt.open(QIODevice::WriteOnly | QIODevice::Truncate));
+  QCOMPARE(corrupt.write("invalid"), 7);
+  corrupt.close();
+  QVERIFY(cache.load(replacement, QSize(32, 32)).isNull());
+  QCOMPARE(cache.stats().files, 0);
+
+  QVERIFY(cache.store(replacement, QSize(32, 32), image));
+  QVERIFY(cache.clear());
+  QCOMPARE(cache.stats().files, 0);
+}
+
+void RelicModelTest::settingsExposeIndependentCacheControls() {
+  QTemporaryDir directory;
+  QVERIFY(directory.isValid());
+  QLocalServer server;
+  QVERIFY(server.listen(directory.filePath("wfdaemon.sock")));
+  const QByteArray oldSocket = qgetenv("WFCLI_DAEMON_SOCKET");
+  qputenv("WFCLI_DAEMON_SOCKET", server.fullServerName().toUtf8());
+  const auto restoreSocket = qScopeGuard([oldSocket] {
+    if (oldSocket.isNull()) {
+      qunsetenv("WFCLI_DAEMON_SOCKET");
+    } else {
+      qputenv("WFCLI_DAEMON_SOCKET", oldSocket);
+    }
+  });
+
+  AppController controller;
+  QTRY_VERIFY(server.hasPendingConnections());
+  QVERIFY(server.nextPendingConnection());
+  SettingsWidget settings(&controller);
+
+  QCOMPARE(settings.findChildren<QWidget *>("settingsGroup").size(), 2);
+  QVERIFY(settings.findChild<QLabel *>("settingsDaemonStatus"));
+  for (const QString &name :
+       {QString("clearMemoryCache"), QString("clearDerivativeCache"),
+        QString("clearSourceCache")}) {
+    auto *button = settings.findChild<QPushButton *>(name);
+    QVERIFY(button);
+    QVERIFY(button->property("destructive").toBool());
+  }
+}
+
+void RelicModelTest::pathReportIsStructured() {
+  const QJsonDocument document =
+      QJsonDocument::fromJson(wfgui::pathReportJson());
+  QVERIFY(document.isObject());
+  const QJsonObject report = document.object();
+  QCOMPARE(report.value("app").toString(), QString("wfgui"));
+
+  QSet<QString> kinds;
+  for (const QJsonValue &value : report.value("paths").toArray()) {
+    const QJsonObject entry = value.toObject();
+    kinds.insert(entry.value("kind").toString());
+    QVERIFY(QFileInfo(entry.value("path").toString()).isAbsolute());
+  }
+  QCOMPARE(kinds, QSet<QString>({"config", "cache", "derivatives", "runtime"}));
 }
 
 void RelicModelTest::marketOrderCardUsesReferenceStructure() {

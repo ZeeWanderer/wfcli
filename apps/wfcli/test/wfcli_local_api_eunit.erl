@@ -104,6 +104,7 @@ lifecycle(#{socket := SocketPath}) ->
     slow_asset_does_not_block_dataset(TestSocket),
     local_request_limit_queues_excess_work(TestSocket),
     global_local_request_limit_queues_other_clients(TestSocket, SocketPath),
+    request_asset_cache_controls(TestSocket),
     ok = socket:close(TestSocket),
 
     GuiSocket = connect_client(
@@ -132,6 +133,25 @@ lifecycle(#{socket := SocketPath}) ->
     await_external_activity(1, 20),
     ok = socket:close(CompanionSocket2),
     await_external_activity(0, 20).
+
+request_asset_cache_controls(Socket) ->
+    Status = #{<<"op">> => <<"asset_cache_status">>, <<"id">> => 40},
+    ok = socket:send(Socket, wfcli_local_protocol:encode(Status)),
+    {ok, StatusLine} = socket:recv(Socket, 0, 1000),
+    {ok, StatusReply} = wfcli_local_protocol:decode(string:trim(StatusLine)),
+    ?assertEqual(true, maps:get(<<"ok">>, StatusReply)),
+    StatusData = maps:get(<<"data">>, StatusReply),
+    ?assert(is_integer(maps:get(<<"bytes">>, StatusData))),
+    ?assert(is_binary(maps:get(<<"cache_root">>, StatusData))),
+
+    Clear = #{<<"op">> => <<"asset_cache_clear">>, <<"id">> => 41},
+    ok = socket:send(Socket, wfcli_local_protocol:encode(Clear)),
+    {ok, ClearLine} = socket:recv(Socket, 0, 1000),
+    {ok, ClearReply} = wfcli_local_protocol:decode(string:trim(ClearLine)),
+    ?assertEqual(true, maps:get(<<"ok">>, ClearReply)),
+    ClearData = maps:get(<<"data">>, ClearReply),
+    ?assertEqual(0, maps:get(<<"objects">>, ClearData)),
+    ?assertEqual(0, maps:get(<<"bytes">>, ClearData)).
 
 slow_asset_does_not_block_dataset(Socket) ->
     Test = self(),
@@ -278,6 +298,7 @@ connect_client(SocketPath, Client, Extra) ->
     ?assert(lists:member(<<"player.foundry">>, maps:get(<<"capabilities">>, Reply))),
     ?assert(lists:member(<<"player.inventory">>, maps:get(<<"capabilities">>, Reply))),
     ?assert(lists:member(<<"player.mastery">>, maps:get(<<"capabilities">>, Reply))),
+    ?assert(lists:member(<<"asset.cache">>, maps:get(<<"capabilities">>, Reply))),
     ?assert(lists:member(<<"notifications.fissures">>,
                          maps:get(<<"capabilities">>, Reply))),
     ?assert(lists:member(<<"asset.resolve">>, maps:get(<<"capabilities">>, Reply))),

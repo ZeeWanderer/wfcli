@@ -179,17 +179,8 @@ QPushButton#navigation[collapsed="true"] {
   text-align: center;
 }
 
-QLabel#daemonStatus,
 QLabel#secondaryText {
   color: #8a8c95;
-}
-
-QLabel#daemonStatus {
-  font-size: 9pt;
-}
-
-QLabel#daemonStatus[connected="true"] {
-  color: #7edb91;
 }
 
 QLabel#pageTitle {

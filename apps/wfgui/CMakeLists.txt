@@ -5,6 +5,8 @@ qt_standard_project_setup()
 qt_add_library(wfgui_core STATIC
   src/activity_data.cpp
   src/activity_data.h
+  src/asset_ref.cpp
+  src/asset_ref.h
   src/app_controller.cpp
   src/app_controller.h
   src/animated_progress_bar.cpp
@@ -13,6 +15,8 @@ qt_add_library(wfgui_core STATIC
   src/compact_search.h
   src/daemon_client.cpp
   src/daemon_client.h
+  src/derivative_cache.cpp
+  src/derivative_cache.h
   src/image_cache.cpp
   src/image_cache.h
   src/inventory_card_layout.cpp
@@ -37,6 +41,10 @@ qt_add_library(wfgui_core STATIC
   src/relic_grid_widget.h
   src/relic_model.cpp
   src/relic_model.h
+  src/settings_widget.cpp
+  src/settings_widget.h
+  src/wfgui_paths.cpp
+  src/wfgui_paths.h
   src/display_metrics.h
   src/tooltip.cpp
   src/tooltip.h
@@ -125,6 +133,7 @@ qt_add_resources(wfgui "wfgui_resources"
     resources/ui/pending.png
     resources/ui/refresh.png
     resources/ui/search.png
+    resources/ui/settings.png
     resources/ui/steel.png
     resources/ui/summary_game.png
     resources/ui/summary_intrinsics.png

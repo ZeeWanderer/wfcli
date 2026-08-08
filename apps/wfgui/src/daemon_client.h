@@ -32,6 +32,8 @@ public:
   void requestNotificationSettings();
   void setFissureNotificationMode(const QString &mode);
   void requestAssets(const QJsonArray &assets);
+  void requestAssetCacheStatus();
+  void clearAssetCache();
   void requestMarketQuotes(const QStringList &items, bool refresh = false);
   void requestMarketVariantQuote(const QString &item,
                                  const QJsonObject &filters,
@@ -61,6 +63,8 @@ signals:
   void notificationSettingsFailed(const QString &error);
   void assetsResolved(const QJsonArray &assets);
   void assetRequestFailed(const QString &error);
+  void assetCacheStatusReady(const QJsonObject &status);
+  void assetCacheRequestFailed(const QString &error);
   void marketQuotesResolved(const QJsonArray &quotes,
                             const QJsonArray &missing);
   void marketQuoteRequestFailed(const QStringList &items, const QString &error);
@@ -88,6 +92,7 @@ private:
   void sendPendingActivity();
   void sendPendingNotificationSettings();
   void sendPendingAssets();
+  void sendPendingAssetCacheRequest();
   void sendAssetBatch(const QJsonArray &assets);
   void sendPendingMarketQuotes();
   void sendPendingMarketVariantQuotes();
@@ -147,6 +152,8 @@ private:
   QHash<QString, QJsonObject> pendingAssets_;
   QStringList pendingAssetOrder_;
   QHash<qint64, QJsonArray> activeAssetRequests_;
+  qint64 activeAssetCacheRequest_ = 0;
+  bool activeAssetCacheClear_ = false;
   QSet<QString> marketCacheRequested_;
   QSet<QString> pendingMarketCacheQuotes_;
   QStringList pendingMarketCacheQuoteOrder_;
@@ -164,6 +171,8 @@ private:
   QHash<qint64, QString> activeMarketAccountRequests_;
   bool ready_ = false;
   bool pendingActivity_ = false;
+  bool pendingAssetCacheStatus_ = false;
+  bool pendingAssetCacheClear_ = false;
   bool pendingNotificationSettings_ = true;
   bool pendingMarketAccountSnapshot_ = true;
   bool activeNotificationRequestIsSet_ = false;

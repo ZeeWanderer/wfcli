@@ -7,7 +7,6 @@
 
 #include "app_controller.h"
 
-class QLabel;
 class QButtonGroup;
 class QEvent;
 class QPushButton;
@@ -29,7 +28,6 @@ public:
   QWidget *screenshotTarget();
 
 private:
-  void updateDaemonStatus();
   void selectPage(int page);
   void changeUiScale(int delta);
   void toggleLeftRail();
@@ -44,7 +42,6 @@ private:
   AppController controller_;
   QWidget *sidebar_;
   PlayerIdentityWidget *playerIdentity_;
-  QLabel *daemonStatus_;
   QButtonGroup *navigation_;
   QList<QPushButton *> navigationButtons_;
   QStringList navigationLabels_;

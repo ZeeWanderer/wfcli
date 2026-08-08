@@ -9,7 +9,6 @@
 #include <QEvent>
 #include <QHBoxLayout>
 #include <QIcon>
-#include <QLabel>
 #include <QMouseEvent>
 #include <QPainter>
 #include <QParallelAnimationGroup>
@@ -36,6 +35,7 @@
 #include "mastery_planner_widget.h"
 #include "player_identity_widget.h"
 #include "relic_planner_widget.h"
+#include "settings_widget.h"
 #include "title_bar_widget.h"
 #include "widget_capture.h"
 
@@ -98,8 +98,7 @@ private:
 MainWindow::MainWindow(QWidget *parent)
     : QMainWindow(parent), controller_(this), sidebar_(new QWidget),
       playerIdentity_(new PlayerIdentityWidget(&controller_)),
-      daemonStatus_(new QLabel), navigation_(new QButtonGroup(this)),
-      pages_(new QStackedWidget),
+      navigation_(new QButtonGroup(this)), pages_(new QStackedWidget),
       activityRail_(new ActivityRailWidget(&controller_)),
       marketDialog_(new MarketItemDialog(&controller_, this)),
       titleBar_(new TitleBarWidget) {
@@ -138,14 +137,18 @@ MainWindow::MainWindow(QWidget *parent)
     const char *label;
     const char *icon;
   };
-  constexpr std::array<NavigationItem, 5> items{{
+  constexpr std::array<NavigationItem, 6> items{{
       {"Foundry", ":/resources/ui/nav_foundry.png"},
       {"Mastery\nHelper", ":/resources/ui/nav_mastery.png"},
       {"Inventory", ":/resources/ui/nav_inventory.png"},
       {"Relic\nPlanner", ":/resources/ui/nav_relic.png"},
       {"Market", ":/resources/ui/market.png"},
+      {"Settings", ":/resources/ui/settings.png"},
   }};
   for (int page = 0; page < static_cast<int>(items.size()); ++page) {
+    if (page == 5) {
+      sidebarLayout->addStretch();
+    }
     navigationLabels_.append(items.at(page).label);
     auto *button = new QPushButton(items.at(page).label);
     button->setObjectName("navigation");
@@ -160,12 +163,6 @@ MainWindow::MainWindow(QWidget *parent)
     navigationButtons_.append(button);
     sidebarLayout->addWidget(button);
   }
-  sidebarLayout->addStretch();
-
-  daemonStatus_->setObjectName("daemonStatus");
-  daemonStatus_->setWordWrap(true);
-  daemonStatus_->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Preferred);
-  sidebarLayout->addWidget(daemonStatus_);
 
   layout->addWidget(sidebar_);
   pages_->setObjectName("centerRail");
@@ -174,18 +171,21 @@ MainWindow::MainWindow(QWidget *parent)
   auto *inventory = new InventoryWidget(&controller_);
   auto *relics = new RelicPlannerWidget(&controller_);
   auto *market = new MarketWidget(&controller_);
+  auto *settings = new SettingsWidget(&controller_);
   wfgui::setCaptureTarget(pages_, "center-rail");
   wfgui::setCaptureTarget(foundry, "foundry");
   wfgui::setCaptureTarget(mastery, "mastery");
   wfgui::setCaptureTarget(inventory, "inventory");
   wfgui::setCaptureTarget(relics, "relic-planner");
   wfgui::setCaptureTarget(market, "market");
+  wfgui::setCaptureTarget(settings, "settings");
   wfgui::setCaptureTarget(activityRail_, "right-rail");
   pages_->addWidget(foundry);
   pages_->addWidget(mastery);
   pages_->addWidget(inventory);
   pages_->addWidget(relics);
   pages_->addWidget(market);
+  pages_->addWidget(settings);
   pages_->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Expanding);
   pages_->setMinimumWidth(0);
   layout->addWidget(pages_, 1);
@@ -237,12 +237,6 @@ MainWindow::MainWindow(QWidget *parent)
     selectPage(4);
     navigation_->button(4)->setChecked(true);
   });
-
-  connect(&controller_, &AppController::statusChanged, this,
-          &MainWindow::updateDaemonStatus);
-  connect(&controller_, &AppController::connectedChanged, this,
-          &MainWindow::updateDaemonStatus);
-  updateDaemonStatus();
 }
 
 void MainWindow::showMarketItem(const QString &item, const QString &side) {
@@ -263,8 +257,8 @@ QWidget *MainWindow::screenshotTarget() {
 }
 
 bool MainWindow::setPage(const QString &page) {
-  const QStringList names = {"foundry", "mastery", "inventory", "relic",
-                             "market"};
+  const QStringList names = {"foundry", "mastery", "inventory",
+                             "relic",   "market",  "settings"};
   const int index = names.indexOf(page.toLower());
   if (index < 0) {
     return false;
@@ -286,12 +280,15 @@ void MainWindow::selectPage(int page) {
     controller_.ensureRelics();
   } else if (page == 4) {
     controller_.ensureMarket();
+  } else if (page == 5) {
+    controller_.refreshSourceAssetCache();
   }
 }
 
 void MainWindow::changeUiScale(int delta) {
   const int current = wfgui::configuredUiScalePercent();
-  const int next = qBound(25, current + delta, 175);
+  const int next = qBound(wfgui::MinimumUiScalePercent, current + delta,
+                          wfgui::MaximumUiScalePercent);
   if (next == current) {
     return;
   }
@@ -314,7 +311,6 @@ void MainWindow::toggleLeftRail() {
   leftRailCollapsed_ = !leftRailCollapsed_;
   titleBar_->setLeftRailCollapsed(leftRailCollapsed_);
   playerIdentity_->setVisible(!leftRailCollapsed_);
-  daemonStatus_->setVisible(!leftRailCollapsed_);
   for (int index = 0; index < navigationButtons_.size(); ++index) {
     QPushButton *button = navigationButtons_.at(index);
     button->setText(leftRailCollapsed_ ? QString()
@@ -367,8 +363,8 @@ void MainWindow::animateRail(QWidget *rail, int targetWidth, bool hideAfter,
 }
 
 QString MainWindow::currentPageName() const {
-  static const QStringList names = {"foundry", "mastery", "inventory", "relic",
-                                    "market"};
+  static const QStringList names = {"foundry", "mastery", "inventory",
+                                    "relic",   "market",  "settings"};
   return names.value(pages_->currentIndex(), "foundry");
 }
 
@@ -414,12 +410,4 @@ void MainWindow::positionResizeHandles() {
     handle->setVisible(enabled);
     handle->raise();
   }
-}
-
-void MainWindow::updateDaemonStatus() {
-  daemonStatus_->setText(controller_.status());
-  daemonStatus_->setToolTip(controller_.status());
-  daemonStatus_->setProperty("connected", controller_.connected());
-  daemonStatus_->style()->unpolish(daemonStatus_);
-  daemonStatus_->style()->polish(daemonStatus_);
 }

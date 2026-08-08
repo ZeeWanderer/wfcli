@@ -57,6 +57,9 @@ public:
   bool marketLoaded() const;
   bool marketBusy() const;
   int ownedMarketQuantity(const QString &name) const;
+  QJsonObject sourceAssetCache() const;
+  QString sourceAssetCacheError() const;
+  bool sourceAssetCacheBusy() const;
 
   void setFilterText(const QString &text);
   void setOnlyOwned(bool onlyOwned);
@@ -88,6 +91,8 @@ public:
   void marketCloseOrder(const QString &id, int quantity);
   void setMarketOrdersVisible(bool visible, const QString &type = QString());
   void setMarketPresenceMode(const QString &mode);
+  void refreshSourceAssetCache();
+  void clearSourceAssetCache();
 
 signals:
   void selectedEraChanged();
@@ -115,6 +120,7 @@ signals:
                                 const QString &error);
   void marketSearchReady(const QString &query, const QJsonArray &matches);
   void marketSearchFailed(const QString &query, const QString &error);
+  void sourceAssetCacheChanged();
 
 private:
   struct PlayerViewState {
@@ -158,7 +164,9 @@ private:
   QString selectedEra_ = "all";
   QString error_;
   EraState relicState_;
-  QHash<QString, QString> assetPaths_;
+  wfgui::AssetMap assets_;
+  QHash<QString, qint64> assetRequestedAt_;
+  QHash<QString, QString> assetRequestedIdentity_;
   QHash<QString, qint64> marketRequestedAt_;
   QHash<QString, QJsonObject> marketItems_;
   QHash<QString, QJsonObject> marketQuotes_;
@@ -171,10 +179,13 @@ private:
   PlayerViewState masteryState_;
   QJsonObject playerProfile_;
   QJsonObject activity_;
+  QJsonObject sourceAssetCache_;
+  QString sourceAssetCacheError_;
   QString activityError_;
   QString fissureNotificationMode_ = "off";
   bool notificationSettingsLoaded_ = false;
   bool marketLoaded_ = false;
+  bool sourceAssetCacheBusy_ = false;
   bool marketPending_ = false;
   int marketActions_ = 0;
   bool relicsRequested_ = false;

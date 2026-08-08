@@ -13,7 +13,7 @@ use serde_json::Value;
 
 use crate::{UiEvent, incident};
 
-const PROTOCOL_VERSION: u32 = 8;
+const PROTOCOL_VERSION: u32 = 9;
 const CLIENT_VERSION: &str = env!("WFCLI_VERSION");
 const RECONNECT_INTERVAL: Duration = Duration::from_secs(2);
 const SOCKET_READ_TIMEOUT: Duration = Duration::from_millis(200);

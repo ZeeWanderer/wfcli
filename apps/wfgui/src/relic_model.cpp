@@ -1,5 +1,6 @@
 #include "relic_model.h"
 
+#include <QList>
 #include <QSet>
 #include <QVariantList>
 #include <QVariantMap>
@@ -87,7 +88,9 @@ QVariant RelicModel::data(const QModelIndex &index, int role) const {
   case RefinementRole:
     return relic.refinement;
   case RelicImageRole:
-    return relic.assetPath;
+    return assets_.value(relic.assetId).path;
+  case RelicAssetRole:
+    return QVariant::fromValue(assets_.value(relic.assetId));
   case PriceCompleteRole:
     return relic.priceComplete;
   case RefinementsRole: {
@@ -112,7 +115,8 @@ QVariant RelicModel::data(const QModelIndex &index, int role) const {
       rewards.push_back(QVariantMap{
           {"name", reward.name},
           {"rarity", reward.rarity},
-          {"image", reward.assetPath},
+          {"image", assets_.value(reward.assetId).path},
+          {"assetRef", QVariant::fromValue(assets_.value(reward.assetId))},
           {"platinum", reward.platinum},
           {"ducats", reward.ducats},
           {"owned", reward.owned},
@@ -145,6 +149,7 @@ QHash<int, QByteArray> RelicModel::roleNames() const {
       {RefinementsRole, "refinements"},
       {RewardsRole, "rewards"},
       {EraRole, "era"},
+      {RelicAssetRole, "relicAsset"},
   };
 }
 
@@ -167,25 +172,28 @@ void RelicModel::setPricesLoading(bool loading) {
   }
 }
 
-void RelicModel::setAssetPaths(const QHash<QString, QString> &paths) {
+void RelicModel::setAssets(const wfgui::AssetMap &assets) {
+  if (assets_ == assets) {
+    return;
+  }
+  QList<int> changedRows;
   for (int row = 0; row < rowCount(); ++row) {
-    wfgui::Relic &relic = storage_->data.relics[static_cast<std::size_t>(row)];
-    bool changed = false;
-    const QString relicPath = paths.value(relic.assetId);
-    if (!relicPath.isEmpty() && relic.assetPath != relicPath) {
-      relic.assetPath = relicPath;
-      changed = true;
-    }
-    for (wfgui::Relic::Reward &reward : relic.rewards) {
-      const QString rewardPath = paths.value(reward.assetId);
-      if (!rewardPath.isEmpty() && reward.assetPath != rewardPath) {
-        reward.assetPath = rewardPath;
-        changed = true;
-      }
-    }
+    const wfgui::Relic &relic =
+        storage_->data.relics[static_cast<std::size_t>(row)];
+    bool changed = assets_.value(relic.assetId) != assets.value(relic.assetId);
+    changed = changed || std::ranges::any_of(
+                             relic.rewards, [this, &assets](const auto &reward) {
+                               return assets_.value(reward.assetId) !=
+                                      assets.value(reward.assetId);
+                             });
     if (changed) {
-      emit dataChanged(index(row), index(row), {RelicImageRole, RewardsRole});
+      changedRows.append(row);
     }
+  }
+  assets_ = assets;
+  for (const int row : changedRows) {
+    emit dataChanged(index(row), index(row),
+                     {RelicImageRole, RelicAssetRole, RewardsRole});
   }
 }
 

@@ -11,6 +11,8 @@
 #include <QStringList>
 #include <QVariantList>
 
+#include "asset_ref.h"
+
 class PlayerItemModel final : public QAbstractListModel {
   Q_OBJECT
 
@@ -51,6 +53,7 @@ public:
     FavoriteRole,
     VaultedRole,
     SubsumedRole,
+    AssetRefRole,
   };
 
   explicit PlayerItemModel(QObject *parent = nullptr);
@@ -63,8 +66,8 @@ public:
 
   bool replace(const QJsonObject &data, QString *error = nullptr);
   void clear();
-  void setAssetPaths(const QHash<QString, QString> &paths);
-  void applyAssetPaths(const QHash<QString, QString> &paths);
+  void setAssets(const wfgui::AssetMap &assets);
+  void applyAssets(const wfgui::AssetMap &assets);
   void applyMarketQuotes(const QJsonArray &quotes, const QJsonArray &missing);
   void markMarketUnavailable(const QStringList &items);
 
@@ -73,7 +76,7 @@ private:
   void notifyMarketRows(const QSet<QString> &names);
 
   QList<QJsonObject> items_;
-  QHash<QString, QString> assetPaths_;
+  wfgui::AssetMap assets_;
   QMultiHash<QString, int> assetRows_;
   QMultiHash<QString, int> nameRows_;
   mutable QHash<int, QVariantList> componentCache_;

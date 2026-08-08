@@ -7,6 +7,8 @@
 
 #include <memory>
 
+#include "asset_ref.h"
+
 class RelicModel final : public QAbstractListModel {
   Q_OBJECT
 
@@ -26,6 +28,7 @@ public:
     RefinementsRole,
     RewardsRole,
     EraRole,
+    RelicAssetRole,
   };
 
   explicit RelicModel(QObject *parent = nullptr);
@@ -38,12 +41,13 @@ public:
   bool replace(const QJsonObject &data, QString *error = nullptr);
   void clear();
   void setPricesLoading(bool loading);
-  void setAssetPaths(const QHash<QString, QString> &paths);
+  void setAssets(const wfgui::AssetMap &assets);
   int traceCount() const;
 
 private:
   struct Storage;
   std::unique_ptr<Storage> storage_;
+  wfgui::AssetMap assets_;
   bool pricesLoading_ = false;
 };
 

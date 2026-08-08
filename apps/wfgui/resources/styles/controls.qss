@@ -49,6 +49,23 @@ QPushButton:disabled {
   color: #8a8c95;
 }
 
+QPushButton[destructive="true"] {
+  background: transparent;
+  border-color: #a73746;
+  color: #ff788a;
+}
+
+QPushButton[destructive="true"]:hover {
+  background: #351b28;
+  border-color: #ff788a;
+}
+
+QPushButton[destructive="true"]:disabled {
+  background: transparent;
+  border-color: #55313a;
+  color: #76505a;
+}
+
 QPushButton#filterChip {
   min-width: 24px;
   min-height: 24px;

@@ -70,8 +70,10 @@ TitleBarWidget::TitleBarWidget(QWidget *parent)
   scaleValue->setAlignment(Qt::AlignCenter);
   scaleDown->setToolTip("Decrease UI scale");
   scaleUp->setToolTip("Increase UI scale");
-  scaleDown->setEnabled(wfgui::configuredUiScalePercent() > 25);
-  scaleUp->setEnabled(wfgui::configuredUiScalePercent() < 175);
+  scaleDown->setEnabled(wfgui::configuredUiScalePercent() >
+                        wfgui::MinimumUiScalePercent);
+  scaleUp->setEnabled(wfgui::configuredUiScalePercent() <
+                      wfgui::MaximumUiScalePercent);
   layout->addWidget(scaleDown);
   layout->addWidget(scaleValue);
   layout->addWidget(scaleUp);
@@ -98,9 +100,9 @@ TitleBarWidget::TitleBarWidget(QWidget *parent)
   layout->addWidget(close);
 
   connect(scaleDown, &QToolButton::clicked, this,
-          [this] { emit uiScaleDeltaRequested(-25); });
+          [this] { emit uiScaleDeltaRequested(-wfgui::UiScaleStepPercent); });
   connect(scaleUp, &QToolButton::clicked, this,
-          [this] { emit uiScaleDeltaRequested(25); });
+          [this] { emit uiScaleDeltaRequested(wfgui::UiScaleStepPercent); });
   connect(leftRail_, &QToolButton::clicked, this,
           &TitleBarWidget::leftRailToggleRequested);
   connect(rightRail_, &QToolButton::clicked, this,

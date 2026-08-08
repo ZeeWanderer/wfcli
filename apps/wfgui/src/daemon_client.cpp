@@ -1,4 +1,5 @@
 #include "daemon_client.h"
+#include "wfgui_paths.h"
 
 #include <QCoreApplication>
 #include <QDir>
@@ -70,6 +71,13 @@ DaemonClient::DaemonClient(QObject *parent)
       pendingPlayerViews_.insert(view);
     }
     pendingActivity_ = pendingActivity_ || activeActivityRequest_ != 0;
+    if (activeAssetCacheRequest_ != 0) {
+      if (activeAssetCacheClear_) {
+        emit assetCacheRequestFailed(
+            "wfdaemon disconnected; cache clear result is unknown");
+      }
+      pendingAssetCacheStatus_ = true;
+    }
     pendingNotificationSettings_ = true;
     for (const MarketQuoteRequest &request :
          std::as_const(activeMarketQuoteRequests_)) {
@@ -122,6 +130,8 @@ DaemonClient::DaemonClient(QObject *parent)
     activeNotificationRequestIsSet_ = false;
     sentNotificationMode_.reset();
     activeAssetRequests_.clear();
+    activeAssetCacheRequest_ = 0;
+    activeAssetCacheClear_ = false;
     activeMarketQuoteRequests_.clear();
     activeMarketVariantRequests_.clear();
     activeMarketResolveRequests_.clear();
@@ -231,6 +241,16 @@ void DaemonClient::requestAssets(const QJsonArray &assets) {
     pendingAssetOrder_.prepend(*id);
   }
   sendPendingAssets();
+}
+
+void DaemonClient::requestAssetCacheStatus() {
+  pendingAssetCacheStatus_ = true;
+  sendPendingAssetCacheRequest();
+}
+
+void DaemonClient::clearAssetCache() {
+  pendingAssetCacheClear_ = true;
+  sendPendingAssetCacheRequest();
 }
 
 void DaemonClient::requestMarketQuotes(const QStringList &items, bool refresh) {
@@ -435,11 +455,11 @@ void DaemonClient::handleLine(const QByteArray &line) {
     }
     const QJsonArray capabilities = message.value("capabilities").toArray();
     const QStringList requiredCapabilities = {
-        "relic.planner",         "worldstate.activity",  "player.foundry",
-        "player.inventory",      "player.mastery",       "market.quote",
-        "market.resolve",        "market.describe",      "market.account",
-        "market.orders",         "market.quote.variant", "market.presence",
-        "notifications.fissures"};
+        "relic.planner",          "worldstate.activity",  "player.foundry",
+        "player.inventory",       "player.mastery",       "market.quote",
+        "market.resolve",         "market.describe",      "market.account",
+        "market.orders",          "market.quote.variant", "market.presence",
+        "notifications.fissures", "asset.cache"};
     const bool capable = std::ranges::all_of(
         requiredCapabilities, [&capabilities](const QString &capability) {
           return capabilities.contains(QJsonValue(capability));
@@ -461,6 +481,7 @@ void DaemonClient::handleLine(const QByteArray &line) {
     sendPendingActivity();
     sendPendingNotificationSettings();
     sendPendingAssets();
+    sendPendingAssetCacheRequest();
     sendPendingMarketQuotes();
     sendPendingMarketVariantQuotes();
     sendPendingMarketResolve();
@@ -502,6 +523,19 @@ void DaemonClient::handleLine(const QByteArray &line) {
         message.value("data").toObject().value("assets").toArray();
     emit assetsResolved(assets);
     sendPendingAssets();
+    return;
+  }
+
+  if (id == activeAssetCacheRequest_) {
+    activeAssetCacheRequest_ = 0;
+    activeAssetCacheClear_ = false;
+    if (message.value("ok").toBool() && message.value("data").isObject()) {
+      emit assetCacheStatusReady(message.value("data").toObject());
+    } else {
+      emit assetCacheRequestFailed(
+          message.value("error").toString("asset cache request failed"));
+    }
+    sendPendingAssetCacheRequest();
     return;
   }
 
@@ -973,6 +1007,26 @@ void DaemonClient::sendAssetBatch(const QJsonArray &assets) {
   write({{"op", "asset_resolve"}, {"id", id}, {"assets", assets}});
 }
 
+void DaemonClient::sendPendingAssetCacheRequest() {
+  if (!ready_ || activeAssetCacheRequest_ != 0) {
+    return;
+  }
+  QString operation;
+  if (pendingAssetCacheClear_) {
+    pendingAssetCacheClear_ = false;
+    activeAssetCacheClear_ = true;
+    operation = "asset_cache_clear";
+  } else if (pendingAssetCacheStatus_) {
+    pendingAssetCacheStatus_ = false;
+    activeAssetCacheClear_ = false;
+    operation = "asset_cache_status";
+  } else {
+    return;
+  }
+  activeAssetCacheRequest_ = nextRequestId_++;
+  write({{"op", operation}, {"id", activeAssetCacheRequest_}});
+}
+
 void DaemonClient::write(const QJsonObject &message) {
   QByteArray encoded = QJsonDocument(message).toJson(QJsonDocument::Compact);
   encoded.append('\n');
@@ -996,20 +1050,7 @@ void DaemonClient::setStatus(const QString &status) {
   emit statusChanged();
 }
 
-QString DaemonClient::socketPath() const {
-  const QString configured = qEnvironmentVariable("WFCLI_DAEMON_SOCKET");
-  if (!configured.isEmpty()) {
-    return configured;
-  }
-  const QString runtime =
-      QStandardPaths::writableLocation(QStandardPaths::RuntimeLocation);
-  if (!runtime.isEmpty()) {
-    return QDir(runtime).filePath("wfcli/wfdaemon.sock");
-  }
-  return QDir(QStandardPaths::writableLocation(
-                  QStandardPaths::GenericCacheLocation))
-      .filePath("wfcli/wfdaemon.sock");
-}
+QString DaemonClient::socketPath() const { return wfgui::daemonSocketPath(); }
 
 QString DaemonClient::wfcliCommand() const {
   const QString configured = qEnvironmentVariable("WFCLI_COMMAND");

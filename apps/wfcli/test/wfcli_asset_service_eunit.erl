@@ -4,6 +4,7 @@
 -module(wfcli_asset_service_eunit).
 
 -include_lib("eunit/include/eunit.hrl").
+-include_lib("kernel/include/file.hrl").
 
 asset_service_test_() ->
     {setup, fun setup/0, fun cleanup/1,
@@ -18,7 +19,9 @@ asset_service_test_() ->
          fun accepts_mastery_rank_icon/0,
          fun rejects_untrusted_image_name/0,
          fun reloads_persisted_descriptor/0,
-         fun removes_orphan_cache_objects/0
+         fun removes_orphan_cache_objects/0,
+         fun refuses_clear_while_active/0,
+         fun reports_usage_and_clears_cache/0
      ] end}.
 
 setup() ->
@@ -230,6 +233,42 @@ removes_orphan_cache_objects() ->
     ok = file:write_file(Orphan, fixture_png()),
     wfcli_asset_service ! maintain_cache,
     wait_for_file_removal(Orphan, 100).
+
+refuses_clear_while_active() ->
+    Test = self(),
+    application:set_env(
+      wfdaemon, asset_http_fun,
+      fun(_Url, _Headers) ->
+          Test ! {clear_fetch_started, self()},
+          receive continue -> {ok, 200, [], fixture_png()} end
+      end),
+    Resolver = spawn(fun() ->
+        Test ! {clear_fetch_result,
+                wfcli_asset_service:resolve(
+                  [#{<<"id">> => <<"clear-active">>,
+                     <<"image_name">> => <<"clear-active.png">>}])}
+    end),
+    Worker = receive {clear_fetch_started, Pid} -> Pid after 1000 -> timeout end,
+    ?assert(is_pid(Worker)),
+    ?assertEqual({error, asset_cache_busy}, wfcli_asset_service:clear()),
+    Worker ! continue,
+    receive {clear_fetch_result, {ok, [_]}} -> ok
+    after 1000 -> error({clear_fetch_timeout, Resolver})
+    end,
+    restore_http_fun().
+
+reports_usage_and_clears_cache() ->
+    {ok, Root} = application:get_env(wfdaemon, asset_cache_dir),
+    Status = wfcli_asset_service:status(),
+    Files = filelib:wildcard(filename:join([Root, "objects", "*"])),
+    Sizes = [Size || Path <- Files,
+                     {ok, #file_info{type = regular, size = Size}} <- [file:read_file_info(Path)]],
+    ?assertEqual(length(Sizes), maps:get(objects, Status)),
+    ?assertEqual(lists:sum(Sizes), maps:get(bytes, Status)),
+    {ok, Cleared} = wfcli_asset_service:clear(),
+    ?assertEqual(0, maps:get(objects, Cleared)),
+    ?assertEqual(0, maps:get(bytes, Cleared)),
+    ?assertEqual(0, maps:get(entries, Cleared)).
 
 restore_http_fun() ->
     {ok, Counter} = application:get_env(wfdaemon, asset_test_counter),

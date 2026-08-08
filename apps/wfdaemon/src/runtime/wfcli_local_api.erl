@@ -421,6 +421,7 @@ handle_request(#{<<"op">> := <<"hello">>} = Request, State) ->
                                <<"player.mastery">>,
                                <<"notifications.fissures">>,
                                <<"asset.resolve">>,
+                               <<"asset.cache">>,
                                <<"companion.command">>]
     },
     send_json(maps:get(socket, State), Reply),
@@ -747,6 +748,21 @@ handle_request(#{<<"op">> := <<"asset_resolve">>,
 handle_request(#{<<"op">> := <<"asset_resolve">>} = Request, State) ->
     send_error(maps:get(socket, State), request_id(Request), invalid_assets),
     {ok, State};
+handle_request(#{<<"op">> := <<"asset_cache_status">>} = Request, State) ->
+    Id = request_id(Request),
+    Work = fun() ->
+        {ok, asset_cache_data(wfcli_asset_service:status())}
+    end,
+    {ok, start_local_request(Id, <<"asset_cache">>, Work, State)};
+handle_request(#{<<"op">> := <<"asset_cache_clear">>} = Request, State) ->
+    Id = request_id(Request),
+    Work = fun() ->
+        case wfcli_asset_service:clear() of
+            {ok, Status} -> {ok, asset_cache_data(Status)};
+            {error, _Reason} = Error -> Error
+        end
+    end,
+    {ok, start_local_request(Id, <<"asset_cache">>, Work, State)};
 handle_request(Request, State) ->
     send_error(maps:get(socket, State), request_id(Request), unsupported_request),
     {ok, State}.
@@ -761,6 +777,16 @@ valid_market_limit(Limit) ->
 
 valid_market_items(Items) ->
     lists:all(fun(Item) -> is_binary(Item) andalso byte_size(Item) > 0 end, Items).
+
+asset_cache_data(Status) ->
+    #{<<"cache_root">> => wfcli_text:to_binary(maps:get(cache_root, Status)),
+      <<"entries">> => maps:get(entries, Status),
+      <<"objects">> => maps:get(objects, Status),
+      <<"bytes">> => maps:get(bytes, Status),
+      <<"queued">> => maps:get(queued, Status),
+      <<"pending">> => maps:get(pending, Status),
+      <<"fetching">> => maps:get(fetching, Status),
+      <<"waiting_calls">> => maps:get(waiting_calls, Status)}.
 
 market_variant_filters(Filters) ->
     Allowed = #{<<"rank">> => {rank, 100}, <<"charges">> => {charges, 100000},
