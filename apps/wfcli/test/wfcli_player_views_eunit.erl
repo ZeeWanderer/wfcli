@@ -185,6 +185,28 @@ mastery_market_names_test() ->
     ?assertEqual(false, maps:get(<<"market_required">>, FormaBlueprint)),
     ?assertEqual(true, maps:get(<<"buyable">>, Item)).
 
+duplicate_recipe_slots_share_owned_count_test() ->
+    Twin = <<"/Lotus/Weapons/Test/TwinKrohkur">>,
+    Krohkur = <<"/Lotus/Weapons/Test/Krohkur">>,
+    Snapshot = #{data => #{<<"inventory">> => #{<<"index">> => #{
+        <<"equipment">> => [entry(Krohkur, 1, 0)]}}}},
+    Catalog = [#{<<"uniqueName">> => Twin, <<"name">> => <<"Twin Krohkur">>,
+                 <<"category">> => <<"Melee">>, <<"masterable">> => true,
+                 <<"components">> => [
+                     #{<<"uniqueName">> => Krohkur, <<"name">> => <<"Krohkur">>,
+                       <<"itemCount">> => 1},
+                     #{<<"uniqueName">> => Krohkur, <<"name">> => <<"Krohkur">>,
+                       <<"itemCount">> => 1}]}],
+
+    {ok, Foundry} = wfcli_player_views:foundry(Snapshot, Catalog),
+    [Item] = maps:get(<<"items">>, Foundry),
+    ?assertEqual([1, 0], [maps:get(<<"owned">>, Component)
+                          || Component <- maps:get(<<"components">>, Item)]),
+    ?assertEqual(1, maps:get(<<"components_owned">>, Item)),
+    ?assertEqual(2, maps:get(<<"components_required">>, Item)),
+    ?assertEqual(1, maps:get(<<"missing_parts">>, Item)),
+    ?assertEqual(false, maps:get(<<"ready_to_build">>, Item)).
+
 item_catalog_compaction_test() ->
     Item = #{<<"uniqueName">> => <<"/Lotus/Test">>,
              <<"name">> => <<"Test">>, <<"vaulted">> => true,

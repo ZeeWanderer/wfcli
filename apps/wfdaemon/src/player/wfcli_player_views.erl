@@ -460,27 +460,44 @@ foundry_item(Item, Owned, Mastery, Pending, Subsumed) ->
           <<"components_required">> => Required}.
 
 mastery_components(Item, Owned) ->
-    Components = maps:get(<<"components">>, Item, []),
-    [begin
-         Unique = maps:get(<<"uniqueName">>, Component),
-         ExternalName = component_external_name(Item, Component),
-         MarketName = component_market_name(Component, ExternalName),
-         #{<<"id">> => Unique,
-           <<"name">> => maps:get(<<"name">>, Component, fallback_name(Unique)),
-           <<"market_name">> => MarketName,
-           <<"market_required">> =>
-               contains(ExternalName, <<"Blueprint">>) andalso
-               not zero_price_component(ExternalName),
-           <<"required">> => max(1, number(maps:get(<<"itemCount">>, Component, 1))),
-           <<"owned">> => maps:get(count, maps:get(Unique, Owned, #{}), 0),
-           <<"tradable">> => maps:get(<<"tradable">>, Component, false) =:= true,
-           <<"relic_drop">> => maps:get(<<"drops">>, Component, []) =/= [],
-           <<"owned_relic">> => has_owned_relic(maps:get(<<"drops">>, Component, []), Owned),
-           <<"relic_probability">> =>
-               component_relic_probability(maps:get(<<"drops">>, Component, []), Owned),
-           <<"asset">> => asset(Unique, maps:get(<<"imageName">>, Component, undefined))}
-     end || Component <- Components, is_map(Component),
-            is_binary(maps:get(<<"uniqueName">>, Component, undefined))].
+    Components = [Component || Component <- maps:get(<<"components">>, Item, []),
+                               is_map(Component),
+                               is_binary(maps:get(<<"uniqueName">>, Component,
+                                                  undefined))],
+    {Result, _Remaining} =
+        lists:mapfoldl(
+          fun(Component, Remaining) ->
+              Unique = maps:get(<<"uniqueName">>, Component),
+              Required = max(1, number(maps:get(<<"itemCount">>, Component, 1))),
+              TotalOwned = maps:get(count, maps:get(Unique, Owned, #{}), 0),
+              Available = maps:get(Unique, Remaining, TotalOwned),
+              DisplayOwned = case Available >= Required of
+                                 true -> TotalOwned;
+                                 false -> Available
+                             end,
+              {mastery_component(Item, Component, Required, DisplayOwned, Owned),
+               Remaining#{Unique => max(0, Available - Required)}}
+          end, #{}, Components),
+    Result.
+
+mastery_component(Item, Component, Required, OwnedCount, Owned) ->
+    Unique = maps:get(<<"uniqueName">>, Component),
+    ExternalName = component_external_name(Item, Component),
+    MarketName = component_market_name(Component, ExternalName),
+    #{<<"id">> => Unique,
+      <<"name">> => maps:get(<<"name">>, Component, fallback_name(Unique)),
+      <<"market_name">> => MarketName,
+      <<"market_required">> =>
+          contains(ExternalName, <<"Blueprint">>) andalso
+          not zero_price_component(ExternalName),
+      <<"required">> => Required,
+      <<"owned">> => OwnedCount,
+      <<"tradable">> => maps:get(<<"tradable">>, Component, false) =:= true,
+      <<"relic_drop">> => maps:get(<<"drops">>, Component, []) =/= [],
+      <<"owned_relic">> => has_owned_relic(maps:get(<<"drops">>, Component, []), Owned),
+      <<"relic_probability">> =>
+          component_relic_probability(maps:get(<<"drops">>, Component, []), Owned),
+      <<"asset">> => asset(Unique, maps:get(<<"imageName">>, Component, undefined))}.
 
 buyable_candidate([]) -> false;
 buyable_candidate(Components) ->
