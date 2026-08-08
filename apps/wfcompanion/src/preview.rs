@@ -2,9 +2,11 @@ use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, mpsc};
 use std::time::Duration;
 
-use crate::PreviewRequest;
+use crate::{PreviewRequest, PreviewSource};
 
 type Renderer = fn((u32, u32), &Path) -> Result<(), String>;
 type FrameRenderer = fn((u32, u32), Duration) -> Result<image::RgbaImage, String>;
@@ -69,10 +71,14 @@ pub(crate) fn render(
             name,
             path,
             background,
+            source,
         } => {
             let preview = find(&name)?;
             ensure_parent(&path)?;
-            (preview.render)(dimensions, &path)?;
+            match source {
+                Some(source) => render_live(source, dimensions, &path)?,
+                None => (preview.render)(dimensions, &path)?,
+            }
             if let Some(background) = background {
                 composite_file(&path, &background, dimensions)?;
             }
@@ -127,6 +133,25 @@ pub(crate) fn render(
         }
         PreviewRequest::List { .. } => Ok(Vec::new()),
     }
+}
+
+fn render_live(source: PreviewSource, dimensions: (u32, u32), path: &Path) -> Result<(), String> {
+    let stopping = Arc::new(AtomicBool::new(false));
+    let (ui, _events) = mpsc::channel();
+    let outbound = crate::daemon::spawn(ui, Arc::clone(&stopping), "preview");
+    let result = (|| {
+        let scene = match source {
+            PreviewSource::RewardScreenshot(path) => {
+                crate::relic::reward_preview_scene(&path, &outbound)?
+            }
+            PreviewSource::RelicInventory(era) => {
+                crate::relic::suggestion_preview_scene(era, &outbound)?
+            }
+        };
+        crate::overlay::save_relic_scene_preview(dimensions, &scene, path)
+    })();
+    stopping.store(true, Ordering::Relaxed);
+    result
 }
 
 fn render_animation(

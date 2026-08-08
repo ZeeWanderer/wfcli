@@ -34,7 +34,7 @@ Usage:
   wfcompanion screenshot OUTPUT.png
   wfcompanion relic-ocr [IMAGE]
   wfcompanion preview list [--animated]
-  wfcompanion preview image TYPE [--background IMAGE] OUTPUT.png
+  wfcompanion preview image TYPE [--background IMAGE] [--scan IMAGE|--era ERA] OUTPUT.png
   wfcompanion preview image all OUTPUT_DIR
   wfcompanion preview video TYPE [--background IMAGE] OUTPUT.webm
   wfcompanion preview video all OUTPUT_DIR
@@ -47,7 +47,7 @@ Commands:
   probe              Print detected Warframe process state as JSON
   screenshot         Capture Warframe through KWin
   relic-ocr          Print OCR candidates from saved or newly captured image
-  preview            Render mock overlays onto a transparent output-sized image
+  preview            Render overlays onto a transparent output-sized image
   paths              Report per-user directories as JSON
   logs               Print incident log path and recent entries
 
@@ -110,6 +110,7 @@ enum PreviewRequest {
         name: String,
         path: PathBuf,
         background: Option<PathBuf>,
+        source: Option<PreviewSource>,
     },
     All {
         directory: PathBuf,
@@ -122,6 +123,12 @@ enum PreviewRequest {
     AnimateAll {
         directory: PathBuf,
     },
+}
+
+#[derive(Debug, Eq, PartialEq)]
+enum PreviewSource {
+    RewardScreenshot(PathBuf),
+    RelicInventory(String),
 }
 
 fn main() -> ExitCode {
@@ -277,15 +284,17 @@ fn parse_preview_command(arguments: &[String]) -> Result<Command, String> {
             }))
         }
         [kind, name, rest @ ..] if kind == "image" => {
-            let (path, background) = parse_preview_output(rest)?;
+            let (path, background, source) = parse_preview_output(rest, true)?;
+            validate_preview_source(name, source.as_ref())?;
             Ok(Command::Preview(PreviewRequest::One {
                 name: name.clone(),
                 path,
                 background,
+                source,
             }))
         }
         [kind, name, rest @ ..] if kind == "video" => {
-            let (path, background) = parse_preview_output(rest)?;
+            let (path, background, _) = parse_preview_output(rest, false)?;
             Ok(Command::Preview(PreviewRequest::Animate {
                 name: name.clone(),
                 path,
@@ -301,9 +310,13 @@ fn parse_preview_command(arguments: &[String]) -> Result<Command, String> {
     }
 }
 
-fn parse_preview_output(arguments: &[String]) -> Result<(PathBuf, Option<PathBuf>), String> {
+fn parse_preview_output(
+    arguments: &[String],
+    allow_source: bool,
+) -> Result<(PathBuf, Option<PathBuf>, Option<PreviewSource>), String> {
     let mut output = None;
     let mut background = None;
+    let mut source = None;
     let mut index = 0;
     while index < arguments.len() {
         match arguments[index].as_str() {
@@ -312,6 +325,21 @@ fn parse_preview_output(arguments: &[String]) -> Result<(PathBuf, Option<PathBuf
                 index += 2;
             }
             "--background" => return Err("--background requires an image path".to_owned()),
+            "--scan" if allow_source && index + 1 < arguments.len() && source.is_none() => {
+                source = Some(PreviewSource::RewardScreenshot(PathBuf::from(
+                    &arguments[index + 1],
+                )));
+                index += 2;
+            }
+            "--era" if allow_source && index + 1 < arguments.len() && source.is_none() => {
+                source = Some(PreviewSource::RelicInventory(arguments[index + 1].clone()));
+                index += 2;
+            }
+            "--scan" | "--era" if source.is_some() => {
+                return Err("preview accepts only one live data source".to_owned());
+            }
+            "--scan" => return Err("--scan requires an image path".to_owned()),
+            "--era" => return Err("--era requires a relic era".to_owned()),
             option if option.starts_with('-') => {
                 return Err(format!("unknown preview option: {option}"));
             }
@@ -323,8 +351,22 @@ fn parse_preview_output(arguments: &[String]) -> Result<(PathBuf, Option<PathBuf
         }
     }
     output
-        .map(|path| (path, background))
+        .map(|path| (path, background, source))
         .ok_or_else(|| "preview requires an output path".to_owned())
+}
+
+fn validate_preview_source(name: &str, source: Option<&PreviewSource>) -> Result<(), String> {
+    match (name, source) {
+        ("relic-rewards", None | Some(PreviewSource::RewardScreenshot(_)))
+        | ("relic-suggestions", None | Some(PreviewSource::RelicInventory(_)))
+        | (_, None) => Ok(()),
+        (_, Some(PreviewSource::RewardScreenshot(_))) => {
+            Err("--scan is only valid for relic-rewards".to_owned())
+        }
+        (_, Some(PreviewSource::RelicInventory(_))) => {
+            Err("--era is only valid for relic-suggestions".to_owned())
+        }
+    }
 }
 
 fn parse_screenshot_command(arguments: &[String]) -> Result<Command, String> {
@@ -416,6 +458,7 @@ mod tests {
                 name: "relic-rewards".to_owned(),
                 path: PathBuf::from("preview.png"),
                 background: None,
+                source: None,
             }))
         );
         assert_eq!(
@@ -442,6 +485,57 @@ mod tests {
         assert_eq!(
             parse_command(&arguments(&["relic-ocr", "rewards.jpg"])),
             Ok(Command::RelicOcr(Some(PathBuf::from("rewards.jpg"))))
+        );
+    }
+
+    #[test]
+    fn parses_live_preview_sources() {
+        assert_eq!(
+            parse_command(&arguments(&[
+                "preview",
+                "image",
+                "relic-rewards",
+                "--scan",
+                "rewards.jpg",
+                "--background",
+                "rewards.jpg",
+                "preview.png",
+            ])),
+            Ok(Command::Preview(PreviewRequest::One {
+                name: "relic-rewards".to_owned(),
+                path: PathBuf::from("preview.png"),
+                background: Some(PathBuf::from("rewards.jpg")),
+                source: Some(PreviewSource::RewardScreenshot(PathBuf::from(
+                    "rewards.jpg"
+                ))),
+            }))
+        );
+        assert_eq!(
+            parse_command(&arguments(&[
+                "preview",
+                "image",
+                "relic-suggestions",
+                "--era",
+                "all",
+                "suggestions.png",
+            ])),
+            Ok(Command::Preview(PreviewRequest::One {
+                name: "relic-suggestions".to_owned(),
+                path: PathBuf::from("suggestions.png"),
+                background: None,
+                source: Some(PreviewSource::RelicInventory("all".to_owned())),
+            }))
+        );
+        assert_eq!(
+            parse_command(&arguments(&[
+                "preview",
+                "image",
+                "notification",
+                "--era",
+                "all",
+                "notification.png",
+            ])),
+            Err("--era is only valid for relic-suggestions".to_owned())
         );
     }
 

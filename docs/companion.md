@@ -119,6 +119,13 @@ make previews PREVIEW_SCENES='relic-rewards relic-suggestions'
 make previews PREVIEW_RESOLUTIONS=2560x1440
 ```
 
+Direct previews can use real OCR and daemon data:
+
+```bash
+wfcompanion preview image relic-rewards --scan SCREENSHOT --background SCREENSHOT OUTPUT.png
+wfcompanion preview image relic-suggestions --era all --background SCREENSHOT OUTPUT.png
+```
+
 Animated previews require FFmpeg. AlecaFrame reference previews require
 [`make aleca-layout-setup`](../tools/aleca-layout/README.md).
 

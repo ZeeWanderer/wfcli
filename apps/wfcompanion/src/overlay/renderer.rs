@@ -77,6 +77,17 @@ pub(crate) fn save_relic_preview(dimensions: (u32, u32), path: &Path) -> Result<
     )
 }
 
+pub(crate) fn save_relic_scene_preview(
+    dimensions: (u32, u32),
+    scene: &crate::relic::Scene,
+    path: &Path,
+) -> Result<(), String> {
+    save_preview_image(
+        render_relic_scene_preview(dimensions, scene, Duration::ZERO)?,
+        path,
+    )
+}
+
 pub(crate) fn save_relic_loading_preview(
     dimensions: (u32, u32),
     path: &Path,

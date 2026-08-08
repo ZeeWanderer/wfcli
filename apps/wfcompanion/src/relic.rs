@@ -58,6 +58,34 @@ pub(crate) fn suggestion_fixture() -> Result<Scene, String> {
         .map_err(|error| format!("invalid relic suggestion fixture: {error}"))
 }
 
+pub(crate) fn reward_preview_scene(
+    path: &Path,
+    daemon: &mpsc::Sender<Outbound>,
+) -> Result<Scene, String> {
+    let image =
+        image::open(path).map_err(|error| format!("could not read {}: {error}", path.display()))?;
+    let rewards = scan_rewards(&image, daemon)?;
+    let Some(context) = reward_context(daemon, &rewards)? else {
+        return Ok(Scene::Rewards(Rewards {
+            items: rewards,
+            account: Account::default(),
+        }));
+    };
+    let assets = resolve_assets(daemon, &context);
+    Ok(Scene::Rewards(contextual_rewards(
+        rewards, &context, &assets,
+    )))
+}
+
+pub(crate) fn suggestion_preview_scene(
+    era: String,
+    daemon: &mpsc::Sender<Outbound>,
+) -> Result<Scene, String> {
+    crate::daemon::relic_recommendations(daemon, era, true)
+        .and_then(|response| parse_suggestions(&response))
+        .map(Scene::Suggestions)
+}
+
 pub(crate) fn diagnose(path: &Path) -> Result<serde_json::Value, String> {
     let image =
         image::open(path).map_err(|error| format!("could not read {}: {error}", path.display()))?;
