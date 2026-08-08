@@ -3,10 +3,10 @@
 #include <QWidget>
 
 class AppController;
+class AnimatedProgressBar;
 class QLabel;
 class PlayerItemFilterModel;
 class PlayerItemGridWidget;
-class QProgressBar;
 class QPushButton;
 class QStackedLayout;
 
@@ -28,7 +28,7 @@ private:
   PlayerItemGridWidget *grid_;
   QLabel *summary_;
   QLabel *emptyState_;
-  QProgressBar *progress_;
+  AnimatedProgressBar *progress_;
   QPushButton *refresh_;
   QStackedLayout *content_;
 };

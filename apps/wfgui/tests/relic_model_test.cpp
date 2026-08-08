@@ -8,6 +8,7 @@
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QLabel>
 #include <QLineEdit>
 #include <QListWidget>
 #include <QLocalServer>
@@ -19,12 +20,12 @@
 #include <QSet>
 #include <QTemporaryDir>
 #include <QToolButton>
-#include <QToolTip>
 #include <QtTest>
 
 #include <utility>
 
 #include "activity_data.h"
+#include "animated_progress_bar.h"
 #include "app_controller.h"
 #include "compact_search.h"
 #include "daemon_client.h"
@@ -38,6 +39,7 @@
 #include "relic_card_layout.h"
 #include "relic_grid_widget.h"
 #include "relic_model.h"
+#include "tooltip.h"
 #include "widget_capture.h"
 
 class RelicModelTest final : public QObject {
@@ -59,6 +61,8 @@ private slots:
   void sortsInventoryLocally();
   void appliesMasteryAcquisitionQuotes();
   void sortsMasteryRecommendations();
+  void keepsMasteryRowsStableWhilePricesLoad();
+  void keepsInventoryRowsStableWhilePricesLoad();
   void invalidatesCachedComponentAssets();
   void rejectsMalformedPayload();
   void cardLayoutUsesConstraints();
@@ -66,13 +70,17 @@ private slots:
   void gridLayoutUsesStableBreakpoints();
   void playerGridUsesAvailableColumns();
   void foundryGridUsesCompactCards();
+  void standardTooltipsUseLocalCoordinates();
   void foundryStatusBadgesHaveTooltips();
+  void masteryComponentTooltipsUseLocalCoordinates();
   void componentClicksUseCounterpartyListings();
   void masteryGridUsesCompactCards();
   void inventoryGridRequestsVisibleQuotes();
   void masteryGridRequestsComponentQuotes();
+  void masteryGridRequestsAllComponentQuotes();
   void cacheMissDoesNotBecomeMarketMiss();
   void playerGridPreservesScrollAcrossResort();
+  void busyProgressAnimates();
   void ownershipFilterKeepsVisibleCardsStable();
   void compactSearchExpandsOnClick();
   void thumbnailCacheRespectsSizeAndDpr();
@@ -586,6 +594,108 @@ void RelicModelTest::sortsMasteryRecommendations() {
       QString("Likely Prime"));
 }
 
+void RelicModelTest::keepsMasteryRowsStableWhilePricesLoad() {
+  PlayerItemModel model;
+  QVERIFY(model.replace({
+      {"items",
+       QJsonArray{
+           QJsonObject{
+               {"id", "alpha"},
+               {"name", "Alpha Prime"},
+               {"mastered", false},
+               {"buyable", true},
+               {"potential_xp", 3000},
+               {"components", QJsonArray{QJsonObject{
+                                  {"market_name", "Alpha Prime Blueprint"},
+                                  {"market_required", true},
+                                  {"required", 1},
+                                  {"owned", 0},
+                              }}},
+           },
+           QJsonObject{
+               {"id", "beta"},
+               {"name", "Beta Prime"},
+               {"mastered", false},
+               {"buyable", true},
+               {"potential_xp", 3000},
+               {"components", QJsonArray{QJsonObject{
+                                  {"market_name", "Beta Prime Blueprint"},
+                                  {"market_required", true},
+                                  {"required", 1},
+                                  {"owned", 0},
+                              }}},
+           },
+       }},
+  }));
+  PlayerItemFilterModel filter;
+  filter.setSourceModel(&model);
+  filter.setPricesLoading(true);
+  filter.setMode("platinum");
+
+  QCOMPARE(filter.rowCount(), 2);
+  QCOMPARE(filter.index(0, 0).data(PlayerItemModel::NameRole).toString(),
+           QString("Alpha Prime"));
+  QSignalSpy layoutChanges(&filter, &QAbstractItemModel::layoutChanged);
+  model.applyMarketQuotes(QJsonArray{QJsonObject{
+                              {"item", "Beta Prime Blueprint"},
+                              {"quote", QJsonObject{{"lowest_sell", 20}}},
+                          }},
+                          QJsonArray{"Alpha Prime Blueprint"});
+
+  QCOMPARE(filter.rowCount(), 2);
+  QCOMPARE(filter.index(0, 0).data(PlayerItemModel::NameRole).toString(),
+           QString("Alpha Prime"));
+  QCOMPARE(filter.index(1, 0).data(PlayerItemModel::NameRole).toString(),
+           QString("Beta Prime"));
+  QCOMPARE(layoutChanges.count(), 0);
+
+  filter.setPricesLoading(false);
+  QCOMPARE(filter.rowCount(), 1);
+  QCOMPARE(filter.index(0, 0).data(PlayerItemModel::NameRole).toString(),
+           QString("Beta Prime"));
+}
+
+void RelicModelTest::keepsInventoryRowsStableWhilePricesLoad() {
+  PlayerItemModel model;
+  QVERIFY(model.replace({
+      {"items",
+       QJsonArray{
+           QJsonObject{{"id", "alpha"},
+                       {"name", "Alpha Prime Part"},
+                       {"tradable", true},
+                       {"ducats", 15}},
+           QJsonObject{{"id", "beta"},
+                       {"name", "Beta Prime Part"},
+                       {"tradable", true},
+                       {"ducats", 45}},
+       }},
+  }));
+  PlayerItemFilterModel filter;
+  filter.setSourceModel(&model);
+  filter.setPricesLoading(true);
+  filter.setSortMode("platinum");
+
+  QSignalSpy layoutChanges(&filter, &QAbstractItemModel::layoutChanged);
+  model.applyMarketQuotes(QJsonArray{QJsonObject{
+                              {"item", "Beta Prime Part"},
+                              {"quote", QJsonObject{{"lowest_sell", 2}}},
+                          }},
+                          {});
+
+  QCOMPARE(layoutChanges.count(), 0);
+  QCOMPARE(filter.index(0, 0).data(PlayerItemModel::IdRole).toString(),
+           QString("alpha"));
+
+  model.applyMarketQuotes(QJsonArray{QJsonObject{
+                              {"item", "Alpha Prime Part"},
+                              {"quote", QJsonObject{{"lowest_sell", 20}}},
+                          }},
+                          {});
+  filter.setPricesLoading(false);
+  QCOMPARE(filter.index(0, 0).data(PlayerItemModel::IdRole).toString(),
+           QString("beta"));
+}
+
 void RelicModelTest::invalidatesCachedComponentAssets() {
   PlayerItemModel model;
   QVERIFY(model.replace({
@@ -777,6 +887,40 @@ void RelicModelTest::foundryGridUsesCompactCards() {
   QCOMPARE(card.deviceIndependentSize().height(), 150.0);
 }
 
+void RelicModelTest::standardTooltipsUseLocalCoordinates() {
+  wfgui::installTooltipHandling(*qApp);
+  QWidget host;
+  QToolButton button(&host);
+  button.setToolTip("Locally positioned");
+  button.setGeometry(40, 30, 80, 30);
+  host.resize(240, 140);
+  host.show();
+  QCoreApplication::processEvents();
+
+  const QPoint local(10, 10);
+  const QPoint expected = button.mapTo(&host, local);
+  QHelpEvent event(QEvent::ToolTip, local,
+                   button.mapToGlobal(local) + QPoint(10000, 10000));
+  QApplication::sendEvent(&button, &event);
+  QCoreApplication::processEvents();
+
+  QLabel *tip =
+      host.findChild<QLabel *>("wfguiTooltip", Qt::FindDirectChildrenOnly);
+  QVERIFY(tip != nullptr);
+  QVERIFY(tip->isVisible());
+  QVERIFY(!tip->isWindow());
+  QCOMPARE(tip->text(), QString("Locally positioned"));
+  const QRect vicinity(expected - QPoint(50, 50), QSize(100, 100));
+  QVERIFY2(vicinity.intersects(tip->geometry()),
+           qPrintable(QString("tooltip at %1,%2; expected near %3,%4")
+                          .arg(tip->x())
+                          .arg(tip->y())
+                          .arg(expected.x())
+                          .arg(expected.y())));
+  wfgui::hideTooltip();
+  QCoreApplication::processEvents();
+}
+
 void RelicModelTest::foundryStatusBadgesHaveTooltips() {
   PlayerItemModel model;
   QVERIFY(model.replace({
@@ -802,27 +946,29 @@ void RelicModelTest::foundryStatusBadgesHaveTooltips() {
   const QRect content = card.adjusted(8, 8, -8, -8);
   const QRect image(content.left() + 3, card.bottom() - 105 + 1, 105, 105);
   const auto tooltipAt = [&grid](const QPoint &position) {
-    QToolTip::hideText();
-    const QPoint expected =
-        grid.viewport()->mapToGlobal(position) + QPoint(200, 100);
-    QHelpEvent event(QEvent::ToolTip, position, expected);
+    wfgui::hideTooltip();
+    const QPoint expected = grid.viewport()->mapTo(&grid, position);
+    QCoreApplication::processEvents();
+    QHelpEvent event(QEvent::ToolTip, position,
+                     grid.viewport()->mapToGlobal(position) +
+                         QPoint(10000, 10000));
     QApplication::sendEvent(grid.viewport(), &event);
     QCoreApplication::processEvents();
-    QWidget *tip = nullptr;
-    for (QWidget *widget : QApplication::topLevelWidgets()) {
-      if (widget->inherits("QTipLabel") && widget->isVisible()) {
-        tip = widget;
-        break;
-      }
-    }
-    if (tip == nullptr) {
-      return QString("missing:%1").arg(QToolTip::text());
+    QLabel *tip =
+        grid.findChild<QLabel *>("wfguiTooltip", Qt::FindDirectChildrenOnly);
+    if (tip == nullptr || !tip->isVisible()) {
+      return QString("missing");
     }
     const QRect vicinity(expected - QPoint(50, 50), QSize(100, 100));
     if (!vicinity.intersects(tip->geometry())) {
-      return QString("misplaced:%1").arg(QToolTip::text());
+      return QString("misplaced:%1 at %2,%3; expected near %4,%5")
+          .arg(tip->text())
+          .arg(tip->x())
+          .arg(tip->y())
+          .arg(expected.x())
+          .arg(expected.y());
     }
-    return QToolTip::text();
+    return tip->text();
   };
 
   QCOMPARE(tooltipAt(content.topLeft() + QPoint(12, 12)),
@@ -833,6 +979,63 @@ void RelicModelTest::foundryStatusBadgesHaveTooltips() {
            QString("Mastery Rank 10"));
   QCOMPARE(tooltipAt(QPoint(image.right() - 14, image.bottom() - 14)),
            QString("Subsumed"));
+  wfgui::hideTooltip();
+  QCoreApplication::processEvents();
+}
+
+void RelicModelTest::masteryComponentTooltipsUseLocalCoordinates() {
+  PlayerItemModel model;
+  QVERIFY(model.replace({
+      {"items", QJsonArray{QJsonObject{
+                    {"id", "test-prime"},
+                    {"name", "Test Prime"},
+                    {"group", "warframes"},
+                    {"owned", false},
+                    {"components",
+                     QJsonArray{QJsonObject{{"name", "Test Prime Blueprint"},
+                                            {"required", 2},
+                                            {"owned", 1}}}},
+                }}},
+  }));
+
+  PlayerItemGridWidget grid(PlayerItemGridWidget::Kind::Mastery);
+  grid.setModel(&model);
+  grid.resize(800, 600);
+  grid.show();
+  QCoreApplication::processEvents();
+
+  const QRect item = grid.visualRect(model.index(0));
+  const QRect card = item.adjusted(4, 4, -4, -4);
+  const QRect content = card.adjusted(8, 8, -8, -8);
+  const int componentAreaLeft = content.right() - 109 + 1;
+  const QRect component(componentAreaLeft + (109 - 30) / 2,
+                        content.center().y() - 30 / 2, 30, 30);
+  const QPoint position = component.center();
+  const QPoint expected = grid.viewport()->mapTo(&grid, position);
+
+  wfgui::hideTooltip();
+  QCoreApplication::processEvents();
+  QHelpEvent event(QEvent::ToolTip, position,
+                   grid.viewport()->mapToGlobal(position) +
+                       QPoint(10000, 10000));
+  QApplication::sendEvent(grid.viewport(), &event);
+  QCoreApplication::processEvents();
+
+  QLabel *tip =
+      grid.findChild<QLabel *>("wfguiTooltip", Qt::FindDirectChildrenOnly);
+  QVERIFY(tip != nullptr);
+  QVERIFY(tip->isVisible());
+  QVERIFY(!tip->isWindow());
+  QCOMPARE(tip->text(), QString("Test Prime Blueprint\nOwned: 1/2"));
+  const QRect vicinity(expected - QPoint(50, 50), QSize(100, 100));
+  QVERIFY2(vicinity.intersects(tip->geometry()),
+           qPrintable(QString("tooltip at %1,%2; expected near %3,%4")
+                          .arg(tip->x())
+                          .arg(tip->y())
+                          .arg(expected.x())
+                          .arg(expected.y())));
+  wfgui::hideTooltip();
+  QCoreApplication::processEvents();
 }
 
 void RelicModelTest::componentClicksUseCounterpartyListings() {
@@ -959,6 +1162,36 @@ void RelicModelTest::masteryGridRequestsComponentQuotes() {
   QTRY_VERIFY(!quotes.isEmpty());
   QCOMPARE(quotes.takeLast().at(0).toStringList(),
            QStringList{"Test Prime Chassis Blueprint"});
+}
+
+void RelicModelTest::masteryGridRequestsAllComponentQuotes() {
+  QJsonArray items;
+  QStringList expected;
+  for (int row = 0; row < 24; ++row) {
+    const QString marketName = QString("Prime Part %1 Blueprint").arg(row);
+    expected.append(marketName);
+    items.append(QJsonObject{
+        {"id", QString("item-%1").arg(row)},
+        {"name", QString("Prime Item %1").arg(row)},
+        {"components",
+         QJsonArray{QJsonObject{
+             {"market_name", marketName}, {"required", 1}, {"owned", 0}}}},
+    });
+  }
+  PlayerItemModel model;
+  QVERIFY(model.replace({{"items", items}}));
+  PlayerItemGridWidget grid(PlayerItemGridWidget::Kind::Mastery);
+  QSignalSpy quotes(&grid, &PlayerItemGridWidget::quotesNeeded);
+  grid.setModel(&model);
+  grid.resize(400, 100);
+  grid.show();
+  QCoreApplication::processEvents();
+  quotes.clear();
+
+  grid.requestAllQuotes();
+
+  QCOMPARE(quotes.count(), 1);
+  QCOMPARE(quotes.takeFirst().at(0).toStringList(), expected);
 }
 
 void RelicModelTest::cacheMissDoesNotBecomeMarketMiss() {
@@ -1279,34 +1512,81 @@ void RelicModelTest::playerGridPreservesScrollAcrossResort() {
   QVERIFY(model.replace({{"items", items}}));
   PlayerItemFilterModel filter;
   filter.setSourceModel(&model);
+  filter.setPricesLoading(true);
   filter.setMode("platinum");
 
   PlayerItemGridWidget grid(PlayerItemGridWidget::Kind::Mastery);
+  QCOMPARE(grid.layoutMode(), QListView::SinglePass);
   grid.setModel(&filter);
   grid.resize(800, 300);
   grid.show();
   QCoreApplication::processEvents();
   QTRY_VERIFY(grid.verticalScrollBar()->maximum() > 0);
   grid.verticalScrollBar()->setValue(grid.verticalScrollBar()->maximum() / 2);
-  const int before = grid.verticalScrollBar()->value();
-  QVERIFY(before > 0);
+  const auto topVisibleId = [&grid, &filter] {
+    QModelIndex top;
+    QRect topRect;
+    for (int row = 0; row < filter.rowCount(); ++row) {
+      const QModelIndex candidate = filter.index(row, 0);
+      const QRect rect = grid.visualRect(candidate);
+      if (!rect.intersects(grid.viewport()->rect())) {
+        continue;
+      }
+      if (!top.isValid() || rect.top() < topRect.top() ||
+          (rect.top() == topRect.top() && rect.left() < topRect.left())) {
+        top = candidate;
+        topRect = rect;
+      }
+    }
+    return top.data(PlayerItemModel::IdRole).toString();
+  };
+  const QString before = topVisibleId();
+  QVERIFY(!before.isEmpty());
+  const auto rowForId = [&filter](const QString &id) {
+    for (int row = 0; row < filter.rowCount(); ++row) {
+      if (filter.index(row, 0).data(PlayerItemModel::IdRole).toString() == id) {
+        return row;
+      }
+    }
+    return -1;
+  };
+  const int beforeOffset =
+      grid.visualRect(filter.index(rowForId(before), 0)).top();
 
-  model.applyMarketQuotes(QJsonArray{QJsonObject{
-                              {"item", "Prime Item 20 Blueprint"},
-                              {"quote", QJsonObject{{"lowest_sell", 12}}},
-                          }},
-                          {});
-  QTRY_COMPARE(grid.verticalScrollBar()->value(), before);
-
-  for (int row = 0; row < 16; ++row) {
-    const QString missing =
-        QString("Prime Item %1 Blueprint").arg(row, 2, 10, QChar('0'));
-    model.applyMarketQuotes({}, QJsonArray{missing});
-    QCoreApplication::processEvents();
-    QVERIFY2(
-        grid.verticalScrollBar()->value() > 0,
-        qPrintable(QString("scroll reset after resolving %1").arg(missing)));
+  QJsonArray quotes;
+  for (int row = 0; row < 40; ++row) {
+    quotes.append(QJsonObject{
+        {"item",
+         QString("Prime Item %1 Blueprint").arg(row, 2, 10, QChar('0'))},
+        {"quote", QJsonObject{{"lowest_sell", 40 - row}}},
+    });
   }
+  model.applyMarketQuotes(quotes, {});
+  filter.setPricesLoading(false);
+  QTRY_VERIFY(rowForId(before) >= 0);
+  QTRY_COMPARE(grid.visualRect(filter.index(rowForId(before), 0)).top(),
+               beforeOffset);
+  QVERIFY(grid.verticalScrollBar()->value() > 0);
+}
+
+void RelicModelTest::busyProgressAnimates() {
+  AnimatedProgressBar regular;
+  regular.resize(200, 7);
+  regular.setRange(0, 0);
+  regular.show();
+
+  AnimatedProgressBar thin;
+  thin.setObjectName("priceProgress");
+  thin.resize(200, 2);
+  thin.setRange(0, 0);
+  thin.show();
+  QCoreApplication::processEvents();
+
+  const QImage firstRegular = regular.grab().toImage();
+  const QImage firstThin = thin.grab().toImage();
+  QTest::qWait(180);
+  QVERIFY(firstRegular != regular.grab().toImage());
+  QVERIFY(firstThin != thin.grab().toImage());
 }
 
 void RelicModelTest::ownershipFilterKeepsVisibleCardsStable() {

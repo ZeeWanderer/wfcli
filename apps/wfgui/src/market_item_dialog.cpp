@@ -13,7 +13,6 @@
 #include <QLabel>
 #include <QListWidget>
 #include <QPixmap>
-#include <QProgressBar>
 #include <QPushButton>
 #include <QResizeEvent>
 #include <QSignalBlocker>
@@ -24,6 +23,7 @@
 #include <QTimer>
 #include <QVBoxLayout>
 
+#include "animated_progress_bar.h"
 #include "app_controller.h"
 #include "market_spin_box.h"
 #include "widget_capture.h"
@@ -185,7 +185,7 @@ MarketItemView::MarketItemView(AppController *controller,
                                                      : nullptr),
       compactListings_(presentation == Presentation::Rail ? new QListWidget
                                                           : nullptr),
-      progress_(new QProgressBar), quantity_(new wfgui::MarketSpinBox),
+      progress_(new AnimatedProgressBar), quantity_(new wfgui::MarketSpinBox),
       price_(new wfgui::MarketSpinBox), rank_(new wfgui::MarketSpinBox),
       charges_(new wfgui::MarketSpinBox), amberStars_(new wfgui::MarketSpinBox),
       cyanStars_(new wfgui::MarketSpinBox), perTrade_(new wfgui::MarketSpinBox),

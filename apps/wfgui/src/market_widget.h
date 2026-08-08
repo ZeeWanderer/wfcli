@@ -5,13 +5,13 @@
 #include <QWidget>
 
 class AppController;
+class AnimatedProgressBar;
 class QButtonGroup;
 class QComboBox;
 class QGridLayout;
 class QHideEvent;
 class QLabel;
 class QLineEdit;
-class QProgressBar;
 class QPushButton;
 class QScrollArea;
 class QStackedWidget;
@@ -58,7 +58,7 @@ private:
   QComboBox *presence_;
   QLabel *presenceState_;
   QLabel *summary_;
-  QProgressBar *progress_;
+  AnimatedProgressBar *progress_;
   QButtonGroup *categories_;
   QLineEdit *search_;
   QComboBox *side_;

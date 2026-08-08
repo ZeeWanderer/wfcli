@@ -3,10 +3,10 @@
 #include <QWidget>
 
 class AppController;
+class AnimatedProgressBar;
 class CompactSearch;
 class QButtonGroup;
 class QLabel;
-class QProgressBar;
 class QPushButton;
 class QStackedLayout;
 class RelicGridWidget;
@@ -29,7 +29,7 @@ private:
 
   AppController *controller_;
   QLabel *traceCount_;
-  QProgressBar *priceProgress_;
+  AnimatedProgressBar *priceProgress_;
   QLabel *emptyState_;
   RelicGridWidget *relics_;
   CompactSearch *search_;

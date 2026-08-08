@@ -11,7 +11,6 @@
 #include <QStyleOptionViewItem>
 #include <QStyledItemDelegate>
 #include <QTimer>
-#include <QToolTip>
 #include <QVariantList>
 #include <QVariantMap>
 
@@ -23,6 +22,7 @@
 #include "image_cache.h"
 #include "inventory_card_layout.h"
 #include "player_item_model.h"
+#include "tooltip.h"
 #include "widget_capture.h"
 
 namespace {
@@ -424,7 +424,6 @@ public:
                  const QStyleOptionViewItem &option,
                  const QModelIndex &index) override {
     if (event->type() == QEvent::ToolTip) {
-      const QPoint tooltipPosition = event->globalPos();
       const qreal scale = wfgui::displayScale(view);
       const QRect content = contentRect(option.rect, kind_, scale);
       if (kind_ == PlayerItemGridWidget::Kind::Foundry) {
@@ -435,39 +434,39 @@ public:
         const FoundryLayout layout =
             foundryLayout(content, card, index, titleFont, scale);
         if (layout.favorite.contains(event->pos())) {
-          QToolTip::showText(tooltipPosition, "Favorite", view->viewport(),
+          wfgui::showTooltip(view->viewport(), event->pos(), "Favorite",
                              layout.favorite);
           return true;
         }
         if (layout.pending.contains(event->pos())) {
-          QToolTip::showText(tooltipPosition, "In Foundry", view->viewport(),
+          wfgui::showTooltip(view->viewport(), event->pos(), "In Foundry",
                              layout.pending);
           return true;
         }
         if (layout.mastered.contains(event->pos())) {
-          QToolTip::showText(tooltipPosition, "Mastered", view->viewport(),
+          wfgui::showTooltip(view->viewport(), event->pos(), "Mastered",
                              layout.mastered);
           return true;
         }
         if (layout.vaulted.contains(event->pos())) {
-          QToolTip::showText(tooltipPosition,
+          wfgui::showTooltip(view->viewport(), event->pos(),
                              index.data(PlayerItemModel::VaultedRole).toBool()
                                  ? "Vaulted"
                                  : "Unvaulted",
-                             view->viewport(), layout.vaulted);
+                             layout.vaulted);
           return true;
         }
         if (layout.mastery.contains(event->pos())) {
-          QToolTip::showText(
-              tooltipPosition,
+          wfgui::showTooltip(
+              view->viewport(), event->pos(),
               QString("Mastery Rank %1")
                   .arg(index.data(PlayerItemModel::MasteryRequirementRole)
                            .toInt()),
-              view->viewport(), layout.mastery);
+              layout.mastery);
           return true;
         }
         if (layout.subsumed.contains(event->pos())) {
-          QToolTip::showText(tooltipPosition, "Subsumed", view->viewport(),
+          wfgui::showTooltip(view->viewport(), event->pos(), "Subsumed",
                              layout.subsumed);
           return true;
         }
@@ -478,7 +477,7 @@ public:
             content, index.data(PlayerItemModel::NameRole).toString(),
             titleFont, scale);
         if (title.favorite.contains(event->pos())) {
-          QToolTip::showText(tooltipPosition, "Favorite", view->viewport(),
+          wfgui::showTooltip(view->viewport(), event->pos(), "Favorite",
                              title.favorite);
           return true;
         }
@@ -510,17 +509,16 @@ public:
             index.data(PlayerItemModel::MasteredRole).toBool(), isSet,
             statusFont, scale);
         if (status.mastered.contains(event->pos())) {
-          QToolTip::showText(tooltipPosition, "Item owned/mastered",
-                             view->viewport(), status.mastered);
+          wfgui::showTooltip(view->viewport(), event->pos(),
+                             "Item owned/mastered", status.mastered);
           return true;
         }
         if (index.data(PlayerItemModel::TradableRole).toBool() &&
             !index.data(PlayerItemModel::SellableRole).toBool() &&
             layout.sell.contains(event->pos())) {
-          QToolTip::showText(tooltipPosition,
-                             isSet ? "No complete set owned"
-                                   : "No copies owned",
-                             view->viewport(), layout.sell);
+          wfgui::showTooltip(
+              view->viewport(), event->pos(),
+              isSet ? "No complete set owned" : "No copies owned", layout.sell);
           return true;
         }
         rects = layout.components;
@@ -540,10 +538,10 @@ public:
           const QRect marker =
               ownedRelicMarkerRect(rects.at(componentIndex), scale);
           if (marker.contains(event->pos())) {
-            QToolTip::showText(tooltipPosition,
+            wfgui::showTooltip(view->viewport(), event->pos(),
                                QString("Show relics containing %1")
                                    .arg(componentMarketName(component)),
-                               view->viewport(), marker);
+                               marker);
             return true;
           }
         }
@@ -553,8 +551,13 @@ public:
                       .arg(component.value("owned").toInt())
                       .arg(required);
         }
-        QToolTip::showText(tooltipPosition, text, view->viewport(),
+        wfgui::showTooltip(view->viewport(), event->pos(), text,
                            rects.at(componentIndex));
+        return true;
+      }
+      const QString text = index.data(Qt::ToolTipRole).toString();
+      if (!text.isEmpty()) {
+        wfgui::showTooltip(view->viewport(), event->pos(), text, option.rect);
         return true;
       }
     }
@@ -1151,8 +1154,7 @@ PlayerItemGridWidget::PlayerItemGridWidget(Kind kind, QWidget *parent)
   setFlow(QListView::LeftToRight);
   setWrapping(true);
   setResizeMode(QListView::Adjust);
-  setLayoutMode(QListView::Batched);
-  setBatchSize(64);
+  setLayoutMode(QListView::SinglePass);
   setUniformItemSizes(true);
   setMouseTracking(true);
   setSelectionMode(QAbstractItemView::NoSelection);
@@ -1169,6 +1171,10 @@ PlayerItemGridWidget::PlayerItemGridWidget(Kind kind, QWidget *parent)
 }
 
 void PlayerItemGridWidget::setModel(QAbstractItemModel *itemModel) {
+  if (model()) {
+    disconnect(model(), nullptr, this, nullptr);
+  }
+  clearScrollAnchor();
   QListView::setModel(itemModel);
   if (itemModel) {
     const auto request = [this] { scheduleVisibleData(); };
@@ -1176,34 +1182,98 @@ void PlayerItemGridWidget::setModel(QAbstractItemModel *itemModel) {
             &PlayerItemGridWidget::preserveScrollPosition);
     connect(itemModel, &QAbstractItemModel::layoutAboutToBeChanged, this,
             &PlayerItemGridWidget::preserveScrollPosition);
+    connect(itemModel, &QAbstractItemModel::rowsAboutToBeInserted, this,
+            &PlayerItemGridWidget::preserveScrollPosition);
+    connect(itemModel, &QAbstractItemModel::rowsAboutToBeRemoved, this,
+            &PlayerItemGridWidget::preserveScrollPosition);
     connect(itemModel, &QAbstractItemModel::modelReset, this, request);
     connect(itemModel, &QAbstractItemModel::rowsInserted, this, request);
+    connect(itemModel, &QAbstractItemModel::rowsRemoved, this, request);
     connect(itemModel, &QAbstractItemModel::layoutChanged, this, request);
     connect(itemModel, &QAbstractItemModel::modelReset, this,
             &PlayerItemGridWidget::restoreScrollPosition);
     connect(itemModel, &QAbstractItemModel::layoutChanged, this,
             &PlayerItemGridWidget::restoreScrollPosition);
+    connect(itemModel, &QAbstractItemModel::rowsInserted, this,
+            &PlayerItemGridWidget::restoreScrollPosition);
+    connect(itemModel, &QAbstractItemModel::rowsRemoved, this,
+            &PlayerItemGridWidget::restoreScrollPosition);
   }
 }
 
 void PlayerItemGridWidget::preserveScrollPosition() {
-  if (!scrollRestoreScheduled_) {
-    preservedScrollValue_ = verticalScrollBar()->value();
+  if (scrollAnchorPending_ || scrollRestoreScheduled_ || !model() ||
+      model()->rowCount() == 0) {
+    return;
   }
+
+  const auto [first, last] = visibleRows();
+  const QRect viewportRect = viewport()->rect();
+  QModelIndex anchor;
+  QRect anchorRect;
+  for (int row = first; row <= last; ++row) {
+    const QModelIndex candidate = model()->index(row, 0);
+    const QRect rect = visualRect(candidate);
+    if (!rect.isValid() || !rect.intersects(viewportRect)) {
+      continue;
+    }
+    if (!anchor.isValid() || rect.top() < anchorRect.top() ||
+        (rect.top() == anchorRect.top() && rect.left() < anchorRect.left())) {
+      anchor = candidate;
+      anchorRect = rect;
+    }
+  }
+  if (!anchor.isValid()) {
+    return;
+  }
+
+  preservedAnchorId_ = anchor.data(PlayerItemModel::IdRole).toString();
+  preservedAnchorOffset_ = anchorRect.top();
+  preservedScrollValue_ = verticalScrollBar()->value();
+  scrollAnchorPending_ = !preservedAnchorId_.isEmpty();
 }
 
 void PlayerItemGridWidget::restoreScrollPosition() {
-  if (preservedScrollValue_ < 0 || scrollRestoreScheduled_) {
+  if (!scrollAnchorPending_ || scrollRestoreScheduled_) {
     return;
   }
   scrollRestoreScheduled_ = true;
   QTimer::singleShot(0, this, [this] {
     doItemsLayout();
-    verticalScrollBar()->setValue(
-        std::min(preservedScrollValue_, verticalScrollBar()->maximum()));
-    preservedScrollValue_ = -1;
-    scrollRestoreScheduled_ = false;
+    QModelIndex anchor;
+    if (model()) {
+      for (int row = 0; row < model()->rowCount(); ++row) {
+        const QModelIndex candidate = model()->index(row, 0);
+        if (candidate.data(PlayerItemModel::IdRole).toString() ==
+            preservedAnchorId_) {
+          anchor = candidate;
+          break;
+        }
+      }
+    }
+
+    if (anchor.isValid()) {
+      scrollTo(anchor, QAbstractItemView::PositionAtTop);
+      doItemsLayout();
+      const int delta = visualRect(anchor).top() - preservedAnchorOffset_;
+      verticalScrollBar()->setValue(std::clamp(
+          verticalScrollBar()->value() + delta, verticalScrollBar()->minimum(),
+          verticalScrollBar()->maximum()));
+    } else {
+      verticalScrollBar()->setValue(std::clamp(preservedScrollValue_,
+                                               verticalScrollBar()->minimum(),
+                                               verticalScrollBar()->maximum()));
+    }
+    clearScrollAnchor();
   });
+}
+
+void PlayerItemGridWidget::clearScrollAnchor() {
+  preservedAnchorId_.clear();
+  preservedAnchorOffset_ = 0;
+  preservedScrollValue_ = 0;
+  scrollAnchorPending_ = false;
+  scrollRestoreScheduled_ = false;
 }
 
 void PlayerItemGridWidget::resizeEvent(QResizeEvent *event) {
@@ -1235,6 +1305,12 @@ void PlayerItemGridWidget::updateGrid() {
 
 void PlayerItemGridWidget::refreshVisibleQuotes() {
   requestVisibleQuotes(true);
+}
+
+void PlayerItemGridWidget::requestAllQuotes(bool refresh) {
+  if (model()) {
+    requestQuotes(0, model()->rowCount() - 1, refresh);
+  }
 }
 
 void PlayerItemGridWidget::scheduleVisibleData() { visibleDataTimer_->start(); }
@@ -1274,6 +1350,13 @@ void PlayerItemGridWidget::requestVisibleQuotes(bool refresh) {
     return;
   }
   const auto [first, last] = visibleRows();
+  requestQuotes(first, last, refresh);
+}
+
+void PlayerItemGridWidget::requestQuotes(int first, int last, bool refresh) {
+  if ((kind_ != Kind::Inventory && kind_ != Kind::Mastery) || !model()) {
+    return;
+  }
   QStringList items;
   for (int row = first; row <= last; ++row) {
     const QModelIndex item = model()->index(row, 0);
@@ -1281,7 +1364,9 @@ void PlayerItemGridWidget::requestVisibleQuotes(bool refresh) {
         item.data(PlayerItemModel::TradableRole).toBool()) {
       items.append(item.data(PlayerItemModel::MarketNameRole).toString());
     } else if (kind_ == Kind::Mastery &&
-               !item.data(PlayerItemModel::OwnedRole).toBool()) {
+               !item.data(PlayerItemModel::OwnedRole).toBool() &&
+               (refresh || item.data(PlayerItemModel::AcquisitionPriceStateRole)
+                                   .toString() == "loading")) {
       for (const QVariant &value :
            item.data(PlayerItemModel::ComponentsRole).toList()) {
         const QVariantMap component = value.toMap();

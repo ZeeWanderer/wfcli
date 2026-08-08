@@ -16,6 +16,7 @@ public:
 
   explicit PlayerItemGridWidget(Kind kind, QWidget *parent = nullptr);
   void setModel(QAbstractItemModel *model) override;
+  void requestAllQuotes(bool refresh = false);
   void refreshVisibleQuotes();
 
 signals:
@@ -33,12 +34,17 @@ private:
   void requestVisibleData();
   void requestVisibleAssets();
   void requestVisibleQuotes(bool refresh = false);
+  void requestQuotes(int first, int last, bool refresh);
   std::pair<int, int> visibleRows() const;
   void preserveScrollPosition();
   void restoreScrollPosition();
+  void clearScrollAnchor();
 
   Kind kind_;
   QTimer *visibleDataTimer_;
-  int preservedScrollValue_ = -1;
+  QString preservedAnchorId_;
+  int preservedAnchorOffset_ = 0;
+  int preservedScrollValue_ = 0;
+  bool scrollAnchorPending_ = false;
   bool scrollRestoreScheduled_ = false;
 };

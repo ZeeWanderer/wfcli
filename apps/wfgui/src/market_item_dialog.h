@@ -8,11 +8,11 @@
 #include <QWidget>
 
 class AppController;
+class AnimatedProgressBar;
 class QLabel;
 class QButtonGroup;
 class QComboBox;
 class QListWidget;
-class QProgressBar;
 class QPushButton;
 class QSpinBox;
 class QTableWidget;
@@ -53,7 +53,7 @@ private:
   QButtonGroup *modes_;
   QTableWidget *listings_;
   QListWidget *compactListings_;
-  QProgressBar *progress_;
+  AnimatedProgressBar *progress_;
   QSpinBox *quantity_;
   QSpinBox *price_;
   QSpinBox *rank_;

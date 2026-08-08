@@ -9,10 +9,10 @@
 #include <QLabel>
 #include <QLineEdit>
 #include <QMenu>
-#include <QProgressBar>
 #include <QPushButton>
 #include <QStackedLayout>
 #include <QStyle>
+#include <QTimer>
 #include <QToolButton>
 #include <QVBoxLayout>
 
@@ -20,6 +20,7 @@
 #include <array>
 #include <utility>
 
+#include "animated_progress_bar.h"
 #include "app_controller.h"
 #include "compact_search.h"
 #include "player_item_grid_widget.h"
@@ -66,8 +67,9 @@ InventoryWidget::InventoryWidget(AppController *controller, QWidget *parent)
     : QWidget(parent), controller_(controller),
       items_(new PlayerItemFilterModel(this)),
       grid_(new PlayerItemGridWidget(PlayerItemGridWidget::Kind::Inventory)),
-      emptyState_(new QLabel), progress_(new QProgressBar),
-      refresh_(new QPushButton), content_(new QStackedLayout) {
+      emptyState_(new QLabel), progress_(new AnimatedProgressBar),
+      refresh_(new QPushButton), content_(new QStackedLayout),
+      priceUpdateTimer_(new QTimer(this)) {
   setObjectName("page");
   items_->setSourceModel(controller_->inventoryItems());
   items_->setGroup("parts");
@@ -146,7 +148,11 @@ InventoryWidget::InventoryWidget(AppController *controller, QWidget *parent)
             [this, key, group, filter, filterGroups](QAction *) {
               items_->setFlag(key, group->checkedAction()->data().toInt());
               updateActiveFilterStyle(filter, filterGroups);
-              updateContent();
+              if (priceSort()) {
+                beginPriceLoad();
+              } else {
+                updateContent();
+              }
             });
   }
   toolbar->addWidget(filter);
@@ -174,14 +180,22 @@ InventoryWidget::InventoryWidget(AppController *controller, QWidget *parent)
   toolbar->addWidget(sortControl);
 
   connect(sort, &QComboBox::currentIndexChanged, this, [this, sort](int index) {
-    items_->setSortMode(sort->itemData(index).toString());
+    sortMode_ = sort->itemData(index).toString();
+    const bool loadingPrices = priceSort();
+    priceLoading_ = loadingPrices;
+    items_->setPricesLoading(loadingPrices);
+    items_->setSortMode(sortMode_);
+    if (loadingPrices) {
+      beginPriceLoad();
+    } else {
+      updateContent();
+    }
   });
   connect(sortDirection, &QToolButton::clicked, this, [this, sortDirection] {
     const bool ascending = !sortDirection->property("ascending").toBool();
     sortDirection->setProperty("ascending", ascending);
-    sortDirection->setIcon(
-        style()->standardIcon(ascending ? QStyle::SP_ArrowUp
-                                       : QStyle::SP_ArrowDown));
+    sortDirection->setIcon(style()->standardIcon(
+        ascending ? QStyle::SP_ArrowUp : QStyle::SP_ArrowDown));
     sortDirection->setToolTip(ascending ? "Ascending" : "Descending");
     items_->setSortAscending(ascending);
   });
@@ -205,7 +219,7 @@ InventoryWidget::InventoryWidget(AppController *controller, QWidget *parent)
   auto *loading = new QWidget;
   auto *loadingLayout = new QVBoxLayout(loading);
   loadingLayout->addStretch();
-  auto *loadingProgress = new QProgressBar;
+  auto *loadingProgress = new AnimatedProgressBar;
   loadingProgress->setRange(0, 0);
   loadingProgress->setMaximumWidth(240);
   loadingLayout->addWidget(loadingProgress, 0, Qt::AlignHCenter);
@@ -227,20 +241,32 @@ InventoryWidget::InventoryWidget(AppController *controller, QWidget *parent)
   frameLayout->addWidget(host, 1);
   layout->addWidget(frame, 1);
 
-  connect(search, &QLineEdit::textChanged, items_,
-          &PlayerItemFilterModel::setText);
-  connect(search, &QLineEdit::textChanged, this,
-          &InventoryWidget::updateContent);
+  connect(search, &QLineEdit::textChanged, this, [this](const QString &text) {
+    items_->setText(text);
+    if (priceSort()) {
+      beginPriceLoad();
+    } else {
+      updateContent();
+    }
+  });
   connect(groupButtons, &QButtonGroup::idClicked, this,
           [this, groupButtons](int buttonId) {
             items_->setGroup(
                 groupButtons->button(buttonId)->property("group").toString());
             updateFilterButtons(groupButtons);
-            updateContent();
+            if (priceSort()) {
+              beginPriceLoad();
+            } else {
+              updateContent();
+            }
           });
   connect(refresh_, &QPushButton::clicked, this, [this] {
+    if (priceSort()) {
+      beginPriceLoad(true);
+    } else {
+      grid_->refreshVisibleQuotes();
+    }
     controller_->refreshInventory();
-    grid_->refreshVisibleQuotes();
   });
   connect(grid_, &PlayerItemGridWidget::assetsNeeded, controller_,
           &AppController::resolveAssets);
@@ -248,21 +274,86 @@ InventoryWidget::InventoryWidget(AppController *controller, QWidget *parent)
           &AppController::resolveMarketQuotes);
   connect(grid_, &PlayerItemGridWidget::marketItemRequested, this,
           &InventoryWidget::marketItemRequested);
-  connect(controller_, &AppController::inventoryStateChanged, this,
-          &InventoryWidget::updateContent);
-  connect(items_, &QAbstractItemModel::modelReset, this,
-          &InventoryWidget::updateContent);
+  connect(controller_, &AppController::inventoryStateChanged, this, [this] {
+    if (priceSort() && !controller_->inventoryLoading()) {
+      beginPriceLoad();
+    } else {
+      updateContent();
+    }
+  });
+  connect(items_, &QAbstractItemModel::modelReset, this, [this] {
+    if (priceSort()) {
+      beginPriceLoad();
+    } else {
+      updateContent();
+    }
+  });
   connect(items_, &QAbstractItemModel::rowsInserted, this,
           &InventoryWidget::updateContent);
   connect(items_, &QAbstractItemModel::rowsRemoved, this,
           &InventoryWidget::updateContent);
+  priceUpdateTimer_->setInterval(33);
+  priceUpdateTimer_->setSingleShot(true);
+  connect(priceUpdateTimer_, &QTimer::timeout, this,
+          &InventoryWidget::updatePriceLoad);
+  connect(controller_, &AppController::marketQuotesChanged, this, [this] {
+    if (priceLoading_ && !priceUpdateTimer_->isActive()) {
+      priceUpdateTimer_->start();
+    }
+  });
+  updateContent();
+}
+
+bool InventoryWidget::priceSort() const {
+  return sortMode_ == "platinum" || sortMode_ == "ducanator";
+}
+
+void InventoryWidget::beginPriceLoad(bool refresh) {
+  if (!priceSort()) {
+    return;
+  }
+  if (!priceLoading_) {
+    priceLoading_ = true;
+    items_->setPricesLoading(true);
+  }
+  if (!controller_->inventoryLoading()) {
+    grid_->requestAllQuotes(refresh);
+  }
+  updatePriceLoad();
+}
+
+void InventoryWidget::updatePriceLoad() {
+  priceTotal_ = 0;
+  pendingPrices_ = 0;
+  if (priceSort() && !controller_->inventoryLoading()) {
+    for (int row = 0; row < items_->rowCount(); ++row) {
+      const QModelIndex item = items_->index(row, 0);
+      if (!item.data(PlayerItemModel::TradableRole).toBool()) {
+        continue;
+      }
+      ++priceTotal_;
+      if (item.data(PlayerItemModel::PriceStateRole).toString() == "loading") {
+        ++pendingPrices_;
+      }
+    }
+    if (priceLoading_ && pendingPrices_ == 0) {
+      priceLoading_ = false;
+      items_->setPricesLoading(false);
+    }
+  }
   updateContent();
 }
 
 void InventoryWidget::updateContent() {
   const bool loading = controller_->inventoryLoading();
-  progress_->setRange(0, loading ? 0 : 1);
-  if (!loading) {
+  const bool pricing = priceLoading_ && pendingPrices_ > 0;
+  if (loading) {
+    progress_->setRange(0, 0);
+  } else if (pricing) {
+    progress_->setRange(0, std::max(1, priceTotal_));
+    progress_->setValue(priceTotal_ - pendingPrices_);
+  } else {
+    progress_->setRange(0, 1);
     progress_->setValue(0);
   }
   refresh_->setEnabled(!loading);

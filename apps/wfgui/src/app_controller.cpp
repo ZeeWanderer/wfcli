@@ -144,6 +144,10 @@ AppController::AppController(QObject *parent)
             for (const QString &item : items) {
               marketRequestedAt_.remove(item);
             }
+            foundryItems_.markMarketUnavailable(items);
+            inventoryItems_.markMarketUnavailable(items);
+            masteryItems_.markMarketUnavailable(items);
+            emit marketQuotesChanged();
           });
   connect(&daemon_, &DaemonClient::marketVariantQuoteReady, this,
           [this](const QString &item, const QJsonObject &filters,

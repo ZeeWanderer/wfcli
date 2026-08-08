@@ -11,11 +11,13 @@
 #include <QPushButton>
 #include <QSizePolicy>
 #include <QStackedLayout>
+#include <QTimer>
 #include <QVBoxLayout>
 
 #include <array>
 #include <utility>
 
+#include "animated_progress_bar.h"
 #include "app_controller.h"
 #include "player_item_grid_widget.h"
 #include "player_item_model.h"
@@ -65,8 +67,7 @@ QString progressText(const QJsonObject &value) {
 class MasterySummaryPanel final : public QWidget {
 public:
   MasterySummaryPanel(const QString &title, const QString &icon,
-                      std::initializer_list<SummaryRow> rows,
-                      int minimumWidth,
+                      std::initializer_list<SummaryRow> rows, int minimumWidth,
                       QWidget *parent = nullptr)
       : QWidget(parent), percent_(new QLabel) {
     setObjectName("masterySummaryPanel");
@@ -166,8 +167,8 @@ MasteryPlannerWidget::MasteryPlannerWidget(AppController *controller,
           "Intrinsics", ":/resources/ui/summary_intrinsics.png",
           {{"Railjack:", "railjack"}, {"Duviri:", "duviri"}}, 180)),
       emptyState_(new QLabel), completionBar_(new QProgressBar),
-      loadingBar_(new QProgressBar), refresh_(new QPushButton),
-      content_(new QStackedLayout) {
+      loadingBar_(new AnimatedProgressBar), refresh_(new QPushButton),
+      content_(new QStackedLayout), priceUpdateTimer_(new QTimer(this)) {
   setObjectName("page");
   items_->setSourceModel(controller_->masteryItems());
   items_->setMode("easy");
@@ -257,12 +258,21 @@ MasteryPlannerWidget::MasteryPlannerWidget(AppController *controller,
     modeLayout->addWidget(button);
   }
   bottomHeader->addWidget(modeGroup);
-  bottomLayout->addLayout(bottomHeader);
 
   loadingBar_->setObjectName("priceProgress");
+  loadingBar_->setRange(0, 1);
+  loadingBar_->setValue(0);
   loadingBar_->setTextVisible(false);
   loadingBar_->setFixedHeight(2);
-  bottomLayout->addWidget(loadingBar_);
+  QSizePolicy loadingPolicy = loadingBar_->sizePolicy();
+  loadingPolicy.setRetainSizeWhenHidden(true);
+  loadingBar_->setSizePolicy(loadingPolicy);
+  loadingBar_->hide();
+  auto *loadingRow = new QHBoxLayout;
+  loadingRow->setContentsMargins(4, 0, 4, 0);
+  loadingRow->addWidget(loadingBar_);
+  bottomLayout->addLayout(loadingRow);
+  bottomLayout->addLayout(bottomHeader);
   emptyState_->setObjectName("emptyState");
   emptyState_->setAlignment(Qt::AlignCenter);
   emptyState_->setWordWrap(true);
@@ -270,7 +280,7 @@ MasteryPlannerWidget::MasteryPlannerWidget(AppController *controller,
   auto *loading = new QWidget;
   auto *loadingLayout = new QVBoxLayout(loading);
   loadingLayout->addStretch();
-  auto *loadingProgress = new QProgressBar;
+  auto *loadingProgress = new AnimatedProgressBar;
   loadingProgress->setRange(0, 0);
   loadingProgress->setMaximumWidth(240);
   loadingLayout->addWidget(loadingProgress, 0, Qt::AlignHCenter);
@@ -288,9 +298,7 @@ MasteryPlannerWidget::MasteryPlannerWidget(AppController *controller,
 
   connect(modeButtons, &QButtonGroup::idClicked, this,
           [this, modeButtons](int buttonId) {
-            items_->setMode(
-                modeButtons->button(buttonId)->property("mode").toString());
-            updateContent();
+            setMode(modeButtons->button(buttonId)->property("mode").toString());
           });
   connect(refresh_, &QPushButton::clicked, controller_,
           &AppController::refreshMastery);
@@ -300,12 +308,31 @@ MasteryPlannerWidget::MasteryPlannerWidget(AppController *controller,
           &AppController::resolveMarketQuotes);
   connect(grid_, &PlayerItemGridWidget::marketItemRequested, this,
           &MasteryPlannerWidget::marketItemRequested);
-  connect(controller_, &AppController::masteryStateChanged, this,
-          &MasteryPlannerWidget::updateContent);
+  connect(controller_, &AppController::masteryStateChanged, this, [this] {
+    if (mode_ == "platinum" && priceLoading_) {
+      updatePriceLoad();
+    } else {
+      updateContent();
+    }
+  });
   connect(controller_, &AppController::assetsChanged, this,
           &MasteryPlannerWidget::updateContent);
-  connect(items_, &QAbstractItemModel::modelReset, this,
-          &MasteryPlannerWidget::updateContent);
+  priceUpdateTimer_->setInterval(33);
+  priceUpdateTimer_->setSingleShot(true);
+  connect(priceUpdateTimer_, &QTimer::timeout, this,
+          &MasteryPlannerWidget::updatePriceLoad);
+  connect(controller_, &AppController::marketQuotesChanged, this, [this] {
+    if (mode_ == "platinum" && priceLoading_ &&
+        !priceUpdateTimer_->isActive()) {
+      priceUpdateTimer_->start();
+    }
+  });
+  connect(items_, &QAbstractItemModel::modelReset, this, [this] {
+    if (mode_ == "platinum") {
+      beginPriceLoad();
+    }
+    updateContent();
+  });
   connect(items_, &QAbstractItemModel::rowsInserted, this,
           &MasteryPlannerWidget::updateContent);
   connect(items_, &QAbstractItemModel::rowsRemoved, this,
@@ -313,10 +340,60 @@ MasteryPlannerWidget::MasteryPlannerWidget(AppController *controller,
   updateContent();
 }
 
+void MasteryPlannerWidget::setMode(const QString &mode) {
+  if (mode_ == mode) {
+    return;
+  }
+  mode_ = mode;
+  priceLoading_ = mode == "platinum";
+  items_->setPricesLoading(priceLoading_);
+  items_->setMode(mode_);
+  if (priceLoading_) {
+    beginPriceLoad();
+  }
+  updateContent();
+}
+
+void MasteryPlannerWidget::beginPriceLoad() {
+  if (mode_ != "platinum") {
+    return;
+  }
+  if (!priceLoading_) {
+    priceLoading_ = true;
+    items_->setPricesLoading(true);
+  }
+  grid_->requestAllQuotes();
+  updatePriceLoad();
+}
+
+void MasteryPlannerWidget::updatePriceLoad() {
+  if (mode_ != "platinum" || controller_->masteryLoading()) {
+    updateContent();
+    return;
+  }
+
+  int pending = 0;
+  const int total = items_->rowCount();
+  for (int row = 0; row < total; ++row) {
+    if (items_->index(row, 0)
+            .data(PlayerItemModel::AcquisitionPriceStateRole)
+            .toString() == "loading") {
+      ++pending;
+    }
+  }
+
+  if (priceLoading_ && pending == 0) {
+    priceLoading_ = false;
+    items_->setPricesLoading(false);
+  }
+  updateContent();
+}
+
 void MasteryPlannerWidget::updateContent() {
   const QJsonObject summary = controller_->masterySummary();
   const QJsonValue level = summary.value("player_level");
-  rank_->setText(level.isDouble() ? QString::number(level.toInt()) : QString("--"));
+  rank_->setText(level.isDouble() ? QString::number(level.toInt())
+                                  : QString("--"));
   const QJsonObject profile = controller_->playerProfile();
   const QString rankAssetId =
       profile.value("rank_asset").toObject().value("id").toString();
@@ -324,24 +401,21 @@ void MasteryPlannerWidget::updateContent() {
   const QString iconPath = rankAssetPath.isEmpty()
                                ? ":/resources/ui/mastery_rank.png"
                                : rankAssetPath;
-  rankIcon_->setPixmap(QPixmap(iconPath).scaled(
-      60, 60, Qt::KeepAspectRatio, Qt::SmoothTransformation));
+  rankIcon_->setPixmap(QPixmap(iconPath).scaled(60, 60, Qt::KeepAspectRatio,
+                                                Qt::SmoothTransformation));
   const QJsonObject rankProgress = summary.value("rank_progress").toObject();
   const bool hasRankProgress = rankProgress.value("available").toBool() &&
                                rankProgress.value("current").isDouble() &&
                                rankProgress.value("total").isDouble();
-  const int rankPercent = hasRankProgress
-                              ? rankProgress.value("percent").toInt()
-                              : 0;
-  completionPercent_->setText(hasRankProgress
-                                  ? QString("%1%").arg(rankPercent)
-                                  : QString("--"));
-  completionText_->setText(
-      hasRankProgress
-          ? QString("%1 / %2 XP")
-                .arg(rankProgress.value("current").toInt())
-                .arg(rankProgress.value("total").toInt())
-          : QString("Mastery XP unavailable"));
+  const int rankPercent =
+      hasRankProgress ? rankProgress.value("percent").toInt() : 0;
+  completionPercent_->setText(hasRankProgress ? QString("%1%").arg(rankPercent)
+                                              : QString("--"));
+  completionText_->setText(hasRankProgress
+                               ? QString("%1 / %2 XP")
+                                     .arg(rankProgress.value("current").toInt())
+                                     .arg(rankProgress.value("total").toInt())
+                               : QString("Mastery XP unavailable"));
   completionBar_->setValue(rankPercent);
 
   QJsonObject game;
@@ -354,8 +428,25 @@ void MasteryPlannerWidget::updateContent() {
   intrinsics_->setData(summary.value("intrinsics").toObject());
 
   const bool loading = controller_->masteryLoading();
-  loadingBar_->setRange(0, loading ? 0 : 1);
-  if (!loading) {
+  int pendingPrices = 0;
+  const int priceTotal = mode_ == "platinum" ? items_->rowCount() : 0;
+  if (priceLoading_ && !loading) {
+    for (int row = 0; row < priceTotal; ++row) {
+      if (items_->index(row, 0)
+              .data(PlayerItemModel::AcquisitionPriceStateRole)
+              .toString() == "loading") {
+        ++pendingPrices;
+      }
+    }
+  }
+  const bool pricing = priceLoading_ && pendingPrices > 0;
+  loadingBar_->setVisible(loading || pricing);
+  if (loading) {
+    loadingBar_->setRange(0, 0);
+  } else if (pricing) {
+    loadingBar_->setRange(0, 0);
+  } else {
+    loadingBar_->setRange(0, 1);
     loadingBar_->setValue(0);
   }
   refresh_->setEnabled(!loading);

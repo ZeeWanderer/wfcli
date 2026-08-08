@@ -457,7 +457,7 @@ void PlayerItemModel::notifyMarketRows(const QSet<QString> &names) {
 
 PlayerItemFilterModel::PlayerItemFilterModel(QObject *parent)
     : QSortFilterProxyModel(parent) {
-  setDynamicSortFilter(true);
+  setDynamicSortFilter(false);
   sort(0);
 }
 
@@ -485,6 +485,16 @@ void PlayerItemFilterModel::setMode(const QString &mode) {
   }
   beginFilterChange();
   mode_ = mode;
+  endFilterChange(QSortFilterProxyModel::Direction::Rows);
+  sort(0);
+}
+
+void PlayerItemFilterModel::setPricesLoading(bool loading) {
+  if (pricesLoading_ == loading) {
+    return;
+  }
+  beginFilterChange();
+  pricesLoading_ = loading;
   endFilterChange(QSortFilterProxyModel::Direction::Rows);
   sort(0);
 }
@@ -544,7 +554,8 @@ bool PlayerItemFilterModel::filterAcceptsRow(
     const int role = flagRole(flag.key());
     bool actual = false;
     if (flag.key() == "duplicate") {
-      actual = sourceModel()->data(item, PlayerItemModel::QuantityRole).toInt() > 1;
+      actual =
+          sourceModel()->data(item, PlayerItemModel::QuantityRole).toInt() > 1;
     } else if (flag.key() == "complete") {
       const QVariantList components =
           sourceModel()->data(item, PlayerItemModel::ComponentsRole).toList();
@@ -588,6 +599,9 @@ bool PlayerItemFilterModel::filterAcceptsRow(
         !sourceModel()->data(item, PlayerItemModel::BuyableRole).toBool()) {
       return false;
     }
+    if (pricesLoading_) {
+      return true;
+    }
     const QString state =
         sourceModel()
             ->data(item, PlayerItemModel::AcquisitionPriceStateRole)
@@ -629,6 +643,9 @@ bool PlayerItemFilterModel::lessThan(const QModelIndex &left,
                rightName.toCaseFolded());
   }
   if (mode_ == "platinum") {
+    if (pricesLoading_) {
+      return leftName.compare(rightName, Qt::CaseInsensitive) < 0;
+    }
     const QVariant leftPrice =
         value(left, PlayerItemModel::AcquisitionPlatinumRole);
     const QVariant rightPrice =
@@ -647,6 +664,10 @@ bool PlayerItemFilterModel::lessThan(const QModelIndex &left,
                       leftName.toCaseFolded()) <
            std::tuple(!rightPrice.isValid(), rightEfficiency,
                       rightName.toCaseFolded());
+  }
+  if (pricesLoading_ && (sortMode_ == "platinum" || sortMode_ == "ducanator")) {
+    const int nameOrder = leftName.compare(rightName, Qt::CaseInsensitive);
+    return sortAscending_ ? nameOrder < 0 : nameOrder > 0;
   }
   const auto sortValue = [this, &value](const QModelIndex &item) -> QVariant {
     if (sortMode_ == "platinum") {

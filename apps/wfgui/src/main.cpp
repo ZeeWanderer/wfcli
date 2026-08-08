@@ -14,6 +14,7 @@
 #include "display_scale.h"
 #include "main_window.h"
 #include "style_loader.h"
+#include "tooltip.h"
 #include "widget_capture.h"
 
 #include <cstdlib>
@@ -41,7 +42,9 @@ int main(int argc, char *argv[]) {
   }
   wfgui::applyConfiguredUiScale();
   QApplication app(argc, argv);
-  app.setWindowIcon(QIcon(":/resources/ui/nav_mastery.png"));
+  wfgui::installTooltipHandling(app);
+  app.setWindowIcon(
+      QIcon::fromTheme("wfgui", QIcon(":/resources/app/wfgui-512.png")));
   QFontDatabase::addApplicationFont(":/assets/Roboto-Bold.ttf");
   QFontDatabase::addApplicationFont(":/assets/Roboto-Light.ttf");
   QFontDatabase::addApplicationFont(":/assets/Roboto-Medium.ttf");

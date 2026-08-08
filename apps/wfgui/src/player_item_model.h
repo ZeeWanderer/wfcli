@@ -91,6 +91,7 @@ public:
   void setText(const QString &text);
   void setGroup(const QString &group);
   void setMode(const QString &mode);
+  void setPricesLoading(bool loading);
   void setFlag(const QString &name, int state);
   void setSortMode(const QString &mode);
   void setSortAscending(bool ascending);
@@ -107,5 +108,6 @@ private:
   QString mode_ = "all";
   QString sortMode_ = "name";
   bool sortAscending_ = true;
+  bool pricesLoading_ = false;
   QHash<QString, int> flags_;
 };

@@ -13,7 +13,6 @@
 #include <QResizeEvent>
 #include <QSet>
 #include <QTimer>
-#include <QToolTip>
 #include <QVariantList>
 #include <QVariantMap>
 
@@ -25,6 +24,7 @@
 #include "image_cache.h"
 #include "relic_card_layout.h"
 #include "relic_model.h"
+#include "tooltip.h"
 #include "widget_capture.h"
 
 namespace {
@@ -57,7 +57,6 @@ public:
 
   void setIndex(const QModelIndex &index) {
     index_ = index;
-    setToolTip(index_.data(RelicModel::NameRole).toString());
     update();
   }
 
@@ -89,10 +88,13 @@ protected:
         }
         const QString name =
             rewards.at(rewardIndex).toMap().value("name").toString();
-        QToolTip::showText(help->globalPos(), name, this,
+        wfgui::showTooltip(this, help->pos(), name,
                            layout.rewardCells.at(rewardIndex));
         return true;
       }
+      wfgui::showTooltip(this, help->pos(),
+                         index_.data(RelicModel::NameRole).toString(), rect());
+      return true;
     }
     return QWidget::event(event);
   }

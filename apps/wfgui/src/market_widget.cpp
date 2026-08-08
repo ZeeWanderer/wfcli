@@ -18,7 +18,6 @@
 #include <QLineEdit>
 #include <QMenu>
 #include <QMessageBox>
-#include <QProgressBar>
 #include <QPropertyAnimation>
 #include <QPushButton>
 #include <QScrollArea>
@@ -33,6 +32,7 @@
 #include <algorithm>
 #include <optional>
 
+#include "animated_progress_bar.h"
 #include "app_controller.h"
 #include "market_order_card.h"
 #include "market_spin_box.h"
@@ -192,7 +192,7 @@ MarketWidget::MarketWidget(AppController *controller, QWidget *parent)
       loginError_(new QLabel), login_(new QPushButton("Sign in")),
       accountName_(new QLabel), presence_(new QComboBox),
       presenceState_(new QLabel), summary_(new QLabel),
-      progress_(new QProgressBar), categories_(new QButtonGroup(this)),
+      progress_(new AnimatedProgressBar), categories_(new QButtonGroup(this)),
       search_(new QLineEdit), side_(new QComboBox), visibility_(new QComboBox),
       inventory_(new QComboBox), sort_(new QComboBox),
       direction_(new QToolButton), scroll_(new QScrollArea),
@@ -241,7 +241,7 @@ MarketWidget::MarketWidget(AppController *controller, QWidget *parent)
 
   auto *loadingLayout = new QVBoxLayout(loadingView_);
   loadingLayout->addStretch();
-  auto *loading = new QProgressBar;
+  auto *loading = new AnimatedProgressBar;
   loading->setRange(0, 0);
   loading->setMaximumWidth(240);
   loadingLayout->addWidget(loading, 0, Qt::AlignHCenter);

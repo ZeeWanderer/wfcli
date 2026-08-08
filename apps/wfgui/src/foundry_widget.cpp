@@ -10,7 +10,6 @@
 #include <QLineEdit>
 #include <QMenu>
 #include <QParallelAnimationGroup>
-#include <QProgressBar>
 #include <QPropertyAnimation>
 #include <QPushButton>
 #include <QStackedLayout>
@@ -22,6 +21,7 @@
 #include <array>
 #include <utility>
 
+#include "animated_progress_bar.h"
 #include "app_controller.h"
 #include "compact_search.h"
 #include "player_item_grid_widget.h"
@@ -114,7 +114,7 @@ FoundryWidget::FoundryWidget(AppController *controller, QWidget *parent)
       items_(new PlayerItemFilterModel(this)),
       grid_(new PlayerItemGridWidget(PlayerItemGridWidget::Kind::Foundry)),
       summary_(new QLabel), emptyState_(new QLabel),
-      progress_(new QProgressBar), refresh_(new QPushButton),
+      progress_(new AnimatedProgressBar), refresh_(new QPushButton),
       content_(new QStackedLayout) {
   setObjectName("page");
   items_->setSourceModel(controller_->foundryItems());
@@ -225,7 +225,7 @@ FoundryWidget::FoundryWidget(AppController *controller, QWidget *parent)
   auto *loading = new QWidget;
   auto *loadingLayout = new QVBoxLayout(loading);
   loadingLayout->addStretch();
-  auto *loadingProgress = new QProgressBar;
+  auto *loadingProgress = new AnimatedProgressBar;
   loadingProgress->setRange(0, 0);
   loadingProgress->setMaximumWidth(240);
   loadingLayout->addWidget(loadingProgress, 0, Qt::AlignHCenter);

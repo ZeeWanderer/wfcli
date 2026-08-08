@@ -1,8 +1,10 @@
 #pragma once
 
+#include <QString>
 #include <QWidget>
 
 class AppController;
+class AnimatedProgressBar;
 class QLabel;
 class MasterySummaryPanel;
 class PlayerItemFilterModel;
@@ -10,6 +12,7 @@ class PlayerItemGridWidget;
 class QProgressBar;
 class QPushButton;
 class QStackedLayout;
+class QTimer;
 
 class MasteryPlannerWidget final : public QWidget {
   Q_OBJECT
@@ -22,6 +25,9 @@ signals:
   void marketItemRequested(const QString &item, const QString &side);
 
 private:
+  void setMode(const QString &mode);
+  void beginPriceLoad();
+  void updatePriceLoad();
   void updateContent();
 
   AppController *controller_;
@@ -36,7 +42,10 @@ private:
   MasterySummaryPanel *intrinsics_;
   QLabel *emptyState_;
   QProgressBar *completionBar_;
-  QProgressBar *loadingBar_;
+  AnimatedProgressBar *loadingBar_;
   QPushButton *refresh_;
   QStackedLayout *content_;
+  QTimer *priceUpdateTimer_;
+  QString mode_ = "easy";
+  bool priceLoading_ = false;
 };

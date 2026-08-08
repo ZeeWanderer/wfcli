@@ -7,6 +7,8 @@ qt_add_library(wfgui_core STATIC
   src/activity_data.h
   src/app_controller.cpp
   src/app_controller.h
+  src/animated_progress_bar.cpp
+  src/animated_progress_bar.h
   src/compact_search.cpp
   src/compact_search.h
   src/daemon_client.cpp
@@ -36,6 +38,8 @@ qt_add_library(wfgui_core STATIC
   src/relic_model.cpp
   src/relic_model.h
   src/display_metrics.h
+  src/tooltip.cpp
+  src/tooltip.h
   src/widget_capture.cpp
   src/widget_capture.h
 )
@@ -97,6 +101,7 @@ qt_add_resources(wfgui "wfgui_resources"
     resources/activity/requiem.png
     resources/activity/resurgence.png
     resources/activity/vallis.png
+    resources/app/wfgui-512.png
     resources/ui/all.png
     resources/ui/favorite.png
     resources/ui/favorite_active.png
@@ -186,10 +191,14 @@ target_link_libraries(wfgui_icon_optics PRIVATE Qt6::Gui)
 install(TARGETS wfgui RUNTIME DESTINATION bin)
 install(FILES resources/qt.conf DESTINATION bin)
 install(FILES resources/Lucide-LICENSE.txt DESTINATION share/licenses/wfcli)
-install(FILES resources/ui/nav_mastery.png
-  DESTINATION share/wfcli
-  RENAME wfgui.png
+install(FILES resources/app/wfgui.svg
+  DESTINATION share/wfcli/icons
 )
+foreach(icon_size 16 24 32 48 64 128 256 512)
+  install(FILES resources/app/wfgui-${icon_size}.png
+    DESTINATION share/wfcli/icons
+  )
+endforeach()
 install(
   DIRECTORY "${VCPKG_INSTALLED_DIR}/${VCPKG_TARGET_TRIPLET}/lib/"
   DESTINATION lib

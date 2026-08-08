@@ -7,7 +7,6 @@
 #include <QIcon>
 #include <QLabel>
 #include <QLineEdit>
-#include <QProgressBar>
 #include <QPushButton>
 #include <QScrollArea>
 #include <QStackedLayout>
@@ -16,6 +15,7 @@
 #include <array>
 #include <utility>
 
+#include "animated_progress_bar.h"
 #include "app_controller.h"
 #include "compact_search.h"
 #include "relic_grid_widget.h"
@@ -34,7 +34,7 @@ constexpr std::array<std::pair<const char *, const char *>, 5> Eras{{
 RelicPlannerWidget::RelicPlannerWidget(AppController *controller,
                                        QWidget *parent)
     : QWidget(parent), controller_(controller), traceCount_(new QLabel),
-      priceProgress_(new QProgressBar), emptyState_(new QLabel),
+      priceProgress_(new AnimatedProgressBar), emptyState_(new QLabel),
       relics_(new RelicGridWidget),
       search_(new CompactSearch("Search relics or rewards")),
       refresh_(new QPushButton), eraGroup_(new QButtonGroup(this)),
@@ -96,7 +96,7 @@ RelicPlannerWidget::RelicPlannerWidget(AppController *controller,
   auto *loading = new QWidget;
   auto *loadingLayout = new QVBoxLayout(loading);
   loadingLayout->addStretch();
-  auto *progress = new QProgressBar;
+  auto *progress = new AnimatedProgressBar;
   progress->setRange(0, 0);
   progress->setMaximumWidth(240);
   loadingLayout->addWidget(progress, 0, Qt::AlignHCenter);
