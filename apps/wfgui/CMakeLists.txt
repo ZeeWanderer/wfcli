@@ -184,6 +184,9 @@ target_compile_definitions(wfgui_core PUBLIC
 target_include_directories(wfgui_core PUBLIC src)
 target_link_libraries(wfgui_core PUBLIC Qt6::Network Qt6::Widgets)
 target_link_libraries(wfgui PRIVATE Qt6::Widgets wfgui_core)
+set_target_properties(wfgui PROPERTIES
+  INSTALL_RPATH "$ORIGIN:$ORIGIN/../lib"
+)
 
 qt_add_executable(wfgui_icon_optics
   ../../tools/icon-optics/main.cpp
@@ -200,6 +203,24 @@ target_link_libraries(wfgui_icon_optics PRIVATE Qt6::Gui)
 install(TARGETS wfgui RUNTIME DESTINATION bin)
 install(FILES resources/qt.conf DESTINATION bin)
 install(FILES resources/Lucide-LICENSE.txt DESTINATION share/licenses/wfcli)
+install(FILES "${WFCLI_LLVM_ROOT}/LICENSE.TXT"
+  DESTINATION share/licenses/wfcli
+  RENAME LLVM-LICENSE.txt
+)
+foreach(runtime c++ c++abi unwind)
+  set(runtime_soname "lib${runtime}.so.1")
+  file(REAL_PATH
+    "${WFCLI_LLVM_ROOT}/lib/${runtime_soname}"
+    runtime_file
+  )
+  install(FILES "${runtime_file}"
+    DESTINATION lib
+    RENAME "${runtime_soname}"
+  )
+  install(CODE
+    "file(RPATH_REMOVE FILE \"\$ENV{DESTDIR}\${CMAKE_INSTALL_PREFIX}/lib/${runtime_soname}\")"
+  )
+endforeach()
 install(FILES resources/app/wfgui.svg
   DESTINATION share/wfcli/icons
 )

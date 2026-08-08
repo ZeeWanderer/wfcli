@@ -18,7 +18,6 @@ string(APPEND VCPKG_CXX_FLAGS
 )
 string(APPEND VCPKG_LINKER_FLAGS
   " -stdlib=libc++ -L${WFCLI_LLVM_ROOT}/lib"
-  " -Wl,-rpath,${WFCLI_LLVM_ROOT}/lib"
 )
 
 include("$ENV{VCPKG_ROOT}/scripts/toolchains/linux.cmake")
