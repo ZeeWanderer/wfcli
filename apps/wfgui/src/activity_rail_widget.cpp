@@ -314,7 +314,7 @@ ActivityRailWidget::ActivityRailWidget(AppController *controller,
     : QWidget(parent), controller_(controller), cycles_(new QGridLayout),
       fissures_(new QVBoxLayout), resurgence_(new QLabel), baro_(new QLabel),
       status_(new QLabel),
-      timersTab_(railTab(":/resources/ui/world.png", "Timers & Events", true)),
+      timersTab_(railTab(":/resources/ui/world.png", "Timers && Events", true)),
       marketTab_(railTab(":/resources/ui/market.png", "WFMarket", false)),
       pages_(new QStackedWidget), market_(new MarketRailWidget(controller)) {
   setObjectName("activityRail");
