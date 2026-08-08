@@ -212,6 +212,7 @@ status(State = #{started_at := StartedAt}) ->
     FormaStatus = try wfcli_forma_service:status()
                   catch _:_ -> unavailable
                   end,
+    AssetStatus = safe_status(wfcli_asset_service),
     with_build_identity(#{
         status => running,
         node => node(),
@@ -228,11 +229,19 @@ status(State = #{started_at := StartedAt}) ->
         query => safe_status(wfcli_query_service),
         player => safe_status(wfcli_player_service),
         market => safe_status(wfcli_market_service),
+        assets => AssetStatus,
         market_account => safe_status(wfcli_market_account_service),
         market_presence => safe_status(wfcli_market_presence_service),
         local_api => safe_status(wfcli_local_api),
+        paths => daemon_paths(AssetStatus),
         update => update_status(State)
     }).
+
+daemon_paths(#{cache_root := Root}) ->
+    lists:keyreplace(assets, 1, wfcli_paths:directories(wfdaemon),
+                     {assets, Root});
+daemon_paths(_Unavailable) ->
+    wfcli_paths:directories(wfdaemon).
 
 update_status(#{manual_update := Manual, artifact_update := Artifact}) ->
     case {Manual, Artifact} of

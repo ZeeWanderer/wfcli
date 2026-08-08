@@ -18,7 +18,16 @@ status_request_returns_running_map_test() ->
                        flavor := _,
                        build := _}, Status),
         ?assert(is_pid(maps:get(pid, Status))),
-        ?assert(is_integer(maps:get(uptime_ms, Status)))
+        ?assert(is_integer(maps:get(uptime_ms, Status))),
+        Paths = maps:get(paths, Status),
+        ?assert(lists:keymember(assets, 1, Paths)),
+        case maps:get(assets, Status) of
+            #{cache_root := AssetRoot} ->
+                ?assertEqual({assets, AssetRoot}, lists:keyfind(assets, 1, Paths));
+            unavailable ->
+                ?assertEqual({assets, wfcli_paths:cache_file("assets")},
+                             lists:keyfind(assets, 1, Paths))
+        end
     after
         cleanup_daemon(Started)
     end.

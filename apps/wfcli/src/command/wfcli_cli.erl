@@ -139,7 +139,7 @@ usage() ->
         {"drops", "find WFCD enemy drops by item or enemy"},
         {"daemon", "control persistent wfdaemon process"},
         {"completion", "generate shell completion"},
-        {"paths", "show per-application XDG directories"}
+        {"paths", "show managed XDG directory tree"}
     ],
     Data = [{Cmd, wfcli_worldstate_cli:command_description(Cmd)}
             || Cmd <- wfcli_worldstate_cli:command_help_names(), Cmd =/= "watch"],

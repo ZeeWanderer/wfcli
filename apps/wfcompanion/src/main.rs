@@ -48,7 +48,7 @@ Commands:
   screenshot         Capture Warframe through KWin
   relic-ocr          Print OCR candidates from saved or newly captured image
   preview            Render mock overlays onto a transparent output-sized image
-  paths              Print per-user directories and symlink destinations
+  paths              Report per-user directories as JSON
   logs               Print incident log path and recent entries
 
 Options:

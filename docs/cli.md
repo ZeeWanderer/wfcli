@@ -82,12 +82,15 @@ Erlang VM.
 
 ```bash
 wfcli paths
+wfcli paths --apps
 wfcli paths wfdaemon
+wfcli paths wfgui
 wfcli companion paths
 ```
 
-The report lists each application's XDG directories without creating them. Directory symlinks are
-shown as `PATH -> TARGET`.
+The default report merges all managed XDG directories into one filesystem tree without creating
+them. A symlink is rendered as `name -> target`, with logical descendants nested below it. Use
+`--apps` to group paths by owning application, or name one application to inspect it alone.
 
 ## Fissure Notifications
 

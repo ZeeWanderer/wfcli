@@ -3,7 +3,7 @@
 %%%-------------------------------------------------------------------
 -module(wfcli_gui_desktop).
 
--export([install/0, uninstall/0, status/0]).
+-export([install/0, uninstall/0, status/0, path_report/0]).
 
 -ifdef(TEST).
 -export([desktop_entry/1, paths/1]).
@@ -12,6 +12,7 @@
 -define(DESKTOP_FILE, "wfgui.desktop").
 -define(ICON_NAME, "wfgui").
 -define(ICON_SIZES, [16, 24, 32, 48, 64, 128, 256, 512]).
+-define(COMMAND_TIMEOUT, 30000).
 
 -doc "Install the wfgui desktop entry and icon set into XDG_DATA_HOME.".
 -spec install() -> {ok, map()} | {error, term()}.
@@ -46,6 +47,14 @@ status() ->
                         lists:all(fun filelib:is_regular/1,
                                   maps:get(icons, Paths)),
             {ok, Paths#{installed => Installed}};
+        {error, _Reason} = Error -> Error
+    end.
+
+-doc "Run wfgui's headless path reporter and return its JSON output.".
+-spec path_report() -> {ok, binary()} | {error, term()}.
+path_report() ->
+    case gui_binary() of
+        {ok, Gui} -> run_path_report(Gui);
         {error, _Reason} = Error -> Error
     end.
 
@@ -129,6 +138,30 @@ find_regular(Paths, Error) ->
     case [filename:absname(Path) || Path <- Paths, filelib:is_regular(Path)] of
         [Path | _] -> {ok, Path};
         [] -> {error, {Error, Paths}}
+    end.
+
+run_path_report(Gui) ->
+    try
+        Port = open_port(
+                 {spawn_executable, Gui},
+                 [binary, exit_status, stderr_to_stdout,
+                  {args, ["--paths-json"]}]),
+        collect_path_report(Port, [])
+    catch
+        Class:Reason -> {error, {gui_start_failed, Class, Reason}}
+    end.
+
+collect_path_report(Port, Acc) ->
+    receive
+        {Port, {data, Data}} -> collect_path_report(Port, [Data | Acc]);
+        {Port, {exit_status, 0}} ->
+            {ok, iolist_to_binary(lists:reverse(Acc))};
+        {Port, {exit_status, Status}} ->
+            {error, {gui_exit_status, Status,
+                     iolist_to_binary(lists:reverse(Acc))}}
+    after ?COMMAND_TIMEOUT ->
+        erlang:port_close(Port),
+        {error, gui_command_timeout}
     end.
 
 copy_files([]) -> ok;

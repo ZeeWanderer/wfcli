@@ -24,7 +24,7 @@ run(Args) ->
         ["hud", "show"] -> set_visibility(<<"hud">>, "HUD", true);
         ["hud", "hide"] -> set_visibility(<<"hud">>, "HUD", false);
         ["probe"] -> diagnostic(["probe"]);
-        ["paths"] -> diagnostic(["paths"]);
+        ["paths"] -> wfcli_path_cli:run(["wfcompanion"]);
         ["screenshot" | Rest] -> screenshot(Rest);
         ["relic-ocr" | Rest] -> diagnostic(["relic-ocr" | Rest]);
         ["preview" | Rest] -> preview(Rest);

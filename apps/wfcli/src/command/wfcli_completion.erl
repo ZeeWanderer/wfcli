@@ -165,7 +165,8 @@ contexts() ->
         {["completion", "install"], ["--file" | help_flags()]},
         {["completion", "status"], ["--file" | help_flags()]},
         {["completion", "uninstall"], ["--file" | help_flags()]},
-        {["paths"], ["wfcli", "wfdaemon", "wfcompanion" | help_flags()]},
+        {["paths"], ["--apps", "wfcli", "wfdaemon", "wfcompanion", "wfgui"
+                     | help_flags()]},
         {["help"], help_choices()}
     ] ++ worldstate_contexts().
 

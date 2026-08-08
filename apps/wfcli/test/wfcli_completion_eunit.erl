@@ -21,6 +21,8 @@ nested_command_completion_test() ->
        ["enable"],
        wfcli_completion:candidates(["daemon", "autostart", "en"])),
     ?assertEqual(["wfdaemon"], wfcli_completion:candidates(["paths", "wfd"])),
+    ?assertEqual(["wfgui"], wfcli_completion:candidates(["paths", "wfg"])),
+    ?assertEqual(["--apps"], wfcli_completion:candidates(["paths", "--a"])),
     ?assertEqual(["inventory"], wfcli_completion:candidates(["baro", "i"])),
     ?assertEqual(["video"], wfcli_completion:candidates(["companion", "preview", "v"])),
     ?assertEqual(["install"], wfcli_completion:candidates(["completion", "i"])),
