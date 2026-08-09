@@ -57,6 +57,10 @@ release_environment_keeps_logs_out_of_release_test() ->
     ?assertEqual(false, proplists:get_value("STEAM_RUNTIME", Env)),
     ?assertEqual(false, proplists:get_value("STEAM_RUNTIME_LIBRARY_PATH", Env)).
 
+homebrew_stop_keeps_login_registration_test() ->
+    ?assertEqual(["services", "kill", "wfcli"],
+                 wfcli_homebrew_service:stop_args()).
+
 daemon_cli_known_commands_test() ->
     Known = wfcli_daemon_cli:known_commands(),
     ?assert(lists:member("status", Known)),

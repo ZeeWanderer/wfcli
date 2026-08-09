@@ -5,6 +5,10 @@
 
 -export([enable/0, disable/0, status/0, installed/0, active/0, start/0, stop/0]).
 
+-ifdef(TEST).
+-export([stop_args/0]).
+-endif.
+
 -define(COMMAND_TIMEOUT, 30000).
 -define(FORMULA, "wfcli").
 -define(UNIT, "wfdaemon.service").
@@ -73,10 +77,12 @@ start() ->
 -doc "Stop wfdaemon while preserving Homebrew login registration.".
 -spec stop() -> {ok, status()} | {error, term()}.
 stop() ->
-    case brew_command(["services", "stop", "--keep", ?FORMULA]) of
+    case brew_command(stop_args()) of
         {ok, _Output} -> status();
         {error, _Reason} = Error -> Error
     end.
+
+stop_args() -> ["services", "kill", ?FORMULA].
 
 status_map(Systemctl) ->
     #{manager => homebrew,
