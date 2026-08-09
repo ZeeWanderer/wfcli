@@ -10,6 +10,8 @@ guides under `docs/`.
 - Keep tests in sync with expected outputs; CT suite lives under `apps/wfcli/test`.
 - Run tests after code, fixture, build, or behavior changes (at minimum
   `./scripts/test-quiet ct`). Documentation-only edits do not require tests.
+- Run tests elevated, outside the Codex sandbox; socket and Erlang distribution
+  tests require host namespaces.
 - Use `./scripts/test-quiet eunit` for EUnit. It suppresses passing noise and keeps
   a full `/tmp` log only on failure; use direct `rebar3` only when debugging.
 - Run `make dev-erlang` before testing `./wfclid`; run `make prod-erlang` before
