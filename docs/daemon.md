@@ -15,6 +15,9 @@ wfcli daemon restart
 wfcli daemon stop
 ```
 
+`status` reports installation source and root, build identity, both client protocol versions,
+runtime queues, and idle policy.
+
 Implicit startup stops the daemon after ten idle minutes. Explicit `start` and `restart` keep it
 running until `stop` unless an idle option is supplied. Starting an already-running daemon applies
 the requested idle policy. `ensure` starts an absent daemon without changing a running daemon.

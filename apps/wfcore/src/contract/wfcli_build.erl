@@ -3,7 +3,7 @@
 %%%-------------------------------------------------------------------
 -module(wfcli_build).
 
--export([version/0, flavor/0, install_root/0, update_root/0, homebrew_install/0,
+-export([version/0, flavor/0, installation/0, install_root/0, update_root/0, homebrew_install/0,
          hot_ebin_dirs/0, artifact_id/0]).
 
 -ifndef(WFCLI_VERSION).
@@ -15,6 +15,7 @@
 -endif.
 
 -type flavor() :: dev | prod.
+-type installation() :: homebrew | local.
 
 -doc "Return release version compiled from root VERSION.".
 -spec version() -> string().
@@ -27,6 +28,14 @@ flavor() ->
         "dev" -> dev;
         "prod" -> prod;
         _ -> flavor_from_path(executable_path())
+    end.
+
+-doc "Return whether this artifact came from Homebrew or a local build.".
+-spec installation() -> installation().
+installation() ->
+    case homebrew_install() of
+        true -> homebrew;
+        false -> local
     end.
 
 -doc "Return current staged installation root.".
@@ -51,7 +60,7 @@ homebrew_install() ->
     case os:getenv("WFCLI_PACKAGE_MANAGER") of
         "homebrew" -> true;
         "standalone" -> false;
-        _ -> homebrew_install_from_path(executable_path())
+        _ -> homebrew_install_from_path(install_root())
     end.
 
 -doc "Find hot-loadable wfcore and wfdaemon ebin directories in current artifact.".

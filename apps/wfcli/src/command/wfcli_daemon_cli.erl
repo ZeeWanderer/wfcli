@@ -97,11 +97,16 @@ status() ->
             io:format("  node: ~s~n", [atom_to_list(maps:get(node, Info))]),
             io:format("  pid: ~p~n", [maps:get(pid, Info)]),
             io:format("  uptime_ms: ~p~n", [maps:get(uptime_ms, Info)]),
-            io:format("  wfcli: ~s~n", [format_value(maps:get(version, Info, undefined))]),
-            io:format("  otp: ~s~n", [format_value(maps:get(otp_release, Info, undefined))]),
-            io:format("  flavor: ~s~n", [format_value(maps:get(flavor, Info, undefined))]),
-            io:format("  request protocol: ~p~n", [maps:get(protocol, Info, undefined)]),
-            io:format("  build: ~s~n", [format_value(maps:get(build, Info, undefined))]),
+            io:format("  version: ~s~n", [format_value(maps:get(version, Info, undefined))]),
+            io:format("  OTP release: ~s~n", [format_value(maps:get(otp_release, Info, undefined))]),
+            io:format("  installation: ~s~n",
+                      [format_value(maps:get(installation, Info, undefined))]),
+            io:format("  install root: ~s~n",
+                      [format_value(maps:get(install_root, Info, undefined))]),
+            io:format("  build flavor: ~s~n",
+                      [format_value(maps:get(flavor, Info, undefined))]),
+            io:format("  artifact ID: ~s~n", [format_value(maps:get(build, Info, undefined))]),
+            print_protocols(Info),
             print_runtime_status(maps:get(service, Info, unavailable),
                                  maps:get(exports, Info, unavailable),
                                  maps:get(market, Info, unavailable));
@@ -218,6 +223,22 @@ format_value(Value) when is_binary(Value) -> binary_to_list(Value);
 format_value(Value) when is_list(Value) -> Value;
 format_value(Value) when is_atom(Value) -> atom_to_list(Value);
 format_value(Value) -> lists:flatten(io_lib:format("~p", [Value])).
+
+print_protocols(Info) ->
+    Protocols = maps:get(protocols, Info, #{}),
+    ErlangRpc = maps:get(erlang_distribution_rpc, Protocols,
+                         maps:get(protocol, Info, undefined)),
+    LocalSocket = maps:get(native_socket_api, Protocols,
+                           local_socket_protocol(Info)),
+    io:format("  protocols:~n"),
+    io:format("    CLI/MCP Erlang RPC: ~s~n", [format_value(ErlangRpc)]),
+    io:format("    GUI/companion Unix socket: ~s~n", [format_value(LocalSocket)]).
+
+local_socket_protocol(Info) ->
+    case maps:get(local_api, Info, unavailable) of
+        LocalApi when is_map(LocalApi) -> maps:get(protocol, LocalApi, undefined);
+        _ -> undefined
+    end.
 
 print_runtime_status(Service, Exports, Market) when is_map(Service), is_map(Exports) ->
     io:format("  worldstate: ~p snapshot(s), ~p watch(es), ~p queued, ~p fetching~n",

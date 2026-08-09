@@ -34,6 +34,10 @@
     uptime_ms := non_neg_integer(),
     version := string() | undefined,
     otp_release := string(),
+    installation := homebrew | local,
+    install_root := file:filename_all(),
+    protocols := #{erlang_distribution_rpc := pos_integer(),
+                   native_socket_api := pos_integer()},
     build := binary() | undefined
 }.
 -type reply() ::
@@ -221,6 +225,10 @@ status(State = #{started_at := StartedAt}) ->
         version => wfcli_build:version(),
         otp_release => erlang:system_info(otp_release),
         protocol => protocol_version(),
+        protocols => #{erlang_distribution_rpc => protocol_version(),
+                       native_socket_api => wfcli_local_protocol:protocol_version()},
+        installation => wfcli_build:installation(),
+        install_root => wfcli_build:install_root(),
         flavor => wfcli_build:flavor(),
         service => ServiceStatus,
         exports => ExportStatus,
