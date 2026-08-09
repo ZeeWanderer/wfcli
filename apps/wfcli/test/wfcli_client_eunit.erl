@@ -29,6 +29,13 @@ brew_update_root_uses_stable_opt_prefix_test() ->
                  wfcli_build:brew_update_root(
                    "/home/linuxbrew/.linuxbrew/Cellar/wfcli/0.1.0")).
 
+homebrew_install_follows_resolved_cellar_path_test() ->
+    ?assert(wfcli_build:homebrew_install_from_path(
+              "/home/linuxbrew/.linuxbrew/Cellar/wfcli/0.1.1/libexec/bin/wfcli")),
+    ?assertNot(wfcli_build:homebrew_install_from_path("/repo/prod/bin/wfcli")),
+    ?assertNot(wfcli_build:homebrew_install_from_path(
+                 "/home/linuxbrew/.linuxbrew/Cellar/other/0.1.1/bin/wfcli")).
+
 release_environment_keeps_logs_out_of_release_test() ->
     Env = wfcli_client:release_environment(),
     ?assertEqual(

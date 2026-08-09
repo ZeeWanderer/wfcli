@@ -3,11 +3,11 @@
 %%%-------------------------------------------------------------------
 -module(wfcli_build).
 
--export([flavor/0, install_root/0, update_root/0,
+-export([flavor/0, install_root/0, update_root/0, homebrew_install/0,
          hot_ebin_dirs/0, artifact_id/0]).
 
 -ifdef(TEST).
--export([flavor_from_path/1, brew_update_root/1]).
+-export([flavor_from_path/1, brew_update_root/1, homebrew_install_from_path/1]).
 -endif.
 
 -type flavor() :: dev | prod.
@@ -35,6 +35,15 @@ update_root() ->
     case os:getenv("WFCLI_UPDATE_ROOT") of
         Value when is_list(Value), Value =/= "" -> absolute_path(Value);
         _ -> brew_update_root(install_root())
+    end.
+
+-doc "Return whether the running artifact is installed by Homebrew.".
+-spec homebrew_install() -> boolean().
+homebrew_install() ->
+    case os:getenv("WFCLI_PACKAGE_MANAGER") of
+        "homebrew" -> true;
+        "standalone" -> false;
+        _ -> homebrew_install_from_path(executable_path())
     end.
 
 -doc "Find hot-loadable wfcore and wfdaemon ebin directories in current artifact.".
@@ -80,6 +89,13 @@ brew_update_root(Root) ->
     case split_at_cellar(Parts, []) of
         {ok, Prefix, Formula} -> filename:join(Prefix ++ ["opt", Formula]);
         error -> AbsoluteRoot
+    end.
+
+homebrew_install_from_path(Path) ->
+    Resolved = resolve_link(filename:absname(Path), 8),
+    case split_at_cellar(filename:split(Resolved), []) of
+        {ok, _Prefix, "wfcli"} -> true;
+        _ -> false
     end.
 
 absolute_path(Path) ->

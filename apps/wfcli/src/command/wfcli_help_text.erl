@@ -430,7 +430,7 @@ daemon_help() ->
         "  start [OPTIONS]    start or pin wfdaemon until explicit stop\n",
         "  stop               stop wfdaemon release if running\n",
         "  restart [OPTIONS]  stop then start; persistent by default\n",
-        "  autostart [status] show systemd user-service state\n",
+        "  autostart [status] show managed user-service state\n",
         "  autostart enable   start now and at user login\n",
         "  autostart disable  disable login startup; leave daemon running\n",
         "  update             hot-load changed BEAMs from local build\n",

@@ -29,16 +29,16 @@ wfcli daemon autostart enable
 wfcli daemon autostart disable
 ```
 
-`enable` installs and starts a systemd user service. `disable` prevents login startup without
-stopping the running daemon.
+`enable` starts a managed user service. Homebrew installations use `brew services`; repository
+builds install a systemd user unit directly. `disable` prevents login startup without stopping the
+running daemon.
 
 Development and production use separate units:
 
 - `wfdaemon-dev.service` for `wfclid`
 - `wfdaemon.service` for `wfcli`
 
-The client refreshes stale unit content and prevents one environment from starting the other's
-release.
+The client detects its installation and refreshes stale service ownership before startup.
 
 ## Updates
 

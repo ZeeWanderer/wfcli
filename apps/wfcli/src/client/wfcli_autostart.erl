@@ -11,12 +11,19 @@
 
 -define(COMMAND_TIMEOUT, 30000).
 
--type status() :: #{path := file:filename_all(), installed := boolean(),
+-type status() :: #{manager := systemd | homebrew,
+                    path := file:filename_all(), installed := boolean(),
                     enabled := boolean(), active := boolean()}.
 
 -doc "Install, enable, and start systemd user service for persistent wfdaemon.".
 -spec enable() -> {ok, status()} | {error, term()}.
 enable() ->
+    case wfcli_build:homebrew_install() of
+        true -> wfcli_homebrew_service:enable();
+        false -> enable_systemd()
+    end.
+
+enable_systemd() ->
     case {systemctl(), release_script()} of
         {{error, _Reason} = Error, _} -> Error;
         {_, {error, _Reason} = Error} -> Error;
@@ -28,7 +35,6 @@ enable() ->
                     with_commands(
                       Systemctl,
                       [["--user", "daemon-reload"],
-                       ["--user", "reset-failed", unit_name()],
                        ["--user", "enable", unit_name()]],
                       fun() -> start_service(Systemctl) end);
                 {error, _Reason} = Error -> Error
@@ -38,6 +44,12 @@ enable() ->
 -doc "Disable login startup while leaving any running daemon untouched.".
 -spec disable() -> {ok, status()} | {error, term()}.
 disable() ->
+    case wfcli_build:homebrew_install() of
+        true -> wfcli_homebrew_service:disable();
+        false -> disable_systemd()
+    end.
+
+disable_systemd() ->
     case systemctl() of
         {error, _Reason} = Error -> Error;
         {ok, Systemctl} ->
@@ -54,6 +66,12 @@ disable() ->
 -doc "Return installed, enabled, and active state of wfdaemon user service.".
 -spec status() -> {ok, status()} | {error, term()}.
 status() ->
+    case wfcli_build:homebrew_install() of
+        true -> wfcli_homebrew_service:status();
+        false -> status_systemd()
+    end.
+
+status_systemd() ->
     case systemctl() of
         {ok, Systemctl} -> {ok, status_map(Systemctl)};
         {error, _Reason} = Error -> Error
@@ -61,11 +79,23 @@ status() ->
 
 -doc "Return whether wfcli systemd user unit is installed.".
 -spec installed() -> boolean().
-installed() -> filelib:is_regular(unit_path()).
+installed() ->
+    case wfcli_build:homebrew_install() of
+        true -> wfcli_homebrew_service:installed();
+        false -> installed_systemd()
+    end.
+
+installed_systemd() -> filelib:is_regular(unit_path()).
 
 -doc "Return whether installed wfdaemon user service is active.".
 -spec active() -> {ok, boolean()} | {error, term()}.
 active() ->
+    case wfcli_build:homebrew_install() of
+        true -> wfcli_homebrew_service:active();
+        false -> active_systemd()
+    end.
+
+active_systemd() ->
     case systemctl() of
         {ok, Systemctl} -> {ok, active(Systemctl)};
         {error, _Reason} = Error -> Error
@@ -73,11 +103,19 @@ active() ->
 
 -doc "Start installed wfdaemon user service without changing login enablement.".
 -spec start() -> {ok, status()} | {error, term()}.
-start() -> service_command("start").
+start() ->
+    case wfcli_build:homebrew_install() of
+        true -> wfcli_homebrew_service:start();
+        false -> service_command("start")
+    end.
 
 -doc "Stop installed wfdaemon user service without changing login enablement.".
 -spec stop() -> {ok, status()} | {error, term()}.
-stop() -> service_command("stop").
+stop() ->
+    case wfcli_build:homebrew_install() of
+        true -> wfcli_homebrew_service:stop();
+        false -> service_command("stop")
+    end.
 
 service_command(Command) ->
     case systemctl() of
@@ -96,15 +134,13 @@ service_command(Command) ->
 prepare_service_command(Systemctl, "start") ->
     case refresh_unit(Systemctl) of
         ok ->
-            case run_command(Systemctl, ["--user", "reset-failed", unit_name()]) of
-                {ok, _Output} -> ok;
-                {error, _Reason} = Error -> Error
-            end;
+            reset_failed(Systemctl);
         {error, _Reason} = Error -> Error
     end;
 prepare_service_command(_Systemctl, _Command) -> ok.
 
 start_service(Systemctl) ->
+    ok = reset_failed(Systemctl),
     case active(Systemctl) of
         true -> verify_daemon_started(Systemctl);
         false ->
@@ -118,6 +154,10 @@ start_service(Systemctl) ->
             end
     end.
 
+reset_failed(Systemctl) ->
+    _ = run_command_raw(Systemctl, ["--user", "reset-failed", unit_name()]),
+    ok.
+
 verify_daemon_started(Systemctl) ->
     case wfcli_client:start(persistent) of
         {ok, _Status, _Node} -> {ok, status_map(Systemctl)};
@@ -126,8 +166,9 @@ verify_daemon_started(Systemctl) ->
 
 status_map(Systemctl) ->
     Path = unit_path(),
-    #{path => Path,
-      installed => installed(),
+    #{manager => systemd,
+      path => Path,
+      installed => installed_systemd(),
       enabled => enabled(Systemctl),
       active => active(Systemctl)}.
 

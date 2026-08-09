@@ -179,6 +179,7 @@ print_autostart(Status) ->
     print_autostart_details(Status).
 
 print_autostart_details(Status) ->
+    io:format("  manager: ~s~n", [atom_to_list(maps:get(manager, Status, systemd))]),
     io:format("  unit: ~s~n", [maps:get(path, Status)]),
     io:format("  installed: ~s~n", [yes_no(maps:get(installed, Status))]),
     io:format("  enabled: ~s~n", [yes_no(maps:get(enabled, Status))]),
