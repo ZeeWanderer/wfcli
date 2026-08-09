@@ -14,7 +14,6 @@
         "gui",
         "harfbuzz",
         "network",
-        "opengl",
         "png",
         "testlib",
         "thread",

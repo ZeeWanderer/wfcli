@@ -47,6 +47,7 @@ gui-configure-dev:
 
 gui-dev: gui-configure-dev
 	LLVM_ROOT="$(LLVM_ROOT)" cmake --build --preset gui-dev
+	rm -rf dev/lib dev/Qt6
 	LLVM_ROOT="$(LLVM_ROOT)" cmake --install _build/cmake/gui-dev
 
 gui-configure-prod:
@@ -56,6 +57,7 @@ gui-configure-prod:
 
 gui-prod: gui-configure-prod
 	LLVM_ROOT="$(LLVM_ROOT)" cmake --build --preset gui-prod
+	rm -rf prod/lib prod/Qt6
 	LLVM_ROOT="$(LLVM_ROOT)" cmake --install _build/cmake/gui-prod
 
 gui-reconfigure: gui-reconfigure-dev gui-reconfigure-prod
