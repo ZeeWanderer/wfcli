@@ -5,6 +5,10 @@
 
 -export([main/1, command_names/0, public_command_names/0, usage/0]).
 
+-ifdef(TEST).
+-export([command_groups/0]).
+-endif.
+
 main(Args) ->
     ensure_started(),
     ok = application:set_env(wfcli, use_daemon, true),
@@ -125,49 +129,51 @@ safe_get_line() ->
     end.
 
 usage() ->
-    Core = [
-        {"forma-plan", "compute Forma/polarity plan across builds"},
-        {"visualize", "render forma-plan outputs"},
-        {"query", "search the indexed knowledge base"},
-        {"player", "inspect or query local player data"},
-        {"market", "look up Warframe Market top-order prices"},
-        {"notifications", "configure fissure notifications"},
-        {"mods", "query mod exports"},
-        {"items", "query export item names"},
-        {"codex", "query official Codex knowledge"},
-        {"enemies", "query WFCD enemy knowledge"},
-        {"drops", "find WFCD enemy drops by item or enemy"},
-        {"daemon", "control persistent wfdaemon process"},
-        {"completion", "generate shell completion"},
-        {"paths", "show managed XDG directory tree"}
-    ],
-    Data = [{Cmd, wfcli_worldstate_cli:command_description(Cmd)}
-            || Cmd <- wfcli_worldstate_cli:command_help_names(), Cmd =/= "watch"],
-    Utility = [
-        {"update", "update cached knowledge base data"},
-        {"companion", "inspect native game companion"},
-        {"gui", "install the desktop launcher"},
-        {"mcp", "serve MCP over standard input/output"},
-        {"watch", "watch command specs (multi-source)"},
-        {"help", "show help topics"},
-        {"-h, --help", "show this help"}
-    ],
-    Rows = Core ++ Data ++ Utility,
+    Groups = command_groups(),
+    Rows = lists:append([GroupRows || {_Label, GroupRows} <- Groups]),
     Width = max_cmd_width(Rows, 0),
     Lines =
         ["USAGE:",
          "  wfcli <command> [options]",
          "",
-         "COMMANDS:",
-         "  Core:"]
-        ++ format_usage_rows(Core, Width, 4)
-        ++ ["",
-            "  Data:"]
-        ++ format_usage_rows(Data, Width, 4)
-        ++ ["",
-            "  Utility:"]
-        ++ format_usage_rows(Utility, Width, 4),
+         "COMMANDS:"]
+        ++ format_usage_groups(Groups, Width),
     io:format("~ts~n", [string:join(Lines, "\n")]).
+
+command_groups() ->
+    Tools = [
+        {"forma-plan", "compute Forma/polarity plan across builds"},
+        {"visualize", "render forma-plan outputs"},
+        {"notifications", "configure fissure notifications"},
+        {"watch", "watch command specs (multi-source)"}
+    ],
+    Data = [
+        {"query", "search the indexed knowledge base"},
+        {"player", "inspect or query local player data"},
+        {"market", "look up Warframe Market top-order prices"},
+        {"mods", "query mod exports"},
+        {"items", "query export item names"},
+        {"codex", "query official Codex knowledge"},
+        {"enemies", "query WFCD enemy knowledge"},
+        {"drops", "find WFCD enemy drops by item or enemy"}
+    ],
+    Worldstate = [{Cmd, wfcli_worldstate_cli:command_description(Cmd)}
+                  || Cmd <- wfcli_worldstate_cli:command_help_names(), Cmd =/= "watch"],
+    Applications = [
+        {"daemon", "control persistent wfdaemon process"},
+        {"companion", "inspect native game companion"},
+        {"gui", "install the desktop launcher"},
+        {"mcp", "serve MCP over standard input/output"}
+    ],
+    Utility = [
+        {"update", "update cached knowledge base data"},
+        {"completion", "generate shell completion"},
+        {"paths", "show managed XDG directory tree"},
+        {"help", "show help topics"},
+        {"-h, --help", "show this help"}
+    ],
+    [{"Tools", Tools}, {"Data", Data}, {"Worldstate", Worldstate},
+     {"Applications", Applications}, {"Utility", Utility}].
 
 max_cmd_width([], Width) -> Width;
 max_cmd_width([{Cmd, _} | Rest], Width) ->
@@ -179,6 +185,13 @@ format_usage_rows(Rows, Width, Indent) ->
         Prefix ++ wfcli_tty:pad_right(Cmd, Width) ++ "  " ++ Desc
         || {Cmd, Desc} <- Rows
     ].
+
+format_usage_groups([], _Width) -> [];
+format_usage_groups([{Label, Rows}], Width) ->
+    ["  " ++ Label ++ ":"] ++ format_usage_rows(Rows, Width, 4);
+format_usage_groups([{Label, Rows} | Rest], Width) ->
+    ["  " ++ Label ++ ":"] ++ format_usage_rows(Rows, Width, 4) ++
+        [""] ++ format_usage_groups(Rest, Width).
 
 is_worldstate_command(Cmd) ->
     lists:member(Cmd, wfcli_worldstate_cli:command_names()).
