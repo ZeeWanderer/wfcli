@@ -59,7 +59,13 @@ Set **Warframe > Properties > General > Launch Options** in Steam using that abs
 /absolute/path/to/wfcompanion launch -- %command%
 ```
 
-Launch mode starts the companion with Warframe and starts or reuses `wfdaemon`. See the
+Start `wfdaemon` from the host before launching Warframe; Proton-side startup is not recommended:
+
+```bash
+wfcli daemon ensure
+```
+
+Launch mode starts the companion with Warframe and reuses `wfdaemon`. See the
 [companion guide](docs/companion.md) for automatic Steam configuration and overlay controls.
 
 ### Desktop launcher
