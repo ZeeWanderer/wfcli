@@ -32,6 +32,56 @@ relics during selection.
 
 ![Owned relic recommendations](docs/images/wfcompanion-relic-suggestions.webp)
 
+## Install
+
+The Homebrew package targets Linux x86_64. Add the tap, trust only the `wfcli` formula, and
+install it:
+
+```bash
+brew tap zeewanderer/sundries
+brew trust --formula zeewanderer/sundries/wfcli
+brew install wfcli
+```
+
+This installs `wfcli`, `wfdaemon`, `wfcompanion`, and `wfgui` into Homebrew's command path.
+
+### Steam launch mode
+
+Find the installed companion:
+
+```bash
+command -v wfcompanion
+```
+
+Set **Warframe > Properties > General > Launch Options** in Steam using that absolute path:
+
+```text
+/absolute/path/to/wfcompanion launch -- %command%
+```
+
+Launch mode starts the companion with Warframe and starts or reuses `wfdaemon`. See the
+[companion guide](docs/companion.md) for automatic Steam configuration and overlay controls.
+
+### Desktop launcher
+
+Register the GUI in the desktop application menu and install its notification identity:
+
+```bash
+wfcli gui install
+```
+
+### Daemon service (optional)
+
+Normal CLI, GUI, and companion use starts `wfdaemon` automatically. Enable login autostart only
+when persistent watches or notifications should remain active without an open client:
+
+```bash
+wfcli daemon autostart enable
+```
+
+Homebrew installations manage this through `brew services`; use `wfcli daemon autostart status`
+to inspect it.
+
 ## Build
 
 Required toolchains:
@@ -77,13 +127,13 @@ Common contributor commands and individual build targets are documented in
 
 ## Run
 
-Use the production CLI and GUI after `make prod`:
+Use installed commands, or the production links after `make prod`:
 
 ```bash
-./wfcli fissures
-./wfcli baro inventory
-./wfcli query 'dataset=worldstate type=fissure hard=true'
-./wfgui
+wfcli fissures
+wfcli baro inventory
+wfcli query 'dataset=worldstate type=fissure hard=true'
+wfgui
 ```
 
 The CLI starts or reuses `wfdaemon`. Built-in help covers the complete command surface:
@@ -94,18 +144,10 @@ wfcli help commands
 wfcli COMMAND --help
 ```
 
-For in-game overlays and player data, set Warframe's Steam launch options to:
-
-```bash
-/absolute/path/to/wfcli/prod/bin/wfcompanion launch -- %command%
-```
-
-See the [companion guide](docs/companion.md) before enabling launch mode.
-
 Register the MCP adapter with a host using the same production client:
 
 ```bash
-codex mcp add wfcli -- /absolute/path/to/wfcli/prod/bin/wfcli mcp
+codex mcp add wfcli -- wfcli mcp
 ```
 
 ## Documentation
