@@ -230,7 +230,4 @@ negotiate_protocol(Version) ->
     case lists:member(Version, Supported) of true -> Version; false -> ?LATEST_PROTOCOL end.
 
 app_version() ->
-    case application:get_key(wfcli, vsn) of
-        {ok, Version} -> unicode:characters_to_binary(Version);
-        undefined -> <<"0.1.0">>
-    end.
+    unicode:characters_to_binary(wfcli_build:version()).

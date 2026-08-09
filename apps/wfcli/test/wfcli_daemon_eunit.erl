@@ -54,6 +54,7 @@ protocol_handshake_test() ->
         Reply = wfcli_daemon:request({hello, wfcli_daemon:protocol_version()}),
         ?assertEqual(true, maps:get(compatible, Reply)),
         ?assertEqual(wfcli_daemon:protocol_version(), maps:get(protocol, Reply)),
+        ?assertEqual(wfcli_build:version(), maps:get(version, Reply)),
         ?assertEqual(wfcli_build:flavor(), maps:get(flavor, Reply)),
         ?assertEqual(64, byte_size(maps:get(build, Reply)))
     after

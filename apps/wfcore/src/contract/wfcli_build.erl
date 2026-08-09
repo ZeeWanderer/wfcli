@@ -3,14 +3,22 @@
 %%%-------------------------------------------------------------------
 -module(wfcli_build).
 
--export([flavor/0, install_root/0, update_root/0, homebrew_install/0,
+-export([version/0, flavor/0, install_root/0, update_root/0, homebrew_install/0,
          hot_ebin_dirs/0, artifact_id/0]).
+
+-ifndef(WFCLI_VERSION).
+-define(WFCLI_VERSION, "unknown").
+-endif.
 
 -ifdef(TEST).
 -export([flavor_from_path/1, brew_update_root/1, homebrew_install_from_path/1]).
 -endif.
 
 -type flavor() :: dev | prod.
+
+-doc "Return release version compiled from root VERSION.".
+-spec version() -> string().
+version() -> ?WFCLI_VERSION.
 
 -doc "Return artifact flavor selected by environment or executable path.".
 -spec flavor() -> flavor().

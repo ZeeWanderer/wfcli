@@ -9,6 +9,11 @@ default_daemon_node_uses_wfdaemon_name_test() ->
     Node = atom_to_list(wfcli_client:daemon_node()),
     ?assertMatch("wfdaemon@" ++ _, Node).
 
+compiled_version_matches_application_version_test() ->
+    _ = application:load(wfcore),
+    {ok, Version} = application:get_key(wfcore, vsn),
+    ?assertEqual(Version, wfcli_build:version()).
+
 release_script_candidates_include_rebar_outputs_test() ->
     Candidates = wfcli_client:release_script_candidates(),
     ?assert(lists:any(fun(Path) ->

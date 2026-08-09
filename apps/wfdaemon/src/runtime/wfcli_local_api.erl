@@ -1074,10 +1074,7 @@ daemon_identity() ->
         {ok, Identity} -> Identity;
         {error, _Reason} -> null
     end,
-    Version = case application:get_key(wfdaemon, vsn) of
-        {ok, Vsn} -> list_to_binary(Vsn);
-        undefined -> <<"unknown">>
-    end,
+    Version = list_to_binary(wfcli_build:version()),
     #{<<"status">> => <<"running">>,
       <<"node">> => atom_to_binary(node()),
       <<"version">> => Version,

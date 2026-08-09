@@ -1,6 +1,11 @@
 cmake_minimum_required(VERSION 3.28 FATAL_ERROR)
 
 file(STRINGS "${CMAKE_CURRENT_SOURCE_DIR}/VERSION" WFCLI_VERSION LIMIT_COUNT 1)
+file(READ "${CMAKE_CURRENT_SOURCE_DIR}/apps/wfgui/vcpkg.json" WFCLI_VCPKG_MANIFEST)
+string(JSON WFCLI_VCPKG_VERSION GET "${WFCLI_VCPKG_MANIFEST}" version-string)
+if(NOT WFCLI_VCPKG_VERSION STREQUAL WFCLI_VERSION)
+  message(FATAL_ERROR "apps/wfgui/vcpkg.json version must match root VERSION")
+endif()
 file(STRINGS
   "${CMAKE_CURRENT_SOURCE_DIR}/apps/wfdaemon/src/runtime/wfcli_local_protocol.erl"
   WFCLI_LOCAL_PROTOCOL_LINE

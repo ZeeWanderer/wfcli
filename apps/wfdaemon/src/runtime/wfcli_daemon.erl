@@ -95,7 +95,7 @@ handle_call({hello, ClientVersion}, _From, State) ->
     Protocol = protocol_version(),
     Reply0 = #{protocol => Protocol,
                compatible => ClientVersion =:= Protocol,
-               version => app_version(),
+               version => wfcli_build:version(),
                flavor => wfcli_build:flavor(),
                node => node()},
     Reply = with_build_identity(Reply0),
@@ -218,7 +218,7 @@ status(State = #{started_at := StartedAt}) ->
         node => node(),
         pid => self(),
         uptime_ms => max(0, Now - StartedAt),
-        version => app_version(),
+        version => wfcli_build:version(),
         otp_release => erlang:system_info(otp_release),
         protocol => protocol_version(),
         flavor => wfcli_build:flavor(),
@@ -255,16 +255,6 @@ with_build_identity(Map) ->
     case wfcli_hot_update:current_build_identity() of
         {ok, Identity} -> Map#{build => Identity};
         {error, Reason} -> Map#{build => undefined, build_error => Reason}
-    end.
-
-app_version() ->
-    case application:get_key(wfdaemon, vsn) of
-        {ok, Vsn} -> Vsn;
-        undefined ->
-            case application:get_key(wfcli, vsn) of
-                {ok, Vsn} -> Vsn;
-                undefined -> undefined
-            end
     end.
 
 safe_status(Module) ->
