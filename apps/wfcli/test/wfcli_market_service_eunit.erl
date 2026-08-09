@@ -41,6 +41,20 @@ market_worker_snapshots_are_action_scoped_test() ->
     ?assert(maps:is_key(relics, Relic)),
     ?assertNot(maps:is_key(unrelated, Relic)).
 
+market_root_slug_uses_manifest_set_tag_test() ->
+    Root = #{<<"id">> => <<"set">>, <<"slug">> => <<"saryn_prime_set">>,
+             <<"tags">> => [<<"prime">>, <<"set">>]},
+    Part = #{<<"id">> => <<"part">>,
+             <<"slug">> => <<"saryn_prime_chassis_blueprint">>,
+             <<"tags">> => [<<"prime">>, <<"component">>]},
+    Snapshot = #{items => [Root, Part],
+                 details => #{<<"saryn_prime_chassis_blueprint">> =>
+                     #{data => #{<<"setParts">> => [<<"set">>, <<"part">>]}}}},
+    ?assertEqual(
+       [<<"saryn_prime_set">>],
+       wfcli_market_service:root_slugs(
+         [<<"saryn_prime_chassis_blueprint">>], Snapshot)).
+
 market_service_test_() ->
     {setup, fun setup/0, fun cleanup/1,
      fun(State) -> fun() -> exercise(State) end end}.

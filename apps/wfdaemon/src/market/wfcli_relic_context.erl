@@ -3,18 +3,23 @@
 %%%-------------------------------------------------------------------
 -module(wfcli_relic_context).
 
--export([build/6]).
+-export([build/7]).
 
--spec build([binary()], [map()], map(), map(), map(), map()) -> map().
-build(Slugs, Items, Details, Quotes, PlayerSnapshot, Relics) ->
+-spec build([binary()], [map()], map(), map(), map(), map(), [map()]) -> map().
+build(Slugs, Items, Details, Quotes, PlayerSnapshot, Relics, Catalog) ->
     ById = maps:from_list([{maps:get(<<"id">>, Item), Item}
                            || Item <- Items, maps:is_key(<<"id">>, Item)]),
     BySlug = maps:from_list([{maps:get(<<"slug">>, Item), Item}
                              || Item <- Items, maps:is_key(<<"slug">>, Item)]),
-    Owned = owned_counts(PlayerSnapshot),
+    CatalogByRef = maps:from_list([{maps:get(<<"uniqueName">>, Item), Item}
+                                   || Item <- Catalog,
+                                      maps:is_key(<<"uniqueName">>, Item)]),
+    Player = player_index(PlayerSnapshot),
     Available = available_reward_slugs(Relics),
-    Contexts = [context(Slug, BySlug, ById, Details, Quotes, Owned, Available)
+    Contexts = [context(Slug, BySlug, ById, Details, Quotes,
+                        Player, CatalogByRef, Available)
                 || Slug <- Slugs],
+    Owned = maps:get(owned, Player),
     Account = maps:filter(fun(_Key, Value) -> Value =/= undefined end, #{
           <<"platinum">> => profile_value(PlayerSnapshot, <<"premium_credits">>),
           <<"ducats">> => maps:get(
@@ -22,26 +27,32 @@ build(Slugs, Items, Details, Quotes, PlayerSnapshot, Relics) ->
       }),
     #{<<"items">> => Contexts, <<"account">> => Account}.
 
-context(Slug, BySlug, ById, Details, Quotes, Owned, Available) ->
-    Item = maps:get(Slug, BySlug, #{}),
-    Detail = maps:get(data, maps:get(Slug, Details, #{}), #{}),
+context(Slug, BySlug, ById, Details, Quotes, Player, CatalogByRef, Available) ->
+    Detail = detail(Slug, Details),
+    Item = maps:merge(maps:get(Slug, BySlug, #{}), Detail),
     PartIds = maps:get(<<"setParts">>, Detail, []),
-    Parts0 = [maps:get(Id, ById) || Id <- PartIds, maps:is_key(Id, ById)],
-    Parts = [part(Part, Owned) || Part <- Parts0],
+    Parts0 = [with_detail(maps:get(Id, ById), Details)
+              || Id <- PartIds, maps:is_key(Id, ById)],
+    RootItem = first_root_item(Parts0),
+    RootRef0 = maps:get(<<"gameRef">>, RootItem, undefined),
+    RootCatalog = maps:get(RootRef0, CatalogByRef, #{}),
+    Owned = maps:get(owned, Player),
+    Parts = [part(Part, Owned, RootCatalog) || Part <- Parts0],
     Root = first_root(Parts),
-    GameRef = maps:get(<<"game_ref">>, part(Item, Owned), undefined),
-    Required = positive(maps:get(<<"quantityInSet">>, Item, 1), 1),
+    Current = part(Item, Owned, RootCatalog),
+    GameRef = maps:get(<<"game_ref">>, Current, undefined),
+    Required = maps:get(<<"required">>, Current, 1),
     Count = maps:get(GameRef, Owned, 0),
     RootRef = maps:get(<<"game_ref">>, Root, undefined),
     Quote = maps:get(Slug, Quotes, #{}),
     RootSlug = maps:get(<<"slug">>, Root, undefined),
     SetQuote = maps:get(RootSlug, Quotes, #{}),
-    Base = (part(Item, Owned))#{
+    Base = Current#{
         <<"count_owned">> => Count,
         <<"total_to_own">> => Required,
-        <<"crafted">> => maps:get(RootRef, Owned, 0) > 0,
+        <<"crafted">> => crafted(RootRef, RootCatalog, Player),
         <<"set_complete">> => set_complete(Parts),
-        <<"vaulted">> => vaulted(Item, Parts, Available),
+        <<"vaulted">> => vaulted(Item, Parts, RootCatalog, Available),
         <<"parts">> => Parts,
         <<"lowest_sell">> => maps:get(lowest_sell, Quote, undefined),
         <<"highest_buy">> => maps:get(highest_buy, Quote, undefined),
@@ -50,17 +61,18 @@ context(Slug, BySlug, ById, Details, Quotes, Owned, Available) ->
     },
     maps:filter(fun(_Key, Value) -> Value =/= undefined end, Base).
 
-part(Item, Owned) when is_map(Item) ->
+part(Item, Owned, RootCatalog) when is_map(Item) ->
     Slug = maps:get(<<"slug">>, Item, undefined),
     GameRef = maps:get(<<"gameRef">>, Item, undefined),
-    Required = positive(maps:get(<<"quantityInSet">>, Item, 1), 1),
+    Required = positive(maps:get(<<"quantityInSet">>, Item,
+                                 catalog_required(GameRef, RootCatalog)), 1),
     Base = #{
         <<"id">> => maps:get(<<"id">>, Item, undefined),
         <<"slug">> => Slug,
         <<"name">> => item_name(Item),
         <<"game_ref">> => GameRef,
         <<"ducats">> => maps:get(<<"ducats">>, Item, undefined),
-        <<"set_root">> => maps:get(<<"setRoot">>, Item, false),
+        <<"set_root">> => is_set_root(Item),
         <<"required">> => Required,
         <<"owned">> => maps:get(GameRef, Owned, 0),
         <<"asset">> => asset(Slug, Item)
@@ -93,8 +105,16 @@ available_reward_slugs(Relics) ->
       #{},
       Relics).
 
-vaulted(_Item, _Parts, undefined) -> false;
-vaulted(Item, Parts, Available) ->
+vaulted(Item, Parts, RootCatalog, Available) ->
+    case maps:find(<<"vaulted">>, RootCatalog) of
+        {ok, Value} when is_boolean(Value) ->
+            lists:member(<<"prime">>, maps:get(<<"tags">>, Item, [])) andalso
+            Value;
+        _ -> vaulted_from_relics(Item, Parts, Available)
+    end.
+
+vaulted_from_relics(_Item, _Parts, undefined) -> false;
+vaulted_from_relics(Item, Parts, Available) ->
     Prime = lists:member(<<"prime">>, maps:get(<<"tags">>, Item, [])),
     CraftParts = [Part || Part <- Parts, not maps:get(<<"set_root">>, Part, false)],
     Prime andalso CraftParts =/= [] andalso
@@ -113,6 +133,43 @@ first_root(Parts) ->
         [] -> #{}
     end.
 
+first_root_item(Parts) ->
+    case [Part || Part <- Parts, is_set_root(Part)] of
+        [Root | _] -> Root;
+        [] -> #{}
+    end.
+
+is_set_root(Item) ->
+    maps:get(<<"setRoot">>, Item, false) =:= true orelse
+    lists:member(<<"set">>, maps:get(<<"tags">>, Item, [])).
+
+detail(Slug, Details) ->
+    maps:get(data, maps:get(Slug, Details, #{}), #{}).
+
+with_detail(Item, Details) ->
+    maps:merge(Item, detail(maps:get(<<"slug">>, Item, undefined), Details)).
+
+catalog_required(undefined, _RootCatalog) -> 1;
+catalog_required(GameRef, RootCatalog) ->
+    Key = recipe_key(GameRef),
+    Counts = [positive(maps:get(<<"itemCount">>, Component, 1), 1)
+              || Component <- maps:get(<<"components">>, RootCatalog, []),
+                 recipe_key(maps:get(<<"uniqueName">>, Component, <<>>)) =:= Key],
+    case Counts of [] -> 1; _ -> lists:sum(Counts) end.
+
+crafted(undefined, _RootCatalog, _Player) -> false;
+crafted(RootRef, RootCatalog, Player) ->
+    Owned = maps:get(owned, Player),
+    Mastery = maps:get(mastery, Player),
+    Pending = maps:get(pending, Player),
+    RecipeRefs = [maps:get(<<"uniqueName">>, Component, undefined)
+                  || Component <- maps:get(<<"components">>, RootCatalog, [])],
+    maps:get(RootRef, Owned, 0) > 0 orelse
+    (map_size(RootCatalog) > 0 andalso
+     wfcli_player_mastery:mastered(
+       RootCatalog, maps:get(RootRef, Mastery, 0))) orelse
+    lists:any(fun(Ref) -> maps:is_key(recipe_key(Ref), Pending) end, RecipeRefs).
+
 set_complete([]) -> false;
 set_complete(Parts) ->
     CraftParts = [Part || Part <- Parts, not maps:get(<<"set_root">>, Part, false)],
@@ -121,12 +178,21 @@ set_complete(Parts) ->
         maps:get(<<"owned">>, Part, 0) >= maps:get(<<"required">>, Part, 1)
     end, CraftParts).
 
-owned_counts(PlayerSnapshot) ->
+player_index(PlayerSnapshot) ->
     Data = maps:get(data, PlayerSnapshot, #{}),
     Observation = maps:get(<<"inventory">>, Data, #{}),
     Index = maps:get(<<"index">>, Observation, #{}),
     Entries = maps:get(<<"equipment">>, Index, []) ++ maps:get(<<"stacks">>, Index, []),
-    lists:foldl(fun owned_entry/2, #{}, Entries).
+    #{owned => lists:foldl(fun owned_entry/2, #{}, Entries),
+      mastery => maps:from_list(
+        [{maps:get(<<"item_type">>, Entry), maps:get(<<"xp">>, Entry, 0)}
+         || Entry <- maps:get(<<"mastery">>, Index, []), is_map(Entry),
+            is_binary(maps:get(<<"item_type">>, Entry, undefined)),
+            is_integer(maps:get(<<"xp">>, Entry, undefined))]),
+      pending => maps:from_list(
+        [{recipe_key(maps:get(<<"item_type">>, Entry)), true}
+         || Entry <- maps:get(<<"pending_recipes">>, Index, []), is_map(Entry),
+            is_binary(maps:get(<<"item_type">>, Entry, undefined))])}.
 
 owned_entry(#{<<"item_type">> := ItemType, <<"count">> := Count}, Acc)
   when is_binary(ItemType), is_integer(Count), Count > 0 ->
@@ -144,3 +210,16 @@ item_name(Item) ->
 
 positive(Value, _Default) when is_integer(Value), Value > 0 -> Value;
 positive(_Value, Default) -> Default.
+
+recipe_key(undefined) -> undefined;
+recipe_key(Value) when is_binary(Value) ->
+    strip_suffix(strip_suffix(Value, <<"Blueprint">>), <<"Component">>).
+
+strip_suffix(Value, Suffix) ->
+    ValueSize = byte_size(Value),
+    SuffixSize = byte_size(Suffix),
+    case ValueSize >= SuffixSize andalso
+         binary:part(Value, ValueSize - SuffixSize, SuffixSize) =:= Suffix of
+        true -> binary:part(Value, 0, ValueSize - SuffixSize);
+        false -> Value
+    end.

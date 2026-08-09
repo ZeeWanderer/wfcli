@@ -10,7 +10,7 @@
          terminate/2, code_change/3]).
 
 -ifdef(TEST).
--export([worker_snapshot/2]).
+-export([root_slugs/2, worker_snapshot/2]).
 -endif.
 
 -define(SERVER, ?MODULE).
@@ -408,7 +408,8 @@ relic_context(Request, SubmittedAt, Snapshot0, Next0) ->
                 maps:get(details, Snapshot3, #{}),
                 maps:get(quotes, Snapshot3, #{}),
                 player_snapshot(),
-                maps:get(relics, Snapshot3, #{})),
+                maps:get(relics, Snapshot3, #{}),
+                item_catalog()),
             {{ok, Reply#{<<"detail_errors">> => DetailErrors,
                          <<"quote_errors">> => QuoteErrors}},
              Snapshot3, Next2}
@@ -682,11 +683,21 @@ root_slugs(Slugs, Snapshot) ->
           Roots = [maps:get(<<"slug">>, Item)
                    || Id <- PartIds,
                       Item <- [maps:get(Id, ById, #{})],
-                      maps:get(<<"setRoot">>, Item, false),
+                      market_set_root(Item),
                       maps:is_key(<<"slug">>, Item)],
           case Roots of [Root | _] -> {true, Root}; [] -> false end
       end,
       Slugs).
+
+market_set_root(Item) ->
+    maps:get(<<"setRoot">>, Item, false) =:= true orelse
+    lists:member(<<"set">>, maps:get(<<"tags">>, Item, [])).
+
+item_catalog() ->
+    case wfcli_item_catalog:load() of
+        {ok, Catalog, _Meta} -> Catalog;
+        {error, _Reason} -> []
+    end.
 
 player_snapshot() ->
     case whereis(wfcli_player_service) of

@@ -410,9 +410,10 @@ mastery_item(Item, Owned, Mastery, Pending) ->
     Type = maps:get(<<"type">>, Item, <<>>),
     Name = maps:get(<<"name">>, Item, fallback_name(Unique)),
     Xp = maps:get(Unique, Mastery, maps:get(xp, maps:get(Unique, Owned, #{}), 0)),
-    MaxRank = max_rank(Name),
-    Rank = mastery_rank(Xp, Category, Type, MaxRank),
-    MasteryPerRank = mastery_per_rank(Category, Type),
+    Progress = wfcli_player_mastery:progress(Item, Xp),
+    MaxRank = maps:get(max_rank, Progress),
+    Rank = maps:get(rank, Progress),
+    MasteryPerRank = maps:get(mastery_per_rank, Progress),
     Components = mastery_components(Item, Owned),
     Missing = [Component || Component <- Components,
                             maps:get(<<"owned">>, Component) <
@@ -687,7 +688,8 @@ extra_mastery_xp(_Records, _Items) -> 0.
 extra_mastery_record_xp(Record) ->
     Unique = maps:get(<<"item_type">>, Record, <<>>),
     PerRank = case mastery_heavy_item(Unique) of true -> 200; false -> 100 end,
-    rank_from_xp(number(maps:get(<<"xp">>, Record, 0)), PerRank, 30) * PerRank.
+    wfcli_player_mastery:rank(
+       number(maps:get(<<"xp">>, Record, 0)), PerRank, 30) * PerRank.
 
 mastery_heavy_item(Unique) when is_binary(Unique) ->
     binary:match(Unique, <<"/Powersuits/">>) =/= nomatch orelse
@@ -832,27 +834,6 @@ foundry_group(Category, _Type) when Category =:= <<"Pets">>;
                                           Category =:= <<"Sentinels">> -> <<"companion">>;
 foundry_group(<<"Misc">>, _Type) -> <<"modular">>;
 foundry_group(_Category, _Type) -> <<"other">>.
-
-mastery_rank(Xp, Category, Type, MaxRank) ->
-    rank_from_xp(Xp, mastery_per_rank(Category, Type), MaxRank).
-
-rank_from_xp(Xp, PerRank, MaxRank) ->
-    Divisor = case PerRank of 200 -> 1000; 100 -> 500 end,
-    min(MaxRank, trunc(math:sqrt(max(0, Xp) / Divisor))).
-
-mastery_per_rank(Category, Type) when Category =:= <<"Warframes">>;
-                                      Category =:= <<"Archwing">>;
-                                      Category =:= <<"Pets">>;
-                                      Category =:= <<"Sentinels">>;
-                                      Type =:= <<"K-Drive Component">> -> 200;
-mastery_per_rank(_Category, _Type) -> 100.
-
-max_rank(Name) ->
-    case lists:any(fun(Prefix) -> binary:match(Name, Prefix) =/= nomatch end,
-                   [<<"Kuva ">>, <<"Tenet ">>, <<"Coda ">>, <<"Paracesis">>]) of
-        true -> 40;
-        false -> 30
-    end.
 
 mastery_before(A, B) ->
     {maps:get(<<"mastered">>, A), acquisition_unknown(A),
