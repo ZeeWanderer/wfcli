@@ -5,6 +5,7 @@ CARGO_TARGET_DIR ?= $(CURDIR)/_build/cargo
 SCCACHE ?= $(shell command -v sccache 2>/dev/null)
 SCCACHE_BASEDIRS ?= $(CURDIR)
 SCCACHE_DIR ?= $(CURDIR)/.cache/sccache
+SCCACHE_SERVER_UDS ?= $(CURDIR)/.cache/sccache.sock
 LLVM_ROOT ?= $(shell brew --prefix llvm 2>/dev/null)
 NINJA ?= $(shell command -v ninja 2>/dev/null)
 
@@ -31,6 +32,7 @@ export REBAR_CACHE_DIR
 export CARGO_TARGET_DIR
 export SCCACHE_BASEDIRS
 export SCCACHE_DIR
+export SCCACHE_SERVER_UDS
 export CC CXX
 
 ifneq ($(strip $(SCCACHE)),)
@@ -51,6 +53,7 @@ build: dev prod native-compile-commands
 
 sccache-start:
 ifneq ($(strip $(SCCACHE)),)
+	@mkdir -p "$(dir $(SCCACHE_SERVER_UDS))"
 	@if ! $(SCCACHE) --start-server >/dev/null 2>&1; then \
 		$(SCCACHE) --show-stats >/dev/null; \
 	fi
