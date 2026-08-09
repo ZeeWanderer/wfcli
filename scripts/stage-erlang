@@ -25,8 +25,10 @@ if [[ ! -x "$profile_dir/bin/wfcli" || ! -x "$release/bin/wfdaemon" ]]; then
 fi
 
 mkdir -p "$stage/bin" "$stage/libexec"
-rm -rf "$stage/libexec/wfdaemon"
-install -m 0755 "$profile_dir/bin/wfcli" "$stage/bin/wfcli"
+rm -rf "$stage/libexec/wfdaemon" "$stage/libexec/wfcli"
+mkdir -p "$stage/libexec/wfcli"
+install -m 0755 "$profile_dir/bin/wfcli" "$stage/libexec/wfcli/wfcli.escript"
+install -m 0755 "$root/scripts/wfcli-wrapper" "$stage/bin/wfcli"
 cp -a "$release" "$stage/libexec/wfdaemon"
 install -m 0755 "$root/scripts/wfdaemon-wrapper" "$stage/bin/wfdaemon"
 printf '%s\n' "$mode" > "$stage/BUILD_FLAVOR"

@@ -585,28 +585,9 @@ fn send_snapshot(message: &Value, ui: &mpsc::Sender<UiEvent>) {
 
 fn ensure_daemon() {
     let command = wfcli_command();
-    let mut extra = Vec::new();
-    if let Some(root) = std::env::var_os("ERL_ROOTDIR") {
-        extra.push(PathBuf::from(root).join("bin/escript"));
-    }
-    extra.extend([
-        PathBuf::from("/home/linuxbrew/.linuxbrew/bin/escript"),
-        PathBuf::from("/usr/local/bin/escript"),
-        PathBuf::from("/usr/bin/escript"),
-    ]);
-    let escript = crate::external::resolve(
-        "WFCOMPANION_ESCRIPT",
-        "escript",
-        option_env!("WFCOMPANION_BUILD_ESCRIPT"),
-        &extra,
-    );
-    let invocation = format!(
-        "{} {}",
-        PathBuf::from(&escript).display(),
-        command.display()
-    );
-    let mut process = ProcessCommand::new(&escript);
-    process.arg(&command).args(["daemon", "ensure"]);
+    let invocation = format!("{} daemon ensure", command.display());
+    let mut process = ProcessCommand::new(&command);
+    process.args(["daemon", "ensure"]);
     sanitize_native_child(&mut process);
     match process
         .stdin(Stdio::null())
