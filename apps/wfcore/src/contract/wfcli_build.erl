@@ -92,11 +92,17 @@ brew_update_root(Root) ->
     end.
 
 homebrew_install_from_path(Path) ->
-    Resolved = resolve_link(filename:absname(Path), 8),
-    case split_at_cellar(filename:split(Resolved), []) of
-        {ok, _Prefix, "wfcli"} -> true;
-        _ -> false
-    end.
+    Absolute = filename:absname(Path),
+    homebrew_wfcli_path(Absolute) orelse
+        homebrew_wfcli_path(resolve_link(Absolute, 8)).
+
+homebrew_wfcli_path(Path) ->
+    homebrew_wfcli_parts(filename:split(Path)).
+
+homebrew_wfcli_parts(["Cellar", "wfcli", _Version | _Rest]) -> true;
+homebrew_wfcli_parts(["opt", "wfcli" | _Rest]) -> true;
+homebrew_wfcli_parts([_Part | Rest]) -> homebrew_wfcli_parts(Rest);
+homebrew_wfcli_parts([]) -> false.
 
 absolute_path(Path) ->
     case filename:pathtype(Path) of
