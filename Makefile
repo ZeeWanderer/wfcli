@@ -2,9 +2,19 @@ REBAR3 ?= rebar3
 CARGO ?= cargo
 REBAR_CACHE_DIR ?= $(CURDIR)/.cache/rebar3
 CARGO_TARGET_DIR ?= $(CURDIR)/_build/cargo
-CCACHE_DIR ?= $(CURDIR)/.cache/ccache
+SCCACHE ?= $(shell command -v sccache 2>/dev/null)
+SCCACHE_BASEDIRS ?= $(CURDIR)
+SCCACHE_DIR ?= $(CURDIR)/.cache/sccache
 LLVM_ROOT ?= $(shell brew --prefix llvm 2>/dev/null)
 NINJA ?= $(shell command -v ninja 2>/dev/null)
+
+ifeq ($(origin CC),default)
+CC := $(if $(LLVM_ROOT),$(LLVM_ROOT)/bin/clang,clang)
+endif
+ifeq ($(origin CXX),default)
+CXX := $(if $(LLVM_ROOT),$(LLVM_ROOT)/bin/clang++,clang++)
+endif
+
 COMPANION_MANIFEST := apps/wfcompanion/Cargo.toml
 VERSION := $(strip $(shell cat VERSION))
 PLATFORM := $(shell uname -s | tr '[:upper:]' '[:lower:]')-$(shell uname -m)
@@ -19,9 +29,18 @@ ICON_OPTICS_CONFIG ?= $(CURDIR)/tools/icon-optics/foundry.json
 
 export REBAR_CACHE_DIR
 export CARGO_TARGET_DIR
-export CCACHE_DIR
+export SCCACHE_BASEDIRS
+export SCCACHE_DIR
+export CC CXX
 
-.PHONY: all build dev prod erlang cli daemon mcp companion gui gui-dev gui-prod \
+ifneq ($(strip $(SCCACHE)),)
+RUSTC_WRAPPER ?= $(SCCACHE)
+CMAKE_C_COMPILER_LAUNCHER ?= $(SCCACHE)
+CMAKE_CXX_COMPILER_LAUNCHER ?= $(SCCACHE)
+export RUSTC_WRAPPER CMAKE_C_COMPILER_LAUNCHER CMAKE_CXX_COMPILER_LAUNCHER
+endif
+
+.PHONY: all build dev prod erlang cli daemon mcp companion gui gui-dev gui-prod sccache-start \
 	gui-configure-dev gui-configure-prod gui-reconfigure gui-reconfigure-dev gui-reconfigure-prod \
 	dev-erlang prod-erlang dev-companion prod-companion links \
 	debug-bridge native-bridges previews icon-optics aleca-layout-setup fix-executables \
@@ -29,6 +48,13 @@ export CCACHE_DIR
 
 all: dev
 build: dev prod native-compile-commands
+
+sccache-start:
+ifneq ($(strip $(SCCACHE)),)
+	@if ! $(SCCACHE) --start-server >/dev/null 2>&1; then \
+		$(SCCACHE) --show-stats >/dev/null; \
+	fi
+endif
 
 dev: dev-erlang dev-companion gui-dev links
 
@@ -40,7 +66,7 @@ companion: dev-companion
 
 gui: gui-dev
 
-gui-configure-dev:
+gui-configure-dev: sccache-start
 	test -n "$(LLVM_ROOT)"
 	test -n "$(NINJA)"
 	LLVM_ROOT="$(LLVM_ROOT)" cmake --preset gui-dev --log-level=WARNING -DCMAKE_MAKE_PROGRAM="$(NINJA)"
@@ -50,7 +76,7 @@ gui-dev: gui-configure-dev
 	rm -rf dev/lib dev/Qt6
 	LLVM_ROOT="$(LLVM_ROOT)" cmake --install _build/cmake/gui-dev
 
-gui-configure-prod:
+gui-configure-prod: sccache-start
 	test -n "$(LLVM_ROOT)"
 	test -n "$(NINJA)"
 	LLVM_ROOT="$(LLVM_ROOT)" cmake --preset gui-prod --log-level=WARNING -DCMAKE_MAKE_PROGRAM="$(NINJA)"
@@ -62,12 +88,12 @@ gui-prod: gui-configure-prod
 
 gui-reconfigure: gui-reconfigure-dev gui-reconfigure-prod
 
-gui-reconfigure-dev:
+gui-reconfigure-dev: sccache-start
 	test -n "$(LLVM_ROOT)"
 	test -n "$(NINJA)"
 	LLVM_ROOT="$(LLVM_ROOT)" cmake --fresh --preset gui-dev --log-level=WARNING -DCMAKE_MAKE_PROGRAM="$(NINJA)"
 
-gui-reconfigure-prod:
+gui-reconfigure-prod: sccache-start
 	test -n "$(LLVM_ROOT)"
 	test -n "$(NINJA)"
 	LLVM_ROOT="$(LLVM_ROOT)" cmake --fresh --preset gui-prod --log-level=WARNING -DCMAKE_MAKE_PROGRAM="$(NINJA)"
@@ -84,10 +110,10 @@ prod-erlang:
 	$(REBAR3) as prod release
 	./scripts/stage-erlang prod
 
-dev-companion:
+dev-companion: sccache-start
 	./scripts/build-companion dev
 
-prod-companion:
+prod-companion: sccache-start
 	./scripts/build-companion prod
 
 links:
@@ -100,12 +126,12 @@ links:
 	ln -sfn prod/bin/wfcompanion wfcompanion
 	ln -sfn prod/bin/wfgui wfgui
 
-debug-bridge:
+debug-bridge: sccache-start
 	./scripts/build-debug-bridge
 
 native-bridges: debug-bridge
 
-native-compile-commands:
+native-compile-commands: sccache-start
 	./scripts/native-compile-commands
 
 previews: $(PREVIEW_DEPS)

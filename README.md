@@ -44,7 +44,7 @@ Required toolchains:
 | Desktop GUI | LLVM with libc++, Ninja, vcpkg, Autoconf, Autoconf Archive, Automake, and Libtool |
 
 `wfcompanion` runtime integration requires KDE Plasma on Wayland, KScreen, and Tesseract 5 with
-English language data. `ccache` is optional. FFmpeg with VP9 support is used for animated overlay
+English language data. `sccache` is optional. FFmpeg with VP9 support is used for animated overlay
 previews, and `zip` is used for release archives.
 
 Initialize dependencies and build development and production trees:

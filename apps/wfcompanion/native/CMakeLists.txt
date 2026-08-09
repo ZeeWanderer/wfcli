@@ -1,5 +1,16 @@
 cmake_minimum_required(VERSION 3.24 FATAL_ERROR)
 
+find_program(WFCOMPANION_SCCACHE NAMES sccache)
+if(WFCOMPANION_SCCACHE)
+  execute_process(
+    COMMAND "${WFCOMPANION_SCCACHE}" --start-server
+    OUTPUT_QUIET
+    ERROR_QUIET
+  )
+  set(CMAKE_C_COMPILER_LAUNCHER "${WFCOMPANION_SCCACHE}" CACHE FILEPATH "" FORCE)
+  set(CMAKE_CXX_COMPILER_LAUNCHER "${WFCOMPANION_SCCACHE}" CACHE FILEPATH "" FORCE)
+endif()
+
 project(wfcompanion_native LANGUAGES C CXX)
 
 set(BLEND2D_DIR "" CACHE PATH "Blend2D source directory")

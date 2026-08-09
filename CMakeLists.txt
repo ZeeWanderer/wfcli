@@ -17,7 +17,20 @@ if(NOT WFCLI_LOCAL_PROTOCOL)
   message(FATAL_ERROR "Could not read wfdaemon local protocol version")
 endif()
 
+find_program(WFCLI_SCCACHE NAMES sccache)
+if(WFCLI_SCCACHE)
+  execute_process(
+    COMMAND "${WFCLI_SCCACHE}" --start-server
+    OUTPUT_QUIET
+    ERROR_QUIET
+  )
+endif()
+
 project(wfcli VERSION "${WFCLI_VERSION}" LANGUAGES CXX)
+
+if(WFCLI_LLVM_ROOT)
+  list(APPEND CMAKE_BUILD_RPATH "${WFCLI_LLVM_ROOT}/lib")
+endif()
 
 include(CTest)
 add_subdirectory(apps/wfgui)

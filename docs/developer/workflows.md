@@ -30,8 +30,8 @@ make gui
 
 `make gui` derives `LLVM_ROOT` from Homebrew; override it to select another complete LLVM prefix.
 Host tools and target libraries share one triplet. The build environment supplies LLVM's runtime
-path while generated tools execute. vcpkg archives and ccache remain under `.cache/`; compiler
-output remains under `_build/`.
+path while generated tools execute. vcpkg archives and sccache data remain under `.cache/`;
+compiler output remains under `_build/`.
 
 GUI prerequisites include CMake, Ninja, vcpkg, Autoconf, Autoconf Archive, Automake, and Libtool.
 VS Code CMake Tools uses the tracked presets and existing `_build/cmake/` trees.
