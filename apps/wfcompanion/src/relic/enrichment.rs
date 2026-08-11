@@ -1,11 +1,10 @@
 use std::collections::BTreeMap;
-use std::sync::mpsc;
 
 use serde::{Deserialize, Serialize};
 
 use super::{
-    Account, Asset, Candidate, Outbound, REWARD_IDENTIFICATION_FAILED, Reward, Rewards, SetPart,
-    assets,
+    Account, Asset, Candidate, OutboundSender, REWARD_IDENTIFICATION_FAILED, Reward, Rewards,
+    SetPart, assets,
 };
 
 #[derive(Clone, Debug)]
@@ -82,7 +81,7 @@ pub(super) struct AssetSpec {
 }
 
 pub(super) fn resolve_reward_candidates(
-    daemon: &mpsc::Sender<Outbound>,
+    daemon: &OutboundSender,
     candidates: Vec<Candidate>,
 ) -> Result<Resolution, String> {
     let mut positions = Vec::new();
@@ -168,7 +167,7 @@ pub(super) fn resolve_reward_candidates(
 }
 
 pub(super) fn reward_context(
-    daemon: &mpsc::Sender<Outbound>,
+    daemon: &OutboundSender,
     rewards: &[Reward],
 ) -> Result<Option<ContextReply>, String> {
     let slugs = rewards
@@ -242,7 +241,7 @@ pub(super) fn contextual_rewards(
 }
 
 pub(super) fn resolve_assets(
-    daemon: &mpsc::Sender<Outbound>,
+    daemon: &OutboundSender,
     context: &ContextReply,
 ) -> BTreeMap<String, Asset> {
     let specs = context

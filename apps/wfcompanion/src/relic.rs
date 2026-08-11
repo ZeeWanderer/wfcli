@@ -7,7 +7,7 @@ use std::time::{Duration, Instant};
 use crate::UiEvent;
 use crate::assets;
 use crate::capture;
-use crate::daemon::Outbound;
+use crate::daemon::OutboundSender;
 use crate::incident;
 use image::DynamicImage;
 
@@ -58,10 +58,7 @@ pub(crate) fn suggestion_fixture() -> Result<Scene, String> {
         .map_err(|error| format!("invalid relic suggestion fixture: {error}"))
 }
 
-pub(crate) fn reward_preview_scene(
-    path: &Path,
-    daemon: &mpsc::Sender<Outbound>,
-) -> Result<Scene, String> {
+pub(crate) fn reward_preview_scene(path: &Path, daemon: &OutboundSender) -> Result<Scene, String> {
     let image =
         image::open(path).map_err(|error| format!("could not read {}: {error}", path.display()))?;
     let rewards = scan_rewards(&image, daemon)?;
@@ -79,7 +76,7 @@ pub(crate) fn reward_preview_scene(
 
 pub(crate) fn suggestion_preview_scene(
     era: String,
-    daemon: &mpsc::Sender<Outbound>,
+    daemon: &OutboundSender,
 ) -> Result<Scene, String> {
     crate::daemon::relic_recommendations(daemon, era, true)
         .and_then(|response| parse_suggestions(&response))
@@ -152,7 +149,7 @@ struct Candidate {
 
 pub(crate) fn spawn(
     triggers: mpsc::Receiver<Trigger>,
-    daemon: mpsc::Sender<Outbound>,
+    daemon: OutboundSender,
     ui: mpsc::Sender<UiEvent>,
     stopping: Arc<AtomicBool>,
 ) {
@@ -431,7 +428,7 @@ fn ignore_suggestion_close(after_reward: bool, elapsed: Duration) -> bool {
 }
 
 fn show_suggestions(
-    daemon: &mpsc::Sender<Outbound>,
+    daemon: &OutboundSender,
     ui: &mpsc::Sender<UiEvent>,
     fallback_era: Option<&str>,
 ) -> Result<String, String> {
@@ -483,7 +480,7 @@ fn timed_suggestion_era() -> (Result<String, String>, u128, u128) {
 }
 
 fn spawn_suggestion_prices(
-    daemon: mpsc::Sender<Outbound>,
+    daemon: OutboundSender,
     ui: mpsc::Sender<UiEvent>,
     stopping: Arc<AtomicBool>,
     current_generation: Arc<AtomicU64>,
@@ -533,10 +530,7 @@ fn priced_suggestion_count(suggestions: &Suggestions) -> usize {
         .count()
 }
 
-fn scan_rewards(
-    image: &DynamicImage,
-    daemon: &mpsc::Sender<Outbound>,
-) -> Result<Vec<Reward>, String> {
+fn scan_rewards(image: &DynamicImage, daemon: &OutboundSender) -> Result<Vec<Reward>, String> {
     let mut detected = Vec::new();
     for geometry in [Geometry::Normal, Geometry::Legacy] {
         if let Some(count) = detect_player_count(image, geometry) {

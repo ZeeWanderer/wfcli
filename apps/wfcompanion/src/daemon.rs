@@ -1,25 +1,59 @@
 use std::collections::{BTreeMap, VecDeque};
-use std::io::{self, BufRead, BufReader, Write};
-use std::os::unix::net::UnixStream;
+use std::io;
 use std::path::PathBuf;
 use std::process::{Command as ProcessCommand, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, mpsc};
+use std::sync::{Arc, mpsc as std_mpsc};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use serde::Serialize;
 use serde_json::Value;
+use tokio::io::{
+    AsyncBufRead, AsyncBufReadExt, AsyncRead, AsyncWrite, AsyncWriteExt, BufReader, Lines,
+};
+use tokio::net::UnixStream;
+use tokio::sync::mpsc;
+use tokio::time::{self, MissedTickBehavior};
 
 use crate::{UiEvent, incident};
 
 const PROTOCOL_VERSION: u32 = 9;
 const CLIENT_VERSION: &str = env!("WFCLI_VERSION");
 const RECONNECT_INTERVAL: Duration = Duration::from_secs(2);
-const SOCKET_READ_TIMEOUT: Duration = Duration::from_millis(200);
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(2);
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(2);
+const WRITE_TIMEOUT: Duration = Duration::from_secs(5);
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 const RELIC_SUGGESTION_LIMIT: u64 = 32;
+const STOP_CHECK_INTERVAL: Duration = Duration::from_secs(1);
+
+pub(crate) type OutboundSender = mpsc::UnboundedSender<Outbound>;
+type OutboundReceiver = mpsc::UnboundedReceiver<Outbound>;
+type ReplySender = std_mpsc::Sender<Result<Value, String>>;
+
+#[derive(Debug)]
+pub(crate) struct RequestReply {
+    sender: ReplySender,
+    deadline: Instant,
+}
+
+impl RequestReply {
+    fn new(sender: ReplySender) -> Self {
+        Self {
+            sender,
+            deadline: Instant::now() + REQUEST_TIMEOUT,
+        }
+    }
+
+    fn expired(&self) -> bool {
+        Instant::now() >= self.deadline
+    }
+
+    fn send(&self, result: Result<Value, String>) {
+        let _ = self.sender.send(result);
+    }
+}
 
 #[derive(Debug, Serialize)]
 #[serde(tag = "op", rename_all = "snake_case")]
@@ -77,26 +111,26 @@ pub(crate) enum Outbound {
     MarketResolve {
         labels: Vec<String>,
         limit: u64,
-        reply: mpsc::Sender<Result<Value, String>>,
+        reply: RequestReply,
     },
     AssetResolve {
         assets: Vec<Value>,
-        reply: mpsc::Sender<Result<Value, String>>,
+        reply: RequestReply,
     },
     RelicContext {
         items: Vec<String>,
-        reply: mpsc::Sender<Result<Value, String>>,
+        reply: RequestReply,
     },
     RelicRecommendations {
         era: String,
         fetch_prices: bool,
         limit: u64,
-        reply: mpsc::Sender<Result<Value, String>>,
+        reply: RequestReply,
     },
 }
 
 pub(crate) fn market_resolve(
-    outbound: &mpsc::Sender<Outbound>,
+    outbound: &OutboundSender,
     labels: Vec<String>,
     limit: u64,
 ) -> Result<Value, String> {
@@ -108,7 +142,7 @@ pub(crate) fn market_resolve(
 }
 
 pub(crate) fn asset_resolve(
-    outbound: &mpsc::Sender<Outbound>,
+    outbound: &OutboundSender,
     assets: Vec<Value>,
 ) -> Result<Value, String> {
     request(outbound, |reply| Outbound::AssetResolve {
@@ -118,7 +152,7 @@ pub(crate) fn asset_resolve(
 }
 
 pub(crate) fn relic_context(
-    outbound: &mpsc::Sender<Outbound>,
+    outbound: &OutboundSender,
     items: Vec<String>,
 ) -> Result<Value, String> {
     request(outbound, |reply| Outbound::RelicContext {
@@ -128,7 +162,7 @@ pub(crate) fn relic_context(
 }
 
 pub(crate) fn relic_recommendations(
-    outbound: &mpsc::Sender<Outbound>,
+    outbound: &OutboundSender,
     era: String,
     fetch_prices: bool,
 ) -> Result<Value, String> {
@@ -141,8 +175,8 @@ pub(crate) fn relic_recommendations(
 }
 
 fn request(
-    outbound: &mpsc::Sender<Outbound>,
-    build: impl Fn(mpsc::Sender<Result<Value, String>>) -> Outbound,
+    outbound: &OutboundSender,
+    build: impl Fn(RequestReply) -> Outbound,
 ) -> Result<Value, String> {
     match request_once(outbound, &build) {
         Err(error) if error == "daemon connection closed" => {
@@ -154,31 +188,44 @@ fn request(
 }
 
 fn request_once(
-    outbound: &mpsc::Sender<Outbound>,
-    build: &impl Fn(mpsc::Sender<Result<Value, String>>) -> Outbound,
+    outbound: &OutboundSender,
+    build: &impl Fn(RequestReply) -> Outbound,
 ) -> Result<Value, String> {
-    let (reply_tx, reply_rx) = mpsc::channel();
+    let (reply_tx, reply_rx) = std_mpsc::channel();
     outbound
-        .send(build(reply_tx))
+        .send(build(RequestReply::new(reply_tx)))
         .map_err(|_| "daemon connection worker stopped".to_owned())?;
-    reply_rx
-        .recv_timeout(REQUEST_TIMEOUT)
-        .map_err(|_| "daemon request timed out".to_owned())?
+    match reply_rx.recv_timeout(REQUEST_TIMEOUT) {
+        Ok(result) => result,
+        Err(std_mpsc::RecvTimeoutError::Timeout) => Err("daemon request timed out".to_owned()),
+        Err(std_mpsc::RecvTimeoutError::Disconnected) => {
+            Err("daemon connection worker stopped".to_owned())
+        }
+    }
 }
 
 pub(crate) fn spawn(
-    ui: mpsc::Sender<UiEvent>,
+    ui: std_mpsc::Sender<UiEvent>,
     stopping: Arc<AtomicBool>,
     mode: &'static str,
-) -> mpsc::Sender<Outbound> {
-    let (outbound_tx, outbound_rx) = mpsc::channel();
-    thread::spawn(move || connection_loop(outbound_rx, ui, stopping, mode));
+) -> OutboundSender {
+    let (outbound_tx, outbound_rx) = mpsc::unbounded_channel();
+    thread::spawn(move || {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_io()
+            .enable_time()
+            .build();
+        match runtime {
+            Ok(runtime) => runtime.block_on(connection_loop(outbound_rx, ui, stopping, mode)),
+            Err(error) => incident::error("daemon.runtime_failed", error.to_string()),
+        }
+    });
     outbound_tx
 }
 
-fn connection_loop(
-    outbound: mpsc::Receiver<Outbound>,
-    ui: mpsc::Sender<UiEvent>,
+async fn connection_loop(
+    mut outbound: OutboundReceiver,
+    ui: std_mpsc::Sender<UiEvent>,
     stopping: Arc<AtomicBool>,
     mode: &'static str,
 ) {
@@ -186,20 +233,29 @@ fn connection_loop(
     let mut start_attempted = false;
     let mut latest = BTreeMap::new();
     let mut queued = VecDeque::new();
-    while !stopping.load(Ordering::Relaxed) {
-        drain_outbound(&outbound, &mut latest, &mut queued);
-        match UnixStream::connect(&path) {
+    loop {
+        if stopping.load(Ordering::Relaxed) {
+            return;
+        }
+        drain_outbound(&mut outbound, &mut latest, &mut queued);
+        let connection = time::timeout(CONNECT_TIMEOUT, UnixStream::connect(&path))
+            .await
+            .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "daemon connect timed out"))
+            .and_then(|result| result);
+        match connection {
             Ok(stream) => {
                 start_attempted = false;
                 if let Err(error) = connection_session(
                     stream,
-                    &outbound,
+                    &mut outbound,
                     &mut latest,
                     &mut queued,
                     &ui,
                     &stopping,
                     mode,
-                ) {
+                )
+                .await
+                {
                     let incompatible = error.kind() == io::ErrorKind::InvalidData;
                     incident::warn("daemon.disconnected", error.to_string());
                     let _ = ui.send(UiEvent::Disconnected(error.to_string()));
@@ -223,43 +279,77 @@ fn connection_loop(
                 }
             }
         }
-        thread::sleep(RECONNECT_INTERVAL);
+        if stopping.load(Ordering::Relaxed)
+            || !wait_for_reconnect(&mut outbound, &mut latest, &mut queued, &stopping).await
+        {
+            return;
+        }
     }
 }
 
-fn connection_session(
-    stream: UnixStream,
-    outbound: &mpsc::Receiver<Outbound>,
+async fn wait_for_reconnect(
+    outbound: &mut OutboundReceiver,
     latest: &mut BTreeMap<&'static str, Value>,
     queued: &mut VecDeque<Outbound>,
-    ui: &mpsc::Sender<UiEvent>,
+    stopping: &AtomicBool,
+) -> bool {
+    let delay = time::sleep(RECONNECT_INTERVAL);
+    tokio::pin!(delay);
+    let mut stop_check = time::interval(STOP_CHECK_INTERVAL);
+    stop_check.set_missed_tick_behavior(MissedTickBehavior::Skip);
+    loop {
+        tokio::select! {
+            _ = &mut delay => return true,
+            message = outbound.recv() => match message {
+                Some(message) => retain_outbound(message, latest, queued),
+                None => return false,
+            },
+            _ = stop_check.tick() => {
+                if stopping.load(Ordering::Relaxed) {
+                    return false;
+                }
+            }
+        }
+    }
+}
+
+async fn connection_session(
+    mut stream: UnixStream,
+    outbound: &mut OutboundReceiver,
+    latest: &mut BTreeMap<&'static str, Value>,
+    queued: &mut VecDeque<Outbound>,
+    ui: &std_mpsc::Sender<UiEvent>,
     stopping: &AtomicBool,
     mode: &'static str,
 ) -> io::Result<()> {
-    stream.set_read_timeout(Some(HANDSHAKE_TIMEOUT))?;
-    let mut writer = stream.try_clone()?;
-    let mut reader = BufReader::new(stream);
-    send_message(
-        &mut writer,
-        &ClientMessage::Hello {
-            id: 1,
-            protocol: PROTOCOL_VERSION,
-            client: "wfcompanion",
-            version: CLIENT_VERSION,
-            pid: std::process::id(),
-            mode,
-            capabilities: &[
-                "player.publish",
-                "dataset.subscribe",
-                "market.resolve",
-                "market.quote",
-                "relic.context",
-                "asset.resolve",
-                "overlay",
-            ],
-        },
-    )?;
-    let hello = read_message(&mut reader)?;
+    let (reader, mut writer) = stream.split();
+    let mut reader = BufReader::new(reader).lines();
+    let hello = time::timeout(HANDSHAKE_TIMEOUT, async {
+        send_message(
+            &mut writer,
+            &ClientMessage::Hello {
+                id: 1,
+                protocol: PROTOCOL_VERSION,
+                client: "wfcompanion",
+                version: CLIENT_VERSION,
+                pid: std::process::id(),
+                mode,
+                capabilities: &[
+                    "player.publish",
+                    "dataset.subscribe",
+                    "market.resolve",
+                    "market.quote",
+                    "relic.context",
+                    "asset.resolve",
+                    "overlay",
+                ],
+            },
+        )
+        .await?;
+        read_message(&mut reader).await
+    })
+    .await
+    .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "daemon handshake timed out"))??;
     validate_hello(&hello)?;
     incident::info(
         "daemon.connected",
@@ -267,33 +357,36 @@ fn connection_session(
     );
     let _ = ui.send(UiEvent::Connected(hello));
 
-    reader
-        .get_ref()
-        .set_read_timeout(Some(SOCKET_READ_TIMEOUT))?;
     send_message(
         &mut writer,
         &ClientMessage::Subscribe {
             id: 2,
             dataset: "player",
         },
-    )?;
+    )
+    .await?;
     send_message(
         &mut writer,
         &ClientMessage::Get {
             id: 3,
             dataset: "daemon",
         },
-    )?;
+    )
+    .await?;
 
     let mut next_id = 10;
     for (&source, data) in latest.iter() {
-        send_publish(&mut writer, next_id, source, data)?;
+        send_publish(&mut writer, next_id, source, data).await?;
         next_id += 1;
     }
 
     let mut pending = BTreeMap::new();
     while let Some(message) = queued.pop_front() {
-        send_outbound(&mut writer, next_id, message, latest, &mut pending)?;
+        if let Err(error) = send_outbound(&mut writer, next_id, message, latest, &mut pending).await
+        {
+            fail_pending(&mut pending, "daemon connection closed");
+            return Err(error);
+        }
         next_id += 1;
     }
 
@@ -306,23 +399,28 @@ fn connection_session(
         stopping,
         next_id,
         pending: &mut pending,
-    });
+    })
+    .await;
     fail_pending(&mut pending, "daemon connection closed");
     result
 }
 
-struct ActiveSession<'a> {
-    writer: &'a mut UnixStream,
-    reader: &'a mut BufReader<UnixStream>,
-    outbound: &'a mpsc::Receiver<Outbound>,
+struct ActiveSession<'a, R, W> {
+    writer: &'a mut W,
+    reader: &'a mut Lines<BufReader<R>>,
+    outbound: &'a mut OutboundReceiver,
     latest: &'a mut BTreeMap<&'static str, Value>,
-    ui: &'a mpsc::Sender<UiEvent>,
+    ui: &'a std_mpsc::Sender<UiEvent>,
     stopping: &'a AtomicBool,
     next_id: u64,
-    pending: &'a mut BTreeMap<u64, mpsc::Sender<Result<Value, String>>>,
+    pending: &'a mut BTreeMap<u64, RequestReply>,
 }
 
-fn active_session(session: ActiveSession<'_>) -> io::Result<()> {
+async fn active_session<R, W>(session: ActiveSession<'_, R, W>) -> io::Result<()>
+where
+    R: AsyncRead + Unpin,
+    W: AsyncWrite + Unpin,
+{
     let ActiveSession {
         writer,
         reader,
@@ -333,64 +431,82 @@ fn active_session(session: ActiveSession<'_>) -> io::Result<()> {
         mut next_id,
         pending,
     } = session;
-    let mut line = String::new();
-    while !stopping.load(Ordering::Relaxed) {
-        while let Ok(message) = outbound.try_recv() {
-            send_outbound(writer, next_id, message, latest, pending)?;
-            next_id += 1;
-        }
-
-        line.clear();
-        match reader.read_line(&mut line) {
-            Ok(0) => {
-                return Err(io::Error::new(
-                    io::ErrorKind::ConnectionReset,
-                    "daemon closed",
-                ));
+    let mut stop_check = time::interval(STOP_CHECK_INTERVAL);
+    stop_check.set_missed_tick_behavior(MissedTickBehavior::Skip);
+    loop {
+        tokio::select! {
+            message = outbound.recv() => match message {
+                Some(message) => {
+                    send_outbound(writer, next_id, message, latest, pending).await?;
+                    next_id += 1;
+                }
+                None => return Ok(()),
+            },
+            line = reader.next_line() => match line? {
+                Some(line) => handle_server_message(&line, ui, pending),
+                None => {
+                    return Err(io::Error::new(
+                        io::ErrorKind::ConnectionReset,
+                        "daemon closed",
+                    ));
+                }
+            },
+            _ = stop_check.tick() => {
+                expire_pending(pending);
+                if stopping.load(Ordering::Relaxed) {
+                    return Ok(());
+                }
             }
-            Ok(_) => handle_server_message(line.trim_end(), ui, pending),
-            Err(error)
-                if error.kind() == io::ErrorKind::WouldBlock
-                    || error.kind() == io::ErrorKind::TimedOut => {}
-            Err(error) => return Err(error),
         }
     }
-    Ok(())
 }
 
 fn drain_outbound(
-    outbound: &mpsc::Receiver<Outbound>,
+    outbound: &mut OutboundReceiver,
     latest: &mut BTreeMap<&'static str, Value>,
     queued: &mut VecDeque<Outbound>,
 ) {
     while let Ok(message) = outbound.try_recv() {
-        match message {
-            Outbound::Publish { source, data } => {
-                latest.insert(source, data);
-            }
-            request => queued.push_back(request),
-        }
+        retain_outbound(message, latest, queued);
     }
 }
 
-fn send_outbound(
-    writer: &mut UnixStream,
-    id: u64,
+fn retain_outbound(
     message: Outbound,
     latest: &mut BTreeMap<&'static str, Value>,
-    pending: &mut BTreeMap<u64, mpsc::Sender<Result<Value, String>>>,
-) -> io::Result<()> {
+    queued: &mut VecDeque<Outbound>,
+) {
     match message {
         Outbound::Publish { source, data } => {
             latest.insert(source, data);
-            send_publish(writer, id, source, &latest[source])
+        }
+        request => queued.push_back(request),
+    }
+}
+
+async fn send_outbound<W>(
+    writer: &mut W,
+    id: u64,
+    message: Outbound,
+    latest: &mut BTreeMap<&'static str, Value>,
+    pending: &mut BTreeMap<u64, RequestReply>,
+) -> io::Result<()>
+where
+    W: AsyncWrite + Unpin,
+{
+    match message {
+        Outbound::Publish { source, data } => {
+            latest.insert(source, data);
+            send_publish(writer, id, source, &latest[source]).await
         }
         Outbound::MarketResolve {
             labels,
             limit,
             reply,
         } => {
-            pending.insert(id, reply);
+            if !register_pending(pending, id, reply) {
+                return Ok(());
+            }
             send_message(
                 writer,
                 &ClientMessage::MarketResolve {
@@ -399,9 +515,12 @@ fn send_outbound(
                     limit,
                 },
             )
+            .await
         }
         Outbound::AssetResolve { assets, reply } => {
-            pending.insert(id, reply);
+            if !register_pending(pending, id, reply) {
+                return Ok(());
+            }
             send_message(
                 writer,
                 &ClientMessage::AssetResolve {
@@ -409,10 +528,13 @@ fn send_outbound(
                     assets: &assets,
                 },
             )
+            .await
         }
         Outbound::RelicContext { items, reply } => {
-            pending.insert(id, reply);
-            send_message(writer, &ClientMessage::RelicContext { id, items: &items })
+            if !register_pending(pending, id, reply) {
+                return Ok(());
+            }
+            send_message(writer, &ClientMessage::RelicContext { id, items: &items }).await
         }
         Outbound::RelicRecommendations {
             era,
@@ -420,7 +542,9 @@ fn send_outbound(
             limit,
             reply,
         } => {
-            pending.insert(id, reply);
+            if !register_pending(pending, id, reply) {
+                return Ok(());
+            }
             send_message(
                 writer,
                 &ClientMessage::RelicRecommendations {
@@ -430,13 +554,39 @@ fn send_outbound(
                     limit,
                 },
             )
+            .await
         }
     }
 }
 
-fn fail_pending(pending: &mut BTreeMap<u64, mpsc::Sender<Result<Value, String>>>, reason: &str) {
+fn register_pending(
+    pending: &mut BTreeMap<u64, RequestReply>,
+    id: u64,
+    reply: RequestReply,
+) -> bool {
+    if reply.expired() {
+        reply.send(Err("daemon request timed out".to_owned()));
+        false
+    } else {
+        pending.insert(id, reply);
+        true
+    }
+}
+
+fn expire_pending(pending: &mut BTreeMap<u64, RequestReply>) {
+    pending.retain(|_, reply| {
+        if reply.expired() {
+            reply.send(Err("daemon request timed out".to_owned()));
+            false
+        } else {
+            true
+        }
+    });
+}
+
+fn fail_pending(pending: &mut BTreeMap<u64, RequestReply>, reason: &str) {
     for (_, reply) in std::mem::take(pending) {
-        let _ = reply.send(Err(reason.to_owned()));
+        reply.send(Err(reason.to_owned()));
     }
 }
 
@@ -483,24 +633,29 @@ fn validate_hello(message: &Value) -> io::Result<()> {
     }
 }
 
-fn read_message(reader: &mut BufReader<UnixStream>) -> io::Result<Value> {
-    let mut line = String::new();
-    match reader.read_line(&mut line)? {
-        0 => Err(io::Error::new(
+async fn read_message<R>(reader: &mut Lines<R>) -> io::Result<Value>
+where
+    R: AsyncBufRead + Unpin,
+{
+    match reader.next_line().await? {
+        None => Err(io::Error::new(
             io::ErrorKind::ConnectionReset,
             "daemon closed during handshake",
         )),
-        _ => serde_json::from_str(line.trim_end())
+        Some(line) => serde_json::from_str(&line)
             .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error)),
     }
 }
 
-fn send_publish(
-    writer: &mut UnixStream,
+async fn send_publish<W>(
+    writer: &mut W,
     id: u64,
     source: &'static str,
     data: &Value,
-) -> io::Result<()> {
+) -> io::Result<()>
+where
+    W: AsyncWrite + Unpin,
+{
     send_message(
         writer,
         &ClientMessage::Publish {
@@ -510,18 +665,24 @@ fn send_publish(
             data,
         },
     )
+    .await
 }
 
-fn send_message(writer: &mut UnixStream, message: &ClientMessage<'_>) -> io::Result<()> {
-    serde_json::to_writer(&mut *writer, message)?;
-    writer.write_all(b"\n")?;
-    writer.flush()
+async fn send_message<W>(writer: &mut W, message: &ClientMessage<'_>) -> io::Result<()>
+where
+    W: AsyncWrite + Unpin,
+{
+    let mut frame = serde_json::to_vec(message)?;
+    frame.push(b'\n');
+    time::timeout(WRITE_TIMEOUT, writer.write_all(&frame))
+        .await
+        .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "daemon write timed out"))?
 }
 
 fn handle_server_message(
     line: &str,
-    ui: &mpsc::Sender<UiEvent>,
-    pending: &mut BTreeMap<u64, mpsc::Sender<Result<Value, String>>>,
+    ui: &std_mpsc::Sender<UiEvent>,
+    pending: &mut BTreeMap<u64, RequestReply>,
 ) {
     let Ok(message) = serde_json::from_str::<Value>(line) else {
         return;
@@ -562,7 +723,7 @@ fn handle_server_message(
                 .map(Value::to_string)
                 .unwrap_or_else(|| "daemon request failed".to_owned()))
         };
-        let _ = reply.send(result);
+        reply.send(result);
         return;
     }
     if matches!(message.get("id").and_then(Value::as_u64), Some(2 | 3)) {
@@ -570,7 +731,7 @@ fn handle_server_message(
     }
 }
 
-fn send_snapshot(message: &Value, ui: &mpsc::Sender<UiEvent>) {
+fn send_snapshot(message: &Value, ui: &std_mpsc::Sender<UiEvent>) {
     let Some(dataset) = message.get("dataset").and_then(Value::as_str) else {
         return;
     };
@@ -661,7 +822,7 @@ mod tests {
 
     #[test]
     fn records_latest_value_for_reconnect_replay() {
-        let (sender, receiver) = mpsc::channel();
+        let (sender, mut receiver) = mpsc::unbounded_channel();
         sender
             .send(Outbound::Publish {
                 source: "game",
@@ -677,9 +838,85 @@ mod tests {
 
         let mut latest = BTreeMap::new();
         let mut queued = VecDeque::new();
-        drain_outbound(&receiver, &mut latest, &mut queued);
+        drain_outbound(&mut receiver, &mut latest, &mut queued);
         assert_eq!(latest["game"]["running"], true);
         assert!(queued.is_empty());
+    }
+
+    #[test]
+    fn active_session_wakes_for_outbound_publish() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_io()
+            .enable_time()
+            .build()
+            .unwrap();
+        runtime.block_on(async {
+            let (mut client, server) = UnixStream::pair().unwrap();
+            let (reader, mut writer) = client.split();
+            let mut reader = BufReader::new(reader).lines();
+            let mut server = BufReader::new(server).lines();
+            let (sender, mut outbound) = mpsc::unbounded_channel();
+            let (ui, _events) = std_mpsc::channel();
+            let stopping = AtomicBool::new(false);
+            let mut latest = BTreeMap::new();
+            let mut pending = BTreeMap::new();
+            let session = active_session(ActiveSession {
+                writer: &mut writer,
+                reader: &mut reader,
+                outbound: &mut outbound,
+                latest: &mut latest,
+                ui: &ui,
+                stopping: &stopping,
+                next_id: 10,
+                pending: &mut pending,
+            });
+            tokio::pin!(session);
+
+            let line = time::timeout(Duration::from_secs(1), async {
+                time::sleep(Duration::from_millis(10)).await;
+                sender
+                    .send(Outbound::Publish {
+                        source: "game",
+                        data: serde_json::json!({"running": true}),
+                    })
+                    .unwrap();
+                tokio::select! {
+                    result = &mut session => panic!("session ended before publish: {result:?}"),
+                    line = server.next_line() => line.unwrap().unwrap(),
+                }
+            })
+            .await
+            .unwrap();
+            let message: Value = serde_json::from_str(&line).unwrap();
+            assert_eq!(message["op"], "publish");
+            assert_eq!(message["source"], "game");
+            assert_eq!(message["data"]["running"], true);
+
+            drop(server);
+            assert!(
+                time::timeout(Duration::from_secs(1), &mut session)
+                    .await
+                    .unwrap()
+                    .is_err()
+            );
+        });
+    }
+
+    #[test]
+    fn expired_request_is_not_registered() {
+        let (sender, result) = std_mpsc::channel();
+        let reply = RequestReply {
+            sender,
+            deadline: Instant::now() - Duration::from_millis(1),
+        };
+        let mut pending = BTreeMap::new();
+
+        assert!(!register_pending(&mut pending, 17, reply));
+        assert_eq!(
+            result.recv().unwrap(),
+            Err("daemon request timed out".to_owned())
+        );
+        assert!(pending.is_empty());
     }
 
     #[test]
@@ -731,9 +968,9 @@ mod tests {
 
     #[test]
     fn routes_correlated_request_reply() {
-        let (ui, _events) = mpsc::channel();
-        let (reply, result) = mpsc::channel();
-        let mut pending = BTreeMap::from([(17, reply)]);
+        let (ui, _events) = std_mpsc::channel();
+        let (reply, result) = std_mpsc::channel();
+        let mut pending = BTreeMap::from([(17, RequestReply::new(reply))]);
         handle_server_message(
             r#"{"id":17,"ok":true,"data":{"matches":[]}}"#,
             &ui,
@@ -745,7 +982,7 @@ mod tests {
 
     #[test]
     fn routes_overlay_and_hud_visibility_independently() {
-        let (ui, events) = mpsc::channel();
+        let (ui, events) = std_mpsc::channel();
         let mut pending = BTreeMap::new();
 
         handle_server_message(
@@ -768,21 +1005,17 @@ mod tests {
 
     #[test]
     fn retries_request_closed_by_daemon_restart() {
-        let (sender, receiver) = mpsc::channel();
+        let (sender, mut receiver) = mpsc::unbounded_channel();
         let worker = thread::spawn(move || {
-            let Outbound::RelicContext { reply, .. } = receiver.recv().unwrap() else {
+            let Outbound::RelicContext { reply, .. } = receiver.blocking_recv().unwrap() else {
                 panic!("expected first relic context request");
             };
-            reply
-                .send(Err("daemon connection closed".to_owned()))
-                .unwrap();
+            reply.send(Err("daemon connection closed".to_owned()));
 
-            let Outbound::RelicContext { reply, .. } = receiver.recv().unwrap() else {
+            let Outbound::RelicContext { reply, .. } = receiver.blocking_recv().unwrap() else {
                 panic!("expected retried relic context request");
             };
-            reply
-                .send(Ok(serde_json::json!({"data": {"quotes": []}})))
-                .unwrap();
+            reply.send(Ok(serde_json::json!({"data": {"quotes": []}})));
         });
 
         let response = relic_context(&sender, vec!["forma-blueprint".to_owned()]).unwrap();
@@ -792,22 +1025,20 @@ mod tests {
 
     #[test]
     fn relic_recommendations_preserve_price_request() {
-        let (sender, receiver) = mpsc::channel();
+        let (sender, mut receiver) = mpsc::unbounded_channel();
         let worker = thread::spawn(move || {
             let Outbound::RelicRecommendations {
                 fetch_prices,
                 limit,
                 reply,
                 ..
-            } = receiver.recv().unwrap()
+            } = receiver.blocking_recv().unwrap()
             else {
                 panic!("expected relic recommendations request");
             };
             assert!(fetch_prices);
             assert_eq!(limit, 32);
-            reply
-                .send(Ok(serde_json::json!({"data": {"items": []}})))
-                .unwrap();
+            reply.send(Ok(serde_json::json!({"data": {"items": []}})));
         });
 
         relic_recommendations(&sender, "lith".to_owned(), true).unwrap();

@@ -10,7 +10,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use serde::Serialize;
 use serde_json::json;
 
-use crate::daemon::Outbound;
+use crate::daemon::{Outbound, OutboundSender};
 use crate::debug_output::{Bridge as DebugBridge, Event as DebugEvent, Runtime as DebugRuntime};
 use crate::incident;
 use crate::inventory::{Bridge as InventoryBridge, Event as InventoryEvent};
@@ -52,7 +52,7 @@ pub(crate) struct GameState {
 }
 
 pub(crate) fn spawn(
-    outbound: mpsc::Sender<Outbound>,
+    outbound: OutboundSender,
     relic: mpsc::Sender<RelicTrigger>,
     stopping: Arc<AtomicBool>,
 ) {
@@ -183,7 +183,7 @@ fn handle_debug_event(
     event: DebugEvent,
     bridge: &mut Option<DebugBridge>,
     relic: &mpsc::Sender<RelicTrigger>,
-    outbound: &mpsc::Sender<Outbound>,
+    outbound: &OutboundSender,
     status: &mut CollectorStatus,
     next_bridge_attempt: &mut Instant,
     last_ui_console_open: &mut Option<Instant>,
@@ -234,7 +234,7 @@ fn handle_debug_event(
 fn handle_inventory_event(
     event: InventoryEvent,
     bridge: &mut Option<InventoryBridge>,
-    outbound: &mpsc::Sender<Outbound>,
+    outbound: &OutboundSender,
     status: &mut CollectorStatus,
 ) {
     match event {
@@ -262,7 +262,7 @@ fn handle_inventory_event(
     }
 }
 
-fn publish_collector(outbound: &mpsc::Sender<Outbound>, status: &CollectorStatus) {
+fn publish_collector(outbound: &OutboundSender, status: &CollectorStatus) {
     let _ = outbound.send(Outbound::Publish {
         source: "collector",
         data: json!({
