@@ -18,6 +18,7 @@
 
 namespace {
 constexpr qint64 HelloRequestId = 1;
+constexpr qint64 PlayerSubscriptionId = 2;
 constexpr int AssetBatchSize = 8;
 constexpr int MaxActiveAssetRequests = 2;
 constexpr int MarketCacheBatchSize = 100;
@@ -198,16 +199,12 @@ void DaemonClient::start() { connectSocket(); }
 void DaemonClient::requestRelics(const QString &era, bool fetchPrices) {
   const RelicRequest request{.era = era, .prices = fetchPrices};
   const QString key = relicRequestKey(request);
-  if (!relicRequestActive(key)) {
-    pendingRelicRequests_.insert(key, request);
-  }
+  pendingRelicRequests_.insert(key, request);
   sendPendingRequests();
 }
 
 void DaemonClient::requestPlayerView(const QString &view) {
-  if (!activePlayerViews_.values().contains(view)) {
-    pendingPlayerViews_.insert(view);
-  }
+  pendingPlayerViews_.insert(view);
   sendPendingPlayerViews();
 }
 
@@ -441,6 +438,14 @@ void DaemonClient::handleLine(const QByteArray &line) {
   }
 
   const QJsonObject message = document.object();
+  if (message.value("event").toString() == "dataset" &&
+      message.value("subscription").toInteger() == PlayerSubscriptionId &&
+      message.value("dataset").toString() == "player" &&
+      message.value("data").isObject()) {
+    handlePlayerSnapshot(message.value("data").toObject(),
+                         message.value("source").toString());
+    return;
+  }
   if (message.value("event").toString() == "market_presence" &&
       message.value("data").isObject()) {
     emit marketPresenceReady(message.value("data").toObject(), false);
@@ -460,11 +465,14 @@ void DaemonClient::handleLine(const QByteArray &line) {
     }
     const QJsonArray capabilities = message.value("capabilities").toArray();
     const QStringList requiredCapabilities = {
-        "relic.planner",          "worldstate.activity",  "player.foundry",
-        "player.inventory",       "player.mastery",       "market.quote",
-        "market.resolve",         "market.describe",      "market.account",
-        "market.orders",          "market.quote.variant", "market.presence",
-        "notifications.fissures", "asset.cache"};
+        "relic.planner",          "worldstate.activity",
+        "player.foundry",         "player.inventory",
+        "player.mastery",         "market.quote",
+        "market.resolve",         "market.describe",
+        "market.account",         "market.orders",
+        "market.quote.variant",   "market.presence",
+        "notifications.fissures", "asset.cache",
+        "dataset.subscribe",      "dataset.subscribe.metadata"};
     const bool capable = std::ranges::all_of(
         requiredCapabilities, [&capabilities](const QString &capability) {
           return capabilities.contains(QJsonValue(capability));
@@ -481,6 +489,7 @@ void DaemonClient::handleLine(const QByteArray &line) {
     stopAttempted_ = false;
     setConnected(true);
     setStatus("Connected to wfdaemon");
+    sendPlayerSubscription();
     sendPendingRequests();
     sendPendingPlayerViews();
     sendPendingActivity();
@@ -495,6 +504,16 @@ void DaemonClient::handleLine(const QByteArray &line) {
     return;
   }
 
+  if (id == PlayerSubscriptionId) {
+    if (!message.value("ok").toBool() || !message.value("data").isObject()) {
+      setStatus(message.value("error").toString(
+          "wfdaemon player subscription failed"));
+      return;
+    }
+    handlePlayerSnapshot(message.value("data").toObject(), QString());
+    return;
+  }
+
   const auto active = activeRelicRequests_.find(id);
   if (active != activeRelicRequests_.end()) {
     const RelicRequest request = active.value();
@@ -503,15 +522,18 @@ void DaemonClient::handleLine(const QByteArray &line) {
       const QString error =
           message.value("error").toString("daemon request failed");
       emit requestFailed(request.era, request.prices, error);
+      sendPendingRequests();
       return;
     }
     const QJsonValue data = message.value("data");
     if (!data.isObject()) {
       emit requestFailed(request.era, request.prices,
                          "daemon returned malformed relic planner data");
+      sendPendingRequests();
       return;
     }
     emit relicPlannerReady(request.era, request.prices, data.toObject());
+    sendPendingRequests();
     return;
   }
 
@@ -752,14 +774,28 @@ void DaemonClient::handleLine(const QByteArray &line) {
   if (!message.value("ok").toBool()) {
     emit playerViewFailed(
         view, message.value("error").toString("player view request failed"));
+    sendPendingPlayerViews();
     return;
   }
   const QJsonValue data = message.value("data");
   if (!data.isObject()) {
     emit playerViewFailed(view, "daemon returned malformed player view data");
+    sendPendingPlayerViews();
     return;
   }
   emit playerViewReady(view, data.toObject());
+  sendPendingPlayerViews();
+}
+
+void DaemonClient::handlePlayerSnapshot(const QJsonObject &data,
+                                        const QString &source) {
+  const qint64 revision = data.value("revision").toInteger(-1);
+  if (revision < 0 ||
+      (playerRevision_.has_value() && playerRevision_.value() == revision)) {
+    return;
+  }
+  playerRevision_ = revision;
+  emit playerDatasetChanged(revision, source);
 }
 
 void DaemonClient::sendHello() {
@@ -772,7 +808,8 @@ void DaemonClient::sendHello() {
       {"pid", QCoreApplication::applicationPid()},
       {"mode", "desktop"},
       {"capabilities",
-       QJsonArray{"relic.planner", "worldstate.activity", "player.foundry",
+       QJsonArray{"dataset.subscribe", "dataset.subscribe.metadata",
+                  "relic.planner", "worldstate.activity", "player.foundry",
                   "player.inventory", "player.mastery", "market.quote",
                   "market.resolve", "market.describe", "market.account",
                   "market.orders", "market.quote.variant", "market.presence",
@@ -780,13 +817,23 @@ void DaemonClient::sendHello() {
   });
 }
 
+void DaemonClient::sendPlayerSubscription() {
+  write({{"op", "subscribe"},
+         {"id", PlayerSubscriptionId},
+         {"dataset", "player"},
+         {"include_data", false}});
+}
+
 void DaemonClient::sendPendingPlayerViews() {
   if (!ready_ || pendingPlayerViews_.isEmpty()) {
     return;
   }
   const QSet<QString> pending = pendingPlayerViews_;
-  pendingPlayerViews_.clear();
   for (const QString &view : pending) {
+    if (activePlayerViews_.values().contains(view)) {
+      continue;
+    }
+    pendingPlayerViews_.remove(view);
     const qint64 id = nextRequestId_++;
     activePlayerViews_.insert(id, view);
     QString operation = "mastery_view";
@@ -834,16 +881,19 @@ void DaemonClient::sendPendingRequests() {
     return;
   }
   const QHash<QString, RelicRequest> pending = pendingRelicRequests_;
-  pendingRelicRequests_.clear();
-  for (const RelicRequest &request : pending) {
+  for (auto request = pending.cbegin(); request != pending.cend(); ++request) {
+    if (relicRequestActive(request.key())) {
+      continue;
+    }
+    pendingRelicRequests_.remove(request.key());
     const qint64 id = nextRequestId_++;
-    activeRelicRequests_.insert(id, request);
+    activeRelicRequests_.insert(id, request.value());
     write({
         {"op", "relic_planner"},
         {"id", id},
-        {"era", request.era},
+        {"era", request->era},
         {"only_owned", false},
-        {"fetch_prices", request.prices},
+        {"fetch_prices", request->prices},
         {"limit", "all"},
     });
   }

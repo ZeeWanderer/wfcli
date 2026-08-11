@@ -16,7 +16,8 @@ player_service_test_() ->
          fun publish_invalidates_derived_views/0,
          fun unchanged_publish_keeps_revision_and_views/0,
          fun unchanged_game_publish_refreshes_transient_state/0,
-         fun game_stop_does_not_erase_cached_inventory/0
+         fun game_stop_does_not_erase_cached_inventory/0,
+         fun clear_advances_revision/0
      ] end}.
 
 setup() ->
@@ -78,7 +79,7 @@ unchanged_publish_keeps_revision_and_views() ->
     ?assertMatch(#{cache_dirty := false, persist_timer := undefined},
                  sys:get_state(wfcli_player_service)),
     receive
-        {wfcli_player, Ref, _Snapshot} -> error(unchanged_publish_notified)
+        {wfcli_player, Ref, _Source, _Snapshot} -> error(unchanged_publish_notified)
     after 25 -> ok
     end,
     ok = wfcli_player_service:unsubscribe(Ref).
@@ -99,6 +100,21 @@ game_stop_does_not_erase_cached_inventory() ->
     {ok, _} = wfcli_player_service:publish(<<"game">>, #{<<"running">> => false}),
     Data = maps:get(data, wfcli_player_service:snapshot()),
     ?assertEqual(Inventory, maps:get(<<"inventory">>, Data)).
+
+clear_advances_revision() ->
+    Before = wfcli_player_service:snapshot(),
+    {ok, Ref, _} = wfcli_player_service:subscribe(self()),
+    ok = wfcli_player_service:clear(),
+    receive
+        {wfcli_player, Ref, clear, Cleared} ->
+            ?assertEqual(maps:get(revision, Before) + 1,
+                         maps:get(revision, Cleared)),
+            ?assertEqual(#{}, maps:get(data, Cleared)),
+            ?assert(is_integer(maps:get(updated_at, Cleared)))
+    after 1000 ->
+        error(clear_notification_missing)
+    end,
+    ok = wfcli_player_service:unsubscribe(Ref).
 
 await_subscribers(Expected, 0) ->
     ?assertEqual(Expected, maps:get(subscribers, wfcli_player_service:status()));

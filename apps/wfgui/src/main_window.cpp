@@ -270,6 +270,7 @@ bool MainWindow::setPage(const QString &page) {
 
 void MainWindow::selectPage(int page) {
   pages_->setCurrentIndex(page);
+  controller_.setActivePage(currentPageName());
   if (page == 0) {
     controller_.ensureFoundry();
   } else if (page == 1) {
@@ -279,6 +280,7 @@ void MainWindow::selectPage(int page) {
   } else if (page == 3) {
     controller_.ensureRelics();
   } else if (page == 4) {
+    controller_.ensureInventory();
     controller_.ensureMarket();
   } else if (page == 5) {
     controller_.refreshSourceAssetCache();

@@ -40,15 +40,38 @@ AppController::AppController(QObject *parent)
               return;
             }
             EraState &state = relicState_;
+            const qint64 revision = data.value("revision").toInteger(-1);
+            if (playerRevision_ >= 0 && revision >= 0 &&
+                revision < playerRevision_) {
+              if (prices) {
+                state.pricesPending = false;
+              } else {
+                state.metadataPending = false;
+              }
+              state.stale = true;
+              if (activePage_ == "relic") {
+                refresh();
+              }
+              return;
+            }
             if (prices) {
               state.priced = data;
               state.hasPrices = true;
               state.pricesPending = false;
+              state.pricesRevision = revision;
             } else {
               state.metadata = data;
               state.hasMetadata = true;
               state.metadataPending = false;
+              state.metadataRevision = revision;
             }
+            const bool metadataCurrent =
+                !state.hasMetadata || playerRevision_ < 0 ||
+                state.metadataRevision >= playerRevision_;
+            const bool pricesCurrent = !state.hasPrices ||
+                                       playerRevision_ < 0 ||
+                                       state.pricesRevision >= playerRevision_;
+            state.stale = !metadataCurrent || !pricesCurrent;
             state.error.clear();
             requestAssets(data);
             applySelectedEra();
@@ -108,6 +131,8 @@ AppController::AppController(QObject *parent)
           });
   connect(&daemon_, &DaemonClient::playerViewReady, this,
           &AppController::applyPlayerView);
+  connect(&daemon_, &DaemonClient::playerDatasetChanged, this,
+          &AppController::handlePlayerDatasetChanged);
   connect(&daemon_, &DaemonClient::playerViewFailed, this,
           [this](const QString &view, const QString &requestError) {
             if (PlayerViewState *state = playerState(view)) {
@@ -440,6 +465,8 @@ void AppController::selectEra(const QString &era) {
   emit selectedEraChanged();
 }
 
+void AppController::setActivePage(const QString &page) { activePage_ = page; }
+
 void AppController::refresh() {
   relicsRequested_ = true;
   EraState &state = relicState_;
@@ -454,6 +481,9 @@ void AppController::refresh() {
 void AppController::ensureRelics() {
   if (!relicsRequested_) {
     refresh();
+  } else if (relicState_.stale && !relicState_.metadataPending &&
+             !relicState_.pricesPending) {
+    refresh();
   } else if (relicState_.hasPrices) {
     requestAssets(relicState_.priced);
   } else if (relicState_.hasMetadata) {
@@ -462,19 +492,22 @@ void AppController::ensureRelics() {
 }
 
 void AppController::ensureFoundry() {
-  if (!foundryState_.loaded && !foundryState_.pending) {
+  if ((!foundryState_.loaded || foundryState_.stale) &&
+      !foundryState_.pending) {
     refreshFoundry();
   }
 }
 
 void AppController::ensureInventory() {
-  if (!inventoryState_.loaded && !inventoryState_.pending) {
+  if ((!inventoryState_.loaded || inventoryState_.stale) &&
+      !inventoryState_.pending) {
     refreshInventory();
   }
 }
 
 void AppController::ensureMastery() {
-  if (!masteryState_.loaded && !masteryState_.pending) {
+  if ((!masteryState_.loaded || masteryState_.stale) &&
+      !masteryState_.pending) {
     refreshMastery();
   }
 }
@@ -734,11 +767,53 @@ void AppController::requestAssets(const QJsonObject &data) {
   resolveAssets(rewardAssets);
 }
 
+void AppController::handlePlayerDatasetChanged(qint64 revision,
+                                               const QString &source) {
+  if (revision < 0 || revision == playerRevision_ ||
+      (!source.isEmpty() && source != "inventory" && source != "clear")) {
+    return;
+  }
+  playerRevision_ = revision;
+  foundryState_.stale = true;
+  inventoryState_.stale = true;
+  masteryState_.stale = true;
+  relicState_.stale = true;
+
+  if (activePage_ == "foundry" && !foundryState_.pending) {
+    refreshFoundry();
+  } else if (activePage_ == "inventory" && !inventoryState_.pending) {
+    refreshInventory();
+  } else if (activePage_ == "mastery" && !masteryState_.pending) {
+    refreshMastery();
+  } else if (activePage_ == "relic" && !relicState_.metadataPending &&
+             !relicState_.pricesPending) {
+    refresh();
+  } else if (activePage_ == "market" && !inventoryState_.pending) {
+    refreshInventory();
+  }
+}
+
 void AppController::applyPlayerView(const QString &view,
                                     const QJsonObject &data) {
   PlayerViewState *state = playerState(view);
   PlayerItemModel *model = playerModel(view);
   if (!state || !model) {
+    return;
+  }
+  const qint64 revision = data.value("revision").toInteger(-1);
+  if (playerRevision_ >= 0 && revision >= 0 && revision < playerRevision_) {
+    state->pending = false;
+    state->stale = true;
+    if (activePage_ == view ||
+        (activePage_ == "market" && view == "inventory")) {
+      if (view == "foundry") {
+        refreshFoundry();
+      } else if (view == "inventory") {
+        refreshInventory();
+      } else if (view == "mastery") {
+        refreshMastery();
+      }
+    }
     return;
   }
   QString parseError;
@@ -747,6 +822,8 @@ void AppController::applyPlayerView(const QString &view,
     state->error = parseError;
   } else {
     state->loaded = true;
+    state->stale = false;
+    state->revision = revision;
     state->error.clear();
     state->summary = data.value("summary").toObject();
     const QJsonObject profile = data.value("profile").toObject();

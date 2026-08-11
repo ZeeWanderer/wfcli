@@ -317,8 +317,12 @@ connection_loop(State = #{reader_monitor := ReaderMonitor}) ->
                 {stop, _Reason, State1} -> State1
             end;
         {socket_closed, _Reason} -> State;
+        {wfcli_player, Ref, Source, Snapshot} ->
+            State1 = send_subscription_update(Ref, Source, Snapshot, State),
+            connection_loop(State1);
+        %% Accept notifications queued before a hot update of wfcli_player_service.
         {wfcli_player, Ref, Snapshot} ->
-            State1 = send_subscription_update(Ref, Snapshot, State),
+            State1 = send_subscription_update(Ref, undefined, Snapshot, State),
             connection_loop(State1);
         {wfcli_daemon, Ref, Reply} ->
             State1 = send_service_reply(Ref, Reply, State),
@@ -407,6 +411,7 @@ handle_request(#{<<"op">> := <<"hello">>} = Request, State) ->
         <<"compatible">> => Compatible,
         <<"protocol">> => wfcli_local_protocol:protocol_version(),
         <<"capabilities">> => [<<"dataset.get">>, <<"dataset.subscribe">>,
+                               <<"dataset.subscribe.metadata">>,
                                <<"player.publish">>, <<"market.quote">>,
                                <<"market.quote.variant">>,
                                <<"market.resolve">>, <<"market.describe">>,
@@ -480,7 +485,7 @@ handle_request(#{<<"op">> := <<"notification_settings_set">>} = Request, State) 
     {ok, State};
 handle_request(#{<<"op">> := <<"subscribe">>, <<"dataset">> := <<"player">>} = Request,
                State) ->
-    subscribe_player(request_id(Request), State);
+    subscribe_player(request_id(Request), Request, State);
 handle_request(#{<<"op">> := <<"unsubscribe">>, <<"subscription">> := Id} = Request,
                State) when is_integer(Id) ->
     State1 = unsubscribe_player(Id, State),
@@ -854,21 +859,32 @@ relic_limit(Request, Default) ->
         _ -> error
     end.
 
-subscribe_player(Id, State) when is_integer(Id) ->
+subscribe_player(Id, Request, State) when is_integer(Id) ->
+    case subscription_options(Request) of
+        {ok, Options} -> start_player_subscription(Id, Options, State);
+        {error, Reason} ->
+            send_error(maps:get(socket, State), Id, Reason),
+            {ok, State}
+    end;
+subscribe_player(_Id, _Request, State) ->
+    send_error(maps:get(socket, State), 0, invalid_request_id),
+    {ok, State}.
+
+start_player_subscription(Id, Options, State) ->
     State1 = unsubscribe_player(Id, State),
     case wfcli_player_service:subscribe(self()) of
         {ok, Ref, Snapshot} ->
-            send_ok(maps:get(socket, State1), Id, <<"player">>, Snapshot),
+            send_ok(maps:get(socket, State1), Id, <<"player">>,
+                    subscription_snapshot(Snapshot, Options)),
             Subscriptions = maps:get(subscriptions, State1),
             Refs = maps:get(refs, State1),
-            {ok, State1#{subscriptions => Subscriptions#{Id => Ref}, refs => Refs#{Ref => Id}}};
+            Subscription = Options#{id => Id},
+            {ok, State1#{subscriptions => Subscriptions#{Id => Ref},
+                         refs => Refs#{Ref => Subscription}}};
         {error, Reason} ->
             send_error(maps:get(socket, State1), Id, Reason),
             {ok, State1}
-    end;
-subscribe_player(_Id, State) ->
-    send_error(maps:get(socket, State), 0, invalid_request_id),
-    {ok, State}.
+    end.
 
 unsubscribe_player(Id, State) ->
     case maps:take(Id, maps:get(subscriptions, State)) of
@@ -879,17 +895,42 @@ unsubscribe_player(Id, State) ->
             State#{subscriptions => Subscriptions, refs => Refs}
     end.
 
-send_subscription_update(Ref, Snapshot, State) ->
+send_subscription_update(Ref, Source, Snapshot, State) ->
     case maps:get(Ref, maps:get(refs, State), undefined) of
         undefined -> State;
-        Id ->
-            send_json(maps:get(socket, State),
-                      #{<<"event">> => <<"dataset">>,
-                        <<"subscription">> => Id,
-                        <<"dataset">> => <<"player">>,
-                        <<"data">> => json_snapshot(Snapshot)}),
-            State
+        Id when is_integer(Id) ->
+            send_player_event(Id, Source, json_snapshot(Snapshot), State);
+        #{id := Id} = Options ->
+            send_player_event(
+              Id, Source, subscription_snapshot(Snapshot, Options), State)
     end.
+
+send_player_event(Id, Source, Snapshot, State) ->
+    Event0 = #{<<"event">> => <<"dataset">>,
+               <<"subscription">> => Id,
+               <<"dataset">> => <<"player">>,
+               <<"data">> => Snapshot},
+    Event = case json_source(Source) of
+        undefined -> Event0;
+        JsonSource -> Event0#{<<"source">> => JsonSource}
+    end,
+    send_json(maps:get(socket, State), Event),
+    State.
+
+subscription_options(Request) ->
+    IncludeData = maps:get(<<"include_data">>, Request, true),
+    case is_boolean(IncludeData) of
+        true -> {ok, #{include_data => IncludeData}};
+        false -> {error, invalid_subscription_options}
+    end.
+
+json_source(clear) -> <<"clear">>;
+json_source(Source) when is_binary(Source) -> Source;
+json_source(_Source) -> undefined.
+
+subscription_snapshot(Snapshot, #{include_data := true}) -> json_snapshot(Snapshot);
+subscription_snapshot(Snapshot, #{include_data := false}) ->
+    maps:remove(<<"data">>, json_snapshot(Snapshot)).
 
 send_service_reply(Ref, Reply, State) ->
     case maps:take(Ref, maps:get(activity_refs, State, #{})) of

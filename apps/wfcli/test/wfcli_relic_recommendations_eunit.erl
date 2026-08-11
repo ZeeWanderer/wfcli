@@ -25,7 +25,8 @@ parses_and_ranks_owned_relics_test() ->
     ?assertEqual(<<"Axi B1 Relic">>, maps:get(<<"name">>, Second)),
     ?assertEqual(<<"RelicAxiD.png">>,
                  maps:get(<<"image_name">>, maps:get(<<"asset">>, Second))),
-    ?assertEqual(1842, maps:get(<<"trace_count">>, Result)).
+    ?assertEqual(1842, maps:get(<<"trace_count">>, Result)),
+    ?assertEqual(0, maps:get(<<"revision">>, Result)).
 
 missing_quotes_keep_ducat_ranking_and_null_price_test() ->
     {ok, Catalog} = wfcli_relic_recommendations:parse(fixture()),

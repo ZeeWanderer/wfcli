@@ -64,7 +64,6 @@ pub(crate) fn spawn(
         let mut inventory_bridge: Option<InventoryBridge> = None;
         let mut bridge_error: Option<String> = None;
         let mut inventory_error: Option<String> = None;
-        let mut last_inventory_sync: Option<String> = None;
         let mut status = CollectorStatus::default();
         let mut next_scan = Instant::now();
         let mut next_bridge_attempt = Instant::now();
@@ -161,13 +160,7 @@ pub(crate) fn spawn(
             }
 
             while let Ok(event) = inventory_rx.try_recv() {
-                handle_inventory_event(
-                    event,
-                    &mut inventory_bridge,
-                    &outbound,
-                    &mut last_inventory_sync,
-                    &mut status,
-                );
+                handle_inventory_event(event, &mut inventory_bridge, &outbound, &mut status);
             }
 
             let wait = EVENT_INTERVAL.min(next_scan.saturating_duration_since(Instant::now()));
@@ -242,7 +235,6 @@ fn handle_inventory_event(
     event: InventoryEvent,
     bridge: &mut Option<InventoryBridge>,
     outbound: &mpsc::Sender<Outbound>,
-    last_sync: &mut Option<String>,
     status: &mut CollectorStatus,
 ) {
     match event {
@@ -250,16 +242,11 @@ fn handle_inventory_event(
             game_pid,
             collector,
             process_pid,
-            sync_key,
             data,
         } if bridge
             .as_ref()
             .is_some_and(|open| open.game_pid() == game_pid) =>
         {
-            if last_sync.as_ref() == Some(&sync_key) {
-                return;
-            }
-            *last_sync = Some(sync_key);
             status.inventory_updates += 1;
             incident::info(
                 "observer.inventory_received",

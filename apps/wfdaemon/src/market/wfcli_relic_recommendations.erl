@@ -61,7 +61,8 @@ build(Era, Catalog, Items, Quotes, PlayerSnapshot, Options) ->
     Suggestions = ranked(Era, Catalog, Owned, ItemBySlug, Quotes,
                          maps:get(view, Options),
                          maps:get(only_owned, Options, true)),
-    #{<<"trace_count">> => maps:get(?VOID_TRACES, Owned, 0),
+    #{<<"revision">> => maps:get(revision, PlayerSnapshot, 0),
+      <<"trace_count">> => maps:get(?VOID_TRACES, Owned, 0),
       <<"items">> => limit(Suggestions, maps:get(limit, Options))}.
 
 limit(Items, all) -> Items;

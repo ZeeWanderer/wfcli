@@ -65,6 +65,7 @@ public:
   void setFilterText(const QString &text);
   void setOnlyOwned(bool onlyOwned);
   void selectEra(const QString &era);
+  void setActivePage(const QString &page);
   void refresh();
   void ensureRelics();
   void ensureFoundry();
@@ -129,14 +130,17 @@ private:
   struct PlayerViewState {
     QJsonObject summary;
     QString error;
+    qint64 revision = -1;
     bool loaded = false;
     bool pending = false;
+    bool stale = false;
   };
 
   void setError(const QString &error);
   void setLoading(bool loading);
   void applySelectedEra();
   void requestAssets(const QJsonObject &data);
+  void handlePlayerDatasetChanged(qint64 revision, const QString &source);
   void applyPlayerView(const QString &view, const QJsonObject &data);
   PlayerViewState *playerState(const QString &view);
   PlayerItemModel *playerModel(const QString &view);
@@ -156,6 +160,9 @@ private:
     bool hasPrices = false;
     bool metadataPending = false;
     bool pricesPending = false;
+    bool stale = false;
+    qint64 metadataRevision = -1;
+    qint64 pricesRevision = -1;
   };
 
   DaemonClient daemon_;
@@ -193,4 +200,6 @@ private:
   int marketActions_ = 0;
   bool relicsRequested_ = false;
   bool loading_ = false;
+  QString activePage_ = "foundry";
+  qint64 playerRevision_ = -1;
 };

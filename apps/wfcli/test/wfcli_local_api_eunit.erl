@@ -87,6 +87,7 @@ cleanup(#{root := Root, socket := SocketPath, cache := CachePath,
     ok.
 
 lifecycle(#{socket := SocketPath}) ->
+    request_player_metadata_subscription(SocketPath),
     TestSocket = connect_client(SocketPath, <<"test">>, #{}),
     ?assertMatch(#{external_activity := 0}, wfcli_worldstate_service:status()),
     request_market_resolve(TestSocket),
@@ -291,6 +292,8 @@ connect_client(SocketPath, Client, Extra) ->
     ?assert(lists:member(<<"market.presence">>, maps:get(<<"capabilities">>, Reply))),
     ?assert(lists:member(<<"market.quote.variant">>,
                          maps:get(<<"capabilities">>, Reply))),
+    ?assert(lists:member(<<"dataset.subscribe.metadata">>,
+                         maps:get(<<"capabilities">>, Reply))),
     ?assert(lists:member(<<"relic.recommendations">>,
                          maps:get(<<"capabilities">>, Reply))),
     ?assert(lists:member(<<"relic.planner">>, maps:get(<<"capabilities">>, Reply))),
@@ -303,6 +306,35 @@ connect_client(SocketPath, Client, Extra) ->
                          maps:get(<<"capabilities">>, Reply))),
     ?assert(lists:member(<<"asset.resolve">>, maps:get(<<"capabilities">>, Reply))),
     Socket.
+
+request_player_metadata_subscription(SocketPath) ->
+    Socket = connect_client(SocketPath, <<"test">>, #{}),
+    Request = #{<<"op">> => <<"subscribe">>, <<"id">> => 2,
+                <<"dataset">> => <<"player">>, <<"include_data">> => false},
+    ok = socket:send(Socket, wfcli_local_protocol:encode(Request)),
+    {ok, InitialLine} = socket:recv(Socket, 0, 5000),
+    {ok, Initial} = wfcli_local_protocol:decode(string:trim(InitialLine)),
+    InitialData = maps:get(<<"data">>, Initial),
+    ?assertEqual(true, maps:get(<<"ok">>, Initial)),
+    ?assert(maps:is_key(<<"revision">>, InitialData)),
+    ?assertNot(maps:is_key(<<"data">>, InitialData)),
+
+    {ok, _} = wfcli_player_service:publish(
+                <<"collector">>, #{<<"inventory_active">> => true}),
+    {ok, CollectorLine} = socket:recv(Socket, 0, 5000),
+    {ok, CollectorEvent} = wfcli_local_protocol:decode(string:trim(CollectorLine)),
+    ?assertEqual(<<"collector">>, maps:get(<<"source">>, CollectorEvent)),
+    {ok, Snapshot} = wfcli_player_service:publish(
+                       <<"inventory">>, #{<<"schema">> => 1}),
+    {ok, EventLine} = socket:recv(Socket, 0, 5000),
+    {ok, Event} = wfcli_local_protocol:decode(string:trim(EventLine)),
+    EventData = maps:get(<<"data">>, Event),
+    ?assertEqual(<<"dataset">>, maps:get(<<"event">>, Event)),
+    ?assertEqual(<<"inventory">>, maps:get(<<"source">>, Event)),
+    ?assertEqual(maps:get(revision, Snapshot), maps:get(<<"revision">>, EventData)),
+    ?assertNot(maps:is_key(<<"data">>, EventData)),
+    ok = socket:close(Socket),
+    ok = wfcli_player_service:clear().
 
 request_notification_settings(Socket) ->
     Get = #{<<"op">> => <<"notification_settings">>, <<"id">> => 15},

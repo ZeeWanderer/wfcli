@@ -172,6 +172,11 @@ handle_info({'DOWN', Monitor, process, _Pid, _Reason}, State) ->
                                               Ref, maps:get(subscribers, State)),
                              subscriber_monitors => Monitors}}
     end;
+handle_info({wfcli_player, Ref, _Source, Snapshot}, State = #{player_ref := Ref}) ->
+    Active = game_active(Snapshot),
+    {noreply, notify_changed(State,
+                             apply_desired(State#{game_active => Active}))};
+%% Accept notifications queued before a hot update of wfcli_player_service.
 handle_info({wfcli_player, Ref, Snapshot}, State = #{player_ref := Ref}) ->
     Active = game_active(Snapshot),
     {noreply, notify_changed(State,

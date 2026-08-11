@@ -21,6 +21,7 @@
     updated_at := integer() | undefined,
     data := map()
 }.
+-type source() :: binary() | clear.
 -type state() :: #{
     cache_path := file:filename_all(),
     snapshot := snapshot(),
@@ -47,7 +48,7 @@ snapshot() ->
 publish(Source, Data) ->
     gen_server:call(?SERVER, {publish, Source, Data}).
 
--doc "Subscribe a local process to player snapshot replacements.".
+-doc "Subscribe a local process. Changes arrive as `{wfcli_player, Ref, Source, Snapshot}`.".
 -spec subscribe(pid()) -> {ok, reference(), snapshot()} | {error, term()}.
 subscribe(Client) ->
     gen_server:call(?SERVER, {subscribe, Client}).
@@ -102,7 +103,10 @@ handle_call({subscribe, Client}, _From, State) when is_pid(Client) ->
 handle_call({unsubscribe, Ref}, _From, State) ->
     {reply, ok, remove_subscriber(Ref, State)};
 handle_call(clear, _From, State) ->
-    Snapshot = empty_snapshot(),
+    OldSnapshot = maps:get(snapshot, State),
+    Snapshot = #{revision => maps:get(revision, OldSnapshot) + 1,
+                 updated_at => erlang:system_time(millisecond),
+                 data => #{}},
     case persist_snapshot(maps:get(cache_path, State), Snapshot) of
         ok ->
             cancel_timer(maps:get(persist_timer, State)),
@@ -110,7 +114,7 @@ handle_call(clear, _From, State) ->
             State1 = set_game_active(
                        false, State#{snapshot => Snapshot, cache_dirty => false,
                                      cache_error => undefined, persist_timer => undefined}),
-            notify_subscribers(Snapshot, State1),
+            notify_subscribers(clear, Snapshot, State1),
             {reply, ok, State1};
         {error, Reason} ->
             {reply, {error, {player_cache_write_failed, Reason}}, State}
@@ -177,7 +181,7 @@ publish_source(Source, Data, State) ->
             invalidate_view_cache(),
             State1 = maybe_update_game_status(Source, Data,
                                               mark_dirty(State#{snapshot => Snapshot})),
-            notify_subscribers(Snapshot, State1),
+            notify_subscribers(Source, Snapshot, State1),
             {reply, {ok, Snapshot}, State1}
     end.
 
@@ -202,9 +206,12 @@ release_legacy_game_hold(State) ->
         false -> ok
     end.
 
-notify_subscribers(Snapshot, State) ->
+-spec notify_subscribers(source(), snapshot(), state()) -> ok.
+notify_subscribers(Source, Snapshot, State) ->
     maps:foreach(
-      fun(Ref, #{client := Client}) -> Client ! {wfcli_player, Ref, Snapshot} end,
+      fun(Ref, #{client := Client}) ->
+          Client ! {wfcli_player, Ref, Source, Snapshot}
+      end,
       maps:get(subscribers, State)).
 
 remove_subscriber(Ref, State) ->

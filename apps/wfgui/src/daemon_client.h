@@ -56,6 +56,7 @@ signals:
   void statusChanged();
   void relicPlannerReady(const QString &era, bool prices,
                          const QJsonObject &data);
+  void playerDatasetChanged(qint64 revision, const QString &source);
   void playerViewReady(const QString &view, const QJsonObject &data);
   void playerViewFailed(const QString &view, const QString &error);
   void activityReady(const QJsonObject &data);
@@ -89,7 +90,9 @@ private:
   void connectSocket();
   void ensureDaemon(bool update = false);
   void handleLine(const QByteArray &line);
+  void handlePlayerSnapshot(const QJsonObject &data, const QString &source);
   void sendHello();
+  void sendPlayerSubscription();
   void sendPendingRequests();
   void sendPendingPlayerViews();
   void sendPendingActivity();
@@ -188,6 +191,7 @@ private:
   bool stopAttempted_ = false;
   bool updatingDaemon_ = false;
   bool stoppingDaemon_ = false;
+  std::optional<qint64> playerRevision_;
   qint64 nextRequestId_ = 10;
   QString status_ = "Connecting to wfdaemon";
 };

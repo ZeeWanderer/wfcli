@@ -86,6 +86,7 @@ private slots:
   void masteryGridRequestsComponentQuotes();
   void masteryGridRequestsAllComponentQuotes();
   void playerGridRequestsAssetsWhenShown();
+  void subscribesToPlayerUpdatesAndCoalescesViews();
   void cacheMissDoesNotBecomeMarketMiss();
   void playerGridPreservesScrollAcrossResort();
   void busyProgressAnimates();
@@ -1297,6 +1298,149 @@ void RelicModelTest::masteryGridRequestsAllComponentQuotes() {
   QCOMPARE(quotes.takeFirst().at(0).toStringList(), expected);
 }
 
+void RelicModelTest::subscribesToPlayerUpdatesAndCoalescesViews() {
+  QTemporaryDir directory;
+  QVERIFY(directory.isValid());
+  const QString socketPath = directory.filePath("wfdaemon.sock");
+  QLocalServer server;
+  QVERIFY(server.listen(socketPath));
+
+  const QByteArray oldSocket = qgetenv("WFCLI_DAEMON_SOCKET");
+  qputenv("WFCLI_DAEMON_SOCKET", socketPath.toUtf8());
+  const auto restoreSocket = qScopeGuard([oldSocket] {
+    if (oldSocket.isNull()) {
+      qunsetenv("WFCLI_DAEMON_SOCKET");
+    } else {
+      qputenv("WFCLI_DAEMON_SOCKET", oldSocket);
+    }
+  });
+
+  DaemonClient client;
+  QSignalSpy playerChanged(&client, &DaemonClient::playerDatasetChanged);
+  QSignalSpy viewReady(&client, &DaemonClient::playerViewReady);
+  client.start();
+  QTRY_VERIFY(server.hasPendingConnections());
+  QLocalSocket *peer = server.nextPendingConnection();
+  QVERIFY(peer);
+  QTRY_VERIFY(peer->canReadLine());
+  QCOMPARE(
+      QJsonDocument::fromJson(peer->readLine()).object().value("op").toString(),
+      QString("hello"));
+
+  const QJsonArray capabilities{
+      "dataset.subscribe",      "dataset.subscribe.metadata",
+      "relic.planner",          "worldstate.activity",
+      "player.foundry",         "player.inventory",
+      "player.mastery",         "market.quote",
+      "market.resolve",         "market.describe",
+      "market.account",         "market.orders",
+      "market.presence",        "market.quote.variant",
+      "notifications.fissures", "asset.cache",
+  };
+  peer->write(QJsonDocument(QJsonObject{{"id", 1},
+                                        {"ok", true},
+                                        {"compatible", true},
+                                        {"capabilities", capabilities}})
+                  .toJson(QJsonDocument::Compact) +
+              '\n');
+  peer->flush();
+  QTRY_VERIFY(client.connected());
+
+  QJsonObject subscription;
+  QTRY_VERIFY(([&] {
+    while (peer->canReadLine()) {
+      const QJsonObject request =
+          QJsonDocument::fromJson(peer->readLine()).object();
+      if (request.value("op").toString() == "subscribe") {
+        subscription = request;
+      }
+    }
+    return !subscription.isEmpty();
+  })());
+  QCOMPARE(subscription.value("id").toInteger(), qint64(2));
+  QCOMPARE(subscription.value("dataset").toString(), QString("player"));
+  QCOMPARE(subscription.value("include_data").toBool(), false);
+
+  peer->write(QJsonDocument(QJsonObject{
+                                {"id", 2},
+                                {"ok", true},
+                                {"dataset", "player"},
+                                {"data", QJsonObject{{"revision", 4}}},
+                            })
+                  .toJson(QJsonDocument::Compact) +
+              '\n');
+  peer->flush();
+  QTRY_COMPARE(playerChanged.count(), 1);
+  QCOMPARE(playerChanged.at(0).at(0).toLongLong(), qint64(4));
+  QCOMPARE(playerChanged.at(0).at(1).toString(), QString());
+
+  const auto sendPlayerEvent = [peer](qint64 revision, const QString &source) {
+    peer->write(QJsonDocument(QJsonObject{
+                                  {"event", "dataset"},
+                                  {"subscription", 2},
+                                  {"dataset", "player"},
+                                  {"source", source},
+                                  {"data", QJsonObject{{"revision", revision}}},
+                              })
+                    .toJson(QJsonDocument::Compact) +
+                '\n');
+    peer->flush();
+  };
+  sendPlayerEvent(5, "collector");
+  QTRY_COMPARE(playerChanged.count(), 2);
+  QCOMPARE(playerChanged.at(1).at(1).toString(), QString("collector"));
+  sendPlayerEvent(5, "inventory");
+  QTest::qWait(20);
+  QCOMPARE(playerChanged.count(), 2);
+  sendPlayerEvent(6, "inventory");
+  QTRY_COMPARE(playerChanged.count(), 3);
+
+  client.requestPlayerView("inventory");
+  QJsonObject firstRequest;
+  QTRY_VERIFY(([&] {
+    while (peer->canReadLine()) {
+      const QJsonObject request =
+          QJsonDocument::fromJson(peer->readLine()).object();
+      if (request.value("op").toString() == "inventory_view") {
+        firstRequest = request;
+      }
+    }
+    return !firstRequest.isEmpty();
+  })());
+  client.requestPlayerView("inventory");
+  peer->write(QJsonDocument(QJsonObject{
+                                {"id", firstRequest.value("id")},
+                                {"ok", true},
+                                {"data", QJsonObject{{"revision", 6}}},
+                            })
+                  .toJson(QJsonDocument::Compact) +
+              '\n');
+  peer->flush();
+  QTRY_COMPARE(viewReady.count(), 1);
+
+  QJsonObject secondRequest;
+  QTRY_VERIFY(([&] {
+    while (peer->canReadLine()) {
+      const QJsonObject request =
+          QJsonDocument::fromJson(peer->readLine()).object();
+      if (request.value("op").toString() == "inventory_view") {
+        secondRequest = request;
+      }
+    }
+    return !secondRequest.isEmpty();
+  })());
+  QVERIFY(secondRequest.value("id") != firstRequest.value("id"));
+  peer->write(QJsonDocument(QJsonObject{
+                                {"id", secondRequest.value("id")},
+                                {"ok", true},
+                                {"data", QJsonObject{{"revision", 6}}},
+                            })
+                  .toJson(QJsonDocument::Compact) +
+              '\n');
+  peer->flush();
+  QTRY_COMPARE(viewReady.count(), 2);
+}
+
 void RelicModelTest::cacheMissDoesNotBecomeMarketMiss() {
   QTemporaryDir directory;
   QVERIFY(directory.isValid());
@@ -1325,10 +1469,13 @@ void RelicModelTest::cacheMissDoesNotBecomeMarketMiss() {
     QCOMPARE(hello.value("op").toString(), QString("hello"));
 
     const QJsonArray capabilities{
-        "relic.planner",          "worldstate.activity", "player.foundry",
-        "player.inventory",       "player.mastery",      "market.quote",
-        "market.resolve",         "market.describe",     "market.account",
-        "market.orders",          "market.presence",     "market.quote.variant",
+        "dataset.subscribe",      "dataset.subscribe.metadata",
+        "relic.planner",          "worldstate.activity",
+        "player.foundry",         "player.inventory",
+        "player.mastery",         "market.quote",
+        "market.resolve",         "market.describe",
+        "market.account",         "market.orders",
+        "market.presence",        "market.quote.variant",
         "notifications.fissures", "asset.cache",
     };
     peer->write(QJsonDocument(QJsonObject{{"id", 1},

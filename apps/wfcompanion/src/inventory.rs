@@ -17,7 +17,7 @@ use crate::debug_output::Runtime;
 
 const MAX_PAYLOAD_SIZE: usize = 0x4e2000;
 const SCAN_CHUNK_SIZE: usize = 1024 * 1024;
-const SCAN_INTERVAL: Duration = Duration::from_millis(25);
+const SCAN_INTERVAL: Duration = Duration::from_secs(1);
 const HTTP_QUEUE_PATTERN: &[u8] = &[
     0x48, 0x00, 0x00, 0x48, 0x8b, 0x0d, 0x00, 0x00, 0x00, 0x00, 0x48, 0x85, 0x00, 0x74, 0x00, 0x48,
     0x8b, 0xd3, 0xe8,
@@ -71,7 +71,6 @@ pub(crate) enum Event {
         game_pid: u32,
         collector: &'static str,
         process_pid: u32,
-        sync_key: String,
         data: Value,
     },
 }
@@ -202,7 +201,6 @@ fn scan_native(
     stopping: Arc<AtomicBool>,
     events: mpsc::Sender<Event>,
 ) {
-    let mut last_sync: Option<String> = None;
     let mut player_name = player_name_from_log(&prefix);
     let mut seen_payloads = HashSet::new();
     crate::incident::info(
@@ -218,28 +216,23 @@ fn scan_native(
                 {
                     continue;
                 }
-                let mut hasher = DefaultHasher::new();
-                payload.hash(&mut hasher);
-                if !seen_payloads.insert(hasher.finish()) {
+                if !is_new_payload(&payload, &mut seen_payloads) {
                     continue;
                 }
                 if player_name.is_none() {
                     player_name = player_name_from_log(&prefix);
                 }
-                if let Ok((sync_key, data)) = parse_observation(
+                if let Ok(data) = parse_observation(
                     &payload,
                     "native_http_buffer",
                     game_pid,
                     player_name.as_deref(),
-                ) && last_sync.as_ref() != Some(&sync_key)
-                {
-                    last_sync = Some(sync_key.clone());
+                ) {
                     if events
                         .send(Event::Inventory {
                             game_pid,
                             collector: "native_http_buffer",
                             process_pid: game_pid,
-                            sync_key,
                             data,
                         })
                         .is_err()
@@ -251,6 +244,12 @@ fn scan_native(
         }
         wait_for_scan(&stopping);
     }
+}
+
+fn is_new_payload(payload: &[u8], seen: &mut HashSet<u64>) -> bool {
+    let mut hasher = DefaultHasher::new();
+    payload.hash(&mut hasher);
+    seen.insert(hasher.finish())
 }
 
 fn resolve_http_queue(mem: &File, game_pid: u32) -> Result<u64, String> {
@@ -442,7 +441,7 @@ fn parse_observation(
     collector: &'static str,
     process_pid: u32,
     player_name: Option<&str>,
-) -> Result<(String, Value), String> {
+) -> Result<Value, String> {
     let value: Value = serde_json::from_slice(payload)
         .map_err(|error| format!("inventory payload is not valid JSON: {error}"))?;
     let raw = unwrap_inventory(value)?;
@@ -469,7 +468,7 @@ fn parse_observation(
     };
     let data = serde_json::to_value(observation)
         .map_err(|error| format!("could not encode inventory observation: {error}"))?;
-    Ok((sync_key, data))
+    Ok(data)
 }
 
 fn unwrap_inventory(value: Value) -> Result<Value, String> {
@@ -623,14 +622,14 @@ mod tests {
 
     #[test]
     fn parses_and_indexes_inventory_without_dropping_raw_fields() {
-        let (sync, value) = parse_observation(
+        let value = parse_observation(
             SAMPLE.as_bytes(),
             "native_http_queue",
             42,
             Some("TestTenno"),
         )
         .unwrap();
-        assert_eq!(sync, "abcdef");
+        assert_eq!(value["sync"]["$oid"], "abcdef");
         assert_eq!(value["schema"], 1);
         assert_eq!(value["collector"], "native_http_queue");
         assert_eq!(value["process_pid"], 42);
@@ -645,10 +644,22 @@ mod tests {
     #[test]
     fn unwraps_inventory_json_envelope() {
         let wrapped = serde_json::json!({"InventoryJSON": SAMPLE}).to_string();
-        let (sync, value) =
-            parse_observation(wrapped.as_bytes(), "native_http_queue", 7, None).unwrap();
-        assert_eq!(sync, "abcdef");
+        let value = parse_observation(wrapped.as_bytes(), "native_http_queue", 7, None).unwrap();
+        assert_eq!(value["sync"]["$oid"], "abcdef");
         assert_eq!(value["process_pid"], 7);
+    }
+
+    #[test]
+    fn deduplicates_payloads_not_inventory_sync_markers() {
+        let changed = SAMPLE.replace("\"ItemCount\":3", "\"ItemCount\":4");
+        let mut seen = HashSet::new();
+        assert!(is_new_payload(SAMPLE.as_bytes(), &mut seen));
+        assert!(!is_new_payload(SAMPLE.as_bytes(), &mut seen));
+        assert!(is_new_payload(changed.as_bytes(), &mut seen));
+
+        let value = parse_observation(changed.as_bytes(), "native_http_queue", 42, None).unwrap();
+        assert_eq!(value["sync"]["$oid"], "abcdef");
+        assert_eq!(value["index"]["stacks"][0]["count"], 4);
     }
 
     #[test]
