@@ -115,7 +115,8 @@ handle_call({unsubscribe, Ref}, _From, State) ->
 handle_call({set_idle_policy, Policy}, _From, State) ->
     {reply, wfcli_worldstate_service:set_idle_policy(Policy), State};
 handle_call(player_snapshot, _From, State) ->
-    {reply, wfcli_player_service:snapshot(), State};
+    Snapshot = wfcli_player_service:snapshot(),
+    {reply, Snapshot#{projection_summary => wfcli_player_projection:summary(Snapshot)}, State};
 handle_call(player_clear, _From, State) ->
     {reply, wfcli_player_service:clear(), State};
 handle_call(notification_settings, _From, State) ->

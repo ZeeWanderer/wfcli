@@ -133,12 +133,19 @@ field_values(Entry, haystack) ->
     present_values([maps:get(haystack, Entry, undefined)]);
 field_values(Entry, {entry, Key}) ->
     present_values([maps:get(Key, Entry, undefined)]);
+field_values(Entry, {entry_values, Key}) ->
+    case maps:get(Key, Entry, undefined) of
+        Values when is_list(Values) -> present_values(Values);
+        Value -> present_values([Value])
+    end;
 field_values(Entry, {data, Key}) ->
     present_values([maps:get(Key, maps:get(data, Entry, #{}), undefined)]);
 field_values(Entry, {row, Key}) ->
     present_values([maps:get(Key, maps:get(row_map, Entry, #{}), undefined)]);
 field_values(Entry, {data_path, Path}) ->
     present_values(wfcli_data_extract:extract_values(maps:get(data, Entry, #{}), Path));
+field_values(Entry, {entry_path, Key, Path}) ->
+    present_values(wfcli_data_extract:extract_values(maps:get(Key, Entry, #{}), Path));
 field_values(Entry, Key) ->
     Data = maps:get(data, Entry, #{}),
     Row = maps:get(row_map, Entry, #{}),

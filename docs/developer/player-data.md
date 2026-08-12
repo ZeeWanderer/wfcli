@@ -1,8 +1,7 @@
 # Player Data Acquisition
 
 `wfdaemon` owns the canonical `player` dataset. `wfcompanion` collects the local account
-observation through a narrow read-only native collector, indexes stable fields, and publishes
-both the index and untouched raw payload.
+observation through a narrow read-only native collector and publishes the untouched raw payload.
 
 ## AlecaFrame Finding
 
@@ -103,14 +102,19 @@ distribution, include it in incident logs, or upload it without explicit informe
 
 ## Current Contract
 
-The companion observation has schema `1`, collector `native_http_buffer`, collection time, game
-PID, sync value, profile, index, and raw payload. The typed index currently covers equipment,
-stack inventory, mastery records, pending recipes, missions, and player skills. Unknown fields
-remain queryable under `raw`.
+Companion observation schema `2` contains collector metadata, collection time, game PID, sync
+value, profile, and raw payload. Schema `1` snapshots with a companion-built index remain readable
+for cache migration.
 
 `wfdaemon` persists the latest observation in `player.term` with owner-only permissions. Player
-query entities expose profile, inventory, mastery, recipe, mission, and raw rows. Relic reward
-context joins Market set metadata to stack/equipment counts and account platinum or ducats.
+projection derives equipment, item stacks, ranked upgrades, configs, loadouts, mastery, recipes,
+missions, skills, affiliations, focus state, boosters, and challenges. Raw and typed records share
+origins; query defaults to typed records for covered origins and raw records elsewhere. Raw
+fields remain available through `data.*`, normalized nested fields through `typed.*`.
+
+`wfcli_player_schema` reports unknown fields and shape changes in understood records without
+rejecting production payloads. The player fixture must audit cleanly so schema drift becomes a
+test failure when fixtures are refreshed.
 
 `wfcli_player_views` joins that snapshot to the managed WFCD item catalog. It derives inventory
 categories and sets plus mastery ownership, rank, pending builds, missing components, owned-relic

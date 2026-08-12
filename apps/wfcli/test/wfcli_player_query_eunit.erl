@@ -40,6 +40,88 @@ typed_mastery_and_recipe_entities_are_distinct_test() ->
                  lists:sort([maps:get(type, Entry)
                              || Entry <- maps:get(slice, Results)])).
 
+auto_view_prefers_typed_record_for_same_origin_test() ->
+    {ok, Ast} = wfcli_query_parse:parse(
+                  "origin=inventory.raw.Suits.0"),
+    {ok, #{results := Results}} =
+        wfcli_player_query:execute(Ast, #{}, fixture_snapshot()),
+    [Entry] = maps:get(slice, Results),
+    ?assertEqual(player_equipment, maps:get(type, Entry)),
+    ?assertEqual(<<"typed">>, maps:get(representation, Entry)),
+    ?assertEqual(<<"inventory.raw.Suits.0">>, maps:get(origin, Entry)).
+
+view_control_can_select_raw_typed_or_both_test() ->
+    Base = "origin=inventory.raw.Suits.0",
+    ?assertEqual([player_raw], query_types("view=raw " ++ Base)),
+    ?assertEqual([player_equipment], query_types("view=typed " ++ Base)),
+    ?assertEqual([player_equipment, player_raw],
+                 lists:sort(query_types("view=both " ++ Base))).
+
+typed_view_contains_only_typed_entries_test() ->
+    {ok, Ast} = wfcli_query_parse:parse("view=typed"),
+    {ok, #{results := Results}} =
+        wfcli_player_query:execute(Ast, #{}, fixture_snapshot()),
+    Entries = maps:get(slice, Results),
+    ?assert(Entries =/= []),
+    ?assert(lists:all(
+              fun(Entry) -> maps:get(representation, Entry) =:= <<"typed">> end,
+              Entries)).
+
+nested_projection_origin_supports_raw_typed_or_both_test() ->
+    Base = "origin=inventory.raw.Suits.0.Configs.0",
+    ?assertEqual([player_config], query_types(Base)),
+    ?assertEqual([player_raw], query_types("view=raw " ++ Base)),
+    ?assertEqual([player_config, player_raw],
+                 lists:sort(query_types("view=both " ++ Base))).
+
+typed_path_queries_enriched_nested_fields_test() ->
+    {ok, Ast} = wfcli_query_parse:parse(
+                  "type=player_equipment typed.configs.0.upgrade_slots.0.rank=8"),
+    {ok, #{results := Results}} =
+        wfcli_player_query:execute(Ast, #{}, fixture_snapshot()),
+    [Entry] = maps:get(slice, Results),
+    ?assertEqual(<<"suit-1">>, maps:get(instance_id, Entry)).
+
+typed_scalar_fields_are_directly_queryable_test() ->
+    ?assertEqual([player_profile], query_types("player_level=18")),
+    ?assertEqual([player_loadout], query_types("type=player_loadout active=true")),
+    ?assertEqual([player_upgrade],
+                 query_types("type=player_upgrade equipped=true rank=8")).
+
+secondary_origin_resolves_to_covering_typed_record_test() ->
+    ?assertEqual([player_profile],
+                 query_types("origin=inventory.raw.PlayerLevel")),
+    ?assertEqual([player_raw],
+                 query_types("view=raw origin=inventory.raw.PlayerLevel")).
+
+typed_record_keeps_unprojected_source_fields_queryable_test() ->
+    Snapshot0 = fixture_snapshot(),
+    Inventory0 = maps:get(<<"inventory">>, maps:get(data, Snapshot0)),
+    Raw0 = maps:get(<<"raw">>, Inventory0),
+    [Suit0] = maps:get(<<"Suits">>, Raw0),
+    Raw = Raw0#{<<"Suits">> => [Suit0#{<<"FutureStat">> => 17}]},
+    Snapshot = Snapshot0#{data => #{<<"inventory">> =>
+                                        Inventory0#{<<"raw">> => Raw}}},
+    {ok, Ast} = wfcli_query_parse:parse(
+                  "type=player_equipment data.FutureStat=17"),
+    {ok, #{results := Results}} = wfcli_player_query:execute(Ast, #{}, Snapshot),
+    [Entry] = maps:get(slice, Results),
+    ?assertEqual(<<"suit-1">>, maps:get(instance_id, Entry)).
+
+unprojected_raw_data_remains_in_auto_view_test() ->
+    {ok, Ast} = wfcli_query_parse:parse(
+                  "data.UnknownFutureSection.kept=true"),
+    {ok, #{results := Results}} =
+        wfcli_player_query:execute(Ast, #{}, fixture_snapshot()),
+    [Entry] = maps:get(slice, Results),
+    ?assertEqual(player_raw, maps:get(type, Entry)),
+    ?assertEqual(<<"raw">>, maps:get(representation, Entry)).
+
+invalid_view_control_is_rejected_test() ->
+    {ok, Ast} = wfcli_query_parse:parse("view=merged type=player_equipment"),
+    ?assertMatch({error, {query_errors, [_]}},
+                 wfcli_player_query:execute(Ast, #{}, fixture_snapshot())).
+
 snapshot() ->
     #{revision => 4, updated_at => 1234,
       data => #{
@@ -81,3 +163,19 @@ typed_snapshot() ->
               <<"raw">> => #{<<"UnknownFutureField">> => true}
           }
       }}.
+
+query_types(Query) ->
+    {ok, Ast} = wfcli_query_parse:parse(Query),
+    {ok, #{results := Results}} =
+        wfcli_player_query:execute(Ast, #{}, fixture_snapshot()),
+    [maps:get(type, Entry) || Entry <- maps:get(slice, Results)].
+
+fixture_snapshot() ->
+    {ok, Body} = file:read_file(
+                   "apps/wfcli/test/fixtures/player_inventory_sample.json"),
+    Raw = jsone:decode(Body, [{object_format, map}]),
+    #{revision => 9, updated_at => 6789,
+      data => #{<<"inventory">> => #{
+          <<"schema">> => 2,
+          <<"profile">> => #{<<"player_name">> => <<"TestTenno">>},
+          <<"raw">> => Raw}}}.

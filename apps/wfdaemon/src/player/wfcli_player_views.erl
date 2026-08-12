@@ -33,17 +33,15 @@ mastery() ->
 -doc "Build Foundry view from supplied data; exposed for deterministic tests.".
 -spec foundry(map(), [map()]) -> {ok, map()}.
 foundry(Snapshot, Catalog) ->
-    Observation = inventory_observation(Snapshot),
-    Index = maps:get(<<"index">>, Observation, #{}),
-    Owned = aggregate(maps:get(<<"equipment">>, Index, []) ++
-                      maps:get(<<"stacks">>, Index, [])),
-    Mastery = mastery_index(maps:get(<<"mastery">>, Index, [])),
-    Pending = pending_index(maps:get(<<"pending_recipes">>, Index, []), Catalog),
-    Subsumed = subsumed_index(maps:get(<<"raw">>, Observation, #{})),
+    Player = wfcli_player_projection:build(Snapshot),
+    Owned = aggregate(owned_records(Player)),
+    Mastery = mastery_index(maps:get(<<"mastery">>, Player, [])),
+    Pending = pending_index(maps:get(<<"pending_recipes">>, Player, []), Catalog),
+    Subsumed = subsumed_index(maps:get(<<"raw">>, Player, #{})),
     Items = [foundry_item(Item, Owned, Mastery, Pending, Subsumed)
              || Item <- Catalog, mastery_item_supported(Item)],
     Sorted = lists:sort(fun name_before/2, Items),
-    {ok, (base_response(Snapshot))#{
+    {ok, (base_response(Snapshot, Player))#{
         <<"items">> => Sorted,
         <<"summary">> => foundry_summary(Sorted)
     }}.
@@ -51,11 +49,10 @@ foundry(Snapshot, Catalog) ->
 -doc "Build inventory view from supplied data; exposed for deterministic tests.".
 -spec inventory(map(), [map()]) -> {ok, map()}.
 inventory(Snapshot, Catalog) ->
-    Observation = inventory_observation(Snapshot),
-    Index = maps:get(<<"index">>, Observation, #{}),
+    Player = wfcli_player_projection:build(Snapshot),
     CatalogIndex = catalog_index(Catalog),
-    Mastery = mastery_index(maps:get(<<"mastery">>, Index, [])),
-    Stacks = aggregate(maps:get(<<"stacks">>, Index, [])),
+    Mastery = mastery_index(maps:get(<<"mastery">>, Player, [])),
+    Stacks = aggregate(maps:get(<<"stacks">>, Player, [])),
     StackItems = [inventory_item(Unique, Entry,
                                  maps:get(Unique, CatalogIndex, #{}), Mastery)
                   || {Unique, Entry} <- maps:to_list(Stacks),
@@ -65,7 +62,7 @@ inventory(Snapshot, Catalog) ->
                        Set =/= undefined],
     Items = StackItems ++ SetItems,
     Sorted = lists:sort(fun name_before/2, Items),
-    {ok, (base_response(Snapshot))#{
+    {ok, (base_response(Snapshot, Player))#{
         <<"items">> => Sorted,
         <<"summary">> => inventory_summary(Sorted)
     }}.
@@ -78,19 +75,17 @@ mastery(Snapshot, Catalog) ->
 -doc "Build mastery view with supplied Star Chart metadata.".
 -spec mastery(map(), [map()], map() | undefined) -> {ok, map()}.
 mastery(Snapshot, Catalog, StarChart) ->
-    Observation = inventory_observation(Snapshot),
-    Index = maps:get(<<"index">>, Observation, #{}),
-    Owned = aggregate(maps:get(<<"equipment">>, Index, []) ++
-                      maps:get(<<"stacks">>, Index, [])),
-    Mastery = mastery_index(maps:get(<<"mastery">>, Index, [])),
-    Pending = pending_index(maps:get(<<"pending_recipes">>, Index, []), Catalog),
+    Player = wfcli_player_projection:build(Snapshot),
+    Owned = aggregate(owned_records(Player)),
+    Mastery = mastery_index(maps:get(<<"mastery">>, Player, [])),
+    Pending = pending_index(maps:get(<<"pending_recipes">>, Player, []), Catalog),
     Items = [mastery_item(Item, Owned, Mastery, Pending)
              || Item <- Catalog, mastery_item_supported(Item)],
     Sorted = lists:sort(fun mastery_before/2, Items),
-    Profile = profile(maps:get(<<"profile">>, Observation, #{})),
-    {ok, (base_response(Snapshot))#{
+    Profile = profile(maps:get(<<"profile">>, Player, #{})),
+    {ok, (base_response(Snapshot, Player))#{
         <<"items">> => Sorted,
-        <<"summary">> => mastery_summary(Sorted, Profile, Index, StarChart)
+        <<"summary">> => mastery_summary(Sorted, Profile, Player, StarChart)
     }}.
 
 with_catalog(View, Build) ->
@@ -147,15 +142,15 @@ cache_store(Key, Result) ->
     end,
     ok.
 
-inventory_observation(Snapshot) ->
-    Data = maps:get(data, Snapshot, #{}),
-    maps:get(<<"inventory">>, Data, #{}).
-
-base_response(Snapshot) ->
-    Observation = inventory_observation(Snapshot),
+base_response(Snapshot, Player) ->
     #{<<"revision">> => maps:get(revision, Snapshot, 0),
       <<"updated_at">> => nullable(maps:get(updated_at, Snapshot, undefined)),
-      <<"profile">> => profile(maps:get(<<"profile">>, Observation, #{}))}.
+      <<"profile">> => profile(maps:get(<<"profile">>, Player, #{}))}.
+
+owned_records(Player) ->
+    maps:get(<<"equipment">>, Player, []) ++
+    maps:get(<<"items">>, Player, []) ++
+    maps:get(<<"stacks">>, Player, []).
 
 profile(Profile) when is_map(Profile) ->
     case maps:get(<<"player_level">>, Profile, undefined) of
@@ -585,18 +580,59 @@ ends_with(_Value, _Suffix) -> false.
 has_owned_relic(Drops, Owned) ->
     lists:any(
       fun(Drop) ->
-          Unique = maps:get(<<"uniqueName">>, Drop, undefined),
-          maps:get(count, maps:get(Unique, Owned, #{}), 0) > 0
+          case drop_relic_unique(Drop) of
+              Unique when is_binary(Unique) ->
+                  maps:get(count, maps:get(Unique, Owned, #{}), 0) > 0;
+              _ -> false
+          end
       end, Drops).
 
 component_relic_probability(Drops, Owned) ->
-    1.0 - lists:foldl(
-      fun(Drop, MissChance) ->
-          Unique = maps:get(<<"uniqueName">>, Drop, undefined),
+    Relics = lists:foldl(fun relic_drop_chance/2, #{}, Drops),
+    1.0 - maps:fold(
+      fun(Unique, Chance, MissChance) ->
           Count = maps:get(count, maps:get(Unique, Owned, #{}), 0),
-          Chance = min(100, max(0, number(maps:get(<<"chance">>, Drop, 0)))) / 100,
           MissChance * math:pow(1.0 - Chance, Count)
-      end, 1.0, Drops).
+      end, 1.0, Relics).
+
+relic_drop_chance(Drop, Acc) ->
+    case drop_relic_unique(Drop) of
+        Unique when is_binary(Unique) ->
+            Chance = min(100, max(0, number(maps:get(<<"chance">>, Drop, 0)))) / 100,
+            maps:update_with(Unique, fun(Previous) -> max(Previous, Chance) end,
+                             Chance, Acc);
+        _ -> Acc
+    end.
+
+drop_relic_unique(Drop) ->
+    case maps:get(<<"uniqueName">>, Drop, undefined) of
+        Unique when is_binary(Unique) ->
+            replace_relic_refinement(
+              Unique, relic_refinement_suffix(maps:get(<<"location">>, Drop, <<>>)));
+        _ -> undefined
+    end.
+
+relic_refinement_suffix(Location) ->
+    case {contains(Location, <<"(Exceptional)">>),
+          contains(Location, <<"(Flawless)">>),
+          contains(Location, <<"(Radiant)">>)} of
+        {true, _, _} -> <<"Silver">>;
+        {_, true, _} -> <<"Gold">>;
+        {_, _, true} -> <<"Platinum">>;
+        _ -> <<"Bronze">>
+    end.
+
+replace_relic_refinement(Unique, Refinement) ->
+    Existing = [Suffix || Suffix <- [<<"Bronze">>, <<"Silver">>, <<"Gold">>,
+                                          <<"Platinum">>],
+                         ends_with(Unique, Suffix)],
+    case Existing of
+        [Suffix | _] ->
+            PrefixSize = byte_size(Unique) - byte_size(Suffix),
+            <<Prefix:PrefixSize/binary, _/binary>> = Unique,
+            <<Prefix/binary, Refinement/binary>>;
+        [] -> Unique
+    end.
 
 item_relic_probability([]) -> 0.0;
 item_relic_probability(Components) ->
@@ -762,34 +798,41 @@ star_chart_summary(Missions, _Metadata) when is_list(Missions) ->
 star_chart_summary(_Missions, Metadata) -> star_chart_summary([], Metadata).
 
 completed_node_xp(Missions, Mode, Nodes) ->
-    lists:sum([maps:get(maps:get(<<"Tag">>, Mission), Nodes)
+    lists:sum([maps:get(mission_tag(Mission), Nodes)
                || Mission <- Missions,
                   completed_mission(Mission, Mode, Nodes)]).
 
 completed_mission(Mission, Mode, Nodes) ->
-    Tag = maps:get(<<"Tag">>, Mission, <<>>),
+    Tag = mission_tag(Mission),
     maps:is_key(Tag, Nodes) andalso completed_mission(Mission, Mode).
 
 completed_mission(Mission, Mode) when is_map(Mission) ->
-    Tag = maps:get(<<"Tag">>, Mission, <<>>),
-    not is_junction(Tag) andalso number(maps:get(<<"Completes">>, Mission, 0)) > 0
-        andalso (Mode =:= normal orelse number(maps:get(<<"Tier">>, Mission, 0)) > 0);
+    Tag = mission_tag(Mission),
+    not is_junction(Tag) andalso
+        mission_number(Mission, <<"completes">>, <<"Completes">>) > 0
+        andalso (Mode =:= normal orelse mission_number(Mission, <<"tier">>, <<"Tier">>) > 0);
 completed_mission(_Mission, _Mode) -> false.
 
 completed_junction(Mission, Mode, Junctions) ->
-    Tag = maps:get(<<"Tag">>, Mission, <<>>),
+    Tag = mission_tag(Mission),
     maps:is_key(Tag, Junctions) andalso completed_junction(Mission, Mode).
 
 completed_junction(Mission, Mode) when is_map(Mission) ->
-    Tag = maps:get(<<"Tag">>, Mission, <<>>),
-    Completes = number(maps:get(<<"Completes">>, Mission, 0)),
-    Tier = number(maps:get(<<"Tier">>, Mission, 0)),
+    Tag = mission_tag(Mission),
+    Completes = mission_number(Mission, <<"completes">>, <<"Completes">>),
+    Tier = mission_number(Mission, <<"tier">>, <<"Tier">>),
     is_junction(Tag) andalso binary:match(Tag, <<"To">>) =/= nomatch andalso
         case Mode of
             normal -> Completes > 0;
             steel -> Completes =:= 2 orelse (Completes >= 1 andalso Tier >= 1)
         end;
 completed_junction(_Mission, _Mode) -> false.
+
+mission_tag(Mission) ->
+    maps:get(<<"tag">>, Mission, maps:get(<<"Tag">>, Mission, <<>>)).
+
+mission_number(Mission, Key, LegacyKey) ->
+    number(maps:get(Key, Mission, maps:get(LegacyKey, Mission, 0))).
 
 is_junction(Tag) when is_binary(Tag) ->
     Suffix = <<"Junction">>,

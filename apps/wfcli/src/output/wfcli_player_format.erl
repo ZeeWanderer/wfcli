@@ -15,7 +15,8 @@ print_snapshot(Snapshot) ->
     io:format("  sources: ~s~n", [source_list(maps:keys(Data))]),
     print_game(maps:get(<<"game">>, Data, undefined)),
     print_collector(maps:get(<<"collector">>, Data, undefined)),
-    print_inventory(maps:get(<<"inventory">>, Data, undefined)),
+    print_inventory(maps:get(<<"inventory">>, Data, undefined),
+                    maps:get(projection_summary, Snapshot, #{})),
     ok.
 
 -doc "Render player entities returned by unified query engine.".
@@ -47,8 +48,22 @@ print_collector(Collector) ->
                 maps:get(<<"inventory_updates_observed">>, Collector, undefined)),
     print_field("last observed ms", maps:get(<<"last_observed_at">>, Collector, undefined)).
 
-print_inventory(undefined) -> ok;
-print_inventory(Inventory) ->
+print_inventory(undefined, _Summary) -> ok;
+print_inventory(Inventory, Summary) when map_size(Summary) > 0 ->
+    io:format("~nInventory~n"),
+    print_field("observation schema", maps:get(<<"schema">>, Inventory, undefined)),
+    print_field("projection schema", maps:get(schema, Summary, undefined)),
+    print_field("collected_at_ms", maps:get(<<"collected_at">>, Inventory, undefined)),
+    print_field("equipment", maps:get(equipment, Summary, 0)),
+    print_field("items", maps:get(items, Summary, 0)),
+    print_field("stacks", maps:get(stacks, Summary, 0)),
+    print_field("upgrades", maps:get(upgrades, Summary, 0)),
+    print_field("configs", maps:get(configs, Summary, 0)),
+    print_field("loadouts", maps:get(loadouts, Summary, 0)),
+    print_field("mastery records", maps:get(mastery, Summary, 0)),
+    print_field("pending recipes", maps:get(pending_recipes, Summary, 0)),
+    print_field("schema issues", maps:get(schema_issues, Summary, 0));
+print_inventory(Inventory, _Summary) ->
     Index = maps:get(<<"index">>, Inventory, #{}),
     io:format("~nInventory~n"),
     print_field("schema", maps:get(<<"schema">>, Inventory, undefined)),

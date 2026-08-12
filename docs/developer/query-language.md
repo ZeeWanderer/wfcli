@@ -22,8 +22,9 @@ such as mod polarity aliases, stay in the owning entity schema rather than the g
 Worldstate projected columns are query fields through the shared schema registry; raw record
 fields remain available as `data.<path>`.
 
-`sort=` and `dataset=` are positive top-level controls, not predicates. They must not compile under
-`OR` or `NOT`. Dataset adapters validate fields and operators before evaluating any row.
+`sort=` and `dataset=` are positive top-level controls, not predicates. Player queries also accept
+`view=auto|raw|typed|both`. Controls must not compile under `OR` or `NOT`. Dataset adapters
+validate fields and operators before evaluating any row.
 
 ## Design Sources
 

@@ -11,9 +11,18 @@ inventory_and_mastery_join_test() ->
                  data => #{<<"inventory">> => #{
                      <<"profile">> => #{<<"player_name">> => <<"TestTenno">>,
                                         <<"player_level">> => 4},
-                     <<"raw">> => #{<<"InfestedFoundry">> => #{
-                         <<"ConsumedSuits">> => [#{<<"s">> => Frame}]
-                     }},
+                     <<"raw">> => #{
+                         <<"InfestedFoundry">> => #{
+                             <<"ConsumedSuits">> => [#{<<"s">> => Frame}]
+                         },
+                         <<"Missions">> => [
+                             #{<<"Tag">> => <<"EarthNode">>,
+                               <<"Completes">> => 1, <<"Tier">> => 1},
+                             #{<<"Tag">> => <<"EventNode">>,
+                               <<"Completes">> => 1, <<"Tier">> => 1},
+                             #{<<"Tag">> => <<"EarthToVenusJunction">>,
+                               <<"Completes">> => 2, <<"Tier">> => 1}]
+                     },
                      <<"index">> => #{
                          <<"equipment">> => [entry(Frame, 1, 100000)],
                          <<"stacks">> => [entry(Relic, 2, 0), entry(Chassis, 1, 0)],
@@ -92,6 +101,10 @@ inventory_and_mastery_join_test() ->
 
     StarChartMetadata = #{nodes => #{<<"EarthNode">> => 51},
                           junctions => #{<<"EarthToVenusJunction">> => true}},
+    Projection = wfcli_player_projection:build(Snapshot),
+    [ProjectedMission | _] = maps:get(<<"missions">>, Projection),
+    ?assert(maps:is_key(<<"tag">>, ProjectedMission)),
+    ?assertNot(maps:is_key(<<"Tag">>, ProjectedMission)),
     {ok, Mastery} = wfcli_player_views:mastery(
                       Snapshot, Catalog, StarChartMetadata),
     [MasteryItem] = maps:get(<<"items">>, Mastery),
@@ -206,6 +219,36 @@ duplicate_recipe_slots_share_owned_count_test() ->
     ?assertEqual(2, maps:get(<<"components_required">>, Item)),
     ?assertEqual(1, maps:get(<<"missing_parts">>, Item)),
     ?assertEqual(false, maps:get(<<"ready_to_build">>, Item)).
+
+refined_relic_probability_uses_variant_inventory_test() ->
+    Frame = <<"/Lotus/Powersuits/Test/RefinementPrime">>,
+    Part = <<"/Lotus/Types/Recipes/TestRefinementPart">>,
+    Intact = <<"/Lotus/Types/Game/Projections/T4TestABronze">>,
+    Radiant = <<"/Lotus/Types/Game/Projections/T4TestAPlatinum">>,
+    Snapshot = #{data => #{<<"inventory">> => #{<<"index">> => #{
+        <<"stacks">> => [entry(Intact, 2, 0), entry(Radiant, 1, 0)]}}}},
+    Drops = [
+        #{<<"location">> => <<"Axi T1 Relic">>,
+          <<"uniqueName">> => Intact, <<"chance">> => 25},
+        #{<<"location">> => <<"Axi T1 Relic (Exceptional)">>,
+          <<"uniqueName">> => Intact, <<"chance">> => 20},
+        #{<<"location">> => <<"Axi T1 Relic (Flawless)">>,
+          <<"uniqueName">> => Intact, <<"chance">> => 15},
+        #{<<"location">> => <<"Axi T1 Relic (Radiant)">>,
+          <<"uniqueName">> => Intact, <<"chance">> => 10}],
+    Catalog = [#{<<"uniqueName">> => Frame, <<"name">> => <<"Refinement Prime">>,
+                 <<"category">> => <<"Warframes">>, <<"masterable">> => true,
+                 <<"components">> => [
+                     #{<<"uniqueName">> => Part, <<"name">> => <<"Blueprint">>,
+                       <<"itemCount">> => 1, <<"drops">> => Drops}]}],
+
+    {ok, Mastery} = wfcli_player_views:mastery(Snapshot, Catalog),
+    [Item] = maps:get(<<"items">>, Mastery),
+    [Component] = maps:get(<<"components">>, Item),
+    Expected = 1.0 - math:pow(0.75, 2) * 0.9,
+    ?assert(abs(maps:get(<<"relic_probability">>, Item) - Expected) < 0.0001),
+    ?assert(abs(maps:get(<<"relic_probability">>, Component) - Expected) < 0.0001),
+    ?assert(maps:get(<<"owned_relic">>, Component)).
 
 item_catalog_compaction_test() ->
     Item = #{<<"uniqueName">> => <<"/Lotus/Test">>,

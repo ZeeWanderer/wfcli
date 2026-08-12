@@ -27,43 +27,7 @@ const HTTP_QUEUE_MASK: &[u8] = &[
     0xff, 0xff, 0xff,
 ];
 const INVENTORY_MARKER: &[u8] = b"LastInventorySync";
-const SCHEMA_VERSION: u32 = 1;
-
-const EQUIPMENT_COLLECTIONS: &[&str] = &[
-    "Suits",
-    "LongGuns",
-    "Pistols",
-    "Melee",
-    "Ships",
-    "Scoops",
-    "Sentinels",
-    "KubrowPets",
-    "SpaceSuits",
-    "SpaceMelee",
-    "SpaceGuns",
-    "OperatorAmps",
-    "Hoverboards",
-    "MoaPets",
-    "DataKnives",
-    "CrewShips",
-    "CrewShipSalvagedWeapons",
-    "CrewShipWeapons",
-    "MechSuits",
-    "Robotics",
-];
-
-const STACK_COLLECTIONS: &[&str] = &[
-    "RawUpgrades",
-    "FlavourItems",
-    "MiscItems",
-    "Recipes",
-    "Upgrades",
-    "Consumables",
-    "LevelKeys",
-    "FusionTreasures",
-    "SpecialItems",
-    "CrewShipAmmo",
-];
+const SCHEMA_VERSION: u32 = 2;
 
 #[derive(Debug)]
 pub(crate) enum Event {
@@ -120,7 +84,6 @@ struct Observation {
     process_pid: u32,
     sync: Value,
     profile: Profile,
-    index: InventoryIndex,
     raw: Value,
 }
 
@@ -136,39 +99,6 @@ struct Profile {
     daily_focus: Option<i64>,
     focus_capacity: Option<i64>,
     last_region_played: Option<String>,
-}
-
-#[derive(Debug, Default, Serialize)]
-struct InventoryIndex {
-    equipment: Vec<IndexedItem>,
-    stacks: Vec<IndexedItem>,
-    mastery: Vec<MasteryRecord>,
-    pending_recipes: Vec<PendingRecipe>,
-    missions: Vec<Value>,
-    player_skills: Value,
-}
-
-#[derive(Debug, Serialize)]
-struct IndexedItem {
-    collection: String,
-    item_type: String,
-    instance_id: Option<String>,
-    count: i64,
-    xp: Option<i64>,
-    item_name: Option<String>,
-}
-
-#[derive(Debug, Serialize)]
-struct MasteryRecord {
-    item_type: String,
-    xp: i64,
-}
-
-#[derive(Debug, Serialize)]
-struct PendingRecipe {
-    item_type: String,
-    instance_id: Option<String>,
-    completion_date: Value,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -463,7 +393,6 @@ fn parse_observation(
         process_pid,
         sync,
         profile: profile(object, player_name),
-        index: build_index(object),
         raw,
     };
     let data = serde_json::to_value(observation)
@@ -498,91 +427,12 @@ fn profile(object: &Map<String, Value>, player_name: Option<&str>) -> Profile {
     }
 }
 
-fn build_index(object: &Map<String, Value>) -> InventoryIndex {
-    InventoryIndex {
-        equipment: index_items(object, EQUIPMENT_COLLECTIONS, 1),
-        stacks: index_items(object, STACK_COLLECTIONS, 0),
-        mastery: object
-            .get("XPInfo")
-            .and_then(Value::as_array)
-            .into_iter()
-            .flatten()
-            .filter_map(|item| {
-                Some(MasteryRecord {
-                    item_type: field_text(item, "ItemType")?,
-                    xp: field_integer(item, "XP").unwrap_or(0),
-                })
-            })
-            .collect(),
-        pending_recipes: object
-            .get("PendingRecipes")
-            .and_then(Value::as_array)
-            .into_iter()
-            .flatten()
-            .filter_map(|item| {
-                Some(PendingRecipe {
-                    item_type: field_text(item, "ItemType")?,
-                    instance_id: item
-                        .get("ItemId")
-                        .map(value_key)
-                        .filter(|id| !id.is_empty()),
-                    completion_date: item.get("CompletionDate").cloned().unwrap_or(Value::Null),
-                })
-            })
-            .collect(),
-        missions: object
-            .get("Missions")
-            .and_then(Value::as_array)
-            .cloned()
-            .unwrap_or_default(),
-        player_skills: object.get("PlayerSkills").cloned().unwrap_or(Value::Null),
-    }
-}
-
-fn index_items(
-    object: &Map<String, Value>,
-    collections: &[&str],
-    default_count: i64,
-) -> Vec<IndexedItem> {
-    let mut indexed = Vec::new();
-    for collection in collections {
-        let Some(items) = object.get(*collection).and_then(Value::as_array) else {
-            continue;
-        };
-        for item in items {
-            let Some(item_type) = field_text(item, "ItemType") else {
-                continue;
-            };
-            indexed.push(IndexedItem {
-                collection: (*collection).to_owned(),
-                item_type,
-                instance_id: item
-                    .get("ItemId")
-                    .map(value_key)
-                    .filter(|id| !id.is_empty()),
-                count: field_integer(item, "ItemCount").unwrap_or(default_count),
-                xp: field_integer(item, "XP"),
-                item_name: field_text(item, "ItemName"),
-            });
-        }
-    }
-    indexed
-}
-
 fn integer(object: &Map<String, Value>, key: &str) -> Option<i64> {
     object.get(key).and_then(Value::as_i64)
 }
 
 fn text(object: &Map<String, Value>, key: &str) -> Option<String> {
     object.get(key).and_then(Value::as_str).map(str::to_owned)
-}
-
-fn field_integer(value: &Value, key: &str) -> Option<i64> {
-    value.get(key).and_then(Value::as_i64)
-}
-
-fn field_text(value: &Value, key: &str) -> Option<String> {
-    value.get(key).and_then(Value::as_str).map(str::to_owned)
 }
 
 fn value_key(value: &Value) -> String {
@@ -621,7 +471,7 @@ mod tests {
     }"#;
 
     #[test]
-    fn parses_and_indexes_inventory_without_dropping_raw_fields() {
+    fn parses_inventory_without_dropping_raw_fields() {
         let value = parse_observation(
             SAMPLE.as_bytes(),
             "native_http_queue",
@@ -630,14 +480,15 @@ mod tests {
         )
         .unwrap();
         assert_eq!(value["sync"]["$oid"], "abcdef");
-        assert_eq!(value["schema"], 1);
+        assert_eq!(value["schema"], 2);
         assert_eq!(value["collector"], "native_http_queue");
         assert_eq!(value["process_pid"], 42);
         assert_eq!(value["profile"]["player_name"], "TestTenno");
         assert_eq!(value["profile"]["player_level"], 18);
-        assert_eq!(value["index"]["equipment"][0]["count"], 1);
-        assert_eq!(value["index"]["stacks"][0]["count"], 3);
-        assert_eq!(value["index"]["mastery"][0]["xp"], 450000);
+        assert!(value.get("index").is_none());
+        assert_eq!(value["raw"]["Suits"][0]["XP"], 9000);
+        assert_eq!(value["raw"]["MiscItems"][0]["ItemCount"], 3);
+        assert_eq!(value["raw"]["XPInfo"][0]["XP"], 450000);
         assert_eq!(value["raw"]["UnknownFutureField"]["kept"], true);
     }
 
@@ -659,7 +510,7 @@ mod tests {
 
         let value = parse_observation(changed.as_bytes(), "native_http_queue", 42, None).unwrap();
         assert_eq!(value["sync"]["$oid"], "abcdef");
-        assert_eq!(value["index"]["stacks"][0]["count"], 4);
+        assert_eq!(value["raw"]["MiscItems"][0]["ItemCount"], 4);
     }
 
     #[test]

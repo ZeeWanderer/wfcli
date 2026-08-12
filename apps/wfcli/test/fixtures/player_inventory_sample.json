@@ -1,0 +1,126 @@
+{
+  "LastInventorySync": {"$oid": "sync-1"},
+  "PlayerLevel": 18,
+  "RegularCredits": 12345,
+  "PremiumCredits": 50,
+  "PremiumCreditsFree": 10,
+  "FusionPoints": 900,
+  "TradesRemaining": 7,
+  "DailyFocus": 1000,
+  "FocusCapacity": 500000,
+  "LastRegionPlayed": "Region1",
+  "Suits": [
+    {
+      "ItemId": {"$oid": "suit-1"},
+      "ItemType": "/Lotus/Powersuits/TestSuit",
+      "XP": 9000,
+      "UpgradeVer": 12,
+      "Polarized": 2,
+      "Features": 3,
+      "FocusLens": "/Lotus/Types/Items/FocusLens/TestLens",
+      "Polarity": [{"Slot": 0, "Value": "AP_ATTACK"}],
+      "ArchonCrystalUpgrades": [],
+      "Configs": [
+        {
+          "Name": "Config A",
+          "Upgrades": [{"$oid": "mod-1"}],
+          "AbilityOverride": [],
+          "Skins": [],
+          "Songs": [],
+          "pricol": 1
+        }
+      ]
+    }
+  ],
+  "LongGuns": [
+    {
+      "ItemId": {"$oid": "gun-1"},
+      "ItemType": "/Lotus/Weapons/TestGun",
+      "ItemName": "Named Test Gun",
+      "XP": 450000,
+      "UpgradeVer": 10,
+      "Configs": []
+    }
+  ],
+  "MiscItems": [
+    {
+      "ItemType": "/Lotus/Types/Items/MiscItems/ArgonCrystal",
+      "ItemCount": 3
+    }
+  ],
+  "Recipes": [
+    {
+      "ItemType": "/Lotus/Types/Recipes/TestPart",
+      "ItemCount": 2
+    }
+  ],
+  "Upgrades": [
+    {
+      "ItemId": {"$oid": "mod-1"},
+      "ItemType": "/Lotus/Upgrades/Mods/TestMod",
+      "UpgradeFingerprint": "{\"lvl\":8}"
+    }
+  ],
+  "RawUpgrades": [
+    {
+      "ItemType": "/Lotus/Upgrades/Mods/TestUnrankedMod",
+      "ItemCount": 4,
+      "LastAdded": {"$date": {"$numberLong": "1000"}}
+    }
+  ],
+  "XPInfo": [
+    {"ItemType": "/Lotus/Powersuits/TestSuit", "XP": 9000}
+  ],
+  "PendingRecipes": [
+    {
+      "ItemId": {"$oid": "recipe-1"},
+      "ItemType": "/Lotus/Types/Recipes/TestSuit",
+      "CompletionDate": {"$date": {"$numberLong": "2000"}}
+    }
+  ],
+  "Missions": [
+    {"Tag": "SolNode1", "Completes": 1, "Tier": 2}
+  ],
+  "PlayerSkills": {
+    "LPS_PILOTING": 7,
+    "LPS_DRIFT_RIDING": 5
+  },
+  "Affiliations": [
+    {
+      "Tag": "TestSyndicate",
+      "Standing": 12000,
+      "Title": 3,
+      "Initiated": true,
+      "FreeFavorsEarned": 1,
+      "FreeFavorsUsed": 0,
+      "WeeklyMissions": []
+    }
+  ],
+  "FocusUpgrades": [
+    {"ItemType": "/Lotus/Focus/TestNode", "Level": 2, "IsUniversal": false}
+  ],
+  "FocusXP": {"AP_ATTACK": 42000},
+  "Boosters": [
+    {
+      "ItemType": "/Lotus/Types/Boosters/TestBooster",
+      "ExpiryDate": {"$date": {"$numberLong": "3000"}}
+    }
+  ],
+  "ChallengeProgress": [
+    {"Name": "TestChallenge", "Progress": 4, "Completed": false}
+  ],
+  "LoadOutPresets": {
+    "NORMAL": [
+      {
+        "ItemId": {"$oid": "loadout-1"},
+        "n": "Default",
+        "Favorite": true,
+        "FocusSchool": "/Lotus/Focus/TestSchool",
+        "PresetIcon": "/Lotus/Interface/Icons/Test.png",
+        "s": {"ItemId": {"$oid": "suit-1"}, "mod": 0, "cus": 1}
+      }
+    ]
+  },
+  "CurrentLoadOutIds": [{"$oid": "loadout-1"}],
+  "UnknownFutureSection": {"kept": true}
+}

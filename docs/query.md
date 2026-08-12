@@ -87,6 +87,19 @@ do not own or hide source data. Query the immutable full source tree through the
 wfcli query 'dataset=worldstate type=raw_worldstate data.Conquests.0.Type=CT_LAB extract=data.Conquests.0.Missions.*.missionType'
 ```
 
+Player projections retain their source object under `data.*`; normalized nested fields use
+`typed.*`. Raw and typed representations share one or more origins. Player queries prefer typed
+records for covered origins while retaining raw records with no projection:
+
+```bash
+wfcli query 'dataset=player type=player_upgrade rank>=8'
+wfcli query 'dataset=player typed.configs.0.upgrade_slots.0.rank=8'
+wfcli query 'dataset=player view=raw origin=inventory.raw.Suits.0'
+wfcli query 'dataset=player view=both origin=inventory.raw.Suits.0'
+```
+
+`view=auto|raw|typed|both` is a player-only top-level control. `auto` is the default.
+
 Catalog fields differ by dataset; invalid fields and operators are reported as query errors.
 Run `wfcli COMMAND --help` for focused field flags and examples.
 
