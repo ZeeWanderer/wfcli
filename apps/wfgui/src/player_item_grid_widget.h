@@ -8,6 +8,7 @@
 
 class QTimer;
 class QShowEvent;
+class QContextMenuEvent;
 
 class PlayerItemGridWidget final : public QListView {
   Q_OBJECT
@@ -25,8 +26,10 @@ signals:
   void quotesNeeded(const QStringList &items, bool refresh);
   void marketItemRequested(const QString &item, const QString &side);
   void relicRewardRequested(const QString &reward);
+  void foundryItemRequested(const QString &item);
 
 protected:
+  void contextMenuEvent(QContextMenuEvent *event) override;
   void resizeEvent(QResizeEvent *event) override;
   void showEvent(QShowEvent *event) override;
 

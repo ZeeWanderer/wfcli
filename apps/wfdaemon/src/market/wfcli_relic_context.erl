@@ -179,19 +179,19 @@ set_complete(Parts) ->
     end, CraftParts).
 
 player_index(PlayerSnapshot) ->
-    Data = maps:get(data, PlayerSnapshot, #{}),
-    Observation = maps:get(<<"inventory">>, Data, #{}),
-    Index = maps:get(<<"index">>, Observation, #{}),
-    Entries = maps:get(<<"equipment">>, Index, []) ++ maps:get(<<"stacks">>, Index, []),
+    Player = wfcli_player_projection:build(PlayerSnapshot),
+    Entries = maps:get(<<"equipment">>, Player, []) ++
+              maps:get(<<"items">>, Player, []) ++
+              maps:get(<<"stacks">>, Player, []),
     #{owned => lists:foldl(fun owned_entry/2, #{}, Entries),
       mastery => maps:from_list(
         [{maps:get(<<"item_type">>, Entry), maps:get(<<"xp">>, Entry, 0)}
-         || Entry <- maps:get(<<"mastery">>, Index, []), is_map(Entry),
+         || Entry <- maps:get(<<"mastery">>, Player, []), is_map(Entry),
             is_binary(maps:get(<<"item_type">>, Entry, undefined)),
             is_integer(maps:get(<<"xp">>, Entry, undefined))]),
       pending => maps:from_list(
         [{recipe_key(maps:get(<<"item_type">>, Entry)), true}
-         || Entry <- maps:get(<<"pending_recipes">>, Index, []), is_map(Entry),
+         || Entry <- maps:get(<<"pending_recipes">>, Player, []), is_map(Entry),
             is_binary(maps:get(<<"item_type">>, Entry, undefined))])}.
 
 owned_entry(#{<<"item_type">> := ItemType, <<"count">> := Count}, Acc)
@@ -200,9 +200,8 @@ owned_entry(#{<<"item_type">> := ItemType, <<"count">> := Count}, Acc)
 owned_entry(_Entry, Acc) -> Acc.
 
 profile_value(PlayerSnapshot, Key) ->
-    Data = maps:get(data, PlayerSnapshot, #{}),
-    Observation = maps:get(<<"inventory">>, Data, #{}),
-    maps:get(Key, maps:get(<<"profile">>, Observation, #{}), undefined).
+    Player = wfcli_player_projection:build(PlayerSnapshot),
+    maps:get(Key, maps:get(<<"profile">>, Player, #{}), undefined).
 
 item_name(Item) ->
     English = maps:get(<<"en">>, maps:get(<<"i18n">>, Item, #{}), #{}),

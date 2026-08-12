@@ -17,10 +17,12 @@ class RelicPlannerWidget final : public QWidget {
 public:
   explicit RelicPlannerWidget(AppController *controller,
                               QWidget *parent = nullptr);
+  void showEra(const QString &era);
   void showReward(const QString &reward);
 
 signals:
   void marketItemRequested(const QString &item, const QString &side);
+  void foundryItemRequested(const QString &item);
 
 private:
   void updateContent();

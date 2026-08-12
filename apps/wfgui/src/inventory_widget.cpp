@@ -274,6 +274,8 @@ InventoryWidget::InventoryWidget(AppController *controller, QWidget *parent)
           &AppController::resolveMarketQuotes);
   connect(grid_, &PlayerItemGridWidget::marketItemRequested, this,
           &InventoryWidget::marketItemRequested);
+  connect(grid_, &PlayerItemGridWidget::relicRewardRequested, this,
+          &InventoryWidget::relicRewardRequested);
   connect(controller_, &AppController::inventoryStateChanged, this, [this] {
     if (priceSort() && !controller_->inventoryLoading()) {
       beginPriceLoad();

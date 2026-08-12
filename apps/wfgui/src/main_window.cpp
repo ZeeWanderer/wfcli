@@ -218,16 +218,26 @@ MainWindow::MainWindow(QWidget *parent)
   const auto openMarket = [this](const QString &item, const QString &side) {
     showMarketItem(item, side);
   };
+  const auto showRelics = [this, relics](const QString &reward) {
+    setPage("relic");
+    relics->showReward(reward);
+  };
+  const auto showFoundry = [this, foundry](const QString &item) {
+    setPage("foundry");
+    foundry->showItem(item);
+  };
   connect(foundry, &FoundryWidget::marketItemRequested, this, openMarket);
-  connect(foundry, &FoundryWidget::relicRewardRequested, this,
-          [this, relics](const QString &reward) {
-            setPage("relic");
-            relics->showReward(reward);
-          });
+  connect(foundry, &FoundryWidget::relicRewardRequested, this, showRelics);
   connect(mastery, &MasteryPlannerWidget::marketItemRequested, this,
           openMarket);
+  connect(mastery, &MasteryPlannerWidget::relicRewardRequested, this,
+          showRelics);
+  connect(mastery, &MasteryPlannerWidget::foundryItemRequested, this,
+          showFoundry);
   connect(inventory, &InventoryWidget::marketItemRequested, this, openMarket);
+  connect(inventory, &InventoryWidget::relicRewardRequested, this, showRelics);
   connect(relics, &RelicPlannerWidget::marketItemRequested, this, openMarket);
+  connect(relics, &RelicPlannerWidget::foundryItemRequested, this, showFoundry);
   connect(market, &MarketWidget::marketItemRequested, this, openMarket);
   connect(marketDialog_, &MarketItemDialog::signInRequested, this, [this] {
     selectPage(4);
@@ -237,6 +247,11 @@ MainWindow::MainWindow(QWidget *parent)
     selectPage(4);
     navigation_->button(4)->setChecked(true);
   });
+  connect(activityRail_, &ActivityRailWidget::relicEraRequested, this,
+          [this, relics](const QString &era) {
+            setPage("relic");
+            relics->showEra(era);
+          });
 }
 
 void MainWindow::showMarketItem(const QString &item, const QString &side) {

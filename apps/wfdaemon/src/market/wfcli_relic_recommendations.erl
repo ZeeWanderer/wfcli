@@ -12,7 +12,7 @@
 
 -doc "Return compact relic-catalog schema version.".
 -spec catalog_version() -> pos_integer().
-catalog_version() -> 2.
+catalog_version() -> 3.
 
 -doc "Fetch and compact the WFCD relic catalog.".
 -spec fetch() -> {ok, map()} | {error, term()}.
@@ -97,7 +97,7 @@ real_http_get(Url, Headers) ->
 compact(#{<<"uniqueName">> := Unique, <<"name">> := Name,
           <<"rewards">> := Rewards} = Relic)
   when is_binary(Unique), is_binary(Name), is_list(Rewards) ->
-    case era(Name) of
+    case era(Name, Unique) of
         undefined -> false;
         Era ->
             CompactRewards = lists:filtermap(fun compact_reward/1, Rewards),
@@ -117,14 +117,25 @@ compact_reward(#{<<"chance">> := Chance, <<"item">> := Item} = Reward)
              rarity => maps:get(<<"rarity">>, Reward, undefined)}};
 compact_reward(_Reward) -> false.
 
-era(Name) ->
+era(Name, Unique) ->
     case binary:split(Name, <<" ">>, [global, trim_all]) of
         [Era | _] when Era =:= <<"Lith">>; Era =:= <<"Meso">>;
                        Era =:= <<"Neo">>; Era =:= <<"Axi">>;
                        Era =:= <<"Requiem">> ->
             string:lowercase(Era);
+        [<<"Vanguard">> | _] -> projection_era(Unique);
         _ -> undefined
     end.
+
+projection_era(Unique) when is_binary(Unique) ->
+    case re:run(Unique, <<"/T([1-4])">>, [{capture, [1], binary}]) of
+        {match, [<<"1">>]} -> <<"lith">>;
+        {match, [<<"2">>]} -> <<"meso">>;
+        {match, [<<"3">>]} -> <<"neo">>;
+        {match, [<<"4">>]} -> <<"axi">>;
+        nomatch -> <<"vanguard">>
+    end;
+projection_era(_Unique) -> <<"vanguard">>.
 
 ranked(Era, Catalog, Owned, ItemBySlug, Quotes, View, OnlyOwned) ->
     Candidates = ranked_candidates(Era, Catalog, Owned, ItemBySlug, Quotes,
@@ -149,10 +160,10 @@ ranked_candidates(Era, Catalog, Owned, ItemBySlug, Quotes, View, OnlyOwned) ->
                   Ducats = expected_max(
                              Rewards,
                              fun(Reward) -> reward_ducats(Reward, ItemBySlug) end),
-                  {PublicEra, Refinement} = relic_name_parts(maps:get(name, Relic)),
+                  {_Family, Refinement} = relic_name_parts(maps:get(name, Relic)),
                   Public = #{<<"id">> => Unique,
                              <<"name">> => maps:get(name, Relic),
-                             <<"era">> => PublicEra,
+                             <<"era">> => maps:get(era, Relic),
                              <<"refinement">> => Refinement,
                              <<"amount_owned">> => Count,
                              <<"vaulted">> => maps:get(vaulted, Relic),
@@ -273,7 +284,8 @@ recommendation_before(A, B) ->
     KeyA > KeyB.
 
 era_matches(<<"all">>, Era) ->
-    lists:member(Era, [<<"lith">>, <<"meso">>, <<"neo">>, <<"axi">>]);
+    lists:member(Era, [<<"lith">>, <<"meso">>, <<"neo">>, <<"axi">>,
+                       <<"requiem">>, <<"vanguard">>]);
 era_matches(Era, Era) -> true;
 era_matches(_Wanted, _Actual) -> false.
 
@@ -308,7 +320,7 @@ relic_name_parts(Name) ->
 relic_asset(Unique, Relic) ->
     ImageName = case maps:get(image_name, Relic, undefined) of
         Existing when is_binary(Existing) -> Existing;
-        _ -> relic_image_name(maps:get(name, Relic, undefined))
+        _ -> relic_image_name_from_relic(maps:get(name, Relic, undefined), Unique)
     end,
     case ImageName of
         Name when is_binary(Name) ->
@@ -317,21 +329,21 @@ relic_asset(Unique, Relic) ->
         _ -> null
     end.
 
-relic_image_name(Name) when is_binary(Name) ->
+relic_image_name_from_relic(Name, Unique) when is_binary(Name) ->
     case binary:split(Name, <<" ">>, [global, trim_all]) of
-        [Era, _Code | Parts] when Parts =/= [] ->
-            relic_image_name(Era, lists:last(Parts));
+        [_Family, _Code | Parts] when Parts =/= [] ->
+            relic_image_name(era(Name, Unique), lists:last(Parts));
         _ -> undefined
     end;
-relic_image_name(_Name) -> undefined.
+relic_image_name_from_relic(_Name, _Unique) -> undefined.
 
 relic_image_name(Era, Refinement) ->
     Prefix = case Era of
-        <<"Lith">> -> <<"Lith">>;
-        <<"Meso">> -> <<"Meso">>;
-        <<"Neo">> -> <<"Neo">>;
-        <<"Axi">> -> <<"Axi">>;
-        <<"Requiem">> -> <<"Immortal">>;
+        <<"lith">> -> <<"Lith">>;
+        <<"meso">> -> <<"Meso">>;
+        <<"neo">> -> <<"Neo">>;
+        <<"axi">> -> <<"Axi">>;
+        <<"requiem">> -> <<"Immortal">>;
         _ -> undefined
     end,
     Suffix = case Refinement of
@@ -434,10 +446,10 @@ expected_max(Rewards, ValueFun) ->
     end.
 
 owned_counts(PlayerSnapshot) ->
-    Data = maps:get(data, PlayerSnapshot, #{}),
-    Observation = maps:get(<<"inventory">>, Data, #{}),
-    Index = maps:get(<<"index">>, Observation, #{}),
-    Entries = maps:get(<<"equipment">>, Index, []) ++ maps:get(<<"stacks">>, Index, []),
+    Player = wfcli_player_projection:build(PlayerSnapshot),
+    Entries = maps:get(<<"equipment">>, Player, []) ++
+              maps:get(<<"items">>, Player, []) ++
+              maps:get(<<"stacks">>, Player, []),
     lists:foldl(fun owned_entry/2, #{}, Entries).
 
 owned_entry(#{<<"item_type">> := ItemType, <<"count">> := Count}, Acc)

@@ -1,10 +1,12 @@
 #include "relic_grid_widget.h"
 
 #include <QAbstractItemModel>
+#include <QContextMenuEvent>
 #include <QEnterEvent>
 #include <QFontMetrics>
 #include <QGridLayout>
 #include <QHelpEvent>
+#include <QMenu>
 #include <QMouseEvent>
 #include <QPainter>
 #include <QPainterPath>
@@ -45,8 +47,12 @@ public:
   explicit RelicCardWidget(
       const QModelIndex &index,
       std::function<void(const QString &, const QString &)> marketRequest,
+      std::function<void(const QString &)> filterRequest,
+      std::function<void(const QString &)> foundryRequest,
       QWidget *parent = nullptr)
-      : QWidget(parent), marketRequest_(std::move(marketRequest)) {
+      : QWidget(parent), marketRequest_(std::move(marketRequest)),
+        filterRequest_(std::move(filterRequest)),
+        foundryRequest_(std::move(foundryRequest)) {
     setObjectName("relicCardCanvas");
     wfgui::setCaptureItem(this);
     setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
@@ -146,6 +152,51 @@ protected:
       return;
     }
     QWidget::mouseReleaseEvent(event);
+  }
+
+  void contextMenuEvent(QContextMenuEvent *event) override {
+    if (!index_.isValid()) {
+      return;
+    }
+    const QVariantList rewards = index_.data(RelicModel::RewardsRole).toList();
+    const int rewardIndex = rewardIndexAt(event->pos());
+    const bool rewardHit = rewardIndex >= 0 && rewardIndex < rewards.size();
+    const QString item =
+        rewardHit ? rewards.at(rewardIndex).toMap().value("name").toString()
+                  : index_.data(RelicModel::NameRole).toString();
+    if (item.isEmpty()) {
+      return;
+    }
+
+    auto *menu = new QMenu(this);
+    menu->setObjectName("relicContextMenu");
+    menu->setAttribute(Qt::WA_DeleteOnClose);
+    const bool primeReward =
+        rewardHit && item.contains(" Prime ", Qt::CaseInsensitive);
+    if (rewardHit) {
+      QAction *filter =
+          menu->addAction("Show all relics containing this reward");
+      connect(filter, &QAction::triggered, this,
+              [this, item] { filterRequest_(item); });
+      if (primeReward) {
+        QAction *foundry = menu->addAction("Show item in Foundry");
+        connect(foundry, &QAction::triggered, this,
+                [this, item] { foundryRequest_(item); });
+      }
+    }
+    if (!rewardHit || primeReward) {
+      if (!menu->actions().isEmpty()) {
+        menu->addSeparator();
+      }
+      QAction *sell = menu->addAction("View WTS listings");
+      QAction *buy = menu->addAction("View WTB listings");
+      connect(sell, &QAction::triggered, this,
+              [this, item] { marketRequest_(item, "sell"); });
+      connect(buy, &QAction::triggered, this,
+              [this, item] { marketRequest_(item, "buy"); });
+    }
+    menu->popup(event->globalPos());
+    event->accept();
   }
 
   void paintEvent(QPaintEvent *) override {
@@ -300,14 +351,39 @@ protected:
         painter.drawEllipse(rewardRect.adjusted(ownedInset, ownedInset,
                                                 -ownedInset, -ownedInset));
       }
+      if (reward.value("search_match").toBool()) {
+        const int inset = wfgui::scaled(1, scale_);
+        painter.setPen(QPen(QColor("#f0c95a"), wfgui::scaled(3, scale_)));
+        painter.setBrush(Qt::NoBrush);
+        painter.drawEllipse(rewardRect.adjusted(inset, inset, -inset, -inset));
+      }
     }
   }
 
 private:
+  int rewardIndexAt(const QPoint &position) const {
+    const QVariantList rewards = index_.data(RelicModel::RewardsRole).toList();
+    const QVariantList refinements =
+        index_.data(RelicModel::RefinementsRole).toList();
+    const wfgui::RelicCardLayout layout = wfgui::RelicCardLayout::calculate(
+        rect(), static_cast<int>(refinements.size()),
+        static_cast<int>(rewards.size()), scale_);
+    const int count = std::min(static_cast<int>(layout.rewardCells.size()),
+                               static_cast<int>(rewards.size()));
+    for (int reward = 0; reward < count; ++reward) {
+      if (layout.rewardCells.at(reward).contains(position)) {
+        return reward;
+      }
+    }
+    return -1;
+  }
+
   QPersistentModelIndex index_;
   qreal scale_ = 0.0;
   bool hovered_ = false;
   std::function<void(const QString &, const QString &)> marketRequest_;
+  std::function<void(const QString &)> filterRequest_;
+  std::function<void(const QString &)> foundryRequest_;
 };
 } // namespace
 
@@ -385,6 +461,10 @@ void RelicGridWidget::rebuild() {
             [this](const QString &item, const QString &side) {
               emit marketItemRequested(item, side);
             },
+            [this](const QString &reward) {
+              emit rewardFilterRequested(reward);
+            },
+            [this](const QString &item) { emit foundryItemRequested(item); },
             this);
         cardCache_.insert(key, card);
       } else {

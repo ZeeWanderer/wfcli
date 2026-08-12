@@ -113,9 +113,10 @@ FoundryWidget::FoundryWidget(AppController *controller, QWidget *parent)
     : QWidget(parent), controller_(controller),
       items_(new PlayerItemFilterModel(this)),
       grid_(new PlayerItemGridWidget(PlayerItemGridWidget::Kind::Foundry)),
-      summary_(new QLabel), emptyState_(new QLabel),
-      progress_(new AnimatedProgressBar), refresh_(new QPushButton),
-      content_(new QStackedLayout) {
+      groups_(new QButtonGroup(this)),
+      search_(new CompactSearch("Search Foundry")), summary_(new QLabel),
+      emptyState_(new QLabel), progress_(new AnimatedProgressBar),
+      refresh_(new QPushButton), content_(new QStackedLayout) {
   setObjectName("page");
   items_->setSourceModel(controller_->foundryItems());
   items_->setGroup("warframe");
@@ -127,7 +128,7 @@ FoundryWidget::FoundryWidget(AppController *controller, QWidget *parent)
 
   auto *toolbar = new QHBoxLayout;
   toolbar->setSpacing(10);
-  auto *groups = new QButtonGroup(this);
+  auto *groups = groups_;
   groups->setExclusive(true);
   int id = 0;
   for (const auto &[label, value, icon] : Groups) {
@@ -149,7 +150,7 @@ FoundryWidget::FoundryWidget(AppController *controller, QWidget *parent)
     toolbar->addWidget(button);
   }
   toolbar->addStretch();
-  auto *expandingSearch = new CompactSearch("Search Foundry");
+  auto *expandingSearch = search_;
   auto *search = expandingSearch->editor();
   toolbar->addWidget(expandingSearch);
 
@@ -271,6 +272,17 @@ FoundryWidget::FoundryWidget(AppController *controller, QWidget *parent)
           &FoundryWidget::updateContent);
   connect(items_, &QAbstractItemModel::rowsRemoved, this,
           &FoundryWidget::updateContent);
+  updateContent();
+}
+
+void FoundryWidget::showItem(const QString &item) {
+  items_->setGroup("all");
+  items_->setText(item);
+  search_->setText(item);
+  for (auto *button : groups_->buttons()) {
+    button->setChecked(button->property("group").toString() == "all");
+  }
+  updateFilterButtons(groups_, false);
   updateContent();
 }
 

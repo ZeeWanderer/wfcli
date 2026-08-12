@@ -93,13 +93,14 @@ selects_visible_candidate_reward_slugs_test() ->
        wfcli_relic_recommendations:price_slugs(
          <<"axi">>, Catalog, items(), player(), 1)).
 
-all_excludes_requiem_relics_test() ->
+all_includes_requiem_relics_test() ->
     {ok, Catalog} = wfcli_relic_recommendations:parse(fixture()),
     Result = wfcli_relic_recommendations:build(
                <<"all">>, Catalog, items(), quotes(), player(), planner_options()),
-    Names = [maps:get(<<"name">>, Item)
-             || Item <- maps:get(<<"items">>, Result)],
-    ?assertEqual(false, lists:member(<<"Requiem I1 Intact">>, Names)).
+    Requiem = [Item || Item <- maps:get(<<"items">>, Result),
+                       maps:get(<<"era">>, Item) =:= <<"requiem">>],
+    [Relic] = Requiem,
+    ?assertEqual(<<"Requiem I1 Relic">>, maps:get(<<"name">>, Relic)).
 
 requiem_can_be_selected_explicitly_test() ->
     {ok, Catalog} = wfcli_relic_recommendations:parse(fixture()),
@@ -110,6 +111,44 @@ requiem_can_be_selected_explicitly_test() ->
     ?assertEqual(<<"Requiem I1 Intact">>, maps:get(<<"name">>, Relic)),
     ?assertEqual(<<"RelicImmortalD.png">>,
                  maps:get(<<"image_name">>, maps:get(<<"asset">>, Relic))).
+
+vanguard_uses_projection_tier_test() ->
+    Body = jsone:encode([
+        #{<<"uniqueName">> => <<"/Lotus/Types/Game/Projections/T4VanguardTestABronze">>,
+          <<"name">> => <<"Vanguard V1 Intact">>, <<"vaulted">> => true,
+          <<"imageName">> => <<"RelicAxiD.png">>, <<"rewards">> => []}
+    ]),
+    {ok, Catalog} = wfcli_relic_recommendations:parse(Body),
+    Player = #{data => #{<<"inventory">> => #{<<"index">> => #{<<"stacks">> => [
+        #{<<"item_type">> => <<"/Lotus/Types/Game/Projections/T4VanguardTestABronze">>,
+          <<"count">> => 1}
+    ]}}}},
+    Axi = wfcli_relic_recommendations:build(
+            <<"axi">>, Catalog, [], #{}, Player, planner_options()),
+    [Relic] = maps:get(<<"items">>, Axi),
+    ?assertEqual(<<"Vanguard V1 Relic">>, maps:get(<<"name">>, Relic)),
+    ?assertEqual(<<"axi">>, maps:get(<<"era">>, Relic)),
+    All = wfcli_relic_recommendations:build(
+            <<"all">>, Catalog, [], #{}, Player, planner_options()),
+    ?assertEqual(1, length(maps:get(<<"items">>, All))).
+
+unknown_vanguard_tier_remains_visible_in_all_test() ->
+    Body = jsone:encode([
+        #{<<"uniqueName">> => <<"/Lotus/Types/Game/Projections/VanguardTestABronze">>,
+          <<"name">> => <<"Vanguard V2 Intact">>, <<"rewards">> => []}
+    ]),
+    {ok, Catalog} = wfcli_relic_recommendations:parse(Body),
+    Player = #{data => #{<<"inventory">> => #{<<"index">> => #{<<"stacks">> => [
+        #{<<"item_type">> => <<"/Lotus/Types/Game/Projections/VanguardTestABronze">>,
+          <<"count">> => 1}
+    ]}}}},
+    All = wfcli_relic_recommendations:build(
+            <<"all">>, Catalog, [], #{}, Player, planner_options()),
+    [Relic] = maps:get(<<"items">>, All),
+    ?assertEqual(<<"vanguard">>, maps:get(<<"era">>, Relic)),
+    Axi = wfcli_relic_recommendations:build(
+            <<"axi">>, Catalog, [], #{}, Player, planner_options()),
+    ?assertEqual([], maps:get(<<"items">>, Axi)).
 
 recommendation_limit_is_request_scoped_test() ->
     Entries = lists:seq(1, 60),

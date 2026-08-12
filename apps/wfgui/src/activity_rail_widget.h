@@ -23,6 +23,10 @@ public:
 
 signals:
   void signInRequested();
+  void relicEraRequested(const QString &era);
+
+protected:
+  bool eventFilter(QObject *watched, QEvent *event) override;
 
 private:
   void rebuild();

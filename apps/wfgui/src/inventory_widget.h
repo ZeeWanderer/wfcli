@@ -20,6 +20,7 @@ public:
 
 signals:
   void marketItemRequested(const QString &item, const QString &side);
+  void relicRewardRequested(const QString &reward);
 
 private:
   bool priceSort() const;

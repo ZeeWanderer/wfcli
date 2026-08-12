@@ -20,6 +20,8 @@ public:
 
 signals:
   void marketItemRequested(const QString &item, const QString &side);
+  void rewardFilterRequested(const QString &reward);
+  void foundryItemRequested(const QString &item);
 
 protected:
   void resizeEvent(QResizeEvent *event) override;

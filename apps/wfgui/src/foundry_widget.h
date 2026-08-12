@@ -4,6 +4,8 @@
 
 class AppController;
 class AnimatedProgressBar;
+class CompactSearch;
+class QButtonGroup;
 class QLabel;
 class PlayerItemFilterModel;
 class PlayerItemGridWidget;
@@ -15,6 +17,7 @@ class FoundryWidget final : public QWidget {
 
 public:
   explicit FoundryWidget(AppController *controller, QWidget *parent = nullptr);
+  void showItem(const QString &item);
 
 signals:
   void marketItemRequested(const QString &item, const QString &side);
@@ -26,6 +29,8 @@ private:
   AppController *controller_;
   PlayerItemFilterModel *items_;
   PlayerItemGridWidget *grid_;
+  QButtonGroup *groups_;
+  CompactSearch *search_;
   QLabel *summary_;
   QLabel *emptyState_;
   AnimatedProgressBar *progress_;

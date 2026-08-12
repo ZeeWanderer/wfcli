@@ -293,6 +293,16 @@ QString RelicFilterModel::era() const { return era_; }
 
 QVariant RelicFilterModel::data(const QModelIndex &index, int role) const {
   QVariant value = QSortFilterProxyModel::data(index, role);
+  if (role == RelicModel::RewardsRole && !filterText_.isEmpty()) {
+    QVariantList rewards;
+    for (const QVariant &entry : value.toList()) {
+      QVariantMap reward = entry.toMap();
+      reward.insert("search_match", reward.value("name").toString().contains(
+                                        filterText_, Qt::CaseInsensitive));
+      rewards.push_back(reward);
+    }
+    return rewards;
+  }
   if (!onlyOwned_ || role != RelicModel::RefinementsRole) {
     return value;
   }
@@ -313,6 +323,10 @@ void RelicFilterModel::setFilterText(const QString &text) {
   beginFilterChange();
   filterText_ = text;
   endFilterChange(QSortFilterProxyModel::Direction::Rows);
+  if (rowCount() > 0) {
+    emit dataChanged(index(0, 0), index(rowCount() - 1, 0),
+                     {RelicModel::RewardsRole});
+  }
   emit filterTextChanged();
 }
 

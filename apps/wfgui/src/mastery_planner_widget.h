@@ -23,6 +23,8 @@ public:
 
 signals:
   void marketItemRequested(const QString &item, const QString &side);
+  void relicRewardRequested(const QString &reward);
+  void foundryItemRequested(const QString &item);
 
 private:
   void setMode(const QString &mode);

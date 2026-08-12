@@ -1,8 +1,10 @@
 #include "player_item_grid_widget.h"
 
 #include <QAbstractItemView>
+#include <QContextMenuEvent>
 #include <QFontMetrics>
 #include <QHelpEvent>
+#include <QMenu>
 #include <QMouseEvent>
 #include <QPainter>
 #include <QPainterPath>
@@ -356,6 +358,71 @@ QString componentMarketName(const QVariantMap &component) {
 QString counterpartyOrderSide(int owned, int required) {
   // Missing items come from WTS sellers; owned items go to WTB buyers.
   return owned >= qMax(1, required) ? "buy" : "sell";
+}
+
+QString relicSearchTerm(const QModelIndex &index) {
+  const QString group = index.data(PlayerItemModel::GroupRole).toString();
+  if (group == "relics" ||
+      index.data(PlayerItemModel::FromRelicsRole).toBool()) {
+    return index.data(PlayerItemModel::NameRole).toString();
+  }
+  if (!index.data(PlayerItemModel::IsPrimeRole).toBool()) {
+    return {};
+  }
+  if (group == "parts") {
+    return index.data(PlayerItemModel::MarketNameRole).toString();
+  }
+  if (group == "sets") {
+    QString name = index.data(PlayerItemModel::NameRole).toString();
+    if (name.endsWith(" Set", Qt::CaseInsensitive)) {
+      name.chop(4);
+    }
+    return name;
+  }
+  return index.data(PlayerItemModel::NameRole).toString();
+}
+
+struct ContextTarget {
+  QModelIndex item;
+  QVariantMap component;
+};
+
+ContextTarget contextTargetAt(const PlayerItemGridWidget *view,
+                              PlayerItemGridWidget::Kind kind,
+                              const QPoint &position) {
+  const QModelIndex index = view->indexAt(position);
+  if (!index.isValid()) {
+    return {};
+  }
+
+  const qreal scale = wfgui::displayScale(view);
+  const QRect content = contentRect(view->visualRect(index), kind, scale);
+  QVariantList components =
+      index.data(PlayerItemModel::ComponentsRole).toList();
+  QList<QRect> areas;
+  if (kind == PlayerItemGridWidget::Kind::Inventory) {
+    const bool isSet =
+        index.data(PlayerItemModel::GroupRole).toString() == "sets";
+    areas = wfgui::InventoryCardLayout::calculate(
+                content, isSet, static_cast<int>(components.size()), scale)
+                .components;
+  } else {
+    if (kind == PlayerItemGridWidget::Kind::Mastery &&
+        index.data(PlayerItemModel::OwnedRole).toBool()) {
+      components.clear();
+    }
+    areas = componentRects(content, static_cast<int>(components.size()), kind,
+                           scale);
+  }
+  for (int component = 0;
+       component < std::min(static_cast<int>(areas.size()),
+                            static_cast<int>(components.size()));
+       ++component) {
+    if (areas.at(component).contains(position)) {
+      return {index, components.at(component).toMap()};
+    }
+  }
+  return {index, {}};
 }
 
 class PlayerItemDelegate final : public QStyledItemDelegate {
@@ -1133,6 +1200,12 @@ private:
                                      imageRect.size()));
         }
       }
+      if (component.value("search_match").toBool()) {
+        const int inset = wfgui::scaled(1, scale);
+        painter.setPen(QPen(QColor("#f0c95a"), wfgui::scaled(3, scale)));
+        painter.setBrush(Qt::NoBrush);
+        painter.drawEllipse(circle.adjusted(inset, inset, -inset, -inset));
+      }
     }
   }
 
@@ -1173,6 +1246,101 @@ PlayerItemGridWidget::PlayerItemGridWidget(Kind kind, QWidget *parent)
           &PlayerItemGridWidget::requestVisibleData);
   connect(verticalScrollBar(), &QScrollBar::valueChanged, this,
           [this] { scheduleVisibleData(); });
+}
+
+void PlayerItemGridWidget::contextMenuEvent(QContextMenuEvent *event) {
+  const QPoint position = viewport()->mapFromGlobal(event->globalPos());
+  const ContextTarget target = contextTargetAt(this, kind_, position);
+  if (!target.item.isValid()) {
+    return;
+  }
+
+  auto *menu = new QMenu(this);
+  menu->setObjectName("playerItemContextMenu");
+  menu->setAttribute(Qt::WA_DeleteOnClose);
+  const QString itemName =
+      target.item.data(PlayerItemModel::NameRole).toString();
+  const bool component = !target.component.isEmpty();
+
+  if (component) {
+    const QString componentName = componentMarketName(target.component);
+    const QString componentMarket =
+        target.component.value("market_name").toString();
+    if ((target.item.data(PlayerItemModel::IsPrimeRole).toBool() &&
+         target.component.value("relic_drop").toBool()) ||
+        target.component.value("owned_relic").toBool()) {
+      QAction *relics = menu->addAction("Show in Relic Planner");
+      connect(relics, &QAction::triggered, this, [this, componentName] {
+        emit relicRewardRequested(componentName);
+      });
+    } else {
+      const QString itemRelics = relicSearchTerm(target.item);
+      if (!itemRelics.isEmpty()) {
+        QAction *relics = menu->addAction("Show parts in Relic Planner");
+        connect(relics, &QAction::triggered, this,
+                [this, itemRelics] { emit relicRewardRequested(itemRelics); });
+      }
+    }
+    if (kind_ == Kind::Mastery &&
+        target.item.data(PlayerItemModel::HasRecipeRole).toBool()) {
+      QAction *foundry = menu->addAction("Show item in Foundry");
+      connect(foundry, &QAction::triggered, this,
+              [this, itemName] { emit foundryItemRequested(itemName); });
+    }
+    if (!componentMarket.isEmpty()) {
+      if (!menu->actions().isEmpty()) {
+        menu->addSeparator();
+      }
+      QAction *sell = menu->addAction("View WTS listings");
+      QAction *buy = menu->addAction("View WTB listings");
+      connect(sell, &QAction::triggered, this, [this, componentMarket] {
+        emit marketItemRequested(componentMarket, "sell");
+      });
+      connect(buy, &QAction::triggered, this, [this, componentMarket] {
+        emit marketItemRequested(componentMarket, "buy");
+      });
+    }
+  } else {
+    const QString relics = relicSearchTerm(target.item);
+    if (!relics.isEmpty()) {
+      QAction *showRelics = menu->addAction(
+          target.item.data(PlayerItemModel::GroupRole).toString() == "relics"
+              ? "Open in Relic Planner"
+              : "Show parts in Relic Planner");
+      connect(showRelics, &QAction::triggered, this,
+              [this, relics] { emit relicRewardRequested(relics); });
+    }
+    if (kind_ == Kind::Mastery &&
+        target.item.data(PlayerItemModel::HasRecipeRole).toBool()) {
+      QAction *foundry = menu->addAction("Show item in Foundry");
+      connect(foundry, &QAction::triggered, this,
+              [this, itemName] { emit foundryItemRequested(itemName); });
+    }
+    if (target.item.data(PlayerItemModel::TradableRole).toBool()) {
+      const QString marketName =
+          target.item.data(PlayerItemModel::MarketNameRole).toString();
+      if (!marketName.isEmpty()) {
+        if (!menu->actions().isEmpty()) {
+          menu->addSeparator();
+        }
+        QAction *sell = menu->addAction("View WTS listings");
+        QAction *buy = menu->addAction("View WTB listings");
+        connect(sell, &QAction::triggered, this, [this, marketName] {
+          emit marketItemRequested(marketName, "sell");
+        });
+        connect(buy, &QAction::triggered, this, [this, marketName] {
+          emit marketItemRequested(marketName, "buy");
+        });
+      }
+    }
+  }
+
+  if (menu->actions().isEmpty()) {
+    menu->deleteLater();
+    return;
+  }
+  menu->popup(event->globalPos());
+  event->accept();
 }
 
 void PlayerItemGridWidget::setModel(QAbstractItemModel *itemModel) {

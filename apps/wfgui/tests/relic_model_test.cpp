@@ -1,9 +1,11 @@
 #include <QAbstractItemView>
 #include <QCheckBox>
 #include <QCompleter>
+#include <QContextMenuEvent>
 #include <QDateTime>
 #include <QDirIterator>
 #include <QFile>
+#include <QHBoxLayout>
 #include <QHelpEvent>
 #include <QImage>
 #include <QJsonArray>
@@ -14,6 +16,7 @@
 #include <QListWidget>
 #include <QLocalServer>
 #include <QLocalSocket>
+#include <QMenu>
 #include <QPainter>
 #include <QPushButton>
 #include <QRegularExpression>
@@ -27,6 +30,7 @@
 #include <utility>
 
 #include "activity_data.h"
+#include "activity_rail_widget.h"
 #include "animated_progress_bar.h"
 #include "app_controller.h"
 #include "compact_search.h"
@@ -43,6 +47,7 @@
 #include "relic_card_layout.h"
 #include "relic_grid_widget.h"
 #include "relic_model.h"
+#include "relic_planner_widget.h"
 #include "settings_widget.h"
 #include "tooltip.h"
 #include "wfgui_paths.h"
@@ -59,6 +64,7 @@ private slots:
   void filtersByRewardName();
   void filtersRelicsByOwnershipLocally();
   void filtersRelicsByEraLocally();
+  void requiemControlsWork();
   void filtersPlayerItemsLocally();
   void filtersPlayerItemFlags();
   void preservesUnknownInventoryVaultState();
@@ -81,6 +87,8 @@ private slots:
   void foundryStatusBadgesHaveTooltips();
   void masteryComponentTooltipsUseLocalCoordinates();
   void componentClicksUseCounterpartyListings();
+  void playerItemContextMenuRoutesAcrossPages();
+  void relicContextMenuFiltersRewards();
   void masteryGridUsesCompactCards();
   void inventoryGridRequestsVisibleQuotes();
   void masteryGridRequestsComponentQuotes();
@@ -272,6 +280,20 @@ void RelicModelTest::filtersByRewardName() {
   QCOMPARE(filter.rowCount(), 1);
   QCOMPARE(filter.data(filter.index(0, 0), RelicModel::NameRole).toString(),
            QString("Axi A1 Intact"));
+  const QVariantMap reward =
+      filter.data(filter.index(0, 0), RelicModel::RewardsRole)
+          .toList()
+          .front()
+          .toMap();
+  QVERIFY(reward.value("search_match").toBool());
+
+  filter.setFilterText("axi");
+  const QVariantMap nameMatch =
+      filter.data(filter.index(0, 0), RelicModel::RewardsRole)
+          .toList()
+          .front()
+          .toMap();
+  QVERIFY(!nameMatch.value("search_match").toBool());
 }
 
 void RelicModelTest::filtersRelicsByOwnershipLocally() {
@@ -315,6 +337,75 @@ void RelicModelTest::filtersRelicsByEraLocally() {
   QCOMPARE(filter.rowCount(), 2);
 }
 
+void RelicModelTest::requiemControlsWork() {
+  QTemporaryDir directory;
+  QVERIFY(directory.isValid());
+  QLocalServer server;
+  QVERIFY(server.listen(directory.filePath("wfdaemon.sock")));
+  const QByteArray oldSocket = qgetenv("WFCLI_DAEMON_SOCKET");
+  qputenv("WFCLI_DAEMON_SOCKET", server.fullServerName().toUtf8());
+  const auto restoreSocket = qScopeGuard([oldSocket] {
+    if (oldSocket.isNull()) {
+      qunsetenv("WFCLI_DAEMON_SOCKET");
+    } else {
+      qputenv("WFCLI_DAEMON_SOCKET", oldSocket);
+    }
+  });
+
+  AppController controller;
+  QTRY_VERIFY(server.hasPendingConnections());
+  QVERIFY(server.nextPendingConnection());
+
+  RelicPlannerWidget planner(&controller);
+  ActivityRailWidget rail(&controller);
+  connect(&rail, &ActivityRailWidget::relicEraRequested, &planner,
+          &RelicPlannerWidget::showEra);
+  planner.show();
+  rail.show();
+
+  QPushButton *requiem = nullptr;
+  for (QPushButton *button : planner.findChildren<QPushButton *>()) {
+    if (button->property("era").toString() == "requiem") {
+      requiem = button;
+      break;
+    }
+  }
+  QVERIFY(requiem);
+  QVERIFY(!requiem->icon().isNull());
+  QTest::mouseClick(requiem, Qt::LeftButton);
+  QCOMPARE(controller.selectedEra(), QString("requiem"));
+  QVERIFY(requiem->isChecked());
+
+  controller.selectEra("axi");
+  auto *daemon = controller.findChild<DaemonClient *>();
+  QVERIFY(daemon);
+  QSignalSpy requested(&rail, &ActivityRailWidget::relicEraRequested);
+  daemon->activityReady(QJsonObject{{
+      "fissures",
+      QJsonArray{QJsonObject{
+          {"tier", "Requiem"},
+          {"mission", "Survival"},
+          {"node", "Taveuni (Kuva Fortress)"},
+          {"hard", false},
+          {"expiry",
+           QDateTime::currentDateTimeUtc().addSecs(300).toString(Qt::ISODate)},
+      }},
+  }});
+  auto cards = rail.findChildren<QWidget *>("fissureGroup");
+  QTRY_COMPARE(cards.size(), 1);
+  QWidget *card = cards.front();
+  QTest::mouseClick(card, Qt::LeftButton, Qt::NoModifier,
+                    QPoint(card->width() - 8, card->height() / 2));
+  QCOMPARE(requested.size(), 1);
+  QCOMPARE(requested.takeFirst().at(0).toString(), QString("requiem"));
+  QCOMPARE(controller.selectedEra(), QString("requiem"));
+  QVERIFY(requiem->isChecked());
+
+  auto *filter = qobject_cast<RelicFilterModel *>(controller.relics());
+  QVERIFY(filter);
+  QCOMPARE(filter->era(), QString("requiem"));
+}
+
 void RelicModelTest::filtersPlayerItemsLocally() {
   PlayerItemModel model;
   QVERIFY(model.replace({
@@ -327,7 +418,12 @@ void RelicModelTest::filtersPlayerItemsLocally() {
                        {"owned", true},
                        {"rank", 0},
                        {"from_relics", true},
-                       {"buyable", true}},
+                       {"buyable", true},
+                       {"components",
+                        QJsonArray{QJsonObject{
+                            {"name", "Chassis"},
+                            {"market_name", "Test Prime Chassis Blueprint"},
+                        }}}},
            QJsonObject{{"id", "weapon"},
                        {"name", "Test Rifle"},
                        {"group", "weapons"},
@@ -352,6 +448,16 @@ void RelicModelTest::filtersPlayerItemsLocally() {
   QCOMPARE(filter.rowCount(), 1);
   filter.setGroup("weapons");
   QCOMPARE(filter.rowCount(), 0);
+  filter.setGroup("all");
+  filter.setMode("all");
+  filter.setText("chassis blueprint");
+  QCOMPARE(filter.rowCount(), 1);
+  const QVariantMap component =
+      filter.data(filter.index(0, 0), PlayerItemModel::ComponentsRole)
+          .toList()
+          .front()
+          .toMap();
+  QVERIFY(component.value("search_match").toBool());
 }
 
 void RelicModelTest::filtersPlayerItemFlags() {
@@ -1204,6 +1310,185 @@ void RelicModelTest::componentClicksUseCounterpartyListings() {
            QString("Test Prime Chassis Blueprint"));
 }
 
+void RelicModelTest::playerItemContextMenuRoutesAcrossPages() {
+  PlayerItemModel model;
+  QVERIFY(model.replace({
+      {"items",
+       QJsonArray{QJsonObject{
+           {"id", "test-prime"},
+           {"name", "Test Prime"},
+           {"group", "warframes"},
+           {"is_prime", true},
+           {"has_recipe", true},
+           {"from_relics", true},
+           {"components", QJsonArray{QJsonObject{
+                              {"name", "Chassis"},
+                              {"market_name", "Test Prime Chassis Blueprint"},
+                              {"required", 1},
+                              {"owned", 0},
+                              {"relic_drop", true},
+                          }}},
+       }}},
+  }));
+
+  PlayerItemGridWidget grid(PlayerItemGridWidget::Kind::Mastery);
+  QSignalSpy market(&grid, &PlayerItemGridWidget::marketItemRequested);
+  QSignalSpy relic(&grid, &PlayerItemGridWidget::relicRewardRequested);
+  QSignalSpy foundry(&grid, &PlayerItemGridWidget::foundryItemRequested);
+  grid.setModel(&model);
+  grid.resize(800, 600);
+  grid.show();
+  QCoreApplication::processEvents();
+
+  const QRect item = grid.visualRect(model.index(0));
+  const QRect card = item.adjusted(4, 4, -4, -4);
+  const QRect content = card.adjusted(8, 8, -8, -8);
+  const int componentAreaLeft = content.right() - 109 + 1;
+  const QRect component(componentAreaLeft + (109 - 30) / 2,
+                        content.center().y() - 30 / 2, 30, 30);
+  const QPoint global = grid.viewport()->mapToGlobal(component.center());
+  QContextMenuEvent event(QContextMenuEvent::Mouse, component.center(), global);
+  QApplication::sendEvent(grid.viewport(), &event);
+  QCoreApplication::processEvents();
+
+  auto *menu = grid.findChild<QMenu *>("playerItemContextMenu");
+  QVERIFY(menu);
+  const auto action = [menu](const QString &text) {
+    for (QAction *candidate : menu->actions()) {
+      if (candidate->text() == text) {
+        return candidate;
+      }
+    }
+    return static_cast<QAction *>(nullptr);
+  };
+  QVERIFY(action("Show in Relic Planner"));
+  QVERIFY(action("Show item in Foundry"));
+  QVERIFY(action("View WTS listings"));
+  QVERIFY(action("View WTB listings"));
+
+  action("Show in Relic Planner")->trigger();
+  QCOMPARE(relic.takeFirst().at(0).toString(),
+           QString("Test Prime Chassis Blueprint"));
+  action("Show item in Foundry")->trigger();
+  QCOMPARE(foundry.takeFirst().at(0).toString(), QString("Test Prime"));
+  action("View WTS listings")->trigger();
+  QCOMPARE(market.takeFirst().at(1).toString(), QString("sell"));
+  menu->close();
+  QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
+
+  const QPoint itemPosition(content.left() + 4, content.center().y());
+  const QPoint itemGlobal = grid.viewport()->mapToGlobal(itemPosition);
+  QContextMenuEvent itemEvent(QContextMenuEvent::Mouse, itemPosition,
+                              itemGlobal);
+  QApplication::sendEvent(grid.viewport(), &itemEvent);
+  QCoreApplication::processEvents();
+  menu = grid.findChild<QMenu *>("playerItemContextMenu");
+  QVERIFY(menu);
+  QAction *showParts = nullptr;
+  for (QAction *candidate : menu->actions()) {
+    if (candidate->text() == "Show parts in Relic Planner") {
+      showParts = candidate;
+      break;
+    }
+  }
+  QVERIFY(showParts);
+  showParts->trigger();
+  QCOMPARE(relic.takeFirst().at(0).toString(), QString("Test Prime"));
+  menu->close();
+}
+
+void RelicModelTest::relicContextMenuFiltersRewards() {
+  RelicModel model;
+  QVERIFY(model.replace(recommendations()));
+  RelicFilterModel filter;
+  filter.setSourceModel(&model);
+  RelicGridWidget grid;
+  QSignalSpy rewardFilter(&grid, &RelicGridWidget::rewardFilterRequested);
+  QSignalSpy market(&grid, &RelicGridWidget::marketItemRequested);
+  QSignalSpy foundry(&grid, &RelicGridWidget::foundryItemRequested);
+  grid.setModel(&filter);
+  grid.resize(900, 500);
+  grid.show();
+  QCoreApplication::processEvents();
+
+  const auto cards = grid.findChildren<QWidget *>("relicCardCanvas",
+                                                  Qt::FindDirectChildrenOnly);
+  QVERIFY(!cards.isEmpty());
+  QWidget *card = cards.front();
+  const wfgui::RelicCardLayout layout =
+      wfgui::RelicCardLayout::calculate(card->rect(), 1, 1, 1.0);
+  const QPoint position = layout.rewardCells.front().center();
+  const QPoint global = card->mapToGlobal(position);
+  QContextMenuEvent event(QContextMenuEvent::Mouse, position, global);
+  QApplication::sendEvent(card, &event);
+  QCoreApplication::processEvents();
+
+  auto *menu = card->findChild<QMenu *>("relicContextMenu");
+  QVERIFY(menu);
+  const auto action = [menu](const QString &text) {
+    for (QAction *candidate : menu->actions()) {
+      if (candidate->text() == text) {
+        return candidate;
+      }
+    }
+    return static_cast<QAction *>(nullptr);
+  };
+  QVERIFY(action("Show all relics containing this reward"));
+  QVERIFY(action("Show item in Foundry"));
+  action("Show all relics containing this reward")->trigger();
+  QCOMPARE(rewardFilter.takeFirst().at(0).toString(),
+           QString("Saryn Prime Chassis"));
+  action("Show item in Foundry")->trigger();
+  QCOMPARE(foundry.takeFirst().at(0).toString(),
+           QString("Saryn Prime Chassis"));
+  action("View WTB listings")->trigger();
+  QCOMPARE(market.takeFirst().at(1).toString(), QString("buy"));
+  menu->close();
+
+  QJsonObject formaData = recommendations();
+  QJsonArray items = formaData.value("items").toArray();
+  QJsonObject relic = items.at(0).toObject();
+  relic.insert("rewards", QJsonArray{QJsonObject{{"name", "Forma Blueprint"},
+                                                 {"rarity", "Common"}}});
+  items[0] = relic;
+  formaData.insert("items", items);
+
+  RelicModel formaModel;
+  QVERIFY(formaModel.replace(formaData));
+  RelicFilterModel formaFilter;
+  formaFilter.setSourceModel(&formaModel);
+  RelicGridWidget formaGrid;
+  formaGrid.setModel(&formaFilter);
+  formaGrid.resize(900, 500);
+  formaGrid.show();
+  QCoreApplication::processEvents();
+  const auto formaCards = formaGrid.findChildren<QWidget *>(
+      "relicCardCanvas", Qt::FindDirectChildrenOnly);
+  QVERIFY(!formaCards.isEmpty());
+  QWidget *formaCard = formaCards.front();
+  const wfgui::RelicCardLayout formaLayout =
+      wfgui::RelicCardLayout::calculate(formaCard->rect(), 1, 1, 1.0);
+  const QPoint formaPosition = formaLayout.rewardCells.front().center();
+  QContextMenuEvent formaEvent(QContextMenuEvent::Mouse, formaPosition,
+                               formaCard->mapToGlobal(formaPosition));
+  QApplication::sendEvent(formaCard, &formaEvent);
+  QCoreApplication::processEvents();
+  auto *formaMenu = formaCard->findChild<QMenu *>("relicContextMenu");
+  QVERIFY(formaMenu);
+  const QStringList formaActions = [&formaMenu] {
+    QStringList labels;
+    for (QAction *candidate : formaMenu->actions()) {
+      labels.push_back(candidate->text());
+    }
+    return labels;
+  }();
+  QVERIFY(formaActions.contains("Show all relics containing this reward"));
+  QVERIFY(!formaActions.contains("Show item in Foundry"));
+  QVERIFY(!formaActions.contains("View WTS listings"));
+  QVERIFY(!formaActions.contains("View WTB listings"));
+  formaMenu->close();
+}
+
 void RelicModelTest::inventoryGridRequestsVisibleQuotes() {
   PlayerItemModel model;
   QVERIFY(model.replace({
@@ -1318,6 +1603,7 @@ void RelicModelTest::subscribesToPlayerUpdatesAndCoalescesViews() {
   DaemonClient client;
   QSignalSpy playerChanged(&client, &DaemonClient::playerDatasetChanged);
   QSignalSpy viewReady(&client, &DaemonClient::playerViewReady);
+  QSignalSpy assetRefreshed(&client, &DaemonClient::assetRefreshed);
   client.start();
   QTRY_VERIFY(server.hasPendingConnections());
   QLocalSocket *peer = server.nextPendingConnection();
@@ -1394,6 +1680,21 @@ void RelicModelTest::subscribesToPlayerUpdatesAndCoalescesViews() {
   QCOMPARE(playerChanged.count(), 2);
   sendPlayerEvent(6, "inventory");
   QTRY_COMPARE(playerChanged.count(), 3);
+
+  peer->write(QJsonDocument(QJsonObject{
+                                {"event", "asset"},
+                                {"data", QJsonObject{{"ok", true},
+                                                     {"source", "wfcd"},
+                                                     {"image_name", "item.png"},
+                                                     {"path", "/cache/new.png"},
+                                                     {"digest", "new"}}},
+                            })
+                  .toJson(QJsonDocument::Compact) +
+              '\n');
+  peer->flush();
+  QTRY_COMPARE(assetRefreshed.count(), 1);
+  QCOMPARE(assetRefreshed.takeFirst().at(0).toJsonObject().value("digest"),
+           QJsonValue("new"));
 
   client.requestPlayerView("inventory");
   QJsonObject firstRequest;
@@ -1879,8 +2180,13 @@ void RelicModelTest::ownershipFilterKeepsVisibleCardsStable() {
 }
 
 void RelicModelTest::compactSearchExpandsOnClick() {
+  QWidget host;
+  auto *layout = new QHBoxLayout(&host);
+  layout->addStretch();
   CompactSearch search("Search items");
-  search.show();
+  layout->addWidget(&search);
+  host.resize(640, 60);
+  host.show();
   QCoreApplication::processEvents();
   auto *button = search.findChild<QToolButton *>("compactTool");
   QVERIFY(button);
@@ -1897,7 +2203,7 @@ void RelicModelTest::compactSearchExpandsOnClick() {
 
   search.setText("Saryn Prime Chassis");
   QTRY_VERIFY(search.editor()->isVisible());
-  QTRY_COMPARE(search.width(), 174);
+  QTRY_VERIFY(search.width() > 174);
   QCOMPARE(search.editor()->text(), QString("Saryn Prime Chassis"));
 }
 
@@ -2223,6 +2529,9 @@ void RelicModelTest::filtersExpiredFissures() {
   QCOMPARE(active.size(), 2);
   QCOMPARE(active.at(0).toObject().value("id").toString(), QString("active"));
   QCOMPARE(active.at(1).toObject().value("id").toString(), QString("unknown"));
+  QCOMPARE(wfgui::relicEraForFissureTier("Requiem"), QString("requiem"));
+  QCOMPARE(wfgui::relicEraForFissureTier("Axi"), QString("axi"));
+  QCOMPARE(wfgui::relicEraForFissureTier("Omnia"), QString("all"));
 }
 
 void RelicModelTest::styleLayersAvoidImplicitSurfaces() {

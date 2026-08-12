@@ -10,6 +10,7 @@
 #include <QJsonArray>
 #include <QLabel>
 #include <QMap>
+#include <QMouseEvent>
 #include <QPaintEvent>
 #include <QPainter>
 #include <QPixmap>
@@ -307,6 +308,7 @@ QString fissureLocation(const QString &node) {
   return node.left(planet) + ", " +
          node.mid(planet + 2, node.size() - planet - 3);
 }
+
 } // namespace
 
 ActivityRailWidget::ActivityRailWidget(AppController *controller,
@@ -514,6 +516,21 @@ void ActivityRailWidget::showMarketItem(const QString &item,
   market_->showItem(item, side);
 }
 
+bool ActivityRailWidget::eventFilter(QObject *watched, QEvent *event) {
+  if (event->type() == QEvent::MouseButtonRelease) {
+    const auto *mouse = static_cast<QMouseEvent *>(event);
+    QWidget *widget = qobject_cast<QWidget *>(watched);
+    while (widget && widget->objectName() != "fissureGroup") {
+      widget = widget->parentWidget();
+    }
+    if (mouse->button() == Qt::LeftButton && widget) {
+      emit relicEraRequested(widget->property("relicEra").toString());
+      return true;
+    }
+  }
+  return QWidget::eventFilter(watched, event);
+}
+
 void ActivityRailWidget::rebuild() {
   const QJsonObject data = controller_->activity();
   rebuildCycles(data);
@@ -582,6 +599,8 @@ void ActivityRailWidget::rebuildFissures(const QJsonObject &data) {
     }
     auto *group = new QWidget;
     group->setObjectName("fissureGroup");
+    group->setProperty("relicEra", wfgui::relicEraForFissureTier(tier));
+    group->setCursor(Qt::PointingHandCursor);
     auto *groupLayout = new QHBoxLayout(group);
     groupLayout->setContentsMargins(6, 5, 6, 5);
     groupLayout->setSpacing(8);
@@ -634,6 +653,10 @@ void ActivityRailWidget::rebuildFissures(const QJsonObject &data) {
       rowsLayout->addWidget(row);
     }
     groupLayout->addLayout(rowsLayout, 1);
+    group->installEventFilter(this);
+    for (QWidget *child : group->findChildren<QWidget *>()) {
+      child->installEventFilter(this);
+    }
     fissures_->addWidget(group);
   }
   fissures_->addStretch();

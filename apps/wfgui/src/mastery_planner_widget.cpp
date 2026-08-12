@@ -308,6 +308,10 @@ MasteryPlannerWidget::MasteryPlannerWidget(AppController *controller,
           &AppController::resolveMarketQuotes);
   connect(grid_, &PlayerItemGridWidget::marketItemRequested, this,
           &MasteryPlannerWidget::marketItemRequested);
+  connect(grid_, &PlayerItemGridWidget::relicRewardRequested, this,
+          &MasteryPlannerWidget::relicRewardRequested);
+  connect(grid_, &PlayerItemGridWidget::foundryItemRequested, this,
+          &MasteryPlannerWidget::foundryItemRequested);
   connect(controller_, &AppController::masteryStateChanged, this, [this] {
     if (mode_ == "platinum" && priceLoading_) {
       updatePriceLoad();

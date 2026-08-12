@@ -260,7 +260,16 @@ endif()
 if(BUILD_TESTING)
   find_package(Qt6 REQUIRED COMPONENTS Test)
   qt_add_executable(wfgui_tests
+    src/activity_rail_widget.cpp
+    src/activity_rail_widget.h
+    src/relic_planner_widget.cpp
+    src/relic_planner_widget.h
     tests/relic_model_test.cpp
+  )
+  qt_add_resources(wfgui_tests "wfgui_test_resources"
+    PREFIX "/"
+    FILES
+      resources/activity/requiem.png
   )
   target_link_libraries(wfgui_tests PRIVATE Qt6::Test wfgui_core)
   target_compile_definitions(wfgui_tests PRIVATE

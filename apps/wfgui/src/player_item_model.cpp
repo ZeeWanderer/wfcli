@@ -478,6 +478,25 @@ PlayerItemFilterModel::PlayerItemFilterModel(QObject *parent)
   sort(0);
 }
 
+QVariant PlayerItemFilterModel::data(const QModelIndex &index, int role) const {
+  QVariant value = QSortFilterProxyModel::data(index, role);
+  if (role != PlayerItemModel::ComponentsRole || text_.isEmpty()) {
+    return value;
+  }
+  QVariantList components;
+  for (const QVariant &entry : value.toList()) {
+    QVariantMap component = entry.toMap();
+    const bool match = component.value("name").toString().contains(
+                           text_, Qt::CaseInsensitive) ||
+                       component.value("market_name")
+                           .toString()
+                           .contains(text_, Qt::CaseInsensitive);
+    component.insert("search_match", match);
+    components.push_back(component);
+  }
+  return components;
+}
+
 void PlayerItemFilterModel::setText(const QString &text) {
   if (text_ == text) {
     return;
@@ -485,6 +504,10 @@ void PlayerItemFilterModel::setText(const QString &text) {
   beginFilterChange();
   text_ = text;
   endFilterChange(QSortFilterProxyModel::Direction::Rows);
+  if (rowCount() > 0) {
+    emit dataChanged(index(0, 0), index(rowCount() - 1, 0),
+                     {PlayerItemModel::ComponentsRole});
+  }
 }
 
 void PlayerItemFilterModel::setGroup(const QString &group) {
@@ -559,11 +582,26 @@ bool PlayerItemFilterModel::filterAcceptsRow(
           group_) {
     return false;
   }
-  if (!text_.isEmpty() && !sourceModel()
-                               ->data(item, PlayerItemModel::NameRole)
-                               .toString()
-                               .contains(text_, Qt::CaseInsensitive)) {
-    return false;
+  if (!text_.isEmpty()) {
+    bool matches = sourceModel()
+                       ->data(item, PlayerItemModel::NameRole)
+                       .toString()
+                       .contains(text_, Qt::CaseInsensitive);
+    if (!matches) {
+      const QVariantList components =
+          sourceModel()->data(item, PlayerItemModel::ComponentsRole).toList();
+      matches = std::ranges::any_of(components, [this](const QVariant &entry) {
+        const QVariantMap component = entry.toMap();
+        return component.value("name").toString().contains(
+                   text_, Qt::CaseInsensitive) ||
+               component.value("market_name")
+                   .toString()
+                   .contains(text_, Qt::CaseInsensitive);
+      });
+    }
+    if (!matches) {
+      return false;
+    }
   }
   const bool mastered =
       sourceModel()->data(item, PlayerItemModel::MasteredRole).toBool();

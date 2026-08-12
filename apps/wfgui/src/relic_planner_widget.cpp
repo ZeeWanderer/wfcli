@@ -22,12 +22,13 @@
 #include "relic_model.h"
 
 namespace {
-constexpr std::array<std::pair<const char *, const char *>, 5> Eras{{
+constexpr std::array<std::pair<const char *, const char *>, 6> Eras{{
     {"All", "all"},
     {"Lith", "lith"},
     {"Meso", "meso"},
     {"Neo", "neo"},
     {"Axi", "axi"},
+    {"Requiem", "requiem"},
 }};
 } // namespace
 
@@ -58,6 +59,9 @@ RelicPlannerWidget::RelicPlannerWidget(AppController *controller,
     button->setToolTip(label);
     if (QString::fromLatin1(value) == "all") {
       button->setIcon(QIcon(":/resources/categories/all.png"));
+      button->setIconSize({22, 22});
+    } else if (QString::fromLatin1(value) == "requiem") {
+      button->setIcon(QIcon(":/resources/activity/requiem.png"));
       button->setIconSize({22, 22});
     }
     eraGroup_->addButton(button, eraId++);
@@ -139,6 +143,10 @@ RelicPlannerWidget::RelicPlannerWidget(AppController *controller,
           &RelicPlannerWidget::updateContent);
   connect(relics_, &RelicGridWidget::marketItemRequested, this,
           &RelicPlannerWidget::marketItemRequested);
+  connect(relics_, &RelicGridWidget::rewardFilterRequested, this,
+          &RelicPlannerWidget::showReward);
+  connect(relics_, &RelicGridWidget::foundryItemRequested, this,
+          &RelicPlannerWidget::foundryItemRequested);
   connect(controller_, &AppController::loadingChanged, this,
           &RelicPlannerWidget::updateContent);
   connect(controller_, &AppController::pricingChanged, this,
@@ -160,6 +168,11 @@ RelicPlannerWidget::RelicPlannerWidget(AppController *controller,
 
   updateEra();
   updateContent();
+}
+
+void RelicPlannerWidget::showEra(const QString &era) {
+  search_->setText({});
+  controller_->selectEra(era);
 }
 
 void RelicPlannerWidget::showReward(const QString &reward) {

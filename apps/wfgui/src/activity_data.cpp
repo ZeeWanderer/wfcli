@@ -17,4 +17,12 @@ QJsonArray activeFissures(const QJsonArray &fissures, qint64 now) {
   return active;
 }
 
+QString relicEraForFissureTier(const QString &tier) {
+  if (tier == "Lith" || tier == "Meso" || tier == "Neo" || tier == "Axi" ||
+      tier == "Requiem") {
+    return tier.toLower();
+  }
+  return "all";
+}
+
 } // namespace wfgui

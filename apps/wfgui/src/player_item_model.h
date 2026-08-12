@@ -92,6 +92,8 @@ class PlayerItemFilterModel final : public QSortFilterProxyModel {
 public:
   explicit PlayerItemFilterModel(QObject *parent = nullptr);
 
+  QVariant data(const QModelIndex &index,
+                int role = Qt::DisplayRole) const override;
   void setText(const QString &text);
   void setGroup(const QString &group);
   void setMode(const QString &mode);
