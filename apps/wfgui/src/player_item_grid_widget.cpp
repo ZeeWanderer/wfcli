@@ -469,7 +469,8 @@ public:
       QPainterPath clip;
       clip.addRoundedRect(QRectF(card), radius, radius);
       painter->setClipPath(clip);
-      paintFoundry(*painter, content, card, index, option.font, scale);
+      paintFoundry(*painter, content, card, index, option.font, scale,
+                   option.rect);
       painter->restore();
       if (foundryOwned) {
         painter->setPen(QPen(QColor("#248444"), wfgui::scaled(2, scale)));
@@ -480,11 +481,11 @@ public:
       return;
     }
     if (kind_ == PlayerItemGridWidget::Kind::Mastery) {
-      paintMastery(*painter, content, index, option.font, scale);
+      paintMastery(*painter, content, index, option.font, scale, option.rect);
       painter->restore();
       return;
     }
-    paintInventory(*painter, content, index, option.font, scale);
+    paintInventory(*painter, content, index, option.font, scale, option.rect);
     painter->restore();
   }
 
@@ -725,7 +726,8 @@ public:
 private:
   static void paintFoundry(QPainter &painter, const QRect &content,
                            const QRect &card, const QModelIndex &index,
-                           const QFont &baseFont, qreal scale) {
+                           const QFont &baseFont, qreal scale,
+                           const QRect &dirtyRegion) {
     const QFont titleFont =
         cardTitleFont(baseFont, PlayerItemGridWidget::Kind::Foundry, scale);
     painter.setFont(titleFont);
@@ -783,7 +785,7 @@ private:
     const QPixmap image = wfgui::cachedThumbnail(
         painter,
         index.data(PlayerItemModel::AssetRefRole).value<wfgui::AssetRef>(),
-        layout.image.size());
+        layout.image.size(), dirtyRegion);
     if (isFoundryWarframe(index)) {
       drawBottomContained(painter, layout.image, image);
     } else {
@@ -791,7 +793,7 @@ private:
     }
     paintComponents(painter, content,
                     index.data(PlayerItemModel::ComponentsRole).toList(),
-                    PlayerItemGridWidget::Kind::Foundry, scale);
+                    PlayerItemGridWidget::Kind::Foundry, scale, dirtyRegion);
 
     if (!layout.mastery.isNull()) {
       painter.setPen(QPen(QColor("#566078"), wfgui::scaled(1, scale)));
@@ -824,7 +826,7 @@ private:
 
   static void paintInventory(QPainter &painter, const QRect &content,
                              const QModelIndex &index, const QFont &baseFont,
-                             qreal scale) {
+                             qreal scale, const QRect &dirtyRegion) {
     const QVariantList components =
         index.data(PlayerItemModel::ComponentsRole).toList();
     const bool isSet =
@@ -841,7 +843,7 @@ private:
         wfgui::cachedThumbnail(
             painter,
             index.data(PlayerItemModel::AssetRefRole).value<wfgui::AssetRef>(),
-            imageRect.size()));
+            imageRect.size(), dirtyRegion));
 
     const QFont titleFont =
         cardTitleFont(baseFont, PlayerItemGridWidget::Kind::Inventory, scale);
@@ -896,7 +898,8 @@ private:
 
     if (isSet) {
       paintComponentRects(painter, components, layout.components,
-                          PlayerItemGridWidget::Kind::Inventory, scale);
+                          PlayerItemGridWidget::Kind::Inventory, scale,
+                          dirtyRegion);
     }
     if (!index.data(PlayerItemModel::TradableRole).toBool()) {
       return;
@@ -993,7 +996,7 @@ private:
 
   static void paintMastery(QPainter &painter, const QRect &content,
                            const QModelIndex &index, const QFont &baseFont,
-                           qreal scale) {
+                           qreal scale, const QRect &dirtyRegion) {
     const bool owned = index.data(PlayerItemModel::OwnedRole).toBool();
     const QVariantList components =
         index.data(PlayerItemModel::ComponentsRole).toList();
@@ -1006,7 +1009,7 @@ private:
         wfgui::cachedThumbnail(
             painter,
             index.data(PlayerItemModel::AssetRefRole).value<wfgui::AssetRef>(),
-            imageRect.size()));
+            imageRect.size(), dirtyRegion));
 
     const int xpHeight = wfgui::scaled(21, scale);
     const QRect xpBadge(imageRect.left(), imageRect.bottom() - xpHeight + 1,
@@ -1105,16 +1108,18 @@ private:
       stateFont.setPixelSize(wfgui::scaled(14, scale));
       stateFont.setWeight(QFont::Light);
       const QFontMetrics metrics(stateFont);
-      const int iconSize = wfgui::scaled(18, scale);
+      const int iconSize = wfgui::scaled(20, scale);
       const int gap = wfgui::scaled(4, scale);
       const int width = iconSize + gap + metrics.horizontalAdvance("Owned");
       int x = stateArea.center().x() - width / 2;
       const int y = stateArea.center().y() - iconSize / 2;
       const QRect iconRect(x, y, iconSize, iconSize);
-      wfgui::drawContained(painter, iconRect,
-                           wfgui::cachedThumbnail(painter,
-                                                  ":/resources/ui/owned.png",
-                                                  iconRect.size()));
+      const QRect glyphRect =
+          centeredSquare(iconRect, wfgui::scaled(18, scale));
+      wfgui::drawContained(
+          painter, iconRect,
+          wfgui::cachedThumbnail(painter, ":/resources/ui/owned.png",
+                                 glyphRect.size()));
       x += iconSize + gap;
       painter.setFont(stateFont);
       painter.setPen(QColor("#abf5ab"));
@@ -1123,23 +1128,24 @@ private:
           Qt::AlignLeft | Qt::AlignVCenter, "Owned");
     } else {
       paintComponents(painter, content, components,
-                      PlayerItemGridWidget::Kind::Mastery, scale);
+                      PlayerItemGridWidget::Kind::Mastery, scale, dirtyRegion);
     }
   }
 
   static void paintComponents(QPainter &painter, const QRect &content,
                               const QVariantList &components,
-                              PlayerItemGridWidget::Kind kind, qreal scale) {
+                              PlayerItemGridWidget::Kind kind, qreal scale,
+                              const QRect &dirtyRegion) {
     const QList<QRect> rects = componentRects(
         content, static_cast<int>(components.size()), kind, scale);
-    paintComponentRects(painter, components, rects, kind, scale);
+    paintComponentRects(painter, components, rects, kind, scale, dirtyRegion);
   }
 
   static void paintComponentRects(QPainter &painter,
                                   const QVariantList &components,
                                   const QList<QRect> &rects,
-                                  PlayerItemGridWidget::Kind kind,
-                                  qreal scale) {
+                                  PlayerItemGridWidget::Kind kind, qreal scale,
+                                  const QRect &dirtyRegion) {
     for (int componentIndex = 0; componentIndex < rects.size();
          ++componentIndex) {
       const QVariantMap component = components.at(componentIndex).toMap();
@@ -1159,7 +1165,7 @@ private:
           painter, imageRect,
           wfgui::cachedThumbnail(
               painter, component.value("assetRef").value<wfgui::AssetRef>(),
-              imageRect.size()));
+              imageRect.size(), dirtyRegion));
       painter.restore();
       if (kind == PlayerItemGridWidget::Kind::Foundry ||
           kind == PlayerItemGridWidget::Kind::Inventory) {

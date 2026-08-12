@@ -12,6 +12,7 @@
 #include <QPixmapCache>
 #include <QPointer>
 #include <QQueue>
+#include <QRegion>
 #include <QSet>
 #include <QThread>
 #include <QThreadPool>
@@ -120,7 +121,8 @@ public:
   }
 
   void request(const QString &key, const wfgui::AssetRef &asset,
-               const QSize &pixelBounds, qreal dpr, QWidget *target) {
+               const QSize &pixelBounds, qreal dpr, QWidget *target,
+               const QRect &dirtyRegion) {
     const qint64 now = QDateTime::currentMSecsSinceEpoch();
     if (stopping_.load()) {
       return;
@@ -131,11 +133,18 @@ public:
     }
 
     auto &waiters = waiters_[key];
-    const auto targetAlreadyQueued =
-        std::any_of(waiters.cbegin(), waiters.cend(),
-                    [target](const auto &item) { return item == target; });
-    if (!targetAlreadyQueued) {
-      waiters.append(target);
+    auto waiter = std::find_if(
+        waiters.begin(), waiters.end(),
+        [target](const Waiter &item) { return item.target == target; });
+    const bool fullUpdate = !dirtyRegion.isValid() || dirtyRegion.isEmpty();
+    if (waiter == waiters.end()) {
+      waiters.append(Waiter{
+          target, fullUpdate ? QRegion{} : QRegion(dirtyRegion), fullUpdate});
+    } else if (fullUpdate) {
+      waiter->region = {};
+      waiter->full = true;
+    } else if (!waiter->full) {
+      waiter->region += dirtyRegion;
     }
     if (pending_.contains(key)) {
       return;
@@ -182,6 +191,17 @@ private:
   struct Failure {
     int attempts = 0;
     qint64 retryAt = 0;
+  };
+
+  struct Waiter {
+    QPointer<QWidget> target;
+    QRegion region;
+    bool full = false;
+  };
+
+  struct TargetUpdate {
+    QRegion region;
+    bool full = false;
   };
 
   void stop() {
@@ -250,13 +270,17 @@ private:
       }
     }
 
-    QSet<QWidget *> targets;
+    QHash<QWidget *, TargetUpdate> targets;
     while (!batch.isEmpty()) {
       ReadyResult result = batch.dequeue();
       finish(result.key, std::move(result.image), result.dpr, targets);
     }
-    for (QWidget *target : std::as_const(targets)) {
-      target->update();
+    for (auto target = targets.cbegin(); target != targets.cend(); ++target) {
+      if (target.value().full) {
+        target.key()->update();
+      } else {
+        target.key()->update(target.value().region);
+      }
     }
     if (more) {
       QTimer::singleShot(0, this, [this] { drainResults(); });
@@ -264,7 +288,7 @@ private:
   }
 
   void finish(const QString &key, QImage image, qreal dpr,
-              QSet<QWidget *> &targets) {
+              QHash<QWidget *, TargetUpdate> &targets) {
     pending_.remove(key);
     if (image.isNull()) {
       Failure &failure = failures_[key];
@@ -276,9 +300,15 @@ private:
       QPixmapCache::insert(key, toPixmap(std::move(image), dpr));
     }
     const auto waiters = waiters_.take(key);
-    for (const QPointer<QWidget> &target : waiters) {
-      if (target) {
-        targets.insert(target.data());
+    for (const Waiter &waiter : waiters) {
+      if (waiter.target) {
+        TargetUpdate &update = targets[waiter.target.data()];
+        if (waiter.full) {
+          update.region = {};
+          update.full = true;
+        } else if (!update.full) {
+          update.region += waiter.region;
+        }
       }
     }
   }
@@ -287,7 +317,7 @@ private:
   QThreadPool writer_;
   QSet<QString> pending_;
   QHash<QString, Failure> failures_;
-  QHash<QString, QList<QPointer<QWidget>>> waiters_;
+  QHash<QString, QList<Waiter>> waiters_;
   QMutex readyMutex_;
   QQueue<ReadyResult> ready_;
   std::atomic_bool stopping_ = false;
@@ -317,13 +347,13 @@ QString memoryKey(const wfgui::AssetRef &asset, const QSize &pixelBounds,
 namespace wfgui {
 
 QPixmap cachedThumbnail(QPainter &painter, const QString &path,
-                        const QSize &logicalBounds) {
-  return cachedThumbnail(painter, AssetRef::embedded(path, path),
-                         logicalBounds);
+                        const QSize &logicalBounds, QRect dirtyRegion) {
+  return cachedThumbnail(painter, AssetRef::embedded(path, path), logicalBounds,
+                         dirtyRegion);
 }
 
 QPixmap cachedThumbnail(QPainter &painter, const AssetRef &asset,
-                        const QSize &logicalBounds) {
+                        const QSize &logicalBounds, QRect dirtyRegion) {
   QPixmap image;
   if (!asset.isValid() || logicalBounds.isEmpty()) {
     return image;
@@ -341,7 +371,7 @@ QPixmap cachedThumbnail(QPainter &painter, const AssetRef &asset,
   QWidget *target = dynamic_cast<QWidget *>(painter.device());
   if (target && !asset.path.startsWith(":/")) {
     ThumbnailLoader *loader = thumbnailLoader();
-    loader->request(key, asset, pixelBounds, dpr, target);
+    loader->request(key, asset, pixelBounds, dpr, target, dirtyRegion);
     return {};
   }
 

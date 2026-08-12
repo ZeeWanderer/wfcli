@@ -14,6 +14,7 @@ audit.
 - [`shared_utilities.md`](developer/shared_utilities.md): stable cross-application contracts
 - [`cli.md`](developer/cli.md): command dispatch, parsing, and terminal output
 - [`companion.md`](developer/companion.md): native observer, local protocol, player data, and overlay
+- [`gui.md`](developer/gui.md): Qt model/view, painting, and asynchronous update rules
 - [`player-data.md`](developer/player-data.md): account payload, collector, and indexing boundary
 - [`assets.md`](developer/assets.md): embedded and dynamic texture ownership
 

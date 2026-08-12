@@ -8,7 +8,6 @@
 #include <QLabel>
 #include <QLineEdit>
 #include <QPushButton>
-#include <QScrollArea>
 #include <QStackedLayout>
 #include <QVBoxLayout>
 
@@ -89,13 +88,6 @@ RelicPlannerWidget::RelicPlannerWidget(AppController *controller,
   priceProgress_->setFixedHeight(2);
 
   relics_->setModel(controller_->relics());
-  auto *scroll = new QScrollArea;
-  scroll->setObjectName("relicScroll");
-  scroll->setWidgetResizable(true);
-  scroll->setFrameShape(QFrame::NoFrame);
-  scroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
-  scroll->setVerticalScrollBarPolicy(Qt::ScrollBarAlwaysOn);
-  scroll->setWidget(relics_);
 
   auto *loading = new QWidget;
   auto *loadingLayout = new QVBoxLayout(loading);
@@ -116,7 +108,7 @@ RelicPlannerWidget::RelicPlannerWidget(AppController *controller,
   contentHost->setObjectName("contentHost");
   contentHost->setLayout(content_);
   content_->setContentsMargins(0, 0, 0, 0);
-  content_->addWidget(scroll);
+  content_->addWidget(relics_);
   content_->addWidget(loading);
   content_->addWidget(emptyState_);
   auto *contentLayout = new QVBoxLayout(contentFrame);

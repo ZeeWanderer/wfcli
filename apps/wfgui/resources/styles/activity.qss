@@ -134,14 +134,13 @@ QLabel#summaryValue {
   font-weight: 500;
 }
 
-QScrollArea#relicScroll,
-QScrollArea#relicScroll QWidget#qt_scrollarea_viewport,
 QScrollArea#activityScroll,
 QScrollArea#activityScroll QWidget#qt_scrollarea_viewport,
-QWidget#relicGrid,
-QWidget#relicCardCanvas {
+QListView#relicGrid,
+QListView#relicGrid QWidget#qt_scrollarea_viewport {
   background: transparent;
   border: none;
+  outline: none;
 }
 
 QWidget#fissureList {

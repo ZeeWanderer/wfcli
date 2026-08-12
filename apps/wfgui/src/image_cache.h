@@ -1,6 +1,7 @@
 #pragma once
 
 #include <QPixmap>
+#include <QRect>
 #include <QRectF>
 #include <QSize>
 #include <QString>
@@ -12,11 +13,14 @@ class QPainter;
 
 namespace wfgui {
 
-// Widget paints schedule disk decode off-thread; cache identity includes bounds and DPR.
+// Widget paints schedule disk decode off-thread; cache identity includes bounds
+// and DPR.
 [[nodiscard]] QPixmap cachedThumbnail(QPainter &painter, const QString &path,
-                                      const QSize &logicalBounds);
+                                      const QSize &logicalBounds,
+                                      QRect dirtyRegion = {});
 [[nodiscard]] QPixmap cachedThumbnail(QPainter &painter, const AssetRef &asset,
-                                      const QSize &logicalBounds);
+                                      const QSize &logicalBounds,
+                                      QRect dirtyRegion = {});
 
 [[nodiscard]] DerivativeCacheStats derivativeCacheStats();
 [[nodiscard]] bool clearDerivativeCache();

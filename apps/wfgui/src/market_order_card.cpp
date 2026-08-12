@@ -115,7 +115,8 @@ MarketOrderCard::MarketOrderCard(const QJsonObject &order,
   top->setObjectName("marketOrderTop");
   top->setFixedHeight(28);
   auto *topLayout = new QHBoxLayout(top);
-  topLayout->setContentsMargins(0, 0, 7, 0);
+  const bool quantityWarning = selling && owned >= 0 && owned < quantity;
+  topLayout->setContentsMargins(0, 0, quantityWarning ? 0 : 7, 0);
   topLayout->setSpacing(0);
 
   auto *visibility = new QToolButton(top);
@@ -145,7 +146,7 @@ MarketOrderCard::MarketOrderCard(const QJsonObject &order,
       new QLabel(owned >= 0 ? QString("%1 owned").arg(owned) : "-- owned", top);
   ownedLabel->setObjectName("marketOrderOwned");
   topLayout->addWidget(ownedLabel);
-  if (selling && owned >= 0 && owned < quantity) {
+  if (quantityWarning) {
     auto *warning = new QLabel("!", top);
     warning->setObjectName("marketWarning");
     warning->setAlignment(Qt::AlignCenter);

@@ -64,6 +64,7 @@ daemon and requests shared data from it.
 
 - `daemon_client`: local JSON-lines transport, daemon startup, reconnect, and request correlation.
 - `relic_model`: typed relic list, filtering, and asset-path updates.
+- `relic_grid_widget`: virtualized relic-card delegate and interaction routing.
 - `player_item_model`: shared Inventory and Mastery data/filter model.
 - `player_item_grid_widget`: responsive model/view card rendering and visible-asset requests.
 - `app_controller`: per-view cached metadata, price, asset, loading, and error state.

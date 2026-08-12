@@ -1,22 +1,20 @@
 #pragma once
 
-#include <QHash>
-#include <QList>
+#include <QListView>
 #include <QString>
-#include <QWidget>
 
 class QAbstractItemModel;
-class QGridLayout;
-class QModelIndex;
+class QContextMenuEvent;
+class QMouseEvent;
 class QResizeEvent;
 
-class RelicGridWidget final : public QWidget {
+class RelicGridWidget final : public QListView {
   Q_OBJECT
 
 public:
   explicit RelicGridWidget(QWidget *parent = nullptr);
 
-  void setModel(QAbstractItemModel *model);
+  void setModel(QAbstractItemModel *model) override;
 
 signals:
   void marketItemRequested(const QString &item, const QString &side);
@@ -24,20 +22,13 @@ signals:
   void foundryItemRequested(const QString &item);
 
 protected:
+  bool viewportEvent(QEvent *event) override;
+  void contextMenuEvent(QContextMenuEvent *event) override;
+  void mouseReleaseEvent(QMouseEvent *event) override;
   void resizeEvent(QResizeEvent *event) override;
 
 private:
-  void scheduleRebuild();
-  void rebuild();
-  void resetCards();
-  void relayout();
-  void updateRows(const QModelIndex &topLeft, const QModelIndex &bottomRight);
+  void updateGrid();
 
-  QAbstractItemModel *model_ = nullptr;
-  QGridLayout *grid_;
-  QList<QWidget *> cards_;
-  QHash<QString, QWidget *> cardCache_;
-  int columns_ = 0;
   qreal scale_ = 0.0;
-  bool rebuildPending_ = false;
 };

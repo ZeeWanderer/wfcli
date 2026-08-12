@@ -17,6 +17,7 @@
 #include <QLocalServer>
 #include <QLocalSocket>
 #include <QMenu>
+#include <QPaintEvent>
 #include <QPainter>
 #include <QPushButton>
 #include <QRegularExpression>
@@ -98,7 +99,7 @@ private slots:
   void cacheMissDoesNotBecomeMarketMiss();
   void playerGridPreservesScrollAcrossResort();
   void busyProgressAnimates();
-  void ownershipFilterKeepsVisibleCardsStable();
+  void ownershipFilterKeepsVisibleRowsStable();
   void compactSearchExpandsOnClick();
   void normalizesUiScaleInFivePercentSteps();
   void thumbnailCacheRespectsSizeAndDpr();
@@ -108,6 +109,7 @@ private slots:
   void settingsExposeIndependentCacheControls();
   void pathReportIsStructured();
   void marketOrderCardUsesReferenceStructure();
+  void masteryOwnedBadgeKeepsPaintMargin();
   void marketSearchKeyboardNavigation();
   void filtersExpiredFissures();
   void styleLayersAvoidImplicitSurfaces();
@@ -116,33 +118,29 @@ private slots:
 };
 
 namespace {
-class HideCounter final : public QObject {
-public:
-  int count = 0;
-
-protected:
-  bool eventFilter(QObject *, QEvent *event) override {
-    if (event->type() == QEvent::Hide) {
-      ++count;
-    }
-    return false;
-  }
-};
-
 class ThumbnailProbe final : public QWidget {
 public:
-  explicit ThumbnailProbe(QString path) : path_(std::move(path)) {}
+  explicit ThumbnailProbe(QString path, QRect dirtyRegion = {})
+      : path_(std::move(path)), dirtyRegion_(dirtyRegion) {}
 
   const QPixmap &thumbnail() const { return thumbnail_; }
+  QRect resolvedPaintRegion() const { return resolvedPaintRegion_; }
 
 protected:
-  void paintEvent(QPaintEvent *) override {
+  void paintEvent(QPaintEvent *event) override {
+    const bool unresolved = thumbnail_.isNull();
     QPainter painter(this);
-    thumbnail_ = wfgui::cachedThumbnail(painter, path_, QSize(20, 20));
+    thumbnail_ =
+        wfgui::cachedThumbnail(painter, path_, QSize(20, 20), dirtyRegion_);
+    if (unresolved && !thumbnail_.isNull()) {
+      resolvedPaintRegion_ = event->region().boundingRect();
+    }
   }
 
 private:
   QString path_;
+  QRect dirtyRegion_;
+  QRect resolvedPaintRegion_;
   QPixmap thumbnail_;
 };
 
@@ -1411,19 +1409,22 @@ void RelicModelTest::relicContextMenuFiltersRewards() {
   grid.show();
   QCoreApplication::processEvents();
 
-  const auto cards = grid.findChildren<QWidget *>("relicCardCanvas",
-                                                  Qt::FindDirectChildrenOnly);
-  QVERIFY(!cards.isEmpty());
-  QWidget *card = cards.front();
+  QCOMPARE(grid.layoutMode(), QListView::SinglePass);
+  QVERIFY(grid.uniformItemSizes());
+  QVERIFY(grid.findChildren<QWidget *>("relicCardCanvas").isEmpty());
+  const QModelIndex first = filter.index(0, 0);
+  QVERIFY(first.isValid());
+  const QRect item = grid.visualRect(first);
+  QVERIFY(item.isValid());
   const wfgui::RelicCardLayout layout =
-      wfgui::RelicCardLayout::calculate(card->rect(), 1, 1, 1.0);
+      wfgui::RelicCardLayout::calculate(item, 1, 1, 1.0);
   const QPoint position = layout.rewardCells.front().center();
-  const QPoint global = card->mapToGlobal(position);
+  const QPoint global = grid.viewport()->mapToGlobal(position);
   QContextMenuEvent event(QContextMenuEvent::Mouse, position, global);
-  QApplication::sendEvent(card, &event);
+  QApplication::sendEvent(grid.viewport(), &event);
   QCoreApplication::processEvents();
 
-  auto *menu = card->findChild<QMenu *>("relicContextMenu");
+  auto *menu = grid.findChild<QMenu *>("relicContextMenu");
   QVERIFY(menu);
   const auto action = [menu](const QString &text) {
     for (QAction *candidate : menu->actions()) {
@@ -1462,18 +1463,19 @@ void RelicModelTest::relicContextMenuFiltersRewards() {
   formaGrid.resize(900, 500);
   formaGrid.show();
   QCoreApplication::processEvents();
-  const auto formaCards = formaGrid.findChildren<QWidget *>(
-      "relicCardCanvas", Qt::FindDirectChildrenOnly);
-  QVERIFY(!formaCards.isEmpty());
-  QWidget *formaCard = formaCards.front();
+  const QModelIndex formaIndex = formaFilter.index(0, 0);
+  QVERIFY(formaIndex.isValid());
+  const QRect formaItem = formaGrid.visualRect(formaIndex);
+  QVERIFY(formaItem.isValid());
   const wfgui::RelicCardLayout formaLayout =
-      wfgui::RelicCardLayout::calculate(formaCard->rect(), 1, 1, 1.0);
+      wfgui::RelicCardLayout::calculate(formaItem, 1, 1, 1.0);
   const QPoint formaPosition = formaLayout.rewardCells.front().center();
-  QContextMenuEvent formaEvent(QContextMenuEvent::Mouse, formaPosition,
-                               formaCard->mapToGlobal(formaPosition));
-  QApplication::sendEvent(formaCard, &formaEvent);
+  QContextMenuEvent formaEvent(
+      QContextMenuEvent::Mouse, formaPosition,
+      formaGrid.viewport()->mapToGlobal(formaPosition));
+  QApplication::sendEvent(formaGrid.viewport(), &formaEvent);
   QCoreApplication::processEvents();
-  auto *formaMenu = formaCard->findChild<QMenu *>("relicContextMenu");
+  auto *formaMenu = formaGrid.findChild<QMenu *>("relicContextMenu");
   QVERIFY(formaMenu);
   const QStringList formaActions = [&formaMenu] {
     QStringList labels;
@@ -2146,7 +2148,7 @@ void RelicModelTest::busyProgressAnimates() {
   QVERIFY(firstThin != thin.grab().toImage());
 }
 
-void RelicModelTest::ownershipFilterKeepsVisibleCardsStable() {
+void RelicModelTest::ownershipFilterKeepsVisibleRowsStable() {
   QJsonObject data = recommendations();
   QJsonArray items = data.value("items").toArray();
   QJsonObject unowned = items.at(1).toObject();
@@ -2164,19 +2166,19 @@ void RelicModelTest::ownershipFilterKeepsVisibleCardsStable() {
   grid.show();
   QCoreApplication::processEvents();
 
-  const auto initial = grid.findChildren<QWidget *>("relicCardCanvas",
-                                                    Qt::FindDirectChildrenOnly);
-  QCOMPARE(initial.size(), 1);
-  HideCounter hides;
-  initial.front()->installEventFilter(&hides);
+  QCOMPARE(grid.layoutMode(), QListView::SinglePass);
+  QVERIFY(grid.uniformItemSizes());
+  QVERIFY(grid.findChildren<QWidget *>("relicCardCanvas").isEmpty());
+  const QRect initial = grid.visualRect(filter.index(0, 0));
+  QVERIFY(initial.isValid());
 
   filter.setOnlyOwned(false);
   QTRY_COMPARE(filter.rowCount(), 2);
-  QTRY_COMPARE(grid.findChildren<QWidget *>("relicCardCanvas",
-                                            Qt::FindDirectChildrenOnly)
-                   .size(),
-               2);
-  QCOMPARE(hides.count, 0);
+  QTRY_COMPARE(grid.visualRect(filter.index(0, 0)), initial);
+  QString error;
+  const QPixmap card =
+      wfgui::grabCaptureTarget("relic-planner.grid.item", 0, &error);
+  QVERIFY2(!card.isNull(), qPrintable(error));
 }
 
 void RelicModelTest::compactSearchExpandsOnClick() {
@@ -2293,11 +2295,13 @@ void RelicModelTest::widgetThumbnailDecodeCompletesOffPaintPath() {
   source.fill(Qt::green);
   QVERIFY(source.save(path));
 
-  ThumbnailProbe probe(path);
+  const QRect dirtyRegion(4, 5, 18, 17);
+  ThumbnailProbe probe(path, dirtyRegion);
   probe.resize(32, 32);
   probe.show();
   QTRY_VERIFY_WITH_TIMEOUT(!probe.thumbnail().isNull(), 2000);
   QCOMPARE(probe.thumbnail().deviceIndependentSize(), QSizeF(20, 10));
+  QCOMPARE(probe.resolvedPaintRegion(), dirtyRegion);
 }
 
 void RelicModelTest::derivativeCacheTracksUpstreamIdentity() {
@@ -2424,6 +2428,10 @@ void RelicModelTest::marketOrderCardUsesReferenceStructure() {
   QCOMPARE(card.findChild<QWidget *>("marketOrderBody")->height(), 79);
   QCOMPARE(card.findChild<QWidget *>("marketOrderArt")->width(), 70);
   QVERIFY(!card.findChild<QCheckBox *>("marketVisibility"));
+  auto *warning = card.findChild<QLabel *>("marketWarning");
+  QVERIFY(warning);
+  QCOMPARE(warning->geometry().right(),
+           card.findChild<QWidget *>("marketOrderTop")->rect().right());
 
   const auto click = [&card](const char *name) {
     auto *button = card.findChild<QToolButton *>(name);
@@ -2442,6 +2450,53 @@ void RelicModelTest::marketOrderCardUsesReferenceStructure() {
   QCOMPARE(soldCalls, 1);
   QCOMPARE(removeCalls, 1);
   QCOMPARE(listingCalls, 1);
+}
+
+void RelicModelTest::masteryOwnedBadgeKeepsPaintMargin() {
+  PlayerItemModel model;
+  QVERIFY(model.replace({
+      {"items", QJsonArray{QJsonObject{{"id", "owned-item"},
+                                       {"name", "Owned Item"},
+                                       {"group", "weapons"},
+                                       {"owned", true},
+                                       {"rank", 30},
+                                       {"max_rank", 30},
+                                       {"potential_xp", 3000}}}},
+  }));
+
+  PlayerItemGridWidget grid(PlayerItemGridWidget::Kind::Mastery);
+  grid.setModel(&model);
+  grid.resize(800, 400);
+  grid.show();
+  QCoreApplication::processEvents();
+
+  const QRect item = grid.visualRect(model.index(0));
+  const QRect content = QRect(QPoint(), item.size()).adjusted(12, 12, -12, -12);
+  QFont stateFont = grid.font();
+  stateFont.setPixelSize(14);
+  stateFont.setWeight(QFont::Light);
+  const int iconSize = 20;
+  const int width =
+      iconSize + 4 + QFontMetrics(stateFont).horizontalAdvance("Owned");
+  const QRect stateArea(content.right() - 109 + 1, content.top(), 109,
+                        content.height());
+  const QRect iconRect(stateArea.center().x() - width / 2,
+                       stateArea.center().y() - iconSize / 2, iconSize,
+                       iconSize);
+  const QImage card = grid.viewport()->grab(item).toImage();
+  const auto green = [&card](int x, int y) {
+    const QColor color = card.pixelColor(x, y);
+    return color.green() > 100 && color.green() > color.red() + 25 &&
+           color.green() > color.blue() + 20;
+  };
+  for (int x = iconRect.left(); x <= iconRect.right(); ++x) {
+    QVERIFY(!green(x, iconRect.top()));
+    QVERIFY(!green(x, iconRect.bottom()));
+  }
+  for (int y = iconRect.top(); y <= iconRect.bottom(); ++y) {
+    QVERIFY(!green(iconRect.left(), y));
+    QVERIFY(!green(iconRect.right(), y));
+  }
 }
 
 void RelicModelTest::marketSearchKeyboardNavigation() {
