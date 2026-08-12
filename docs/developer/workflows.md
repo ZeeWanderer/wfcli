@@ -43,6 +43,7 @@ VS Code CMake Tools uses the tracked presets and existing `_build/cmake/` trees.
 - `./scripts/test-quiet gui`: native desktop model tests with build output suppressed.
 - `cargo test --locked --quiet --manifest-path apps/wfcompanion/Cargo.toml`: Rust tests.
 - `make test-gui`: native desktop model tests.
+- `make test-release`: production startup under the x86-64-v2 baseline using QEMU user emulation.
 - `make test`: Erlang, Rust, and native desktop suites.
 - `make check`: Rust formatting, xref, tests, and both staged builds.
 

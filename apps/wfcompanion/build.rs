@@ -10,6 +10,7 @@ fn main() {
     println!("cargo:rerun-if-changed=native");
     println!("cargo:rerun-if-changed={BLEND2D_SOURCE}");
     println!("cargo:rerun-if-changed={ASMJIT_SOURCE}");
+    println!("cargo:rerun-if-env-changed=WFCLI_CPU_BASELINE");
 
     let manifest_dir = PathBuf::from(env::var_os("CARGO_MANIFEST_DIR").unwrap());
     let version_file = manifest_dir.join("../../VERSION");
@@ -31,18 +32,22 @@ fn main() {
     require_submodule(&asmjit_dir, "AsmJit");
 
     let build_dir = PathBuf::from(env::var_os("OUT_DIR").unwrap()).join("native");
-    run(
-        Command::new("cmake")
-            .arg("-S")
-            .arg(manifest_dir.join("native"))
-            .arg("-B")
-            .arg(&build_dir)
-            .arg("-DCMAKE_BUILD_TYPE=Release")
-            .arg("-DCMAKE_EXPORT_COMPILE_COMMANDS=ON")
-            .arg(format!("-DBLEND2D_DIR={}", blend2d_dir.display()))
-            .arg(format!("-DASMJIT_DIR={}", asmjit_dir.display())),
-        "configure native renderer",
-    );
+    let mut configure = Command::new("cmake");
+    configure
+        .arg("-S")
+        .arg(manifest_dir.join("native"))
+        .arg("-B")
+        .arg(&build_dir)
+        .arg("-DCMAKE_BUILD_TYPE=Release")
+        .arg("-DCMAKE_EXPORT_COMPILE_COMMANDS=ON")
+        .arg(format!("-DBLEND2D_DIR={}", blend2d_dir.display()))
+        .arg(format!("-DASMJIT_DIR={}", asmjit_dir.display()));
+    let cpu = env::var_os("WFCLI_CPU_BASELINE").unwrap_or_default();
+    configure.arg(format!(
+        "-DWFCOMPANION_CPU_BASELINE={}",
+        cpu.to_string_lossy()
+    ));
+    run(&mut configure, "configure native renderer");
     run(
         Command::new("cmake")
             .arg("--build")

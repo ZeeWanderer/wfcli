@@ -44,7 +44,11 @@
       "displayName": "GUI production",
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Release",
-        "CMAKE_INSTALL_PREFIX": "${sourceDir}/prod"
+        "CMAKE_INSTALL_PREFIX": "${sourceDir}/prod",
+        "WFCLI_CPU_BASELINE": "x86-64-v2"
+      },
+      "environment": {
+        "WFCLI_CPU_BASELINE": "x86-64-v2"
       }
     }
   ],
