@@ -28,6 +28,12 @@ endif()
 
 project(wfcli VERSION "${WFCLI_VERSION}" LANGUAGES CXX)
 
+set(WFCLI_CPU_BASELINE "" CACHE STRING "Portable production CPU baseline")
+if(WFCLI_CPU_BASELINE)
+  add_compile_options("-march=${WFCLI_CPU_BASELINE}")
+  add_link_options("-march=${WFCLI_CPU_BASELINE}")
+endif()
+
 if(WFCLI_LLVM_ROOT)
   list(APPEND CMAKE_BUILD_RPATH "${WFCLI_LLVM_ROOT}/lib")
 endif()

@@ -7,9 +7,9 @@ if [[ $# -gt 0 ]]; then
 fi
 
 case "$command_name" in
-    ct|eunit|gui) ;;
+    ct|eunit|gui|release) ;;
     *)
-        printf 'usage: %s [ct|eunit|gui] [options...]\n' "$0" >&2
+        printf 'usage: %s [ct|eunit|gui|release] [options...]\n' "$0" >&2
         exit 2
         ;;
 esac
@@ -19,6 +19,9 @@ if [[ "$command_name" == "gui" ]]; then
     label="gui"
     make gui-dev >"$log_file" 2>&1 &&
         ctest --test-dir _build/cmake/gui-dev --output-on-failure >>"$log_file" 2>&1
+elif [[ "$command_name" == "release" ]]; then
+    label="release portability"
+    ./scripts/test-release-portability >"$log_file" 2>&1
 else
     label="rebar3 $command_name"
     rebar3 "$command_name" "$@" >"$log_file" 2>&1

@@ -46,7 +46,7 @@ endif
 	gui-configure-dev gui-configure-prod gui-reconfigure gui-reconfigure-dev gui-reconfigure-prod \
 	dev-erlang prod-erlang dev-companion prod-companion links \
 	debug-bridge native-bridges previews icon-optics aleca-layout-setup fix-executables \
-	native-compile-commands test test-erlang test-companion test-gui check fmt-check xref package clean
+	native-compile-commands test test-erlang test-companion test-gui test-release check fmt-check xref package clean
 
 all: dev
 build: dev prod native-compile-commands
@@ -168,13 +168,16 @@ test-companion: native-bridges
 test-gui:
 	./scripts/test-quiet gui
 
+test-release: prod
+	./scripts/test-quiet release
+
 fmt-check:
 	$(CARGO) fmt --manifest-path $(COMPANION_MANIFEST) --check
 
 xref:
 	$(REBAR3) xref
 
-check: fmt-check xref test dev prod
+check: fmt-check xref test dev prod test-release
 
 package: prod
 	mkdir -p releases

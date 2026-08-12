@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+qemu="${QEMU_X86_64:-$(command -v qemu-x86_64 || true)}"
+
+if [[ -z "$qemu" ]]; then
+    printf '%s\n' 'qemu-x86_64 not found; release portability test requires QEMU user emulation' >&2
+    exit 1
+fi
+
+"$qemu" -cpu Nehalem-v1 "$root/prod/bin/wfcompanion" --help >/dev/null
+QT_QPA_PLATFORM=offscreen \
+    "$qemu" -cpu Nehalem-v1 "$root/prod/bin/wfgui" --help >/dev/null

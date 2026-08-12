@@ -15,6 +15,7 @@ project(wfcompanion_native LANGUAGES C CXX)
 
 set(BLEND2D_DIR "" CACHE PATH "Blend2D source directory")
 set(ASMJIT_DIR "" CACHE PATH "AsmJit source directory")
+set(WFCOMPANION_CPU_BASELINE "" CACHE STRING "Portable production CPU baseline")
 
 if(NOT EXISTS "${BLEND2D_DIR}/CMakeLists.txt")
   message(FATAL_ERROR "BLEND2D_DIR does not contain Blend2D")
@@ -29,6 +30,10 @@ set(BLEND2D_STATIC ON CACHE BOOL "" FORCE)
 set(BLEND2D_TEST OFF CACHE BOOL "" FORCE)
 set(BLEND2D_DEMOS OFF CACHE BOOL "" FORCE)
 set(BLEND2D_NO_INSTALL ON CACHE BOOL "" FORCE)
+
+if(WFCOMPANION_CPU_BASELINE)
+  add_compile_options("-march=${WFCOMPANION_CPU_BASELINE}")
+endif()
 
 add_subdirectory("${BLEND2D_DIR}" blend2d)
 
