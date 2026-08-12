@@ -17,7 +17,9 @@ mod model;
 
 #[cfg(test)]
 use model::Suggestion;
-pub(crate) use model::{Account, Asset, Reward, Rewards, Scene, SetPart, Suggestions, Trigger};
+pub(crate) use model::{
+    Account, Asset, AssetRefresh, Reward, Rewards, Scene, SetPart, Suggestions, Trigger,
+};
 
 use capture_analysis::{capture_trigger, detect_player_count, read_candidate, suggestion_era};
 #[cfg(test)]
@@ -690,6 +692,8 @@ mod tests {
                 "item".to_owned(),
                 Asset {
                     id: "item".to_owned(),
+                    source: "market".to_owned(),
+                    image_name: "item.png".to_owned(),
                     path: "/tmp/item.png".to_owned(),
                     digest: "item-digest".to_owned(),
                 },
@@ -698,6 +702,8 @@ mod tests {
                 "part".to_owned(),
                 Asset {
                     id: "part".to_owned(),
+                    source: "market".to_owned(),
+                    image_name: "part.png".to_owned(),
                     path: "/tmp/part.png".to_owned(),
                     digest: "part-digest".to_owned(),
                 },

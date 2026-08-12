@@ -21,6 +21,35 @@ pub(crate) enum Scene {
     Error(String),
 }
 
+impl Scene {
+    pub(crate) fn apply_asset_refresh(&mut self, refresh: &AssetRefresh) -> Option<bool> {
+        let Self::Rewards(rewards) = self else {
+            return None;
+        };
+        let mut matched = false;
+        let mut changed = false;
+        for asset in rewards.items.iter_mut().flat_map(|reward| {
+            reward.asset.iter_mut().chain(
+                reward
+                    .parts
+                    .iter_mut()
+                    .filter_map(|part| part.asset.as_mut()),
+            )
+        }) {
+            if asset.source != refresh.source || asset.image_name != refresh.image_name {
+                continue;
+            }
+            matched = true;
+            if asset.path != refresh.path || asset.digest != refresh.digest {
+                asset.path.clone_from(&refresh.path);
+                asset.digest.clone_from(&refresh.digest);
+                changed = true;
+            }
+        }
+        matched.then_some(changed)
+    }
+}
+
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub(crate) struct Rewards {
     pub(crate) items: Vec<Reward>,
@@ -87,6 +116,8 @@ impl Reward {
             set_price: None,
             asset: Some(Asset {
                 id: "embedded:forma".to_owned(),
+                source: "embedded".to_owned(),
+                image_name: "forma.png".to_owned(),
                 path: String::new(),
                 digest: assets::FORMA_ASSET.image.key.to_owned(),
             }),
@@ -107,6 +138,16 @@ pub(crate) struct SetPart {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct Asset {
     pub(crate) id: String,
+    pub(crate) source: String,
+    pub(crate) image_name: String,
+    pub(crate) path: String,
+    pub(crate) digest: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
+pub(crate) struct AssetRefresh {
+    pub(crate) source: String,
+    pub(crate) image_name: String,
     pub(crate) path: String,
     pub(crate) digest: String,
 }
@@ -125,4 +166,72 @@ pub(crate) struct Suggestion {
     pub(crate) favorite: bool,
     pub(crate) expected_platinum: Option<u64>,
     pub(crate) expected_ducats: u64,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn asset(id: &str, name: &str, digest: &str) -> Asset {
+        Asset {
+            id: id.to_owned(),
+            source: "market".to_owned(),
+            image_name: name.to_owned(),
+            path: format!("/old/{name}"),
+            digest: digest.to_owned(),
+        }
+    }
+
+    #[test]
+    fn refreshes_all_scene_assets_with_same_identity() {
+        let mut scene = Scene::Rewards(Rewards {
+            items: vec![Reward {
+                asset: Some(asset("item", "shared.webp", "old")),
+                parts: vec![SetPart {
+                    name: "Part".to_owned(),
+                    owned: 0,
+                    required: 1,
+                    current: true,
+                    asset: Some(asset("part", "shared.webp", "old")),
+                }],
+                ..Reward::unresolved("Part".to_owned(), None, None)
+            }],
+            account: Account::default(),
+        });
+        let refresh = AssetRefresh {
+            source: "market".to_owned(),
+            image_name: "shared.webp".to_owned(),
+            path: "/new/shared.webp".to_owned(),
+            digest: "new".to_owned(),
+        };
+
+        assert_eq!(scene.apply_asset_refresh(&refresh), Some(true));
+        let Scene::Rewards(rewards) = scene else {
+            unreachable!();
+        };
+        assert_eq!(rewards.items[0].asset.as_ref().unwrap().digest, "new");
+        assert_eq!(
+            rewards.items[0].parts[0].asset.as_ref().unwrap().digest,
+            "new"
+        );
+    }
+
+    #[test]
+    fn ignores_refresh_for_another_asset() {
+        let mut scene = Scene::Rewards(Rewards {
+            items: vec![Reward {
+                asset: Some(asset("item", "item.webp", "old")),
+                ..Reward::unresolved("Part".to_owned(), None, None)
+            }],
+            account: Account::default(),
+        });
+        let refresh = AssetRefresh {
+            source: "market".to_owned(),
+            image_name: "other.webp".to_owned(),
+            path: "/new/other.webp".to_owned(),
+            digest: "new".to_owned(),
+        };
+
+        assert_eq!(scene.apply_asset_refresh(&refresh), None);
+    }
 }

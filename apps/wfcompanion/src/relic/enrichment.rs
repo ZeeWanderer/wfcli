@@ -291,6 +291,8 @@ pub(super) fn resolve_assets(
                     descriptor.get("id")?.as_str()?.to_owned(),
                     Asset {
                         id: descriptor.get("id")?.as_str()?.to_owned(),
+                        source: descriptor.get("source")?.as_str()?.to_owned(),
+                        image_name: descriptor.get("image_name")?.as_str()?.to_owned(),
                         path: descriptor.get("path")?.as_str()?.to_owned(),
                         digest: descriptor.get("digest")?.as_str()?.to_owned(),
                     },
@@ -304,6 +306,8 @@ pub(super) fn resolve_assets(
 pub(super) fn embedded_asset(spec: &AssetSpec) -> Option<Asset> {
     assets::embedded_asset(&spec.source, &spec.image_name).map(|embedded| Asset {
         id: spec.id.clone(),
+        source: spec.source.clone(),
+        image_name: spec.image_name.clone(),
         path: String::new(),
         digest: embedded.image.key.to_owned(),
     })

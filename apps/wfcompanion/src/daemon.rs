@@ -710,6 +710,14 @@ fn handle_server_message(
         send_snapshot(&message, ui);
         return;
     }
+    if message.get("event").and_then(Value::as_str) == Some("asset") {
+        if let Some(data) = message.get("data")
+            && let Ok(refresh) = serde_json::from_value::<crate::relic::AssetRefresh>(data.clone())
+        {
+            let _ = ui.send(UiEvent::AssetRefreshed(refresh));
+        }
+        return;
+    }
     if let Some(reply) = message
         .get("id")
         .and_then(Value::as_u64)
@@ -1001,6 +1009,25 @@ mod tests {
             &mut pending,
         );
         assert!(matches!(events.recv().unwrap(), UiEvent::HudVisible(true)));
+    }
+
+    #[test]
+    fn routes_asset_refresh_event() {
+        let (ui, events) = std_mpsc::channel();
+        let mut pending = BTreeMap::new();
+
+        handle_server_message(
+            r#"{"event":"asset","data":{"source":"market","image_name":"item.webp","path":"/cache/item.webp","digest":"new"}}"#,
+            &ui,
+            &mut pending,
+        );
+
+        let UiEvent::AssetRefreshed(refresh) = events.recv().unwrap() else {
+            panic!("expected asset refresh");
+        };
+        assert_eq!(refresh.source, "market");
+        assert_eq!(refresh.image_name, "item.webp");
+        assert_eq!(refresh.digest, "new");
     }
 
     #[test]

@@ -118,6 +118,8 @@ pub(super) fn part_asset(name: &str) -> Option<crate::relic::Asset> {
     };
     Some(crate::relic::Asset {
         id: format!("preview:{name}"),
+        source: "fixture".to_owned(),
+        image_name: id.to_owned(),
         path: format!(
             "{}/test/fixtures/relic-parts/{id}",
             env!("CARGO_MANIFEST_DIR")

@@ -120,6 +120,7 @@ pub(crate) fn run(
         frame_pending: false,
         interaction_active: false,
         shortcut_scope: false,
+        pending_asset_refreshes: BTreeMap::new(),
         presentation: Presentation::default(),
         events,
         relic,
@@ -183,6 +184,7 @@ struct Overlay {
     frame_pending: bool,
     interaction_active: bool,
     shortcut_scope: bool,
+    pending_asset_refreshes: BTreeMap<(String, String), crate::relic::AssetRefresh>,
     presentation: Presentation,
     events: mpsc::Receiver<UiEvent>,
     relic: mpsc::Sender<crate::relic::Trigger>,
@@ -269,6 +271,27 @@ impl Overlay {
                     self.snapshots.insert(dataset, data);
                     self.request_full_redraw();
                 }
+                UiEvent::AssetRefreshed(refresh) => {
+                    let applied = self
+                        .relic_scene
+                        .as_mut()
+                        .and_then(|(scene, _, _)| scene.apply_asset_refresh(&refresh));
+                    match applied {
+                        Some(changed) => {
+                            if changed {
+                                let scene = &self.relic_scene.as_ref().unwrap().0;
+                                self.renderer.cache_scene_assets(scene);
+                                self.request_full_redraw();
+                            }
+                        }
+                        None => {
+                            self.pending_asset_refreshes.insert(
+                                (refresh.source.clone(), refresh.image_name.clone()),
+                                refresh,
+                            );
+                        }
+                    }
+                }
                 UiEvent::OverlayVisible(visible) => {
                     self.overlay_enabled = visible;
                     incident::info("overlay.visibility", format!("enabled={visible}"));
@@ -279,7 +302,10 @@ impl Overlay {
                     incident::info("overlay.hud", format!("visible={visible}"));
                     self.request_full_redraw();
                 }
-                UiEvent::RelicScene { scene, deadline } => {
+                UiEvent::RelicScene {
+                    mut scene,
+                    deadline,
+                } => {
                     if self.suggestion_dismissed
                         && matches!(scene, crate::relic::Scene::Suggestions(_))
                     {
@@ -323,6 +349,8 @@ impl Overlay {
                             },
                         ),
                     );
+                    self.pending_asset_refreshes
+                        .retain(|_, refresh| scene.apply_asset_refresh(refresh).is_none());
                     self.renderer.cache_scene_assets(&scene);
                     if matches!(scene, crate::relic::Scene::Suggestions(_))
                         && !updates_current_suggestions

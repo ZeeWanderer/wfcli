@@ -74,6 +74,7 @@ pub(crate) enum UiEvent {
         dataset: String,
         data: Value,
     },
+    AssetRefreshed(relic::AssetRefresh),
     OverlayVisible(bool),
     HudVisible(bool),
     RelicScene {
