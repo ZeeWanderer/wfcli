@@ -2,9 +2,7 @@ use std::collections::HashMap;
 use std::sync::mpsc;
 use std::thread;
 
-use ashpd::desktop::global_shortcuts::{
-    BindShortcutsOptions, GlobalShortcuts, ListShortcutsOptions, NewShortcut,
-};
+use ashpd::desktop::global_shortcuts::{BindShortcutsOptions, GlobalShortcuts, NewShortcut};
 use ashpd::desktop::{CreateSessionOptions, Session};
 use ashpd::zbus;
 use ashpd::zvariant::OwnedValue;
@@ -122,18 +120,6 @@ async fn open_session(portal: &GlobalShortcuts) -> Result<Session<GlobalShortcut
         .await
         .map_err(|error| format!("create session: {error}"))?;
     let result = async {
-        let listed = portal
-            .list_shortcuts(&session, ListShortcutsOptions::default())
-            .await
-            .and_then(|request| request.response())
-            .map_err(|error| format!("list shortcuts: {error}"))?;
-        if listed
-            .shortcuts()
-            .iter()
-            .any(|shortcut| shortcut.id() == SHORTCUT_ID)
-        {
-            return Ok(());
-        }
         let shortcut = NewShortcut::new(SHORTCUT_ID, "Toggle overlay interaction mode")
             .preferred_trigger("CTRL+Tab");
         let bound = portal
