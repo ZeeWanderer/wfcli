@@ -401,6 +401,18 @@ mod tests {
     use super::*;
 
     #[test]
+    fn loads_webp_assets_from_daemon_cache() {
+        let mut encoded = Vec::new();
+        image::codecs::webp::WebPEncoder::new_lossless(&mut encoded)
+            .encode(&[10, 20, 30, 255], 1, 1, image::ExtendedColorType::Rgba8)
+            .unwrap();
+
+        let image = load_icon(&encoded).unwrap();
+        assert_eq!((image.width, image.height), (1, 1));
+        assert_eq!(image.pixels, [30, 20, 10, 255]);
+    }
+
+    #[test]
     fn rounded_panel_antialiases_corners() {
         let mut pixels = vec![0; 8 * 8 * 4];
         let color = [1, 2, 3, 255];
