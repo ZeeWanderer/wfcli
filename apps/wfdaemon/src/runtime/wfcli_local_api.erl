@@ -298,6 +298,7 @@ connection(Socket, Parent) ->
               hello => false, subscriptions => #{}, refs => #{}, market_refs => #{},
               market_account_refs => #{},
               market_presence_ref => undefined,
+              asset_ref => undefined,
               activity_refs => #{},
               workers => #{}, worker_queue => queue:new(),
               worker_permits => 0, worker_permit_requests => 0,
@@ -332,6 +333,9 @@ connection_loop(State = #{reader_monitor := ReaderMonitor}) ->
             connection_loop(State1);
         {wfcli_market_presence, Ref, Snapshot} ->
             State1 = send_market_presence_event(Ref, Snapshot, State),
+            connection_loop(State1);
+        {wfcli_asset, Ref, Descriptor} ->
+            State1 = send_asset_event(Ref, Descriptor, State),
             connection_loop(State1);
         {local_request_result, Token, Id, Dataset, Reply} ->
             State1 = send_local_request_result(Token, Id, Dataset, Reply, State),
@@ -426,6 +430,7 @@ handle_request(#{<<"op">> := <<"hello">>} = Request, State) ->
                                <<"player.mastery">>,
                                <<"notifications.fissures">>,
                                <<"asset.resolve">>,
+                               <<"asset.refresh">>,
                                <<"asset.cache">>,
                                <<"companion.command">>]
     },
@@ -749,7 +754,8 @@ handle_request(#{<<"op">> := <<"asset_resolve">>,
             {error, _Reason} = Error -> Error
         end
     end,
-    {ok, start_local_request(Id, <<"assets">>, Work, State)};
+    State1 = ensure_asset_subscription(State),
+    {ok, start_local_request(Id, <<"assets">>, Work, State1)};
 handle_request(#{<<"op">> := <<"asset_resolve">>} = Request, State) ->
     send_error(maps:get(socket, State), request_id(Request), invalid_assets),
     {ok, State};
@@ -984,6 +990,23 @@ send_market_presence_event(Ref, Snapshot, State) ->
         _ -> State
     end.
 
+ensure_asset_subscription(State) ->
+    try wfcli_asset_service:subscribe(self()) of
+        {ok, Ref} -> State#{asset_ref => Ref};
+        _ -> State
+    catch
+        _:_ -> State
+    end.
+
+send_asset_event(Ref, Descriptor, State) ->
+    case maps:get(asset_ref, State, undefined) of
+        Ref ->
+            send_json(maps:get(socket, State),
+                      #{<<"event">> => <<"asset">>, <<"data">> => Descriptor}),
+            State;
+        _ -> State
+    end.
+
 ensure_market_presence_subscription(State = #{market_presence_ref := Ref})
   when is_reference(Ref) -> State;
 ensure_market_presence_subscription(State) ->
@@ -1162,6 +1185,11 @@ cleanup_connection(State) ->
     case maps:get(market_presence_ref, State, undefined) of
         Ref when is_reference(Ref) ->
             _ = wfcli_market_presence_service:unsubscribe(Ref);
+        _ -> ok
+    end,
+    case maps:get(asset_ref, State, undefined) of
+        AssetRef when is_reference(AssetRef) ->
+            _ = wfcli_asset_service:unsubscribe(AssetRef);
         _ -> ok
     end,
     exit(maps:get(reader, State), shutdown),

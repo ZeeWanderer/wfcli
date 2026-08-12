@@ -15,6 +15,7 @@ asset_service_test_() ->
          fun deduplicates_inflight_fetches/0,
          fun drops_dead_resolve_waiters/0,
          fun prewarms_without_refetching/0,
+         fun stale_cache_returns_before_refresh/0,
          fun accepts_market_sub_icon/0,
          fun accepts_mastery_rank_icon/0,
          fun rejects_untrusted_image_name/0,
@@ -50,6 +51,7 @@ cleanup(Root) ->
     application:unset_env(wfdaemon, asset_workers),
     application:unset_env(wfdaemon, asset_test_counter),
     application:unset_env(wfdaemon, asset_http_fun),
+    application:unset_env(wfdaemon, asset_fresh_ms),
     _ = file:del_dir_r(Root),
     ok.
 
@@ -188,6 +190,48 @@ prewarms_without_refetching() ->
     {ok, [Result]} = wfcli_asset_service:resolve(Request),
     ?assertEqual(true, maps:get(<<"ok">>, Result)),
     ?assertEqual(Before + 1, atomics:get(Counter, 1)).
+
+stale_cache_returns_before_refresh() ->
+    Request = [#{<<"id">> => <<"stale">>,
+                 <<"image_name">> => <<"stale.png">>}],
+    {ok, [Initial]} = wfcli_asset_service:resolve(Request),
+    InitialDigest = maps:get(<<"digest">>, Initial),
+    application:set_env(wfdaemon, asset_fresh_ms, 0),
+    Test = self(),
+    application:set_env(
+      wfdaemon, asset_http_fun,
+      fun(_Url, _Headers) ->
+          Test ! {stale_refresh_started, self()},
+          receive continue ->
+              {ok, 200, [{"etag", "\"changed\""}],
+               <<(fixture_png())/binary, 0>>}
+          end
+      end),
+    {ok, Subscription} = wfcli_asset_service:subscribe(self()),
+    _Resolver = spawn(fun() ->
+        Test ! {stale_resolve_result, wfcli_asset_service:resolve(Request)}
+    end),
+    Worker = receive
+        {stale_refresh_started, Pid} -> Pid
+    after 1000 -> error(stale_refresh_not_started)
+    end,
+    Stale = receive
+        {stale_resolve_result, {ok, [Value]}} -> Value
+    after 100 -> error(stale_resolve_blocked_on_refresh)
+    end,
+    ?assertEqual(true, maps:get(<<"stale">>, Stale)),
+    ?assertEqual(InitialDigest, maps:get(<<"digest">>, Stale)),
+    Worker ! continue,
+    receive
+        {wfcli_asset, Subscription, Refreshed} ->
+            ?assertNotEqual(InitialDigest, maps:get(<<"digest">>, Refreshed)),
+            ?assertEqual(<<"stale.png">>, maps:get(<<"image_name">>, Refreshed))
+    after 1000 -> error(asset_refresh_not_streamed)
+    end,
+    ok = wfcli_asset_service:unsubscribe(Subscription),
+    wait_until_idle(100),
+    application:unset_env(wfdaemon, asset_fresh_ms),
+    restore_http_fun().
 
 accepts_market_sub_icon() ->
     {ok, [Result]} = wfcli_asset_service:resolve(

@@ -34,6 +34,12 @@ load() ->
 -doc "Return preferred managed Star Chart metadata path.".
 -spec source() -> file:filename_all().
 source() ->
+    case application:get_env(wfdaemon, star_chart_file) of
+        {ok, Path} when is_list(Path); is_binary(Path) -> Path;
+        _ -> default_source()
+    end.
+
+default_source() ->
     Paths = wfcli_worldstate:metadata_paths(?CACHE_FILE),
     case [Path || Path <- Paths, filelib:is_file(Path)] of
         [Path | _] -> Path;

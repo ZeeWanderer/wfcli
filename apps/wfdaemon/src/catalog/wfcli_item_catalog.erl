@@ -33,6 +33,12 @@ load() ->
 -doc "Return preferred managed item-catalog path.".
 -spec source() -> file:filename_all().
 source() ->
+    case application:get_env(wfdaemon, item_catalog_file) of
+        {ok, Path} when is_list(Path); is_binary(Path) -> Path;
+        _ -> default_source()
+    end.
+
+default_source() ->
     Paths = wfcli_worldstate:metadata_paths(?ITEM_FILE),
     case [Path || Path <- Paths, filelib:is_file(Path)] of
         [Path | _] -> Path;

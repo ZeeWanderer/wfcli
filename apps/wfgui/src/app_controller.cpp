@@ -77,26 +77,9 @@ AppController::AppController(QObject *parent)
             applySelectedEra();
           });
   connect(&daemon_, &DaemonClient::assetsResolved, this,
-          [this](const QJsonArray &assets) {
-            wfgui::AssetMap changedAssets;
-            for (const QJsonValue &value : assets) {
-              const wfgui::AssetRef asset =
-                  wfgui::AssetRef::fromJson(value.toObject());
-              if (asset.isValid() && assets_.value(asset.id) != asset) {
-                assets_.insert(asset.id, asset);
-                changedAssets.insert(asset.id, asset);
-              }
-            }
-            if (!changedAssets.isEmpty()) {
-              relics_.applyAssets(changedAssets);
-              foundryItems_.applyAssets(changedAssets);
-              inventoryItems_.applyAssets(changedAssets);
-              masteryItems_.applyAssets(changedAssets);
-              QStringList ids = changedAssets.keys();
-              ids.sort();
-              emit assetsChanged(ids);
-            }
-          });
+          &AppController::applyAssets);
+  connect(&daemon_, &DaemonClient::assetRefreshed, this,
+          &AppController::applyAssetRefresh);
   connect(&daemon_, &DaemonClient::assetRequestFailed, this,
           [this] { assetRequestedAt_.clear(); });
   connect(&daemon_, &DaemonClient::assetCacheStatusReady, this,
@@ -455,7 +438,7 @@ void AppController::setOnlyOwned(bool onlyOwned) {
 
 void AppController::selectEra(const QString &era) {
   static const QSet<QString> eras = {
-      "all", "lith", "meso", "neo", "axi",
+      "all", "lith", "meso", "neo", "axi", "requiem",
   };
   if (!eras.contains(era) || selectedEra_ == era) {
     return;
@@ -568,6 +551,42 @@ void AppController::resolveAssets(const QJsonArray &assets) {
     }
   }
   daemon_.requestAssets(pending);
+}
+
+void AppController::applyAssets(const QJsonArray &assets) {
+  wfgui::AssetMap changedAssets;
+  for (const QJsonValue &value : assets) {
+    const wfgui::AssetRef asset = wfgui::AssetRef::fromJson(value.toObject());
+    if (asset.isValid() && assets_.value(asset.id) != asset) {
+      assets_.insert(asset.id, asset);
+      changedAssets.insert(asset.id, asset);
+    }
+  }
+  if (changedAssets.isEmpty()) {
+    return;
+  }
+  relics_.applyAssets(changedAssets);
+  foundryItems_.applyAssets(changedAssets);
+  inventoryItems_.applyAssets(changedAssets);
+  masteryItems_.applyAssets(changedAssets);
+  QStringList ids = changedAssets.keys();
+  ids.sort();
+  emit assetsChanged(ids);
+}
+
+void AppController::applyAssetRefresh(const QJsonObject &asset) {
+  const QString identity = assetRequestIdentity(asset);
+  QJsonArray refreshed;
+  for (auto requested = assetRequestedIdentity_.cbegin();
+       requested != assetRequestedIdentity_.cend(); ++requested) {
+    if (requested.value() != identity) {
+      continue;
+    }
+    QJsonObject resolved = asset;
+    resolved.insert("id", requested.key());
+    refreshed.append(resolved);
+  }
+  applyAssets(refreshed);
 }
 
 void AppController::resolveMarketQuotes(const QStringList &items,
@@ -736,14 +755,21 @@ void AppController::applySelectedEra() {
 }
 
 void AppController::requestAssets(const QJsonObject &data) {
+  QJsonArray eraAssets;
   QJsonArray relicAssets;
   QJsonArray rewardAssets;
+  QSet<QString> eras;
   for (const QJsonValue &itemValue : data.value("items").toArray()) {
     const QJsonObject item = itemValue.toObject();
     const QJsonObject relicAsset = item.value("asset").toObject();
     const QString relicId = relicAsset.value("id").toString();
     if (!relicId.isEmpty()) {
       relicAssets.append(relicAsset);
+      const QString era = item.value("era").toString();
+      if (!era.isEmpty() && !eras.contains(era)) {
+        eras.insert(era);
+        eraAssets.append(relicAsset);
+      }
     }
     for (const QJsonValue &rewardValue : item.value("rewards").toArray()) {
       const QJsonObject rewardAsset =
@@ -763,6 +789,7 @@ void AppController::requestAssets(const QJsonObject &data) {
       }
     }
   }
+  resolveAssets(eraAssets);
   resolveAssets(relicAssets);
   resolveAssets(rewardAssets);
 }

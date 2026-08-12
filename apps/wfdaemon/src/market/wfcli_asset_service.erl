@@ -5,7 +5,8 @@
 
 -behaviour(gen_server).
 
--export([start_link/0, resolve/1, prewarm/1, status/0, clear/0]).
+-export([start_link/0, resolve/1, prewarm/1, subscribe/1, unsubscribe/1,
+         status/0, clear/0]).
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2,
          terminate/2, code_change/3]).
 
@@ -35,6 +36,9 @@
     workers := map(),
     calls := map(),
     call_monitors := map(),
+    subscribers := map(),
+    subscriber_pids := map(),
+    subscriber_monitors := map(),
     max_workers := pos_integer(),
     dirty := boolean(),
     persist_timer := reference() | undefined,
@@ -55,6 +59,16 @@ resolve(Assets) ->
 -spec prewarm([map()]) -> ok.
 prewarm(Assets) ->
     gen_server:cast(?SERVER, {prewarm, Assets}).
+
+-doc "Subscribe to changed cached asset identities.".
+-spec subscribe(pid()) -> {ok, reference()}.
+subscribe(Client) when is_pid(Client) ->
+    gen_server:call(?SERVER, {subscribe, Client}).
+
+-doc "Remove one asset update subscription.".
+-spec unsubscribe(reference()) -> ok.
+unsubscribe(Ref) ->
+    gen_server:call(?SERVER, {unsubscribe, Ref}).
 
 -doc "Return cache location and object count.".
 -spec status() -> map().
@@ -79,6 +93,10 @@ handle_call({resolve, Assets}, From, State)
     start_resolve(Assets, From, State);
 handle_call({resolve, _Assets}, _From, State) ->
     {reply, {error, invalid_assets}, State};
+handle_call({subscribe, Client}, _From, State) when is_pid(Client) ->
+    subscribe_client(Client, State);
+handle_call({unsubscribe, Ref}, _From, State) ->
+    {reply, ok, remove_subscriber(Ref, State)};
 handle_call(status, _From, State) ->
     {reply, cache_status(State), State};
 handle_call(clear, _From, State) ->
@@ -106,7 +124,8 @@ handle_info({'DOWN', Monitor, process, Pid, Reason}, State) ->
     case maps:get(Pid, maps:get(workers, State), undefined) of
         #{monitor := Monitor, key := Key} ->
             {noreply, finish_fetch(Pid, Key, {error, {asset_worker_down, Reason}}, State)};
-        _ -> {noreply, cancel_call(Monitor, State)}
+        _ -> {noreply, remove_subscriber_monitor(Monitor,
+                                                 cancel_call(Monitor, State))}
     end;
 handle_info(persist_index, State) ->
     {noreply, flush_index(State#{persist_timer => undefined})};
@@ -141,6 +160,7 @@ new_state(Root, IndexPath, Entries) ->
     #{root => Root, index_path => IndexPath, entries => Entries,
       foreground => queue:new(), background => queue:new(), pending => #{},
       workers => #{}, calls => #{}, call_monitors => #{},
+      subscribers => #{}, subscriber_pids => #{}, subscriber_monitors => #{},
       max_workers => worker_limit(), dirty => false, persist_timer => undefined,
       maintenance_timer => undefined}.
 
@@ -153,7 +173,8 @@ cache_status(State) ->
                 queue:len(maps:get(background, State)),
       pending => map_size(maps:get(pending, State)),
       fetching => map_size(maps:get(workers, State)),
-      waiting_calls => map_size(maps:get(calls, State))}.
+      waiting_calls => map_size(maps:get(calls, State)),
+      subscribers => map_size(maps:get(subscribers, State))}.
 
 cache_usage(Entries) ->
     Objects = maps:fold(
@@ -204,6 +225,10 @@ start_resolve(Assets, From, State) ->
         lists:foldl(
           fun({Position, {ready, Result}}, {ResultAcc, Count, Acc}) ->
                   {ResultAcc#{Position => Result}, Count, Acc};
+             ({Position, {stale, Result, Request}}, {ResultAcc, Count, Acc}) ->
+                  {ResultAcc#{Position => Result}, Count,
+                   enqueue_asset(asset_key(Request), Request, none,
+                                 background, Acc)};
              ({Position, {fetch, {Id, Source, Name, Cached}}},
               {ResultAcc, Count, Acc}) ->
                   Waiter = {CallRef, Position, Id},
@@ -213,7 +238,8 @@ start_resolve(Assets, From, State) ->
           end,
           {#{}, 0, State}, Prepared),
     case Waiting of
-        0 -> {reply, {ok, ordered_results(Results, length(Assets))}, State1};
+        0 -> {reply, {ok, ordered_results(Results, length(Assets))},
+              dispatch(State1)};
         _ ->
             Monitor = erlang:monitor(process, element(1, From)),
             Call = #{from => From, remaining => Waiting, results => Results,
@@ -229,6 +255,9 @@ prepare_prewarm(Assets, State) ->
           case prepare_asset(Spec, Acc) of
               {fetch, {_Id, Source, Name, Cached}} ->
                   enqueue_asset({Source, Name}, {Source, Name, Cached}, none,
+                                background, Acc);
+              {stale, _Result, Request} ->
+                  enqueue_asset(asset_key(Request), Request, none,
                                 background, Acc);
               {ready, _Result} -> Acc
           end
@@ -258,10 +287,15 @@ prepare_valid(Id, Source, Name, State) ->
     Entries = maps:get(entries, State),
     Key = {Source, Name},
     Cached = maps:get(Key, Entries, undefined),
-    case usable_cached(Cached) andalso fresh(Cached) of
-        true -> {ready, descriptor(Id, Source, Name, Cached, false)};
-        false -> {fetch, {Id, Source, Name, Cached}}
+    case {usable_cached(Cached), fresh(Cached)} of
+        {true, true} -> {ready, descriptor(Id, Source, Name, Cached, false)};
+        {true, false} ->
+            Request = {Source, Name, Cached},
+            {stale, descriptor(Id, Source, Name, Cached, true), Request};
+        _ -> {fetch, {Id, Source, Name, Cached}}
     end.
+
+asset_key({Source, Name, _Cached}) -> {Source, Name}.
 
 enqueue_asset(Key, Request, Waiter, Priority, State) ->
     Pending = maps:get(pending, State),
@@ -374,15 +408,17 @@ fetch_asset({Source, Name, Cached}) ->
         Other -> {error, {invalid_asset_http_result, Other}}
     end.
 
-commit_fetch(Source, Name, _Cached, {entry, Entry}, State) ->
-    save_entry({Source, Name}, Entry, State);
-commit_fetch(Source, Name, _Cached,
+commit_fetch(Source, Name, Cached, {entry, Entry}, State) ->
+    save_entry({Source, Name}, Cached, Entry, State);
+commit_fetch(Source, Name, Cached,
              {body, Url, Body, MediaType, Extension, Headers}, State) ->
-    store_body(Source, Name, Url, Body, MediaType, Extension, Headers, State);
+    store_body(Source, Name, Cached, Url, Body, MediaType, Extension, Headers,
+               State);
 commit_fetch(_Source, _Name, Cached, {error, Reason}, State) ->
     stale_or_error(Cached, Reason, State).
 
-store_body(Source, Name, Url, Body, MediaType, Extension, Headers, State) ->
+store_body(Source, Name, Cached, Url, Body, MediaType, Extension, Headers,
+           State) ->
     Digest = hex(crypto:hash(sha256, Body)),
     Objects = filename:join(maps:get(root, State), "objects"),
     Path = filename:join(Objects, binary_to_list(<<Digest/binary, Extension/binary>>)),
@@ -396,7 +432,7 @@ store_body(Source, Name, Url, Body, MediaType, Extension, Headers, State) ->
                               etag => response_header(<<"etag">>, Headers),
                               last_modified => response_header(<<"last-modified">>, Headers),
                               fetched_at => erlang:system_time(millisecond)},
-                    save_entry({Source, Name}, Entry, State);
+                    save_entry({Source, Name}, Cached, Entry, State);
                 {error, Reason} ->
                     {{error, {asset_cache_write_failed, Reason}}, State}
             end;
@@ -404,9 +440,19 @@ store_body(Source, Name, Url, Body, MediaType, Extension, Headers, State) ->
             {{error, {asset_cache_write_failed, Reason}}, State}
     end.
 
-save_entry(Key, Entry, State) ->
+save_entry(Key, Previous, Entry, State) ->
     Entries = (maps:get(entries, State))#{Key => Entry},
-    {{ok, Entry, false}, mark_dirty(State#{entries => Entries})}.
+    State1 = mark_dirty(State#{entries => Entries}),
+    State2 = case changed_identity(Previous, Entry) of
+        true -> notify_subscribers(Key, Entry, State1);
+        false -> State1
+    end,
+    {{ok, Entry, false}, State2}.
+
+changed_identity(Previous, Entry) when is_map(Previous) ->
+    usable_cached(Previous) andalso
+        maps:get(digest, Previous, undefined) =/= maps:get(digest, Entry, undefined);
+changed_identity(_Previous, _Entry) -> false.
 
 stale_or_error(Cached, _Reason, State) when is_map(Cached) ->
     case usable_cached(Cached) of
@@ -579,9 +625,16 @@ usable_cached(Entry) when is_map(Entry) ->
     end;
 usable_cached(_Entry) -> false.
 
-fresh(Entry) ->
+fresh(Entry) when is_map(Entry) ->
     Now = erlang:system_time(millisecond),
-    Now - maps:get(fetched_at, Entry, 0) < ?FRESH_MS.
+    Now - maps:get(fetched_at, Entry, 0) < fresh_ms();
+fresh(_Entry) -> false.
+
+fresh_ms() ->
+    case application:get_env(wfdaemon, asset_fresh_ms, ?FRESH_MS) of
+        Milliseconds when is_integer(Milliseconds), Milliseconds >= 0 -> Milliseconds;
+        _ -> ?FRESH_MS
+    end.
 
 write_object(Path, Body) ->
     case filelib:is_file(Path) of
@@ -659,6 +712,59 @@ cancel_monitor(Monitor) -> erlang:demonitor(Monitor, [flush]), ok.
 
 remove_monitor(undefined, Monitors) -> Monitors;
 remove_monitor(Monitor, Monitors) -> maps:remove(Monitor, Monitors).
+
+subscribe_client(Client, State) ->
+    case maps:get(Client, maps:get(subscriber_pids, State), undefined) of
+        Ref when is_reference(Ref) -> {reply, {ok, Ref}, State};
+        undefined ->
+            Ref = make_ref(),
+            Monitor = erlang:monitor(process, Client),
+            Subscriber = #{client => Client, monitor => Monitor},
+            Subscribers = (maps:get(subscribers, State))#{Ref => Subscriber},
+            Pids = (maps:get(subscriber_pids, State))#{Client => Ref},
+            Monitors = (maps:get(subscriber_monitors, State))#{Monitor => Ref},
+            {reply, {ok, Ref},
+             State#{subscribers => Subscribers, subscriber_pids => Pids,
+                    subscriber_monitors => Monitors}}
+    end.
+
+remove_subscriber(Ref, State) ->
+    case maps:take(Ref, maps:get(subscribers, State)) of
+        error -> State;
+        {#{client := Client, monitor := Monitor}, Subscribers} ->
+            erlang:demonitor(Monitor, [flush]),
+            State#{subscribers => Subscribers,
+                   subscriber_pids => maps:remove(
+                                        Client, maps:get(subscriber_pids, State)),
+                   subscriber_monitors => maps:remove(
+                                            Monitor,
+                                            maps:get(subscriber_monitors, State))}
+    end.
+
+remove_subscriber_monitor(Monitor, State) ->
+    case maps:take(Monitor, maps:get(subscriber_monitors, State)) of
+        error -> State;
+        {Ref, Monitors} ->
+            case maps:take(Ref, maps:get(subscribers, State)) of
+                error -> State#{subscriber_monitors => Monitors};
+                {#{client := Client}, Subscribers} ->
+                    State#{subscribers => Subscribers,
+                           subscriber_pids => maps:remove(
+                                                Client,
+                                                maps:get(subscriber_pids, State)),
+                           subscriber_monitors => Monitors}
+            end
+    end.
+
+notify_subscribers({Source, Name}, Entry, State) ->
+    Descriptor = maps:remove(
+                   <<"id">>, descriptor(<<>>, Source, Name, Entry, false)),
+    maps:foreach(
+      fun(Ref, #{client := Client}) ->
+          Client ! {wfcli_asset, Ref, Descriptor}
+      end,
+      maps:get(subscribers, State)),
+    State.
 
 cache_root() ->
     case application:get_env(wfdaemon, asset_cache_dir) of

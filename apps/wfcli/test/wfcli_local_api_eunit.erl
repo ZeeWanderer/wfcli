@@ -20,6 +20,18 @@ setup() ->
     NotificationSettings = filename:join(Root, "notifications.json"),
     MarketToken = filename:join(Root, "market-token"),
     MarketPresence = filename:join(Root, "market-presence.json"),
+    ItemCatalog = filename:join(Root, "WFCDItems.json"),
+    StarChart = filename:join(Root, "StarChart.json"),
+    ok = filelib:ensure_dir(filename:join(Root, "placeholder")),
+    ok = file:write_file(
+           ItemCatalog,
+           jsone:encode(#{<<"version">> => <<"test">>, <<"fetchedAt">> => 1,
+                          <<"entries">> => []})),
+    ok = file:write_file(
+           StarChart,
+           jsone:encode(#{<<"version">> => <<"test">>, <<"fetchedAt">> => 1,
+                          <<"nodes">> => #{<<"EarthNode">> => 3000},
+                          <<"junctions">> => []})),
     application:set_env(wfdaemon, local_socket, SocketPath),
     application:set_env(wfdaemon, player_cache, CachePath),
     application:set_env(wfdaemon, market_cache, MarketCache),
@@ -29,6 +41,8 @@ setup() ->
     application:set_env(wfdaemon, notification_settings_file, NotificationSettings),
     application:set_env(wfdaemon, market_account_file, MarketToken),
     application:set_env(wfdaemon, market_presence_file, MarketPresence),
+    application:set_env(wfdaemon, item_catalog_file, ItemCatalog),
+    application:set_env(wfdaemon, star_chart_file, StarChart),
     application:set_env(wfdaemon, local_request_workers, 2),
     application:set_env(wfdaemon, local_request_global_workers, 2),
     application:set_env(wfdaemon, daemon_idle_shutdown, false),
@@ -68,9 +82,12 @@ cleanup(#{root := Root, socket := SocketPath, cache := CachePath,
     application:unset_env(wfdaemon, notification_settings_file),
     application:unset_env(wfdaemon, market_account_file),
     application:unset_env(wfdaemon, market_presence_file),
+    application:unset_env(wfdaemon, item_catalog_file),
+    application:unset_env(wfdaemon, star_chart_file),
     application:unset_env(wfdaemon, local_request_workers),
     application:unset_env(wfdaemon, local_request_global_workers),
     application:unset_env(wfdaemon, asset_http_fun),
+    application:unset_env(wfdaemon, asset_fresh_ms),
     application:unset_env(wfdaemon, daemon_idle_shutdown),
     _ = file:delete(SocketPath),
     _ = file:delete(CachePath),
@@ -90,6 +107,7 @@ lifecycle(#{socket := SocketPath}) ->
     request_player_metadata_subscription(SocketPath),
     TestSocket = connect_client(SocketPath, <<"test">>, #{}),
     ?assertMatch(#{external_activity := 0}, wfcli_worldstate_service:status()),
+    request_mastery_view_from_raw_publish(TestSocket),
     request_market_resolve(TestSocket),
     request_market_describe(TestSocket),
     reject_invalid_market_resolve(TestSocket),
@@ -103,6 +121,7 @@ lifecycle(#{socket := SocketPath}) ->
     request_cached_market_quote(TestSocket),
     request_notification_settings(TestSocket),
     slow_asset_does_not_block_dataset(TestSocket),
+    streams_stale_asset_refresh(TestSocket),
     local_request_limit_queues_excess_work(TestSocket),
     global_local_request_limit_queues_other_clients(TestSocket, SocketPath),
     request_asset_cache_controls(TestSocket),
@@ -134,6 +153,38 @@ lifecycle(#{socket := SocketPath}) ->
     await_external_activity(1, 20),
     ok = socket:close(CompanionSocket2),
     await_external_activity(0, 20).
+
+request_mastery_view_from_raw_publish(Socket) ->
+    Observation = #{
+        <<"schema">> => 2,
+        <<"profile">> => #{<<"player_name">> => <<"TestTenno">>},
+        <<"raw">> => #{
+            <<"PlayerLevel">> => 1,
+            <<"Missions">> => [#{<<"Tag">> => <<"EarthNode">>,
+                                 <<"Completes">> => 1, <<"Tier">> => 0}]
+        }
+    },
+    Publish = #{<<"op">> => <<"publish">>, <<"id">> => 3,
+                <<"dataset">> => <<"player">>, <<"source">> => <<"inventory">>,
+                <<"data">> => Observation},
+    ok = socket:send(Socket, wfcli_local_protocol:encode(Publish)),
+    {ok, PublishLine} = socket:recv(Socket, 0, 5000),
+    {ok, PublishReply} = wfcli_local_protocol:decode(string:trim(PublishLine)),
+    ?assertEqual(true, maps:get(<<"ok">>, PublishReply)),
+
+    Request = #{<<"op">> => <<"mastery_view">>, <<"id">> => 4},
+    ok = socket:send(Socket, wfcli_local_protocol:encode(Request)),
+    {ok, ReplyLine} = socket:recv(Socket, 0, 5000),
+    {ok, Reply} = wfcli_local_protocol:decode(string:trim(ReplyLine)),
+    ?assertEqual(true, maps:get(<<"ok">>, Reply)),
+    Summary = maps:get(<<"summary">>, maps:get(<<"data">>, Reply)),
+    ?assertEqual(true,
+                 maps:get(<<"available">>, maps:get(<<"rank_progress">>, Summary))),
+    ?assertEqual(1, maps:get(<<"current">>,
+                             maps:get(<<"normal">>, maps:get(<<"star_chart">>, Summary)))),
+    ?assertEqual(3000,
+                 maps:get(<<"total_xp">>, maps:get(<<"rank_progress">>, Summary))),
+    ok = wfcli_player_service:clear().
 
 request_asset_cache_controls(Socket) ->
     Status = #{<<"op">> => <<"asset_cache_status">>, <<"id">> => 40},
@@ -186,6 +237,46 @@ slow_asset_does_not_block_dataset(Socket) ->
     {ok, AssetReply} = wfcli_local_protocol:decode(string:trim(AssetLine)),
     ?assertEqual(10, maps:get(<<"id">>, AssetReply)),
     ?assertEqual(true, maps:get(<<"ok">>, AssetReply)),
+    application:unset_env(wfdaemon, asset_http_fun).
+
+streams_stale_asset_refresh(Socket) ->
+    Png = <<16#89, "PNG", 13, 10, 26, 10, 0>>,
+    application:set_env(
+      wfdaemon, asset_http_fun,
+      fun(_Url, _Headers) -> {ok, 200, [], Png} end),
+    send_asset_request(Socket, 12, <<"refresh.png">>),
+    {ok, InitialLine} = socket:recv(Socket, 0, 1000),
+    {ok, Initial} = wfcli_local_protocol:decode(string:trim(InitialLine)),
+    [InitialAsset] = maps:get(<<"assets">>, maps:get(<<"data">>, Initial)),
+    InitialDigest = maps:get(<<"digest">>, InitialAsset),
+
+    Test = self(),
+    application:set_env(wfdaemon, asset_fresh_ms, 0),
+    application:set_env(
+      wfdaemon, asset_http_fun,
+      fun(_Url, _Headers) ->
+          Test ! {socket_asset_refresh_started, self()},
+          receive continue -> {ok, 200, [], <<Png/binary, 1>>} end
+      end),
+    send_asset_request(Socket, 13, <<"refresh.png">>),
+    Worker = receive
+        {socket_asset_refresh_started, Pid} -> Pid
+    after 1000 -> error(socket_asset_refresh_not_started)
+    end,
+    {ok, StaleLine} = socket:recv(Socket, 0, 1000),
+    {ok, Stale} = wfcli_local_protocol:decode(string:trim(StaleLine)),
+    [StaleAsset] = maps:get(<<"assets">>, maps:get(<<"data">>, Stale)),
+    ?assertEqual(true, maps:get(<<"stale">>, StaleAsset)),
+    ?assertEqual(InitialDigest, maps:get(<<"digest">>, StaleAsset)),
+
+    Worker ! continue,
+    {ok, EventLine} = socket:recv(Socket, 0, 1000),
+    {ok, Event} = wfcli_local_protocol:decode(string:trim(EventLine)),
+    ?assertEqual(<<"asset">>, maps:get(<<"event">>, Event)),
+    Refreshed = maps:get(<<"data">>, Event),
+    ?assertNotEqual(InitialDigest, maps:get(<<"digest">>, Refreshed)),
+    ?assertEqual(<<"refresh.png">>, maps:get(<<"image_name">>, Refreshed)),
+    application:unset_env(wfdaemon, asset_fresh_ms),
     application:unset_env(wfdaemon, asset_http_fun).
 
 local_request_limit_queues_excess_work(Socket) ->
@@ -302,6 +393,7 @@ connect_client(SocketPath, Client, Extra) ->
     ?assert(lists:member(<<"player.inventory">>, maps:get(<<"capabilities">>, Reply))),
     ?assert(lists:member(<<"player.mastery">>, maps:get(<<"capabilities">>, Reply))),
     ?assert(lists:member(<<"asset.cache">>, maps:get(<<"capabilities">>, Reply))),
+    ?assert(lists:member(<<"asset.refresh">>, maps:get(<<"capabilities">>, Reply))),
     ?assert(lists:member(<<"notifications.fissures">>,
                          maps:get(<<"capabilities">>, Reply))),
     ?assert(lists:member(<<"asset.resolve">>, maps:get(<<"capabilities">>, Reply))),

@@ -139,6 +139,8 @@ private:
   void setError(const QString &error);
   void setLoading(bool loading);
   void applySelectedEra();
+  void applyAssets(const QJsonArray &assets);
+  void applyAssetRefresh(const QJsonObject &asset);
   void requestAssets(const QJsonObject &data);
   void handlePlayerDatasetChanged(qint64 revision, const QString &source);
   void applyPlayerView(const QString &view, const QJsonObject &data);

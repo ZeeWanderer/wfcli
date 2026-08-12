@@ -451,6 +451,11 @@ void DaemonClient::handleLine(const QByteArray &line) {
     emit marketPresenceReady(message.value("data").toObject(), false);
     return;
   }
+  if (message.value("event").toString() == "asset" &&
+      message.value("data").isObject()) {
+    emit assetRefreshed(message.value("data").toObject());
+    return;
+  }
   const qint64 id = message.value("id").toInteger();
   if (id == HelloRequestId) {
     if (!message.value("ok").toBool() ||

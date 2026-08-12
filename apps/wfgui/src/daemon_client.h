@@ -64,6 +64,7 @@ signals:
   void notificationSettingsReady(const QJsonObject &settings);
   void notificationSettingsFailed(const QString &error);
   void assetsResolved(const QJsonArray &assets);
+  void assetRefreshed(const QJsonObject &asset);
   void assetRequestFailed(const QString &error);
   void assetCacheStatusReady(const QJsonObject &status);
   void assetCacheRequestFailed(const QString &error);
