@@ -35,34 +35,12 @@ forma_cost(Polarity) ->
         _ -> polarity_weight(standard)
     end.
 
-%% Effective mod cost based on slot polarity.
+%% Capacity semantics live with the shared polarity value contract.
 mod_cost(ModPolarity, SlotPolarity, BaseCost) when BaseCost >= 0 ->
-    case {ModPolarity, SlotPolarity} of
-        {_, omni} when ModPolarity =/= umbral -> halve(BaseCost);
-        {umbral, omni} -> bump(BaseCost);
-        {P, P} -> halve(BaseCost);
-        {_, none} -> BaseCost;
-        {_, undefined} -> BaseCost;
-        {none, _} -> BaseCost;
-        {_, unknown} -> bump(BaseCost);
-        {_, _} -> bump(BaseCost)
-    end.
+    wfcli_polarity:mod_cost(ModPolarity, SlotPolarity, BaseCost).
 
-%% Aura/Stance contribution (positive capacity). Match doubles, mismatch halves (rounded).
 aura_value(ModPolarity, SlotPolarity, Cost) when Cost >= 0 ->
-    case {ModPolarity, SlotPolarity} of
-        {_, omni} when ModPolarity =/= umbral -> Cost * 2;
-        {umbral, omni} -> ceil_half(Cost);
-        {P, P} -> Cost * 2;
-        {_, none} -> Cost;
-        {_, undefined} -> Cost;
-        {_, unknown} -> ceil_half(Cost);
-        {_, _} -> ceil_half(Cost)
-    end.
-
-halve(N) -> (N + 1) div 2.
-bump(N) -> ((N * 5) + 3) div 4. %% ceil(1.25 * N)
-ceil_half(N) -> (N + 1) div 2.
+    wfcli_polarity:aura_value(ModPolarity, SlotPolarity, Cost).
 
 %% Base capacity per item type at max rank (without reactor/catalyst).
 base_capacity(warframe, _Opts) -> 30;
@@ -142,10 +120,19 @@ normalize_build(Map) when is_map(Map) ->
     Arcanes = maps:get(<<"arcanes">>, Map, maps:get(arcanes, Map, [])),
     {Mods1, ModErrs} = normalize_mods(Mods),
     {Arcanes1, ArcErrs} = normalize_arcanes(Arcanes),
+    AbilityOverride = maps:get(<<"ability_override">>, Map,
+                               maps:get(ability_override, Map, [])),
     Errs = require_field(Name, "build.name") ++ ModErrs ++ ArcErrs,
-    {#{name => Name, mods => Mods1, arcanes => Arcanes1}, Errs};
+    {#{name => Name, mods => Mods1, arcanes => Arcanes1,
+       ability_override => normalize_ability_override(AbilityOverride)}, Errs};
 normalize_build(_) ->
     {#{}, ["build must be a map"]}.
+
+normalize_ability_override(Values) when is_list(Values) ->
+    [Value || Value <- Values, is_binary(Value) orelse is_list(Value)];
+normalize_ability_override(undefined) -> [];
+normalize_ability_override(null) -> [];
+normalize_ability_override(_Value) -> [].
 
 normalize_mods(Mods) when is_list(Mods) ->
     {Reversed, Errs} =
@@ -274,8 +261,12 @@ normalize_constraints(Map) when is_map(Map) ->
     AllowOmni = maps:get(<<"allow_omni">>, Map, maps:get(allow_omni, Map, false)),
     AllowUmbral = maps:get(<<"allow_umbral_forma">>, Map, maps:get(allow_umbral_forma, Map, false)),
     PreferOmni = maps:get(<<"prefer_omni">>, Map, maps:get(prefer_omni, Map, false)),
-    {MaxForma, MaxErrs} = normalize_int(maps:get(<<"max_forma">>, Map, maps:get(max_forma, Map, undefined)),
-                                        "constraints.max_forma", undefined),
+    MaxRaw = maps:get(<<"max_forma">>, Map, maps:get(max_forma, Map, undefined)),
+    {MaxForma, MaxErrs} = case MaxRaw of
+        undefined -> {undefined, []};
+        null -> {undefined, []};
+        _ -> normalize_int(MaxRaw, "constraints.max_forma", undefined)
+    end,
     Errs = case MaxForma of
         undefined -> MaxErrs;
         N when is_integer(N), N >= 0 -> MaxErrs;

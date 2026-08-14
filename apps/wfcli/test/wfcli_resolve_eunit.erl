@@ -121,6 +121,21 @@ resolve_unicode_list_item_test() ->
     Word = [69,112,105,99,32,71,97,109,101,115,32,72,101,115,97,112,32,66,97,351,108,97,109,97],
     ?assertEqual(Word, wfcli_resolve:resolve("item", Word, #{resolve_items => true})).
 
+invalidate_mod_cache_clears_current_and_legacy_keys_test() ->
+    Keys = [{wfcli, mod_map, 2}, {wfcli, mod_name_index, 2},
+            {wfcli, mod_map}, {wfcli, mod_name_index}],
+    Previous = [{Key, persistent_term:get(Key, undefined)} || Key <- Keys],
+    lists:foreach(fun(Key) -> persistent_term:put(Key, #{test => true}) end, Keys),
+    try
+        ok = wfcli_resolve_registry:invalidate_mod_cache(),
+        lists:foreach(
+          fun(Key) -> ?assertEqual(undefined,
+                                   persistent_term:get(Key, undefined)) end,
+          Keys)
+    after
+        lists:foreach(fun({Key, Value}) -> restore_pt(Key, Value) end, Previous)
+    end.
+
 restore_pt(Key, undefined) ->
     persistent_term:erase(Key);
 restore_pt(Key, Val) ->

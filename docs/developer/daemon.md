@@ -37,6 +37,11 @@ Handshake recovery:
 
 Older clients do not downgrade newer daemon protocols.
 
+Repository applications are versioned and released in lockstep. A wire-contract change updates
+every affected client and increments that protocol; do not add compatibility shims between bundled
+apps. Migrate non-recoverable user state such as saved build groups. Recoverable observations,
+catalogs, asset caches, and derived views may be invalidated instead.
+
 ## Requests And Cancellation
 
 One-off commands submit a monitored one-shot subscription. The daemon queues work, sends exactly

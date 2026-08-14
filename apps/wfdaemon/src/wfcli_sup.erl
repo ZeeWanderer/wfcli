@@ -93,6 +93,20 @@ daemon_children() ->
                 type => worker,
                 modules => [wfcli_player_service]
             }, #{
+                id => wfcli_resolution_issues,
+                start => {wfcli_resolution_issues, start_link, []},
+                restart => permanent,
+                shutdown => 5000,
+                type => worker,
+                modules => [wfcli_resolution_issues]
+            }, #{
+                id => wfcli_build_service,
+                start => {wfcli_build_service, start_link, []},
+                restart => permanent,
+                shutdown => 5000,
+                type => worker,
+                modules => [wfcli_build_service]
+            }, #{
                 id => wfcli_market_limiter,
                 start => {wfcli_market_limiter, start_link, []},
                 restart => permanent,

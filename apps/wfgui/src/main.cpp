@@ -88,8 +88,13 @@ int main(int argc, char *argv[]) {
   const QCommandLineOption pathsJson(
       "paths-json", "Report per-user directories as JSON and exit.");
   const QCommandLineOption page(
-      "page", "Open foundry, mastery, inventory, relic, market, or settings.",
+      "page",
+      "Open foundry, mastery, inventory, relic, build-planner, market, or "
+      "settings.",
       "NAME", "foundry");
+  const QCommandLineOption buildMode(
+      "build-mode", "Open Groups, Equipment, or Discover in Build Planner.",
+      "NAME", "groups");
   const QCommandLineOption marketItem("market-item",
                                       "Open Market listings for ITEM.", "ITEM");
   const QCommandLineOption marketSide(
@@ -98,7 +103,7 @@ int main(int argc, char *argv[]) {
       "activity-tab", "Open timers or market in the right rail.", "NAME",
       "timers");
   parser.addOptions({screenshot, size, screenshotDelay, capture, capturePadding,
-                     listCaptureTargets, pathsJson, page, marketItem,
+                     listCaptureTargets, pathsJson, page, buildMode, marketItem,
                      marketSide, activityTab});
   parser.process(app);
 
@@ -111,8 +116,12 @@ int main(int argc, char *argv[]) {
 
   MainWindow window;
   if (!window.setPage(parser.value(page))) {
-    qCritical("invalid --page (use foundry, mastery, inventory, relic, market, "
-              "or settings)");
+    qCritical("invalid --page (use foundry, mastery, inventory, relic, "
+              "build-planner, market, or settings)");
+    return 2;
+  }
+  if (!window.setBuildPlannerMode(parser.value(buildMode))) {
+    qCritical("invalid --build-mode (use groups, equipment, or discover)");
     return 2;
   }
   if (parser.isSet(size)) {

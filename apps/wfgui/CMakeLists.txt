@@ -1,4 +1,4 @@
-find_package(Qt6 REQUIRED COMPONENTS Network Widgets)
+find_package(Qt6 REQUIRED COMPONENTS Network WebSockets Widgets)
 
 qt_standard_project_setup()
 
@@ -11,6 +11,16 @@ qt_add_library(wfgui_core STATIC
   src/app_controller.h
   src/animated_progress_bar.cpp
   src/animated_progress_bar.h
+  src/arcane_card_widget.cpp
+  src/arcane_card_widget.h
+  src/build_equipment_model.cpp
+  src/build_equipment_model.h
+  src/build_group_model.cpp
+  src/build_group_model.h
+  src/build_source_model.cpp
+  src/build_source_model.h
+  src/build_topology_widget.cpp
+  src/build_topology_widget.h
   src/compact_search.cpp
   src/compact_search.h
   src/daemon_client.cpp
@@ -27,6 +37,10 @@ qt_add_library(wfgui_core STATIC
   src/market_item_dialog.h
   src/market_spin_box.cpp
   src/market_spin_box.h
+  src/mod_card_widget.cpp
+  src/mod_card_widget.h
+  src/overframe_login.cpp
+  src/overframe_login.h
   src/market_rail_widget.cpp
   src/market_rail_widget.h
   src/player_item_grid_widget.cpp
@@ -61,6 +75,14 @@ target_sources(wfgui_core
 qt_add_executable(wfgui
   src/activity_rail_widget.cpp
   src/activity_rail_widget.h
+  src/build_equipment_widget.cpp
+  src/build_equipment_widget.h
+  src/build_discover_widget.cpp
+  src/build_discover_widget.h
+  src/build_groups_widget.cpp
+  src/build_groups_widget.h
+  src/build_planner_widget.cpp
+  src/build_planner_widget.h
   src/foundry_widget.cpp
   src/foundry_widget.h
   src/inventory_widget.cpp
@@ -125,6 +147,7 @@ qt_add_resources(wfgui "wfgui_resources"
     resources/ui/nav_inventory.png
     resources/ui/nav_mastery.png
     resources/ui/nav_relic.png
+    resources/ui/nav_builds.png
     resources/ui/normal.png
     resources/ui/notification.png
     resources/ui/owned.png
@@ -153,6 +176,53 @@ qt_add_resources(wfgui "wfgui_resources"
     resources/market/wfgui-plus.png
     resources/market/wfgui-search.png
     resources/market/wfgui-trash.png
+    resources/polarities/aura.png
+    resources/polarities/madurai.png
+    resources/polarities/naramon.png
+    resources/polarities/penjaga.png
+    resources/polarities/umbra.png
+    resources/polarities/unairu.png
+    resources/polarities/universal.png
+    resources/polarities/vazarin.png
+    resources/polarities/zenurik.png
+    resources/arcane-frames/common.png
+    resources/arcane-frames/empty.png
+    resources/arcane-frames/legendary.png
+    resources/arcane-frames/rare.png
+    resources/arcane-frames/uncommon.png
+    resources/mod-frames/AmalgamBackground.png
+    resources/mod-frames/AmalgamFrameBottom.png
+    resources/mod-frames/AmalgamFrameTop.png
+    resources/mod-frames/BronzeBackground.png
+    resources/mod-frames/BronzeFrameBottom.png
+    resources/mod-frames/BronzeFrameTop.png
+    resources/mod-frames/BronzeLowerTab.png
+    resources/mod-frames/BronzeSideLight.png
+    resources/mod-frames/GalvanizedFrameBottom.png
+    resources/mod-frames/GalvanizedFrameTop.png
+    resources/mod-frames/GoldBackground.png
+    resources/mod-frames/GoldFrameBottom.png
+    resources/mod-frames/GoldFrameTop.png
+    resources/mod-frames/GoldLowerTab.png
+    resources/mod-frames/GoldSideLight.png
+    resources/mod-frames/LegendaryBackground.png
+    resources/mod-frames/LegendaryFrameBottom.png
+    resources/mod-frames/LegendaryFrameTop.png
+    resources/mod-frames/LegendaryLowerTab.png
+    resources/mod-frames/LegendarySideLight.png
+    resources/mod-frames/OmegaFrameBottom.png
+    resources/mod-frames/OmegaFrameTop.png
+    resources/mod-frames/OmegaSideLight.png
+    resources/mod-frames/RivenLowerTab.png
+    resources/mod-frames/SilverBackground.png
+    resources/mod-frames/SilverFrameBottom.png
+    resources/mod-frames/SilverFrameTop.png
+    resources/mod-frames/SilverLowerTab.png
+    resources/mod-frames/SilverSideLight.png
+    resources/mod-slots/aura.png
+    resources/mod-slots/empty.png
+    resources/mod-slots/exilus.png
+    resources/mod-slots/stance.png
     resources/styles/activity.qss
     resources/styles/content.qss
     resources/styles/controls.qss
@@ -182,7 +252,7 @@ target_compile_definitions(wfgui_core PUBLIC
   WFCLI_VERSION="${PROJECT_VERSION}"
 )
 target_include_directories(wfgui_core PUBLIC src)
-target_link_libraries(wfgui_core PUBLIC Qt6::Network Qt6::Widgets)
+target_link_libraries(wfgui_core PUBLIC Qt6::Network Qt6::WebSockets Qt6::Widgets)
 target_link_libraries(wfgui PRIVATE Qt6::Widgets wfgui_core)
 set_target_properties(wfgui PROPERTIES
   INSTALL_RPATH "$ORIGIN:$ORIGIN/../lib"
@@ -277,6 +347,110 @@ if(BUILD_TESTING)
   )
   add_test(NAME wfgui-models COMMAND wfgui_tests)
   set_tests_properties(wfgui-models PROPERTIES
+    ENVIRONMENT "QT_QPA_PLATFORM=offscreen"
+  )
+  qt_add_executable(wfgui_build_equipment_tests
+    tests/build_equipment_model_test.cpp
+  )
+  target_link_libraries(wfgui_build_equipment_tests PRIVATE Qt6::Test wfgui_core)
+  add_test(NAME wfgui-build-equipment COMMAND wfgui_build_equipment_tests)
+  set_tests_properties(wfgui-build-equipment PROPERTIES
+    ENVIRONMENT "QT_QPA_PLATFORM=offscreen"
+  )
+  qt_add_executable(wfgui_build_equipment_widget_tests
+    src/build_equipment_widget.cpp
+    src/build_equipment_widget.h
+    tests/build_equipment_widget_test.cpp
+  )
+  qt_add_resources(wfgui_build_equipment_widget_tests
+    "wfgui_build_equipment_widget_resources"
+    PREFIX "/"
+    FILES
+      resources/ui/panel-left.png
+      resources/ui/panel-right.png
+  )
+  target_link_libraries(wfgui_build_equipment_widget_tests PRIVATE
+    Qt6::Test
+    wfgui_core
+  )
+  add_test(NAME wfgui-build-equipment-widget
+    COMMAND wfgui_build_equipment_widget_tests)
+  set_tests_properties(wfgui-build-equipment-widget PROPERTIES
+    ENVIRONMENT "QT_QPA_PLATFORM=offscreen"
+  )
+  qt_add_executable(wfgui_build_source_tests
+    tests/build_source_model_test.cpp
+  )
+  target_link_libraries(wfgui_build_source_tests PRIVATE Qt6::Test wfgui_core)
+  add_test(NAME wfgui-build-source COMMAND wfgui_build_source_tests)
+  set_tests_properties(wfgui-build-source PROPERTIES
+    ENVIRONMENT "QT_QPA_PLATFORM=offscreen"
+  )
+  qt_add_executable(wfgui_build_group_tests
+    tests/build_group_model_test.cpp
+  )
+  target_link_libraries(wfgui_build_group_tests PRIVATE Qt6::Test wfgui_core)
+  add_test(NAME wfgui-build-groups COMMAND wfgui_build_group_tests)
+  set_tests_properties(wfgui-build-groups PROPERTIES
+    ENVIRONMENT "QT_QPA_PLATFORM=offscreen"
+  )
+  qt_add_executable(wfgui_build_topology_tests
+    tests/build_topology_widget_test.cpp
+  )
+  qt_add_resources(wfgui_build_topology_tests "wfgui_build_topology_resources"
+    PREFIX "/"
+    FILES
+      resources/mod-frames/AmalgamBackground.png
+      resources/mod-frames/AmalgamFrameBottom.png
+      resources/mod-frames/AmalgamFrameTop.png
+      resources/mod-frames/BronzeBackground.png
+      resources/mod-frames/BronzeFrameBottom.png
+      resources/mod-frames/BronzeFrameTop.png
+      resources/mod-frames/BronzeLowerTab.png
+      resources/mod-frames/BronzeSideLight.png
+      resources/mod-frames/GalvanizedFrameBottom.png
+      resources/mod-frames/GalvanizedFrameTop.png
+      resources/mod-frames/GoldBackground.png
+      resources/mod-frames/GoldFrameBottom.png
+      resources/mod-frames/GoldFrameTop.png
+      resources/mod-frames/GoldLowerTab.png
+      resources/mod-frames/GoldSideLight.png
+      resources/mod-frames/LegendaryBackground.png
+      resources/mod-frames/LegendaryFrameBottom.png
+      resources/mod-frames/LegendaryFrameTop.png
+      resources/mod-frames/LegendaryLowerTab.png
+      resources/mod-frames/LegendarySideLight.png
+      resources/mod-frames/OmegaFrameBottom.png
+      resources/mod-frames/OmegaFrameTop.png
+      resources/mod-frames/OmegaSideLight.png
+      resources/mod-frames/RivenLowerTab.png
+      resources/mod-frames/SilverBackground.png
+      resources/mod-frames/SilverFrameBottom.png
+      resources/mod-frames/SilverFrameTop.png
+      resources/mod-frames/SilverLowerTab.png
+      resources/mod-frames/SilverSideLight.png
+      resources/mod-slots/aura.png
+      resources/mod-slots/empty.png
+      resources/mod-slots/exilus.png
+      resources/mod-slots/stance.png
+      resources/arcane-frames/common.png
+      resources/arcane-frames/empty.png
+      resources/arcane-frames/legendary.png
+      resources/arcane-frames/rare.png
+      resources/arcane-frames/uncommon.png
+      resources/polarities/aura.png
+      resources/polarities/madurai.png
+      resources/polarities/naramon.png
+      resources/polarities/penjaga.png
+      resources/polarities/umbra.png
+      resources/polarities/unairu.png
+      resources/polarities/universal.png
+      resources/polarities/vazarin.png
+      resources/polarities/zenurik.png
+  )
+  target_link_libraries(wfgui_build_topology_tests PRIVATE Qt6::Test wfgui_core)
+  add_test(NAME wfgui-build-topology COMMAND wfgui_build_topology_tests)
+  set_tests_properties(wfgui-build-topology PROPERTIES
     ENVIRONMENT "QT_QPA_PLATFORM=offscreen"
   )
   add_test(

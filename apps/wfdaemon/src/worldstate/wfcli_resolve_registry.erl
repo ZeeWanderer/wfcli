@@ -3,9 +3,12 @@
 %%%-------------------------------------------------------------------
 -module(wfcli_resolve_registry).
 
--export([language_map/0, item_map/0, node_map/0, mod_map/0, mod_name_index/0]).
+-export([language_map/0, item_map/0, node_map/0, mod_map/0, mod_name_index/0,
+         invalidate_mod_cache/0]).
 
 -define(ITEM_KEYS, [<<"displayName">>, <<"name">>, <<"locName">>, <<"ItemName">>]).
+-define(MOD_MAP_KEY, {wfcli, mod_map, 2}).
+-define(MOD_NAME_INDEX_KEY, {wfcli, mod_name_index, 2}).
 
 language_map() ->
     case persistent_term:get({wfcli, lang_map}, undefined) of
@@ -35,24 +38,33 @@ node_map() ->
     end.
 
 mod_map() ->
-    case persistent_term:get({wfcli, mod_map}, undefined) of
+    case persistent_term:get(?MOD_MAP_KEY, undefined) of
         M when is_map(M) -> M;
         _ ->
             {Map, NameIndex} = load_mod_caches(),
-            persistent_term:put({wfcli, mod_map}, Map),
-            persistent_term:put({wfcli, mod_name_index}, NameIndex),
+            persistent_term:put(?MOD_MAP_KEY, Map),
+            persistent_term:put(?MOD_NAME_INDEX_KEY, NameIndex),
             Map
     end.
 
 mod_name_index() ->
-    case persistent_term:get({wfcli, mod_name_index}, undefined) of
+    case persistent_term:get(?MOD_NAME_INDEX_KEY, undefined) of
         M when is_map(M) -> M;
         _ ->
             {Map, NameIndex} = load_mod_caches(),
-            persistent_term:put({wfcli, mod_map}, Map),
-            persistent_term:put({wfcli, mod_name_index}, NameIndex),
+            persistent_term:put(?MOD_MAP_KEY, Map),
+            persistent_term:put(?MOD_NAME_INDEX_KEY, NameIndex),
             NameIndex
     end.
+
+-doc "Drop mod metadata projections after source or projection changes.".
+-spec invalidate_mod_cache() -> ok.
+invalidate_mod_cache() ->
+    persistent_term:erase(?MOD_MAP_KEY),
+    persistent_term:erase(?MOD_NAME_INDEX_KEY),
+    persistent_term:erase({wfcli, mod_map}),
+    persistent_term:erase({wfcli, mod_name_index}),
+    ok.
 
 load_language_map() ->
     case find_lang_file() of
@@ -242,13 +254,15 @@ mod_details_from_entry(Entry) ->
     FusionLimit = maps:get(<<"fusionLimit">>, Entry, undefined),
     Type = maps:get(<<"type">>, Entry, undefined),
     Compat = maps:get(<<"compatName">>, Entry, undefined),
+    LevelStats = maps:get(<<"levelStats">>, Entry, undefined),
     #{name => Name,
       rarity => Rarity,
       polarity => Polarity,
       base_drain => BaseDrain,
       fusion_limit => FusionLimit,
       type => Type,
-      compat => Compat}.
+      compat => Compat,
+      level_stats => LevelStats}.
 
 ensure_exports_available() ->
     Missing = [F || F <- wfcli_worldstate:resolver_export_files(), not filelib:is_file(export_path(F))],

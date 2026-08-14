@@ -18,6 +18,7 @@ guides under `docs/`.
   testing `./wfcli`. Both commands refresh the escript and relx daemon release.
 - Run `make dev-companion` or `make prod-companion` after companion code, native
   bridge, asset, or build metadata changes.
+- Follow the lockstep compatibility policy in `docs/developer/daemon.md`.
 - After tests pass, manually exercise updated CLI commands yourself (not just via tests).
 - Add new tests whenever new functionality is added; update fixtures alongside expected outputs.
 - Keep docs lean and standalone: current behavior/contracts, no conversation context or irrelevant

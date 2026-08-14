@@ -32,7 +32,7 @@ AssetRef AssetRef::fromJson(const QJsonObject &value) {
 AssetRef AssetRef::embedded(QString id, QString path) {
   return {
       .id = std::move(id),
-      .source = "embedded",
+      .source = "builtin",
       .imageName = path,
       .path = std::move(path),
       .digest = {},

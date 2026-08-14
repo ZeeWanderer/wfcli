@@ -27,6 +27,7 @@
 #include <array>
 
 #include "activity_rail_widget.h"
+#include "build_planner_widget.h"
 #include "display_scale.h"
 #include "foundry_widget.h"
 #include "inventory_widget.h"
@@ -42,6 +43,24 @@
 namespace {
 constexpr int MinimumWindowWidth = 1024;
 constexpr int ActivityRailThreshold = 1380;
+
+enum PageIndex {
+  FoundryPage,
+  MasteryPage,
+  InventoryPage,
+  RelicPage,
+  BuildPlannerPage,
+  MarketPage,
+  SettingsPage,
+  PageCount
+};
+
+const QStringList &pageNames() {
+  static const QStringList Names = {"foundry", "mastery",       "inventory",
+                                    "relic",   "build-planner", "market",
+                                    "settings"};
+  return Names;
+}
 
 QPixmap tintedPixmap(const QString &path, const QColor &color) {
   const QPixmap source(path);
@@ -99,6 +118,7 @@ MainWindow::MainWindow(QWidget *parent)
     : QMainWindow(parent), controller_(this), sidebar_(new QWidget),
       playerIdentity_(new PlayerIdentityWidget(&controller_)),
       navigation_(new QButtonGroup(this)), pages_(new QStackedWidget),
+      buildPlanner_(new BuildPlannerWidget(&controller_)),
       activityRail_(new ActivityRailWidget(&controller_)),
       marketDialog_(new MarketItemDialog(&controller_, this)),
       titleBar_(new TitleBarWidget) {
@@ -137,16 +157,17 @@ MainWindow::MainWindow(QWidget *parent)
     const char *label;
     const char *icon;
   };
-  constexpr std::array<NavigationItem, 6> items{{
+  constexpr std::array<NavigationItem, PageCount> items{{
       {"Foundry", ":/resources/ui/nav_foundry.png"},
       {"Mastery\nHelper", ":/resources/ui/nav_mastery.png"},
       {"Inventory", ":/resources/ui/nav_inventory.png"},
       {"Relic\nPlanner", ":/resources/ui/nav_relic.png"},
+      {"Build\nPlanner", ":/resources/ui/nav_builds.png"},
       {"Market", ":/resources/ui/market.png"},
       {"Settings", ":/resources/ui/settings.png"},
   }};
   for (int page = 0; page < static_cast<int>(items.size()); ++page) {
-    if (page == 5) {
+    if (page == SettingsPage) {
       sidebarLayout->addStretch();
     }
     navigationLabels_.append(items.at(page).label);
@@ -177,6 +198,7 @@ MainWindow::MainWindow(QWidget *parent)
   wfgui::setCaptureTarget(mastery, "mastery");
   wfgui::setCaptureTarget(inventory, "inventory");
   wfgui::setCaptureTarget(relics, "relic-planner");
+  wfgui::setCaptureTarget(buildPlanner_, "build-planner");
   wfgui::setCaptureTarget(market, "market");
   wfgui::setCaptureTarget(settings, "settings");
   wfgui::setCaptureTarget(activityRail_, "right-rail");
@@ -184,6 +206,7 @@ MainWindow::MainWindow(QWidget *parent)
   pages_->addWidget(mastery);
   pages_->addWidget(inventory);
   pages_->addWidget(relics);
+  pages_->addWidget(buildPlanner_);
   pages_->addWidget(market);
   pages_->addWidget(settings);
   pages_->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Expanding);
@@ -240,12 +263,12 @@ MainWindow::MainWindow(QWidget *parent)
   connect(relics, &RelicPlannerWidget::foundryItemRequested, this, showFoundry);
   connect(market, &MarketWidget::marketItemRequested, this, openMarket);
   connect(marketDialog_, &MarketItemDialog::signInRequested, this, [this] {
-    selectPage(4);
-    navigation_->button(4)->setChecked(true);
+    selectPage(MarketPage);
+    navigation_->button(MarketPage)->setChecked(true);
   });
   connect(activityRail_, &ActivityRailWidget::signInRequested, this, [this] {
-    selectPage(4);
-    navigation_->button(4)->setChecked(true);
+    selectPage(MarketPage);
+    navigation_->button(MarketPage)->setChecked(true);
   });
   connect(activityRail_, &ActivityRailWidget::relicEraRequested, this,
           [this, relics](const QString &era) {
@@ -272,9 +295,7 @@ QWidget *MainWindow::screenshotTarget() {
 }
 
 bool MainWindow::setPage(const QString &page) {
-  const QStringList names = {"foundry", "mastery", "inventory",
-                             "relic",   "market",  "settings"};
-  const int index = names.indexOf(page.toLower());
+  const int index = pageNames().indexOf(page.toLower());
   if (index < 0) {
     return false;
   }
@@ -283,21 +304,25 @@ bool MainWindow::setPage(const QString &page) {
   return true;
 }
 
+bool MainWindow::setBuildPlannerMode(const QString &mode) {
+  return buildPlanner_->setMode(mode);
+}
+
 void MainWindow::selectPage(int page) {
   pages_->setCurrentIndex(page);
   controller_.setActivePage(currentPageName());
-  if (page == 0) {
+  if (page == FoundryPage) {
     controller_.ensureFoundry();
-  } else if (page == 1) {
+  } else if (page == MasteryPage) {
     controller_.ensureMastery();
-  } else if (page == 2) {
+  } else if (page == InventoryPage) {
     controller_.ensureInventory();
-  } else if (page == 3) {
+  } else if (page == RelicPage) {
     controller_.ensureRelics();
-  } else if (page == 4) {
+  } else if (page == MarketPage) {
     controller_.ensureInventory();
     controller_.ensureMarket();
-  } else if (page == 5) {
+  } else if (page == SettingsPage) {
     controller_.refreshSourceAssetCache();
   }
 }
@@ -380,9 +405,7 @@ void MainWindow::animateRail(QWidget *rail, int targetWidth, bool hideAfter,
 }
 
 QString MainWindow::currentPageName() const {
-  static const QStringList names = {"foundry", "mastery", "inventory",
-                                    "relic",   "market",  "settings"};
-  return names.value(pages_->currentIndex(), "foundry");
+  return pageNames().value(pages_->currentIndex(), "foundry");
 }
 
 void MainWindow::resizeEvent(QResizeEvent *event) {

@@ -102,6 +102,7 @@ private slots:
   void ownershipFilterKeepsVisibleRowsStable();
   void compactSearchExpandsOnClick();
   void normalizesUiScaleInFivePercentSteps();
+  void thumbnailCacheDecodesJpeg();
   void thumbnailCacheRespectsSizeAndDpr();
   void alignsFractionalDprThumbnailsToDevicePixels();
   void widgetThumbnailDecodeCompletesOffPaintPath();
@@ -1606,6 +1607,7 @@ void RelicModelTest::subscribesToPlayerUpdatesAndCoalescesViews() {
   QSignalSpy playerChanged(&client, &DaemonClient::playerDatasetChanged);
   QSignalSpy viewReady(&client, &DaemonClient::playerViewReady);
   QSignalSpy assetRefreshed(&client, &DaemonClient::assetRefreshed);
+  QSignalSpy buildReady(&client, &DaemonClient::buildSourceReady);
   client.start();
   QTRY_VERIFY(server.hasPendingConnections());
   QLocalSocket *peer = server.nextPendingConnection();
@@ -1619,11 +1621,15 @@ void RelicModelTest::subscribesToPlayerUpdatesAndCoalescesViews() {
       "dataset.subscribe",      "dataset.subscribe.metadata",
       "relic.planner",          "worldstate.activity",
       "player.foundry",         "player.inventory",
-      "player.mastery",         "market.quote",
+      "player.mastery",         "build.equipment",
+      "build.sources",          "build.revisions",
+      "build.groups",           "build.plans",
+      "market.quote",
       "market.resolve",         "market.describe",
       "market.account",         "market.orders",
       "market.presence",        "market.quote.variant",
-      "notifications.fissures", "asset.cache",
+      "overframe.account",      "notifications.fissures",
+      "asset.cache",
   };
   peer->write(QJsonDocument(QJsonObject{{"id", 1},
                                         {"ok", true},
@@ -1742,6 +1748,67 @@ void RelicModelTest::subscribesToPlayerUpdatesAndCoalescesViews() {
               '\n');
   peer->flush();
   QTRY_COMPARE(viewReady.count(), 2);
+
+  client.requestPlayerView("build_equipment");
+  QJsonObject equipmentRequest;
+  QTRY_VERIFY(([&] {
+    while (peer->canReadLine()) {
+      const QJsonObject request =
+          QJsonDocument::fromJson(peer->readLine()).object();
+      if (request.value("op").toString() == "build_equipment") {
+        equipmentRequest = request;
+      }
+    }
+    return !equipmentRequest.isEmpty();
+  })());
+  peer->write(QJsonDocument(QJsonObject{
+                                {"id", equipmentRequest.value("id")},
+                                {"ok", true},
+                                {"data", QJsonObject{}},
+                            })
+                  .toJson(QJsonDocument::Compact) +
+              '\n');
+  peer->flush();
+  QTRY_COMPARE(viewReady.count(), 3);
+
+  client.searchBuildItems("revenant", "warframe", 20);
+  client.requestBuildList("/Lotus/RevenantPrime");
+  client.requestBuildDetail(374539);
+  QHash<QString, QJsonObject> buildRequests;
+  QTRY_VERIFY(([&] {
+    while (peer->canReadLine()) {
+      const QJsonObject request =
+          QJsonDocument::fromJson(peer->readLine()).object();
+      if (request.value("op").toString().startsWith("build_")) {
+        buildRequests.insert(request.value("op").toString(), request);
+      }
+    }
+    return buildRequests.size() == 3;
+  })());
+  const QHash<QString, QJsonObject> buildReplies{
+      {"build_search", QJsonObject{{"items", QJsonArray{}}}},
+      {"build_list", QJsonObject{{"builds", QJsonArray{}}}},
+      {"build_detail",
+       QJsonObject{{"identity", QJsonObject{{"external_id", 374539}}},
+                   {"fingerprint", "revision"},
+                   {"content", QJsonObject{}}}},
+  };
+  for (auto it = buildRequests.cbegin(); it != buildRequests.cend(); ++it) {
+    peer->write(QJsonDocument(QJsonObject{{"id", it.value().value("id")},
+                                          {"ok", true},
+                                          {"data", buildReplies.value(it.key())}})
+                    .toJson(QJsonDocument::Compact) +
+                '\n');
+  }
+  peer->flush();
+  QTRY_COMPARE(buildReady.count(), 3);
+  QSet<QString> completedOps;
+  for (const QList<QVariant> &arguments : buildReady) {
+    completedOps.insert(
+        arguments.at(0).toJsonObject().value("op").toString());
+  }
+  QCOMPARE(completedOps,
+           QSet<QString>({"build_search", "build_list", "build_detail"}));
 }
 
 void RelicModelTest::cacheMissDoesNotBecomeMarketMiss() {
@@ -1775,11 +1842,15 @@ void RelicModelTest::cacheMissDoesNotBecomeMarketMiss() {
         "dataset.subscribe",      "dataset.subscribe.metadata",
         "relic.planner",          "worldstate.activity",
         "player.foundry",         "player.inventory",
-        "player.mastery",         "market.quote",
+        "player.mastery",         "build.equipment",
+        "build.sources",          "build.revisions",
+        "build.groups",           "build.plans",
+        "market.quote",
         "market.resolve",         "market.describe",
         "market.account",         "market.orders",
         "market.presence",        "market.quote.variant",
-        "notifications.fissures", "asset.cache",
+        "overframe.account",      "notifications.fissures",
+        "asset.cache",
     };
     peer->write(QJsonDocument(QJsonObject{{"id", 1},
                                           {"ok", true},
@@ -2216,6 +2287,21 @@ void RelicModelTest::normalizesUiScaleInFivePercentSteps() {
   QCOMPARE(wfgui::normalizedUiScalePercent(127), 125);
   QCOMPARE(wfgui::normalizedUiScalePercent(128), 130);
   QCOMPARE(wfgui::normalizedUiScalePercent(999), 175);
+}
+
+void RelicModelTest::thumbnailCacheDecodesJpeg() {
+  QTemporaryDir directory;
+  QVERIFY(directory.isValid());
+  const QString path = directory.filePath("mod-art.jpg");
+  QImage source(80, 40, QImage::Format_RGB32);
+  source.fill(Qt::red);
+  QVERIFY(source.save(path, "JPEG"));
+
+  QImage target(64, 64, QImage::Format_ARGB32_Premultiplied);
+  QPainter painter(&target);
+  const QPixmap thumbnail =
+      wfgui::cachedThumbnail(painter, path, QSize(20, 20));
+  QCOMPARE(thumbnail.deviceIndependentSize(), QSizeF(20, 10));
 }
 
 void RelicModelTest::thumbnailCacheRespectsSizeAndDpr() {

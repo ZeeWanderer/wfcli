@@ -297,6 +297,8 @@ connection(Socket, Parent) ->
               reader_monitor => ReaderMonitor, buffer => <<>>,
               hello => false, subscriptions => #{}, refs => #{}, market_refs => #{},
               market_account_refs => #{},
+              build_refs => #{},
+              build_group_ref => undefined,
               market_presence_ref => undefined,
               asset_ref => undefined,
               activity_refs => #{},
@@ -330,6 +332,12 @@ connection_loop(State = #{reader_monitor := ReaderMonitor}) ->
             connection_loop(State1);
         {wfcli_market_account, Ref, Reply} ->
             State1 = send_market_account_reply(Ref, Reply, State),
+            connection_loop(State1);
+        {wfcli_build, Ref, Reply} ->
+            State1 = send_build_reply(Ref, Reply, State),
+            connection_loop(State1);
+        {wfcli_build_group, Ref, Event, Group} ->
+            State1 = send_build_group_event(Ref, Event, Group, State),
             connection_loop(State1);
         {wfcli_market_presence, Ref, Snapshot} ->
             State1 = send_market_presence_event(Ref, Snapshot, State),
@@ -421,6 +429,7 @@ handle_request(#{<<"op">> := <<"hello">>} = Request, State) ->
                                <<"market.resolve">>, <<"market.describe">>,
                                <<"market.account">>, <<"market.orders">>,
                                <<"market.presence">>,
+                               <<"overframe.account">>,
                                <<"relic.context">>,
                                <<"relic.planner">>,
                                <<"relic.recommendations">>,
@@ -428,6 +437,11 @@ handle_request(#{<<"op">> := <<"hello">>} = Request, State) ->
                                <<"player.foundry">>,
                                <<"player.inventory">>,
                                <<"player.mastery">>,
+                               <<"build.equipment">>,
+                               <<"build.sources">>,
+                               <<"build.revisions">>,
+                               <<"build.groups">>,
+                               <<"build.plans">>,
                                <<"notifications.fissures">>,
                                <<"asset.resolve">>,
                                <<"asset.refresh">>,
@@ -439,7 +453,11 @@ handle_request(#{<<"op">> := <<"hello">>} = Request, State) ->
         true -> maps:get(parent, State) ! {client_identified, self(), ClientInfo};
         false -> ok
     end,
-    {ok, State#{hello => Compatible}};
+    State1 = State#{hello => Compatible},
+    {ok, case Compatible of
+             true -> ensure_build_group_subscription(State1);
+             false -> State1
+         end};
 handle_request(Request, State = #{hello := false}) ->
     send_error(maps:get(socket, State), request_id(Request), hello_required),
     {ok, State};
@@ -458,6 +476,139 @@ handle_request(#{<<"op">> := <<"mastery_view">>} = Request, State) ->
     Id = request_id(Request),
     {ok, start_local_request(Id, <<"mastery">>,
                              fun wfcli_player_views:mastery/0, State)};
+handle_request(#{<<"op">> := <<"build_equipment">>} = Request, State) ->
+    Id = request_id(Request),
+    {ok, start_local_request(Id, <<"build_equipment">>,
+                             fun wfcli_build_equipment:snapshot/0, State)};
+handle_request(#{<<"op">> := <<"build_search">>} = Request, State) ->
+    BuildRequest = #{source => overframe, action => search,
+                     query => maps:get(<<"query">>, Request, <<>>),
+                     class => maps:get(<<"class">>, Request, <<"all">>),
+                     limit => maps:get(<<"limit">>, Request, 40)},
+    submit_build(request_id(Request), <<"build_items">>, BuildRequest, State);
+handle_request(#{<<"op">> := <<"build_list">>,
+                 <<"item">> := Item} = Request, State) when is_binary(Item) ->
+    BuildRequest0 = #{source => overframe, action => list, item => Item,
+                      query => maps:get(<<"query">>, Request, <<>>),
+                      scope => maps:get(<<"scope">>, Request, <<"public">>),
+                      ordering => maps:get(<<"ordering">>, Request, <<"score">>),
+                      limit => maps:get(<<"limit">>, Request, 30),
+                      offset => maps:get(<<"offset">>, Request, 0)},
+    BuildRequest = maybe_refresh(Request, BuildRequest0),
+    submit_build(request_id(Request), <<"builds">>, BuildRequest, State);
+handle_request(#{<<"op">> := <<"build_list">>} = Request, State) ->
+    send_error(maps:get(socket, State), request_id(Request), invalid_build_item),
+    {ok, State};
+handle_request(#{<<"op">> := <<"build_detail">>,
+                 <<"build_id">> := BuildId} = Request, State)
+  when is_integer(BuildId), BuildId > 0 ->
+    BuildRequest = maybe_refresh(
+                     Request, #{source => overframe, action => detail, id => BuildId}),
+    submit_build(request_id(Request), <<"build_revision">>, BuildRequest, State);
+handle_request(#{<<"op">> := <<"build_detail">>} = Request, State) ->
+    send_error(maps:get(socket, State), request_id(Request), invalid_build_id),
+    {ok, State};
+handle_request(#{<<"op">> := <<"build_group_list">>} = Request, State) ->
+    Id = request_id(Request),
+    {ok, start_local_request(Id, <<"build_groups">>,
+                             fun wfcli_build_service:groups/0, State)};
+handle_request(#{<<"op">> := <<"build_group_get">>,
+                 <<"group_id">> := GroupId} = Request, State)
+  when is_binary(GroupId) ->
+    Id = request_id(Request),
+    {ok, start_local_request(Id, <<"build_group">>,
+                             fun() -> wfcli_build_service:group(GroupId) end,
+                             State)};
+handle_request(#{<<"op">> := <<"build_group_create">>,
+                 <<"group">> := Input} = Request, State) when is_map(Input) ->
+    Id = request_id(Request),
+    {ok, start_local_request(
+           Id, <<"build_group">>,
+           fun() -> with_build_equipment(
+                      fun(Equipment) ->
+                          wfcli_build_service:create_group(Input, Equipment)
+                      end)
+           end, State)};
+handle_request(#{<<"op">> := <<"build_group_update">>,
+                 <<"group_id">> := GroupId, <<"revision">> := Revision,
+                 <<"patch">> := Patch} = Request, State)
+  when is_binary(GroupId), is_integer(Revision), is_map(Patch) ->
+    Id = request_id(Request),
+    {ok, start_local_request(
+           Id, <<"build_group">>,
+           fun() -> with_build_equipment(
+                      fun(Equipment) ->
+                          wfcli_build_service:update_group(GroupId, Revision,
+                                                           Patch, Equipment)
+                      end)
+           end, State)};
+handle_request(#{<<"op">> := <<"build_group_delete">>,
+                 <<"group_id">> := GroupId, <<"revision">> := Revision} = Request,
+               State) when is_binary(GroupId), is_integer(Revision) ->
+    Id = request_id(Request),
+    Work = fun() ->
+        case wfcli_build_service:delete_group(GroupId, Revision) of
+            ok -> {ok, #{<<"id">> => GroupId, <<"deleted">> => true}};
+            {error, _Reason} = Error -> Error
+        end
+    end,
+    {ok, start_local_request(Id, <<"build_group">>, Work, State)};
+handle_request(#{<<"op">> := <<"build_group_add_source">>,
+                 <<"group_id">> := GroupId, <<"revision">> := Revision,
+                 <<"source">> := Source, <<"external_id">> := ExternalId} = Request,
+               State)
+  when is_binary(GroupId), is_integer(Revision), is_binary(Source) ->
+    Id = request_id(Request),
+    Fingerprint = case maps:get(<<"fingerprint">>, Request, null) of
+        Value when is_binary(Value) -> Value;
+        _ -> latest
+    end,
+    Work = fun() -> wfcli_build_service:add_source_member(
+                       GroupId, Revision, Source, ExternalId, Fingerprint) end,
+    {ok, start_local_request(Id, <<"build_group">>, Work, State)};
+handle_request(#{<<"op">> := <<"build_group_add_config">>,
+                 <<"group_id">> := GroupId, <<"revision">> := Revision,
+                 <<"instance_id">> := InstanceId,
+                 <<"config_index">> := ConfigIndex} = Request, State)
+  when is_binary(GroupId), is_integer(Revision), is_binary(InstanceId),
+       is_integer(ConfigIndex), ConfigIndex >= 0 ->
+    Id = request_id(Request),
+    {ok, start_local_request(
+           Id, <<"build_group">>,
+           fun() -> with_build_equipment(
+                      fun(Equipment) ->
+                          wfcli_build_service:add_config_member(
+                            GroupId, Revision, InstanceId, ConfigIndex, Equipment)
+                      end)
+           end, State)};
+handle_request(#{<<"op">> := <<"build_group_remove_member">>,
+                 <<"group_id">> := GroupId, <<"revision">> := Revision,
+                 <<"member_id">> := MemberId} = Request, State)
+  when is_binary(GroupId), is_integer(Revision), is_binary(MemberId) ->
+    Id = request_id(Request),
+    Work = fun() -> wfcli_build_service:remove_member(
+                       GroupId, Revision, MemberId) end,
+    {ok, start_local_request(Id, <<"build_group">>, Work, State)};
+handle_request(#{<<"op">> := <<"build_group_plan">>,
+                 <<"group_id">> := GroupId, <<"revision">> := Revision} = Request,
+               State) when is_binary(GroupId), is_integer(Revision) ->
+    Id = request_id(Request),
+    case wfcli_build_service:plan_group(self(), GroupId, Revision) of
+        {ok, Ref} ->
+            Refs = maps:get(build_refs, State),
+            {ok, State#{build_refs => Refs#{Ref => {Id, <<"build_plan">>}}}};
+        {error, Reason} ->
+            send_error(maps:get(socket, State), Id, Reason),
+            {ok, State}
+    end;
+handle_request(#{<<"op">> := Op} = Request, State)
+  when Op =:= <<"build_group_get">>; Op =:= <<"build_group_create">>;
+       Op =:= <<"build_group_update">>; Op =:= <<"build_group_delete">>;
+       Op =:= <<"build_group_add_source">>; Op =:= <<"build_group_add_config">>;
+       Op =:= <<"build_group_remove_member">>; Op =:= <<"build_group_plan">> ->
+    send_error(maps:get(socket, State), request_id(Request),
+               invalid_build_group_request),
+    {ok, State};
 handle_request(#{<<"op">> := <<"activity_view">>} = Request, State) ->
     Id = request_id(Request),
     WorldstateRequest = #{source => worldstate, mode => list,
@@ -623,6 +774,23 @@ handle_request(#{<<"op">> := <<"market_login">>} = Request, State) ->
     {ok, State};
 handle_request(#{<<"op">> := <<"market_logout">>} = Request, State) ->
     submit_market_account(request_id(Request), #{action => logout}, State);
+handle_request(#{<<"op">> := <<"overframe_account">>} = Request, State) ->
+    Id = request_id(Request),
+    {ok, start_local_request(Id, <<"overframe_account">>,
+                             fun wfcli_overframe_account:snapshot/0, State)};
+handle_request(#{<<"op">> := <<"overframe_session_import">>,
+                 <<"cookies">> := Cookies} = Request, State) when is_list(Cookies) ->
+    Id = request_id(Request),
+    Work = fun() -> wfcli_overframe_account:store_session(Cookies) end,
+    {ok, start_local_request(Id, <<"overframe_account">>, Work, State)};
+handle_request(#{<<"op">> := <<"overframe_session_import">>} = Request, State) ->
+    send_error(maps:get(socket, State), request_id(Request),
+               invalid_overframe_session),
+    {ok, State};
+handle_request(#{<<"op">> := <<"overframe_logout">>} = Request, State) ->
+    Id = request_id(Request),
+    {ok, start_local_request(Id, <<"overframe_account">>,
+                             fun wfcli_overframe_account:logout/0, State)};
 handle_request(#{<<"op">> := <<"market_order_create">>,
                  <<"order">> := Order} = Request, State) when is_map(Order) ->
     case valid_market_order(Order) of
@@ -980,6 +1148,36 @@ send_market_account_reply(Ref, Reply, State) ->
             State#{market_account_refs => AccountRefs}
     end.
 
+send_build_reply(Ref, Reply, State) ->
+    case maps:take(Ref, maps:get(build_refs, State, #{})) of
+        error -> State;
+        {{Id, Dataset}, BuildRefs} ->
+            case Reply of
+                {ok, Data} -> send_ok(maps:get(socket, State), Id, Dataset, Data);
+                {error, Reason} -> send_error(maps:get(socket, State), Id, Reason)
+            end,
+            State#{build_refs => BuildRefs}
+    end.
+
+send_build_group_event(Ref, Event, Group, State) ->
+    case maps:get(build_group_ref, State, undefined) of
+        Ref ->
+            send_json(maps:get(socket, State),
+                      #{<<"event">> => <<"build_group">>,
+                        <<"action">> => atom_to_binary(Event),
+                        <<"data">> => Group}),
+            State;
+        _ -> State
+    end.
+
+ensure_build_group_subscription(State = #{build_group_ref := Ref})
+  when is_reference(Ref) -> State;
+ensure_build_group_subscription(State) ->
+    case wfcli_build_service:subscribe(self()) of
+        {ok, Ref} -> State#{build_group_ref => Ref};
+        _ -> State
+    end.
+
 send_market_presence_event(Ref, Snapshot, State) ->
     case maps:get(market_presence_ref, State, undefined) of
         Ref ->
@@ -1033,6 +1231,28 @@ submit_market_account(Id, AccountRequest, State) ->
         {error, Reason} ->
             send_error(maps:get(socket, State), Id, Reason),
             {ok, State}
+    end.
+
+submit_build(Id, Dataset, BuildRequest, State) ->
+    case wfcli_build_service:submit(self(), BuildRequest) of
+        {ok, Ref} ->
+            Refs = maps:get(build_refs, State, #{}),
+            {ok, State#{build_refs => Refs#{Ref => {Id, Dataset}}}};
+        {error, Reason} ->
+            send_error(maps:get(socket, State), Id, Reason),
+            {ok, State}
+    end.
+
+with_build_equipment(Fun) ->
+    case wfcli_build_equipment:snapshot() of
+        {ok, Equipment} -> Fun(Equipment);
+        {error, _Reason} = Error -> Error
+    end.
+
+maybe_refresh(Request, BuildRequest) ->
+    case maps:get(<<"refresh">>, Request, false) of
+        true -> BuildRequest#{refresh => true};
+        false -> BuildRequest
     end.
 
 start_local_request(Id, Dataset, Work, State) ->
@@ -1190,6 +1410,11 @@ cleanup_connection(State) ->
     case maps:get(asset_ref, State, undefined) of
         AssetRef when is_reference(AssetRef) ->
             _ = wfcli_asset_service:unsubscribe(AssetRef);
+        _ -> ok
+    end,
+    case maps:get(build_group_ref, State, undefined) of
+        BuildGroupRef when is_reference(BuildGroupRef) ->
+            _ = wfcli_build_service:unsubscribe(BuildGroupRef);
         _ -> ok
     end,
     exit(maps:get(reader, State), shutdown),

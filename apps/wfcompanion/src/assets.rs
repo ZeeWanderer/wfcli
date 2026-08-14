@@ -19,5 +19,5 @@ pub(crate) const FORMA_ASSET: EmbeddedAsset = EmbeddedAsset {
 };
 
 pub(crate) fn embedded_asset(source: &str, id: &str) -> Option<&'static EmbeddedAsset> {
-    (source == "embedded" && id == FORMA_ASSET.id).then_some(&FORMA_ASSET)
+    (source == "builtin" && id == FORMA_ASSET.id).then_some(&FORMA_ASSET)
 }

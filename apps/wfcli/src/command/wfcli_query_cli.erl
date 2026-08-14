@@ -73,6 +73,11 @@ print_dataset(#{dataset := market, reply := {ok, Result}}, _Query, _Parsed) ->
     io:format("== Market ==~n"),
     wfcli_market_format:print(maps:get(query, Result), maps:get(results, Result), #{}, #{}),
     true;
+print_dataset(#{dataset := diagnostics, reply := {ok, Result}}, _Query, _Parsed) ->
+    io:format("== Diagnostics ==~n"),
+    wfcli_diagnostics_format:print_query(maps:get(query, Result),
+                                         maps:get(results, Result)),
+    true;
 print_dataset(#{dataset := Dataset, reply := {ok, Result}}, _Query, _Parsed) ->
     io:format("== ~s ==~n", [dataset_title(Dataset)]),
     Prepared = maps:get(query, Result),
@@ -114,7 +119,8 @@ dataset_title(codex) -> "Codex";
 dataset_title(enemies) -> "Enemies";
 dataset_title(drops) -> "Drops";
 dataset_title(player) -> "Player";
-dataset_title(market) -> "Market".
+dataset_title(market) -> "Market";
+dataset_title(diagnostics) -> "Diagnostics".
 
 fail(Errors) ->
     lists:foreach(fun(Error) -> io:format("error: ~ts~n", [Error]) end, Errors),

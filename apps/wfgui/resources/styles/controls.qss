@@ -49,6 +49,19 @@ QPushButton:disabled {
   color: #8a8c95;
 }
 
+QPushButton#textAction {
+  background: transparent;
+  border: none;
+  color: #b59dff;
+  padding: 4px 5px;
+}
+
+QPushButton#textAction:hover {
+  background: transparent;
+  color: #d8cfff;
+  text-decoration: underline;
+}
+
 QPushButton[destructive="true"] {
   background: transparent;
   border-color: #a73746;

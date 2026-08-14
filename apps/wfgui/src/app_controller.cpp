@@ -13,14 +13,44 @@ QString assetRequestIdentity(const QJsonObject &spec) {
   return spec.value("source").toString("wfcd") + QChar::Null +
          spec.value("image_name").toString();
 }
+
+void appendAsset(const QJsonObject &asset, QJsonArray &assets,
+                 QSet<QString> &ids) {
+  const QString id = asset.value("id").toString();
+  if (!id.isEmpty() && !ids.contains(id)) {
+    ids.insert(id);
+    assets.append(asset);
+  }
+}
+
+QJsonArray buildAssets(const QJsonObject &data) {
+  QJsonArray assets;
+  QSet<QString> ids;
+  for (const QJsonValue &value : data.value("definitions").toArray()) {
+    appendAsset(value.toObject().value("asset").toObject(), assets, ids);
+  }
+  for (const QJsonValue &instanceValue : data.value("instances").toArray()) {
+    const QJsonObject instance = instanceValue.toObject();
+    for (const QJsonValue &configValue : instance.value("configs").toArray()) {
+      for (const QJsonValue &upgradeValue :
+           configValue.toObject().value("upgrade_slots").toArray()) {
+        appendAsset(upgradeValue.toObject().value("asset").toObject(), assets,
+                    ids);
+      }
+    }
+  }
+  return assets;
+}
 } // namespace
 
 AppController::AppController(QObject *parent)
     : QObject(parent), daemon_(this), relics_(this), filteredRelics_(this),
-      inventoryItems_(this), masteryItems_(this), foundryItems_(this) {
+      inventoryItems_(this), masteryItems_(this), foundryItems_(this),
+      buildEquipment_(this), buildGroups_(this), buildSourceItems_(this),
+      sourceBuilds_(this) {
   filteredRelics_.setSourceModel(&relics_);
-  assets_.insert("embedded:forma", wfgui::AssetRef::embedded(
-                                       "embedded:forma", ":/assets/forma.png"));
+  assets_.insert("builtin:forma", wfgui::AssetRef::embedded(
+                                      "builtin:forma", ":/assets/forma.png"));
 
   connect(&daemon_, &DaemonClient::connectionChanged, this,
           &AppController::connectedChanged);
@@ -260,6 +290,38 @@ AppController::AppController(QObject *parent)
             marketError_ = requestError;
             emit marketAccountChanged();
           });
+  connect(&daemon_, &DaemonClient::overframeAccountReady, this,
+          [this](const QString &, const QJsonObject &account) {
+            overframeAccount_ = account;
+            overframeAccountError_.clear();
+            overframeAccountPending_ = false;
+            emit overframeAccountChanged();
+          });
+  connect(&daemon_, &DaemonClient::overframeAccountFailed, this,
+          [this](const QString &, const QString &requestError) {
+            overframeAccountError_ = requestError;
+            overframeAccountPending_ = false;
+            emit overframeAccountChanged();
+          });
+  connect(&daemon_, &DaemonClient::buildSourceReady, this,
+          &AppController::applyBuildSourceReply);
+  connect(&daemon_, &DaemonClient::buildSourceFailed, this,
+          &AppController::applyBuildSourceError);
+  connect(&daemon_, &DaemonClient::buildGroupEvent, this,
+          [this](const QString &action, const QJsonObject &group) {
+            const QString id = group.value("id").toString();
+            if (action == "deleted") {
+              buildGroups_.remove(id);
+            } else {
+              QString parseError;
+              if (!buildGroups_.upsert(group, &parseError)) {
+                buildGroupsError_ = parseError;
+              }
+            }
+            buildGroupsLoaded_ = true;
+            emit buildGroupsStateChanged();
+            emit buildGroupChanged(action, group);
+          });
 
   daemon_.start();
   ensureFoundry();
@@ -294,6 +356,16 @@ QAbstractItemModel *AppController::foundryItems() { return &foundryItems_; }
 QAbstractItemModel *AppController::inventoryItems() { return &inventoryItems_; }
 
 QAbstractItemModel *AppController::masteryItems() { return &masteryItems_; }
+
+QAbstractItemModel *AppController::buildEquipment() { return &buildEquipment_; }
+
+QAbstractItemModel *AppController::buildGroups() { return &buildGroups_; }
+
+QAbstractItemModel *AppController::buildSourceItems() {
+  return &buildSourceItems_;
+}
+
+QAbstractItemModel *AppController::sourceBuilds() { return &sourceBuilds_; }
 
 QString AppController::selectedEra() const { return selectedEra_; }
 
@@ -333,6 +405,10 @@ QString AppController::assetPath(const QString &id) const {
   return assets_.value(id).path;
 }
 
+wfgui::AssetRef AppController::assetRef(const QString &id) const {
+  return assets_.value(id);
+}
+
 QJsonObject AppController::activity() const {
   QJsonObject result = activity_;
   if (!activityError_.isEmpty()) {
@@ -366,6 +442,59 @@ bool AppController::foundryLoaded() const { return foundryState_.loaded; }
 bool AppController::inventoryLoaded() const { return inventoryState_.loaded; }
 
 bool AppController::masteryLoaded() const { return masteryState_.loaded; }
+
+QString AppController::buildEquipmentError() const {
+  return buildEquipmentState_.error;
+}
+
+bool AppController::buildEquipmentLoading() const {
+  return buildEquipmentState_.pending;
+}
+
+bool AppController::buildEquipmentLoaded() const {
+  return buildEquipmentState_.loaded;
+}
+
+QString AppController::buildGroupsError() const { return buildGroupsError_; }
+
+bool AppController::buildGroupsLoading() const {
+  return !pendingBuildGroupRequests_.isEmpty();
+}
+
+bool AppController::buildGroupsLoaded() const { return buildGroupsLoaded_; }
+
+QJsonObject AppController::buildGroup(const QString &id) const {
+  return buildGroups_.group(id);
+}
+
+QString AppController::buildSourceItemsError() const {
+  return buildSourceItemsError_;
+}
+
+QString AppController::sourceBuildsError() const { return sourceBuildsError_; }
+
+bool AppController::buildSourceItemsLoading() const {
+  return !currentBuildItemRequest_.isEmpty() &&
+         pendingBuildRequests_.contains(currentBuildItemRequest_);
+}
+
+bool AppController::sourceBuildsLoading() const {
+  return !currentBuildListRequest_.isEmpty() &&
+         pendingBuildRequests_.contains(currentBuildListRequest_);
+}
+
+QJsonObject AppController::buildRevision(qint64 id) const {
+  return buildRevisions_.value(id);
+}
+
+QString AppController::buildRevisionError(qint64 id) const {
+  return buildRevisionErrors_.value(id);
+}
+
+bool AppController::buildRevisionLoading(qint64 id) const {
+  const QJsonObject request{{"op", "build_detail"}, {"build_id", id}};
+  return pendingBuildRequests_.contains(buildRequestKey(request));
+}
 
 QJsonObject AppController::marketAccount() const { return marketAccount_; }
 
@@ -414,6 +543,18 @@ int AppController::ownedMarketQuantity(const QString &name) const {
     }
   }
   return found ? quantity : 0;
+}
+
+QJsonObject AppController::overframeAccount() const {
+  return overframeAccount_;
+}
+
+QString AppController::overframeAccountError() const {
+  return overframeAccountError_;
+}
+
+bool AppController::overframeAccountBusy() const {
+  return overframeAccountPending_;
 }
 
 QJsonObject AppController::sourceAssetCache() const {
@@ -495,6 +636,19 @@ void AppController::ensureMastery() {
   }
 }
 
+void AppController::ensureBuildEquipment() {
+  if ((!buildEquipmentState_.loaded || buildEquipmentState_.stale) &&
+      !buildEquipmentState_.pending) {
+    refreshBuildEquipment();
+  }
+}
+
+void AppController::ensureBuildGroups() {
+  if (!buildGroupsLoaded_ && pendingBuildGroupRequests_.isEmpty()) {
+    refreshBuildGroups();
+  }
+}
+
 void AppController::refreshFoundry() {
   foundryState_.pending = true;
   foundryState_.error.clear();
@@ -514,6 +668,236 @@ void AppController::refreshMastery() {
   masteryState_.error.clear();
   emit masteryStateChanged();
   daemon_.requestPlayerView("mastery");
+}
+
+void AppController::refreshBuildEquipment() {
+  buildEquipmentState_.pending = true;
+  buildEquipmentState_.error.clear();
+  emit buildEquipmentStateChanged();
+  daemon_.requestPlayerView("build_equipment");
+}
+
+void AppController::refreshBuildGroups() {
+  const QJsonObject request{{"op", "build_group_list"}};
+  const QString key = buildRequestKey(request);
+  if (pendingBuildGroupRequests_.contains(key)) {
+    return;
+  }
+  buildGroupsError_.clear();
+  pendingBuildGroupRequests_.insert(key);
+  emit buildGroupsStateChanged();
+  daemon_.requestBuildGroups();
+}
+
+void AppController::requestBuildGroup(const QString &id) {
+  if (id.isEmpty()) {
+    return;
+  }
+  const QJsonObject request{{"op", "build_group_get"}, {"group_id", id}};
+  const QString key = buildRequestKey(request);
+  if (pendingBuildGroupRequests_.contains(key)) {
+    return;
+  }
+  buildGroupsError_.clear();
+  pendingBuildGroupRequests_.insert(key);
+  emit buildGroupsStateChanged();
+  daemon_.requestBuildGroup(id);
+}
+
+void AppController::createBuildGroup(const QJsonObject &group) {
+  const QJsonObject request{{"op", "build_group_create"}, {"group", group}};
+  const QString key = buildRequestKey(request);
+  if (pendingBuildGroupRequests_.contains(key)) {
+    return;
+  }
+  buildGroupsError_.clear();
+  pendingBuildGroupRequests_.insert(key);
+  emit buildGroupsStateChanged();
+  daemon_.createBuildGroup(group);
+}
+
+void AppController::updateBuildGroup(const QString &id, qint64 revision,
+                                     const QJsonObject &patch) {
+  const QJsonObject request{{"op", "build_group_update"},
+                            {"group_id", id},
+                            {"revision", revision},
+                            {"patch", patch}};
+  const QString key = buildRequestKey(request);
+  if (pendingBuildGroupRequests_.contains(key)) {
+    return;
+  }
+  buildGroupsError_.clear();
+  pendingBuildGroupRequests_.insert(key);
+  emit buildGroupsStateChanged();
+  daemon_.updateBuildGroup(id, revision, patch);
+}
+
+void AppController::deleteBuildGroup(const QString &id, qint64 revision) {
+  const QJsonObject request{{"op", "build_group_delete"},
+                            {"group_id", id},
+                            {"revision", revision}};
+  const QString key = buildRequestKey(request);
+  if (pendingBuildGroupRequests_.contains(key)) {
+    return;
+  }
+  buildGroupsError_.clear();
+  pendingBuildGroupRequests_.insert(key);
+  emit buildGroupsStateChanged();
+  daemon_.deleteBuildGroup(id, revision);
+}
+
+void AppController::addBuildSourceToGroup(const QString &id, qint64 revision,
+                                          qint64 externalId,
+                                          const QString &fingerprint) {
+  QJsonObject request{{"op", "build_group_add_source"},
+                      {"group_id", id},
+                      {"revision", revision},
+                      {"source", "overframe"},
+                      {"external_id", externalId}};
+  if (!fingerprint.isEmpty()) {
+    request.insert("fingerprint", fingerprint);
+  }
+  const QString key = buildRequestKey(request);
+  if (pendingBuildGroupRequests_.contains(key)) {
+    return;
+  }
+  buildGroupsError_.clear();
+  pendingBuildGroupRequests_.insert(key);
+  emit buildGroupsStateChanged();
+  daemon_.addBuildSourceToGroup(id, revision, externalId, fingerprint);
+}
+
+void AppController::addBuildConfigToGroup(const QString &id, qint64 revision,
+                                          const QString &instanceId,
+                                          int configIndex) {
+  const QJsonObject request{{"op", "build_group_add_config"},
+                            {"group_id", id},
+                            {"revision", revision},
+                            {"instance_id", instanceId},
+                            {"config_index", configIndex}};
+  const QString key = buildRequestKey(request);
+  if (pendingBuildGroupRequests_.contains(key)) {
+    return;
+  }
+  buildGroupsError_.clear();
+  pendingBuildGroupRequests_.insert(key);
+  emit buildGroupsStateChanged();
+  daemon_.addBuildConfigToGroup(id, revision, instanceId, configIndex);
+}
+
+void AppController::removeBuildGroupMember(const QString &id, qint64 revision,
+                                           const QString &memberId) {
+  const QJsonObject request{{"op", "build_group_remove_member"},
+                            {"group_id", id},
+                            {"revision", revision},
+                            {"member_id", memberId}};
+  const QString key = buildRequestKey(request);
+  if (pendingBuildGroupRequests_.contains(key)) {
+    return;
+  }
+  buildGroupsError_.clear();
+  pendingBuildGroupRequests_.insert(key);
+  emit buildGroupsStateChanged();
+  daemon_.removeBuildGroupMember(id, revision, memberId);
+}
+
+void AppController::planBuildGroup(const QString &id, qint64 revision) {
+  const QJsonObject request{{"op", "build_group_plan"},
+                            {"group_id", id},
+                            {"revision", revision}};
+  const QString key = buildRequestKey(request);
+  if (pendingBuildGroupRequests_.contains(key)) {
+    return;
+  }
+  buildGroupsError_.clear();
+  pendingBuildGroupRequests_.insert(key);
+  emit buildGroupsStateChanged();
+  daemon_.planBuildGroup(id, revision);
+}
+
+void AppController::searchBuildItems(const QString &query,
+                                     const QString &category, int limit) {
+  const QJsonObject request{{"op", "build_search"},
+                            {"query", query},
+                            {"class", category},
+                            {"limit", limit}};
+  const QString key = buildRequestKey(request);
+  currentBuildItemRequest_ = key;
+  buildSourceItemsError_.clear();
+  if (const auto cached = buildSourceCache_.constFind(key);
+      cached != buildSourceCache_.cend()) {
+    QString parseError;
+    if (!buildSourceItems_.replace(cached.value(), &parseError)) {
+      buildSourceItemsError_ = parseError;
+    }
+  } else {
+    buildSourceItems_.clear();
+    if (!pendingBuildRequests_.contains(key)) {
+      pendingBuildRequests_.insert(key);
+      daemon_.searchBuildItems(query, category, limit);
+    }
+  }
+  emit buildSourceItemsStateChanged();
+}
+
+void AppController::requestSourceBuilds(const QString &item,
+                                        const QString &query,
+                                        const QString &scope,
+                                        const QString &ordering, int limit,
+                                        int offset, bool refresh) {
+  const QJsonObject request{{"op", "build_list"},
+                            {"item", item},
+                            {"query", query},
+                            {"scope", scope},
+                            {"ordering", ordering},
+                            {"limit", limit},
+                            {"offset", offset},
+                            {"refresh", refresh}};
+  const QString key = buildRequestKey(request);
+  currentBuildListRequest_ = key;
+  sourceBuildsError_.clear();
+  if (!refresh) {
+    if (const auto cached = buildSourceCache_.constFind(key);
+        cached != buildSourceCache_.cend()) {
+      QString parseError;
+      if (!sourceBuilds_.replace(cached.value(), &parseError)) {
+        sourceBuildsError_ = parseError;
+      }
+      emit sourceBuildsStateChanged();
+      return;
+    }
+  }
+  sourceBuilds_.clear();
+  if (!pendingBuildRequests_.contains(key)) {
+    pendingBuildRequests_.insert(key);
+    daemon_.requestBuildList(item, query, scope, ordering, limit, offset,
+                             refresh);
+  }
+  emit sourceBuildsStateChanged();
+}
+
+void AppController::requestBuildRevision(qint64 id, bool refresh) {
+  if (id <= 0) {
+    return;
+  }
+  const QJsonObject request{{"op", "build_detail"},
+                            {"build_id", id},
+                            {"refresh", refresh}};
+  const QString key = buildRequestKey(request);
+  buildRevisionErrors_.remove(id);
+  if (!refresh) {
+    if (const auto cached = buildSourceCache_.constFind(key);
+        cached != buildSourceCache_.cend()) {
+      buildRevisions_.insert(id, cached.value());
+      emit buildRevisionChanged(id);
+      return;
+    }
+  }
+  if (!pendingBuildRequests_.contains(key)) {
+    pendingBuildRequests_.insert(key);
+    daemon_.requestBuildDetail(id, refresh);
+  }
+  emit buildRevisionChanged(id);
 }
 
 void AppController::refreshActivity() { daemon_.requestActivity(); }
@@ -569,6 +953,7 @@ void AppController::applyAssets(const QJsonArray &assets) {
   foundryItems_.applyAssets(changedAssets);
   inventoryItems_.applyAssets(changedAssets);
   masteryItems_.applyAssets(changedAssets);
+  buildEquipment_.applyAssets(changedAssets);
   QStringList ids = changedAssets.keys();
   ids.sort();
   emit assetsChanged(ids);
@@ -696,6 +1081,30 @@ void AppController::setMarketPresenceMode(const QString &mode) {
   daemon_.setMarketPresenceMode(mode);
 }
 
+void AppController::refreshOverframeAccount() {
+  if (overframeAccountPending_) {
+    return;
+  }
+  overframeAccountPending_ = true;
+  overframeAccountError_.clear();
+  emit overframeAccountChanged();
+  daemon_.requestOverframeAccount();
+}
+
+void AppController::importOverframeSession(const QJsonArray &cookies) {
+  overframeAccountPending_ = true;
+  overframeAccountError_.clear();
+  emit overframeAccountChanged();
+  daemon_.importOverframeSession(cookies);
+}
+
+void AppController::overframeLogout() {
+  overframeAccountPending_ = true;
+  overframeAccountError_.clear();
+  emit overframeAccountChanged();
+  daemon_.overframeLogout();
+}
+
 void AppController::refreshSourceAssetCache() {
   if (sourceAssetCacheBusy_) {
     return;
@@ -804,6 +1213,7 @@ void AppController::handlePlayerDatasetChanged(qint64 revision,
   foundryState_.stale = true;
   inventoryState_.stale = true;
   masteryState_.stale = true;
+  buildEquipmentState_.stale = true;
   relicState_.stale = true;
 
   if (activePage_ == "foundry" && !foundryState_.pending) {
@@ -812,6 +1222,9 @@ void AppController::handlePlayerDatasetChanged(qint64 revision,
     refreshInventory();
   } else if (activePage_ == "mastery" && !masteryState_.pending) {
     refreshMastery();
+  } else if (activePage_ == "build-planner" &&
+             !buildEquipmentState_.pending) {
+    refreshBuildEquipment();
   } else if (activePage_ == "relic" && !relicState_.metadataPending &&
              !relicState_.pricesPending) {
     refresh();
@@ -822,6 +1235,30 @@ void AppController::handlePlayerDatasetChanged(qint64 revision,
 
 void AppController::applyPlayerView(const QString &view,
                                     const QJsonObject &data) {
+  if (view == "build_equipment") {
+    const qint64 revision = data.value("player_revision").toInteger(-1);
+    buildEquipmentState_.pending = false;
+    if (playerRevision_ >= 0 && revision >= 0 && revision < playerRevision_) {
+      buildEquipmentState_.stale = true;
+      if (activePage_ == "build-planner") {
+        refreshBuildEquipment();
+      }
+      return;
+    }
+    QString parseError;
+    if (!buildEquipment_.replace(data, &parseError)) {
+      buildEquipmentState_.error = parseError;
+    } else {
+      buildEquipmentState_.loaded = true;
+      buildEquipmentState_.stale = false;
+      buildEquipmentState_.revision = revision;
+      buildEquipmentState_.error.clear();
+      buildEquipment_.setAssets(assets_);
+      resolveAssets(buildAssets(data));
+    }
+    emit buildEquipmentStateChanged();
+    return;
+  }
   PlayerViewState *state = playerState(view);
   PlayerItemModel *model = playerModel(view);
   if (!state || !model) {
@@ -878,6 +1315,9 @@ AppController::playerState(const QString &view) {
   if (view == "mastery") {
     return &masteryState_;
   }
+  if (view == "build_equipment") {
+    return &buildEquipmentState_;
+  }
   return nullptr;
 }
 
@@ -901,6 +1341,8 @@ void AppController::emitPlayerStateChanged(const QString &view) {
     emit inventoryStateChanged();
   } else if (view == "mastery") {
     emit masteryStateChanged();
+  } else if (view == "build_equipment") {
+    emit buildEquipmentStateChanged();
   }
 }
 
@@ -951,4 +1393,117 @@ QString AppController::marketVariantKey(const QString &item,
   return marketKey(item) + ':' +
          QString::fromUtf8(
              QJsonDocument(filters).toJson(QJsonDocument::Compact));
+}
+
+QString AppController::buildRequestKey(const QJsonObject &request) {
+  QJsonObject identity = request;
+  identity.remove("refresh");
+  return QString::fromUtf8(
+      QJsonDocument(identity).toJson(QJsonDocument::Compact));
+}
+
+void AppController::applyBuildSourceReply(const QJsonObject &request,
+                                          const QJsonObject &data) {
+  const QString key = buildRequestKey(request);
+  pendingBuildRequests_.remove(key);
+
+  const QString op = request.value("op").toString();
+  if (op == "build_group_plan") {
+    pendingBuildGroupRequests_.remove(key);
+    buildGroupsError_.clear();
+    emit buildGroupsStateChanged();
+    emit buildGroupRequestFinished(request, data);
+    requestBuildGroup(request.value("group_id").toString());
+    return;
+  }
+  if (op.startsWith("build_group_")) {
+    pendingBuildGroupRequests_.remove(key);
+    buildGroupsError_.clear();
+    if (op == "build_group_list") {
+      QString parseError;
+      if (!buildGroups_.replace(data, &parseError)) {
+        buildGroupsError_ = parseError;
+      } else {
+        buildGroupsLoaded_ = true;
+      }
+    } else if (op == "build_group_delete") {
+      buildGroups_.remove(data.value("id").toString());
+    } else {
+      QString parseError;
+      if (!buildGroups_.upsert(data, &parseError)) {
+        buildGroupsError_ = parseError;
+      } else {
+        buildGroupsLoaded_ = true;
+      }
+    }
+    emit buildGroupsStateChanged();
+    emit buildGroupRequestFinished(request, data);
+    return;
+  }
+
+  buildSourceCache_.insert(key, data);
+  if (op == "build_search") {
+    if (key != currentBuildItemRequest_) {
+      return;
+    }
+    QString parseError;
+    buildSourceItemsError_.clear();
+    if (!buildSourceItems_.replace(data, &parseError)) {
+      buildSourceItemsError_ = parseError;
+    }
+    emit buildSourceItemsStateChanged();
+    return;
+  }
+  if (op == "build_list") {
+    if (key != currentBuildListRequest_) {
+      return;
+    }
+    QString parseError;
+    sourceBuildsError_.clear();
+    if (!sourceBuilds_.replace(data, &parseError)) {
+      sourceBuildsError_ = parseError;
+    }
+    emit sourceBuildsStateChanged();
+    return;
+  }
+  if (op != "build_detail") {
+    return;
+  }
+
+  const qint64 id = request.value("build_id").toInteger();
+  const QJsonObject identity = data.value("identity").toObject();
+  if (identity.value("external_id").toInteger() != id ||
+      !data.value("content").isObject() ||
+      data.value("fingerprint").toString().isEmpty()) {
+    buildRevisionErrors_.insert(id, "daemon returned malformed build revision");
+  } else {
+    buildRevisionErrors_.remove(id);
+    buildRevisions_.insert(id, data);
+  }
+  emit buildRevisionChanged(id);
+}
+
+void AppController::applyBuildSourceError(const QJsonObject &request,
+                                          const QString &error) {
+  const QString key = buildRequestKey(request);
+  pendingBuildRequests_.remove(key);
+  const QString op = request.value("op").toString();
+  if (op.startsWith("build_group_")) {
+    pendingBuildGroupRequests_.remove(key);
+    buildGroupsError_ = error;
+    emit buildGroupsStateChanged();
+    emit buildGroupRequestFailed(request, error);
+    return;
+  }
+  if (op == "build_search" && key == currentBuildItemRequest_) {
+    buildSourceItemsError_ = error;
+    emit buildSourceItemsStateChanged();
+  } else if (op == "build_list" && key == currentBuildListRequest_) {
+    sourceBuildsError_ = error;
+    emit sourceBuildsStateChanged();
+  } else if (op == "build_detail") {
+    const qint64 id = request.value("build_id").toInteger();
+    buildRevisionErrors_.insert(id, error);
+    emit buildRevisionChanged(id);
+  }
 }

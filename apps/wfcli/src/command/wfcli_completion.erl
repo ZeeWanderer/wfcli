@@ -139,6 +139,8 @@ contexts() ->
         {["player"], options(wfcli_query_cli:known_args())},
         {["market"], options(wfcli_market_cli:known_args())},
         {["notifications"], ["status", "off", "on", "persistent" | help_flags()]},
+        {["diagnostics"], ["unresolved" | help_flags()]},
+        {["diagnostics", "unresolved"], ["--json" | help_flags()]},
         {["mods"], options(wfcli_exports_cli:known_args())},
         {["items"], options(wfcli_exports_cli:known_args())},
         {["codex"], options(wfcli_knowledge_cli:known_args())},
@@ -207,6 +209,7 @@ options(Args) ->
 
 help_choices() ->
     ["commands", "data", "query", "player", "market", "notifications",
+     "diagnostics",
      "companion", "gui", "mcp",
      "watch", "format", "update", "daemon" | wfcli_cli:public_command_names()].
 

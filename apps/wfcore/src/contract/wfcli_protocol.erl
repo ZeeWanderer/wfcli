@@ -7,7 +7,7 @@
 
 -doc "Current client/daemon wire protocol version.".
 -spec version() -> pos_integer().
-version() -> 5.
+version() -> 6.
 
 -doc "Persistent public datasets searched by a query with no dataset selector.".
 -spec default_datasets() -> [atom()].
@@ -15,7 +15,7 @@ default_datasets() -> [worldstate, mods, items, codex, enemies, drops].
 
 -doc "Every supported query dataset, including local player and market state.".
 -spec all_datasets() -> [atom()].
-all_datasets() -> default_datasets() ++ [player, market].
+all_datasets() -> default_datasets() ++ [player, market, diagnostics].
 
 -doc "Return daemon process that owns one request source.".
 -spec owner(map()) -> atom() | undefined.

@@ -21,6 +21,7 @@ class DaemonClient final : public QObject {
 
 public:
   explicit DaemonClient(QObject *parent = nullptr);
+  ~DaemonClient() override;
 
   bool connected() const;
   QString status() const;
@@ -44,6 +45,30 @@ public:
   void requestMarketAccount();
   void marketLogin(const QString &email, const QString &password);
   void marketLogout();
+  void requestOverframeAccount();
+  void importOverframeSession(const QJsonArray &cookies);
+  void overframeLogout();
+  void searchBuildItems(const QString &query, const QString &category = "all",
+                        int limit = 40);
+  void requestBuildList(const QString &item, const QString &query = QString(),
+                        const QString &scope = "public",
+                        const QString &ordering = "score", int limit = 30,
+                        int offset = 0, bool refresh = false);
+  void requestBuildDetail(qint64 buildId, bool refresh = false);
+  void requestBuildGroups();
+  void requestBuildGroup(const QString &groupId);
+  void createBuildGroup(const QJsonObject &group);
+  void updateBuildGroup(const QString &groupId, qint64 revision,
+                        const QJsonObject &patch);
+  void deleteBuildGroup(const QString &groupId, qint64 revision);
+  void addBuildSourceToGroup(const QString &groupId, qint64 revision,
+                             qint64 externalId,
+                             const QString &fingerprint = QString());
+  void addBuildConfigToGroup(const QString &groupId, qint64 revision,
+                             const QString &instanceId, int configIndex);
+  void removeBuildGroupMember(const QString &groupId, qint64 revision,
+                              const QString &memberId);
+  void planBuildGroup(const QString &groupId, qint64 revision);
   void marketCreateOrder(const QJsonObject &order);
   void marketUpdateOrder(const QString &id, const QJsonObject &patch);
   void marketDeleteOrder(const QString &id);
@@ -85,6 +110,11 @@ signals:
   void marketAccountFailed(const QString &action, const QString &error);
   void marketPresenceReady(const QJsonObject &presence, bool requested);
   void marketPresenceFailed(const QString &error);
+  void overframeAccountReady(const QString &action, const QJsonObject &account);
+  void overframeAccountFailed(const QString &action, const QString &error);
+  void buildSourceReady(const QJsonObject &request, const QJsonObject &data);
+  void buildSourceFailed(const QJsonObject &request, const QString &error);
+  void buildGroupEvent(const QString &action, const QJsonObject &group);
   void requestFailed(const QString &era, bool prices, const QString &error);
 
 private:
@@ -106,8 +136,13 @@ private:
   void sendPendingMarketResolve();
   void sendPendingMarketDescriptions();
   void sendPendingMarketAccount();
+  void sendPendingOverframeAccount();
+  void sendPendingBuildRequests();
+  void queueBuildRequest(const QJsonObject &request);
   void queueMarketAccountRequest(const QString &action,
                                  const QJsonObject &message);
+  void queueOverframeAccountRequest(const QString &action,
+                                    const QJsonObject &message);
   void write(const QJsonObject &message);
   void setConnected(bool connected);
   void setStatus(const QString &status);
@@ -126,6 +161,11 @@ private:
   };
 
   struct MarketAccountRequest {
+    QString action;
+    QJsonObject message;
+  };
+
+  struct OverframeAccountRequest {
     QString action;
     QJsonObject message;
   };
@@ -177,12 +217,17 @@ private:
   QHash<qint64, QStringList> activeMarketDescriptionRequests_;
   QList<MarketAccountRequest> pendingMarketAccountRequests_;
   QHash<qint64, QString> activeMarketAccountRequests_;
+  QList<OverframeAccountRequest> pendingOverframeAccountRequests_;
+  QHash<qint64, QString> activeOverframeAccountRequests_;
+  QList<QJsonObject> pendingBuildRequests_;
+  QHash<qint64, QJsonObject> activeBuildRequests_;
   bool ready_ = false;
   bool pendingActivity_ = false;
   bool pendingAssetCacheStatus_ = false;
   bool pendingAssetCacheClear_ = false;
   bool pendingNotificationSettings_ = true;
   bool pendingMarketAccountSnapshot_ = true;
+  bool pendingOverframeAccountSnapshot_ = false;
   bool activeNotificationRequestIsSet_ = false;
   std::optional<QString> desiredNotificationMode_;
   std::optional<QString> sentNotificationMode_;

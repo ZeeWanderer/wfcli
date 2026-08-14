@@ -253,6 +253,7 @@ refined_relic_probability_uses_variant_inventory_test() ->
 item_catalog_compaction_test() ->
     Item = #{<<"uniqueName">> => <<"/Lotus/Test">>,
              <<"name">> => <<"Test">>, <<"vaulted">> => true,
+             <<"exaltedSlot">> => <<"Secondary">>,
              <<"noise">> => true,
              <<"components">> => [
                  #{<<"uniqueName">> => <<"/Lotus/TestPart">>,
@@ -268,9 +269,44 @@ item_catalog_compaction_test() ->
     Compact = wfcli_item_catalog:compact(Item),
     ?assertNot(maps:is_key(<<"noise">>, Compact)),
     ?assertEqual(true, maps:get(<<"vaulted">>, Compact)),
+    ?assertEqual(<<"Secondary">>, maps:get(<<"exaltedSlot">>, Compact)),
     [Component] = maps:get(<<"components">>, Compact),
     [Drop] = maps:get(<<"drops">>, Component),
     ?assertEqual(<<"/Lotus/Relic">>, maps:get(<<"uniqueName">>, Drop)).
+
+canonical_catalog_items_beat_recipe_components_test() ->
+    Forma = <<"/Lotus/Types/Items/MiscItems/Forma">>,
+    Kuva = <<"/Lotus/Types/Items/MiscItems/Kuva">>,
+    Recipe = #{<<"uniqueName">> => <<"/Lotus/Weapons/Test/Recipe">>,
+               <<"name">> => <<"Test Recipe">>,
+               <<"components">> => [
+                   #{<<"uniqueName">> => Forma, <<"name">> => <<"Test Recipe Forma">>},
+                   #{<<"uniqueName">> => Kuva, <<"name">> => <<"Test Recipe Kuva">>}
+               ]},
+    Catalog = [
+        #{<<"uniqueName">> => Forma, <<"name">> => <<"Forma">>,
+          <<"imageName">> => <<"GenericComponent.png">>, <<"components">> => []},
+        Recipe,
+        #{<<"uniqueName">> => Kuva, <<"name">> => <<"Kuva">>,
+          <<"imageName">> => <<"Kuva.png">>, <<"components">> => []}
+    ],
+    Index = wfcli_item_catalog:index(Catalog),
+    ?assertEqual(false, maps:get(<<"component">>, wfcli_item_catalog:lookup(Forma, Index))),
+    ?assertEqual(false, maps:get(<<"component">>, wfcli_item_catalog:lookup(Kuva, Index))),
+    Snapshot = #{data => #{<<"inventory">> => #{<<"index">> => #{
+        <<"stacks">> => [entry(Forma, 1, 0), entry(Kuva, 10, 0)]}}}},
+    {ok, Inventory} = wfcli_player_views:inventory(Snapshot, Catalog),
+    Items = maps:from_list([{maps:get(<<"id">>, Item), Item}
+                            || Item <- maps:get(<<"items">>, Inventory)]),
+    FormaItem = maps:get(Forma, Items),
+    KuvaItem = maps:get(Kuva, Items),
+    ?assertEqual(<<"Forma">>, maps:get(<<"name">>, FormaItem)),
+    ?assertEqual(<<"Kuva">>, maps:get(<<"name">>, KuvaItem)),
+    ?assertEqual(<<"wfcd">>, maps:get(<<"name_source">>, FormaItem)),
+    ?assertEqual(<<"GenericComponent.png">>,
+                 maps:get(<<"image_name">>, maps:get(<<"asset">>, FormaItem))),
+    ?assertEqual(<<"Kuva.png">>,
+                 maps:get(<<"image_name">>, maps:get(<<"asset">>, KuvaItem))).
 
 entry(Type, Count, Xp) ->
     #{<<"item_type">> => Type, <<"count">> => Count, <<"xp">> => Xp}.

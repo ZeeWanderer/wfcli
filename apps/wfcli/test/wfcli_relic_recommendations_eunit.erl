@@ -198,7 +198,9 @@ forma_reward_uses_embedded_asset_and_local_value_test() ->
     ?assertEqual(2, maps:get(<<"expected_platinum">>, Relic)),
     ?assertEqual(2, maps:get(<<"platinum">>, Reward)),
     ?assertEqual(0, maps:get(<<"ducats">>, Reward)),
-    ?assertEqual(<<"embedded:forma">>, maps:get(<<"id">>, maps:get(<<"asset">>, Reward))).
+    Asset = maps:get(<<"asset">>, Reward),
+    ?assertEqual(<<"builtin:forma">>, maps:get(<<"id">>, Asset)),
+    ?assertEqual(<<"builtin">>, maps:get(<<"source">>, Asset)).
 
 fixture() ->
     jsone:encode([

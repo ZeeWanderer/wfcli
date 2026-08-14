@@ -245,7 +245,11 @@ item_name(V) ->
     case item_name_lookup(KeyBin, Map) of
         undefined ->
             case item_name_fallback(KeyBin, Map) of
-                undefined -> language_item_name(KeyBin);
+                undefined ->
+                    case wfcli_builtin_metadata:equipment(KeyBin) of
+                        #{name := BuiltinName} -> wfcli_text:to_list(BuiltinName);
+                        undefined -> language_item_name(KeyBin)
+                    end;
                 Name -> Name
             end;
         Name -> Name

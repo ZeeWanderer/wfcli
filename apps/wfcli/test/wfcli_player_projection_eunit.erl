@@ -12,11 +12,15 @@ projects_items_upgrades_and_configs_test() ->
 
     [Config] = [Item || Item <- maps:get(<<"configs">>, Projection),
                        maps:get(<<"equipment_id">>, Item) =:= <<"suit-1">>],
-    [Slot] = maps:get(<<"upgrade_slots">>, Config),
+    [Slot] = [Value || Value <- maps:get(<<"upgrade_slots">>, Config),
+                      maps:get(<<"slot">>, Value) =:= 0],
     ?assertEqual(<<"mod-1">>, maps:get(<<"instance_id">>, Slot)),
     ?assertEqual(8, maps:get(<<"rank">>, Slot)),
     ?assertEqual(<<"/Lotus/Upgrades/Mods/TestMod">>,
                  maps:get(<<"item_type">>, Slot)),
+    ?assertEqual([<<"/Lotus/Powersuits/Powers/Roar">>],
+                 maps:get(<<"ability_override">>, Config)),
+    ?assertEqual(1, length(maps:get(<<"archon_crystal_upgrades">>, Suit))),
 
     [Ranked] = [Upgrade || Upgrade <- maps:get(<<"upgrades">>, Projection),
                            maps:get(<<"instance_id">>, Upgrade, null) =:= <<"mod-1">>],
@@ -29,6 +33,24 @@ projects_items_upgrades_and_configs_test() ->
     [Stack] = [Upgrade || Upgrade <- maps:get(<<"upgrades">>, Projection),
                           maps:get(<<"kind">>, Upgrade) =:= <<"stack">>],
     ?assertEqual(4, maps:get(<<"count">>, Stack)).
+
+projects_definition_path_upgrades_without_fake_instances_test() ->
+    Raw0 = fixture_raw(),
+    [Suit0] = maps:get(<<"Suits">>, Raw0),
+    [Config0] = maps:get(<<"Configs">>, Suit0),
+    [First | Rest] = maps:get(<<"Upgrades">>, Config0),
+    Direct = <<"/Lotus/Upgrades/Mods/Melee/WeaponSlashDamageMod">>,
+    Config = Config0#{<<"Upgrades">> => [Direct, First | Rest]},
+    Raw = Raw0#{<<"Suits">> => [Suit0#{<<"Configs">> => [Config]}]},
+    Projection = wfcli_player_projection:from_observation(observation(Raw)),
+    [Projected] = [Value || Value <- maps:get(<<"configs">>, Projection),
+                              maps:get(<<"equipment_id">>, Value) =:= <<"suit-1">>],
+    [Slot] = [Value || Value <- maps:get(<<"upgrade_slots">>, Projected),
+                        maps:get(<<"slot">>, Value) =:= 0],
+    ?assertEqual(Direct, maps:get(<<"item_type">>, Slot)),
+    ?assertEqual(null, maps:get(<<"instance_id">>, Slot)),
+    ?assertEqual(0, maps:get(<<"rank">>, Slot)),
+    ?assertEqual(<<"definition">>, maps:get(<<"kind">>, Slot)).
 
 projects_loadout_links_and_progression_test() ->
     Projection = projection(),
@@ -46,6 +68,22 @@ projects_loadout_links_and_progression_test() ->
     ?assertEqual(1, length(maps:get(<<"focus_pools">>, Projection))),
     ?assertEqual(1, length(maps:get(<<"boosters">>, Projection))),
     ?assertEqual(1, length(maps:get(<<"challenges">>, Projection))).
+
+projects_shape_detected_exalted_equipment_and_features_test() ->
+    Projection = projection(),
+    [Exalted] = [Item || Item <- maps:get(<<"equipment">>, Projection),
+                        maps:get(<<"instance_id">>, Item) =:= <<"exalted-1">>],
+    ?assertEqual(<<"SpecialItems">>, maps:get(<<"collection">>, Exalted)),
+    ?assertEqual(547, maps:get(<<"feature_flags">>, Exalted)),
+    Features = maps:get(<<"features">>, Exalted),
+    ?assertEqual(true, maps:get(<<"double_capacity">>, Features)),
+    ?assertEqual(true, maps:get(<<"utility_slot">>, Features)),
+    ?assertEqual(true, maps:get(<<"arcane_slot">>, Features)),
+    ?assertEqual(true, maps:get(<<"incarnon_genesis">>, Features)),
+    ?assertEqual(false, maps:get(<<"gravimag">>, Features)),
+    ?assertEqual(0, maps:get(<<"unknown_feature_flags">>, Exalted)),
+    ?assertEqual(2, maps:get(<<"mod_slot_purchases">>, Exalted)),
+    ?assertEqual(1, length(maps:get(<<"configs">>, Exalted))).
 
 projection_keeps_raw_and_reports_understood_shape_test() ->
     Projection = projection(),

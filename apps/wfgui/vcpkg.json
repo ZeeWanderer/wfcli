@@ -5,6 +5,12 @@
   "supports": "linux & x64",
   "dependencies": [
     {
+      "name": "libjpeg-turbo",
+      "features": [
+        "jpeg8"
+      ]
+    },
+    {
       "name": "qtbase",
       "default-features": false,
       "features": [
@@ -13,6 +19,7 @@
         "freetype",
         "gui",
         "harfbuzz",
+        "jpeg",
         "network",
         "png",
         "testlib",
@@ -28,6 +35,10 @@
       "features": [
         "webp"
       ]
+    },
+    {
+      "name": "qtwebsockets",
+      "default-features": false
     }
   ]
 }

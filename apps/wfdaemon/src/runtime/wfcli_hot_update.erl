@@ -368,6 +368,7 @@ stateful_candidates() ->
         {wfcli_market_account_service, wfcli_market_account_service},
         {wfcli_market_presence_service, wfcli_market_presence_service},
         {wfcli_asset_service, wfcli_asset_service},
+        {wfcli_resolution_issues, wfcli_resolution_issues},
         {wfcli_local_api, wfcli_local_api},
         {wfcli_daemon, wfcli_daemon}
     ].

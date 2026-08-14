@@ -47,7 +47,9 @@ dataset_resource_uses_protocol_contract_test() ->
     ?assertEqual([<<"worldstate">>, <<"mods">>, <<"items">>, <<"codex">>,
                   <<"enemies">>, <<"drops">>],
                  maps:get(<<"default">>, Data)),
-    ?assertEqual(8, length(maps:get(<<"all">>, Data))).
+    All = maps:get(<<"all">>, Data),
+    ?assertEqual(9, length(All)),
+    ?assert(lists:member(<<"diagnostics">>, All)).
 
 worldstate_schema_resource_is_packaged_test() ->
     {ok, <<"application/json">>, Text} =

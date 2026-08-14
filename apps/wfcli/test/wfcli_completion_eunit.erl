@@ -27,6 +27,10 @@ nested_command_completion_test() ->
     ?assertEqual(["video"], wfcli_completion:candidates(["companion", "preview", "v"])),
     ?assertEqual(["install"], wfcli_completion:candidates(["completion", "i"])),
     ?assertEqual(["install"], wfcli_completion:candidates(["gui", "i"])),
+    ?assertEqual(["unresolved"],
+                 wfcli_completion:candidates(["diagnostics", "u"])),
+    ?assertEqual(["--json"],
+                 wfcli_completion:candidates(["diagnostics", "unresolved", "--j"])),
     ?assertEqual(["--file"],
                  wfcli_completion:candidates(["completion", "install", "--f"])).
 

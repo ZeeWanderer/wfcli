@@ -38,21 +38,39 @@ audit(_Raw) ->
     [issue(wrong_type, [<<"raw">>], #{expected => map})].
 
 audit_equipment(Raw) ->
+    Collections = lists:usort(
+                    wfcli_player_items:equipment_collections() ++
+                    [Collection
+                     || {Collection, Values} <- maps:to_list(Raw),
+                        is_binary(Collection), is_list(Values),
+                        lists:any(fun wfcli_player_items:configurable_equipment/1,
+                                  Values)]),
     lists:append(
       [audit_equipment_collection(Collection, Raw)
-       || Collection <- wfcli_player_items:equipment_collections()]).
+       || Collection <- Collections]).
 
 audit_equipment_collection(Collection, Raw) ->
-    Issues = audit_records(Collection, [<<"ItemId">>, <<"ItemType">>],
-                           equipment_fields(), Raw),
-    ConfigIssues = case maps:get(Collection, Raw, undefined) of
-        Values when is_list(Values) ->
+    Values = maps:get(Collection, Raw, undefined),
+    case {lists:member(Collection, wfcli_player_items:equipment_collections()), Values} of
+        {true, _} ->
+            Issues = audit_records(Collection, [<<"ItemId">>, <<"ItemType">>],
+                                   equipment_fields(), Raw),
+            Issues ++ audit_equipment_configs(Collection, Values, fun erlang:is_map/1);
+        {false, Records} when is_list(Records) ->
             lists:append(
-              [audit_configs(Collection, Index, Item)
-               || {Index, Item} <- lists:enumerate(0, Values), is_map(Item)]);
+              [audit_object([Collection, Index], Item,
+                            [<<"ItemId">>, <<"ItemType">>], equipment_fields()) ++
+               audit_configs(Collection, Index, Item)
+               || {Index, Item} <- lists:enumerate(0, Records),
+                  wfcli_player_items:configurable_equipment(Item)]);
         _ -> []
-    end,
-    Issues ++ ConfigIssues.
+    end.
+
+audit_equipment_configs(Collection, Values, Predicate) when is_list(Values) ->
+    lists:append(
+      [audit_configs(Collection, Index, Item)
+       || {Index, Item} <- lists:enumerate(0, Values), Predicate(Item)]);
+audit_equipment_configs(_Collection, _Values, _Predicate) -> [].
 
 audit_configs(Collection, ItemIndex, Item) ->
     case maps:get(<<"Configs">>, Item, undefined) of
@@ -169,6 +187,8 @@ expected_kind(<<"ItemCount">>) -> integer;
 expected_kind(<<"UpgradeVer">>) -> integer;
 expected_kind(<<"Polarized">>) -> integer;
 expected_kind(<<"Features">>) -> integer;
+expected_kind(<<"ModSlotPurchases">>) -> integer;
+expected_kind(<<"CustomizationSlotPurchases">>) -> integer;
 expected_kind(<<"Configs">>) -> list;
 expected_kind(<<"Polarity">>) -> list;
 expected_kind(<<"ModularParts">>) -> list;
@@ -216,6 +236,7 @@ equipment_fields() ->
      <<"CrewMembers">>, <<"Details">>, <<"Features">>, <<"FocusLens">>,
      <<"InfestationDate">>, <<"IsNew">>, <<"ItemId">>, <<"ItemName">>,
      <<"ItemType">>, <<"ModSlotPurchases">>, <<"ModularParts">>,
+     <<"CustomizationSlotPurchases">>,
      <<"Polarity">>, <<"Polarized">>, <<"RailjackImage">>, <<"ShipExterior">>,
      <<"SkillTree">>, <<"UpgradeFingerprint">>, <<"UpgradeType">>,
      <<"UpgradeVer">>, <<"Weapon">>, <<"XP">>].

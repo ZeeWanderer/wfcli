@@ -183,6 +183,10 @@ QLabel#secondaryText {
   color: #8a8c95;
 }
 
+QLabel#pageError {
+  color: #ff8796;
+}
+
 QLabel#pageTitle {
   font-size: 20pt;
   font-weight: 300;

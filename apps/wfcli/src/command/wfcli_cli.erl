@@ -46,6 +46,8 @@ dispatch_args(["market" | Rest], _Prompt) ->
     wfcli_market_cli:run(Rest);
 dispatch_args(["notifications" | Rest], _Prompt) ->
     wfcli_notification_cli:run(Rest);
+dispatch_args(["diagnostics" | Rest], _Prompt) ->
+    wfcli_diagnostics_cli:run(Rest);
 dispatch_args(["companion" | Rest], _Prompt) ->
     wfcli_companion_cli:run(Rest);
 dispatch_args(["gui" | Rest], _Prompt) ->
@@ -166,6 +168,7 @@ command_groups() ->
         {"mcp", "serve MCP over standard input/output"}
     ],
     Utility = [
+        {"diagnostics", "inspect daemon resolution failures"},
         {"update", "update cached knowledge base data"},
         {"completion", "generate shell completion"},
         {"paths", "show managed XDG directory tree"},
@@ -204,6 +207,7 @@ is_knowledge_command(Cmd) ->
 
 command_names() ->
     ["forma-plan", "visualize", "query", "player", "market", "notifications",
+     "diagnostics",
      "companion", "gui", "mcp",
      "daemon", "update", "completion", "paths", "help"]
     ++ wfcli_exports_cli:command_names()
@@ -212,6 +216,7 @@ command_names() ->
 
 public_command_names() ->
     ["forma-plan", "visualize", "query", "player", "market", "notifications",
+     "diagnostics",
      "companion", "gui", "mcp",
      "daemon", "update", "completion", "paths", "help"]
     ++ wfcli_exports_cli:command_names()

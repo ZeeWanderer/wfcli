@@ -18,7 +18,7 @@ use tokio::time::{self, MissedTickBehavior};
 
 use crate::{UiEvent, incident};
 
-const PROTOCOL_VERSION: u32 = 9;
+include!(concat!(env!("OUT_DIR"), "/local_protocol.rs"));
 const CLIENT_VERSION: &str = env!("WFCLI_VERSION");
 const RECONNECT_INTERVAL: Duration = Duration::from_secs(2);
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(2);

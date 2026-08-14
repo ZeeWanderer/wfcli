@@ -12,14 +12,15 @@ wfcli query [options] <query...>
 
 By default, `query` searches every public dataset: `worldstate`, `mods`,
 `items`, `codex`, `enemies`, and `drops`. Select one or more inside the query;
-`all` also includes local companion-provided player data and Warframe Market
-metadata:
+`all` also includes local companion-provided player data, Warframe Market
+metadata, and daemon diagnostics:
 
 ```bash
 wfcli query 'dataset=worldstate fissure'
 wfcli query 'dataset=codex|drops serration'
 wfcli query 'dataset=player source=game data.phase=game'
 wfcli query 'dataset=market tag=prime lowest_sell<50'
+wfcli query 'dataset=diagnostics kind=asset'
 ```
 
 The daemon manages and periodically refreshes `enemies` and `drops` data.
@@ -28,6 +29,8 @@ is empty until a companion or another owner-only local client publishes observat
 `market` loads the public item manifest and attaches quotes already present in daemon cache.
 Unified query never expands a broad catalog match into thousands of price requests. Use
 `wfcli market QUERY` for bounded live quotes.
+`diagnostics` contains current friendly-name and asset-resolution failures. Use
+`wfcli diagnostics unresolved` for its focused table.
 
 Useful options:
 
@@ -115,6 +118,7 @@ Focused commands are convenience views over the same parser and query engine:
 - `player`: local source namespaces published through the daemon companion socket.
 - `market`: public item metadata plus daemon-cached top-order quotes. `wfcli market` adds
   bounded live quote fetching and price-specific formatting.
+- `diagnostics`: current daemon metadata-resolution failures.
 
 They add useful defaults and dataset-specific formatting; they do not implement a
 separate query language.

@@ -26,6 +26,7 @@ wfcli enemies corrupted
 wfcli drops serration
 wfcli market 'saryn prime set'
 wfcli player
+wfcli diagnostics unresolved
 ```
 
 Advanced operations have dedicated guides:

@@ -98,9 +98,10 @@ all_supervised_stateful_services_are_migrated_test() ->
     ?assertEqual(
        [wfcli_worldstate_service, wfcli_exports_store, wfcli_source_manager,
         wfcli_query_service, wfcli_forma_service, wfcli_player_service,
-        wfcli_market_limiter, wfcli_market_service, wfcli_market_account_service,
-        wfcli_market_presence_service,
-        wfcli_asset_service, wfcli_local_api, wfcli_daemon],
+         wfcli_market_limiter, wfcli_market_service, wfcli_market_account_service,
+         wfcli_market_presence_service,
+         wfcli_asset_service, wfcli_resolution_issues,
+         wfcli_local_api, wfcli_daemon],
        [Module || {_Name, Module} <- wfcli_hot_update:stateful_candidates()]).
 
 local_api_can_be_restarted_for_code_purge_test() ->

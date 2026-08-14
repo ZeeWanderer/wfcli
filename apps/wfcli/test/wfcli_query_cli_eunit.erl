@@ -25,7 +25,7 @@ query_has_no_default_limit_test() ->
     ?assertNot(maps:is_key(limit, wfcli_query_cli:default_opts())).
 
 daemon_protocol_tracks_market_source_test() ->
-    ?assertEqual(5, wfcli_protocol:version()),
+    ?assertEqual(6, wfcli_protocol:version()),
     ?assertEqual(wfcli_market_service, wfcli_protocol:owner(#{source => market})).
 
 explicit_limit_is_parsed_test() ->
@@ -60,13 +60,18 @@ dataset_selector_is_removed_from_quoted_query_test() ->
 
 dataset_selector_accepts_all_test() ->
     {ok, [], Datasets, true} = wfcli_query_service:select_datasets(["dataset:all"]),
-    ?assertEqual([worldstate, mods, items, codex, enemies, drops, player, market], Datasets).
+    ?assertEqual([worldstate, mods, items, codex, enemies, drops, player, market,
+                  diagnostics], Datasets).
 
 dataset_selector_accepts_player_test() ->
     {ok, [], [player], true} = wfcli_query_service:select_datasets(["dataset=player"]).
 
 dataset_selector_accepts_market_test() ->
     {ok, [], [market], true} = wfcli_query_service:select_datasets(["dataset=market"]).
+
+dataset_selector_accepts_diagnostics_test() ->
+    {ok, [], [diagnostics], true} =
+        wfcli_query_service:select_datasets(["dataset=diagnostics"]).
 
 dataset_selector_accepts_default_plus_optional_test() ->
     {ok, [], Datasets, true} = wfcli_query_service:select_datasets(["dataset=default|drops"]),

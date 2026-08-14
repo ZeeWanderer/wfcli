@@ -9,6 +9,9 @@
 #include <QStringList>
 
 #include "daemon_client.h"
+#include "build_equipment_model.h"
+#include "build_group_model.h"
+#include "build_source_model.h"
 #include "player_item_model.h"
 #include "relic_model.h"
 
@@ -22,6 +25,10 @@ public:
   QAbstractItemModel *foundryItems();
   QAbstractItemModel *inventoryItems();
   QAbstractItemModel *masteryItems();
+  QAbstractItemModel *buildEquipment();
+  QAbstractItemModel *buildGroups();
+  QAbstractItemModel *buildSourceItems();
+  QAbstractItemModel *sourceBuilds();
   QString selectedEra() const;
   QString filterText() const;
   bool onlyOwned() const;
@@ -36,6 +43,7 @@ public:
   QJsonObject masterySummary() const;
   QJsonObject playerProfile() const;
   QString assetPath(const QString &id) const;
+  wfgui::AssetRef assetRef(const QString &id) const;
   QJsonObject activity() const;
   QString fissureNotificationMode() const;
   bool notificationSettingsLoaded() const;
@@ -48,6 +56,20 @@ public:
   bool foundryLoaded() const;
   bool inventoryLoaded() const;
   bool masteryLoaded() const;
+  QString buildEquipmentError() const;
+  bool buildEquipmentLoading() const;
+  bool buildEquipmentLoaded() const;
+  QString buildGroupsError() const;
+  bool buildGroupsLoading() const;
+  bool buildGroupsLoaded() const;
+  QJsonObject buildGroup(const QString &id) const;
+  QString buildSourceItemsError() const;
+  QString sourceBuildsError() const;
+  bool buildSourceItemsLoading() const;
+  bool sourceBuildsLoading() const;
+  QJsonObject buildRevision(qint64 id) const;
+  QString buildRevisionError(qint64 id) const;
+  bool buildRevisionLoading(qint64 id) const;
   QJsonObject marketAccount() const;
   QJsonObject marketItem(const QString &key) const;
   QJsonObject marketQuote(const QString &key) const;
@@ -58,6 +80,9 @@ public:
   bool marketBusy() const;
   bool marketQuoteFetchBusy() const;
   int ownedMarketQuantity(const QString &name) const;
+  QJsonObject overframeAccount() const;
+  QString overframeAccountError() const;
+  bool overframeAccountBusy() const;
   QJsonObject sourceAssetCache() const;
   QString sourceAssetCacheError() const;
   bool sourceAssetCacheBusy() const;
@@ -71,9 +96,34 @@ public:
   void ensureFoundry();
   void ensureInventory();
   void ensureMastery();
+  void ensureBuildEquipment();
+  void ensureBuildGroups();
   void refreshFoundry();
   void refreshInventory();
   void refreshMastery();
+  void refreshBuildEquipment();
+  void refreshBuildGroups();
+  void requestBuildGroup(const QString &id);
+  void createBuildGroup(const QJsonObject &group);
+  void updateBuildGroup(const QString &id, qint64 revision,
+                        const QJsonObject &patch);
+  void deleteBuildGroup(const QString &id, qint64 revision);
+  void addBuildSourceToGroup(const QString &id, qint64 revision,
+                             qint64 externalId,
+                             const QString &fingerprint = QString());
+  void addBuildConfigToGroup(const QString &id, qint64 revision,
+                             const QString &instanceId, int configIndex);
+  void removeBuildGroupMember(const QString &id, qint64 revision,
+                              const QString &memberId);
+  void planBuildGroup(const QString &id, qint64 revision);
+  void searchBuildItems(const QString &query,
+                        const QString &category = "all", int limit = 40);
+  void requestSourceBuilds(const QString &item,
+                           const QString &query = QString(),
+                           const QString &scope = "public",
+                           const QString &ordering = "score", int limit = 30,
+                           int offset = 0, bool refresh = false);
+  void requestBuildRevision(qint64 id, bool refresh = false);
   void refreshActivity();
   void setFissureNotificationMode(const QString &mode);
   void resolveAssets(const QJsonArray &assets);
@@ -93,6 +143,9 @@ public:
   void marketCloseOrder(const QString &id, int quantity);
   void setMarketOrdersVisible(bool visible, const QString &type = QString());
   void setMarketPresenceMode(const QString &mode);
+  void refreshOverframeAccount();
+  void importOverframeSession(const QJsonArray &cookies);
+  void overframeLogout();
   void refreshSourceAssetCache();
   void clearSourceAssetCache();
 
@@ -109,6 +162,16 @@ signals:
   void foundryStateChanged();
   void inventoryStateChanged();
   void masteryStateChanged();
+  void buildEquipmentStateChanged();
+  void buildGroupsStateChanged();
+  void buildGroupChanged(const QString &action, const QJsonObject &group);
+  void buildGroupRequestFinished(const QJsonObject &request,
+                                 const QJsonObject &group);
+  void buildGroupRequestFailed(const QJsonObject &request,
+                               const QString &error);
+  void buildSourceItemsStateChanged();
+  void sourceBuildsStateChanged();
+  void buildRevisionChanged(qint64 id);
   void playerProfileChanged();
   void assetsChanged(const QStringList &ids);
   void activityStateChanged();
@@ -124,6 +187,7 @@ signals:
                                 const QString &error);
   void marketSearchReady(const QString &query, const QJsonArray &matches);
   void marketSearchFailed(const QString &query, const QString &error);
+  void overframeAccountChanged();
   void sourceAssetCacheChanged();
 
 private:
@@ -153,6 +217,11 @@ private:
   static QString marketKey(const QString &value);
   static QString marketVariantKey(const QString &item,
                                   const QJsonObject &filters);
+  static QString buildRequestKey(const QJsonObject &request);
+  void applyBuildSourceReply(const QJsonObject &request,
+                             const QJsonObject &data);
+  void applyBuildSourceError(const QJsonObject &request,
+                             const QString &error);
 
   struct EraState {
     QJsonObject metadata;
@@ -173,6 +242,10 @@ private:
   PlayerItemModel inventoryItems_;
   PlayerItemModel masteryItems_;
   PlayerItemModel foundryItems_;
+  BuildEquipmentModel buildEquipment_;
+  BuildGroupModel buildGroups_;
+  BuildItemModel buildSourceItems_;
+  BuildSummaryModel sourceBuilds_;
   QString selectedEra_ = "all";
   QString error_;
   EraState relicState_;
@@ -185,20 +258,37 @@ private:
   QHash<QString, QJsonObject> marketVariantQuotes_;
   QSet<QString> marketVariantPending_;
   QJsonObject marketAccount_;
+  QJsonObject overframeAccount_{{"authenticated", false},
+                                {"stale", false},
+                                {"profile", QJsonValue::Null}};
   QString marketError_;
+  QString overframeAccountError_;
   PlayerViewState foundryState_;
   PlayerViewState inventoryState_;
   PlayerViewState masteryState_;
+  PlayerViewState buildEquipmentState_;
+  QString buildGroupsError_;
+  QSet<QString> pendingBuildGroupRequests_;
   QJsonObject playerProfile_;
   QJsonObject activity_;
   QJsonObject sourceAssetCache_;
+  QHash<QString, QJsonObject> buildSourceCache_;
+  QHash<qint64, QJsonObject> buildRevisions_;
+  QHash<qint64, QString> buildRevisionErrors_;
+  QSet<QString> pendingBuildRequests_;
+  QString currentBuildItemRequest_;
+  QString currentBuildListRequest_;
+  QString buildSourceItemsError_;
+  QString sourceBuildsError_;
   QString sourceAssetCacheError_;
   QString activityError_;
   QString fissureNotificationMode_ = "off";
   bool notificationSettingsLoaded_ = false;
+  bool buildGroupsLoaded_ = false;
   bool marketLoaded_ = false;
   bool sourceAssetCacheBusy_ = false;
   bool marketPending_ = false;
+  bool overframeAccountPending_ = false;
   int marketActions_ = 0;
   bool relicsRequested_ = false;
   bool loading_ = false;

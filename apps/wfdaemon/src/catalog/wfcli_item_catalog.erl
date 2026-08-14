@@ -5,7 +5,7 @@
 
 -include_lib("kernel/include/file.hrl").
 
--export([load/0, source/0, update/0]).
+-export([load/0, source/0, update/0, index/1, lookup/2]).
 -ifdef(TEST).
 -export([compact/1]).
 -endif.
@@ -63,6 +63,25 @@ update() ->
         {error, Reason} -> {error, {item_catalog_http_failed, Reason}}
     end.
 
+-doc "Index canonical items and nested components by game identity.".
+-spec index([map()]) -> map().
+index(Items) when is_list(Items) ->
+    lists:foldl(
+      fun(Item, Acc) when is_map(Item) ->
+          Acc1 = put_index_entry(Item, Item, false, Acc),
+          lists:foldl(
+            fun(Component, Inner) -> put_index_entry(Component, Item, true, Inner) end,
+            Acc1, maps:get(<<"components">>, Item, []));
+         (_Item, Acc) -> Acc
+      end, #{}, Items);
+index(_Items) -> #{}.
+
+-doc "Look up one canonical item or component in an indexed catalog.".
+-spec lookup(binary(), map()) -> map() | undefined.
+lookup(Identity, Index) when is_binary(Identity), is_map(Index) ->
+    maps:get(Identity, Index, undefined);
+lookup(_Identity, _Index) -> undefined.
+
 load_file(Path, Signature) ->
     case file:read_file(Path) of
         {ok, Body} ->
@@ -104,7 +123,12 @@ compact(Item) when is_map(Item) ->
             (copy(Item,
                   [<<"uniqueName">>, <<"name">>, <<"imageName">>, <<"category">>,
                    <<"type">>, <<"masteryReq">>, <<"masterable">>, <<"tradable">>,
-                   <<"isPrime">>, <<"vaulted">>, <<"primeSellingPrice">>]))#{
+                   <<"isPrime">>, <<"vaulted">>, <<"primeSellingPrice">>,
+                   <<"polarities">>, <<"aura">>, <<"exilusPolarity">>,
+                   <<"stancePolarity">>, <<"polarity">>, <<"baseDrain">>,
+                   <<"fusionLimit">>, <<"rarity">>, <<"compatName">>,
+                   <<"productCategory">>, <<"exaltedSlot">>,
+                   <<"isGalvanized">>, <<"isAmalgam">>, <<"isRiven">>]))#{
                 <<"components">> => compact_components(maps:get(<<"components">>, Item, []))
             };
         _ -> undefined
@@ -133,6 +157,38 @@ compact_drops(Values) when is_list(Values) ->
      || Drop <- Values, is_map(Drop), relic_drop(Drop)];
 compact_drops(_Values) -> [].
 
+put_index_entry(Item, Parent, IsComponent, Acc) when is_map(Item) ->
+    case maps:get(<<"uniqueName">>, Item, undefined) of
+        Identity when is_binary(Identity) ->
+            Candidate = Item#{
+                <<"parentCategory">> => maps:get(<<"category">>, Parent, <<>>),
+                <<"parentName">> => maps:get(<<"name">>, Parent, <<>>),
+                <<"parentUniqueName">> => maps:get(<<"uniqueName">>, Parent, undefined),
+                <<"parentType">> => maps:get(<<"type">>, Parent, <<>>),
+                <<"parentIsPrime">> => maps:get(<<"isPrime">>, Parent, false),
+                <<"parentVaulted">> => maps:get(<<"vaulted">>, Parent, undefined),
+                <<"component">> => IsComponent
+            },
+            maps:update_with(
+              Identity, fun(Existing) -> prefer_index_entry(Existing, Candidate) end,
+              Candidate, Acc);
+        _ -> Acc
+    end;
+put_index_entry(_Item, _Parent, _IsComponent, Acc) -> Acc.
+
+prefer_index_entry(#{<<"component">> := true} = Component,
+                   #{<<"component">> := false} = Item) ->
+    maps:merge(Component, Item);
+prefer_index_entry(#{<<"component">> := false} = Item,
+                   #{<<"component">> := true} = Component) ->
+    maps:merge(Component, Item);
+prefer_index_entry(Existing, Candidate) ->
+    case {present(maps:get(<<"imageName">>, Existing, undefined)),
+          present(maps:get(<<"imageName">>, Candidate, undefined))} of
+        {false, true} -> maps:merge(Existing, Candidate);
+        _ -> maps:merge(Candidate, Existing)
+    end.
+
 relic_drop(Drop) ->
     case maps:get(<<"location">>, Drop, <<>>) of
         Location when is_binary(Location) ->
@@ -142,6 +198,12 @@ relic_drop(Drop) ->
 
 copy(Map, Keys) ->
     maps:with([Key || Key <- Keys, maps:is_key(Key, Map)], Map).
+
+present(undefined) -> false;
+present(null) -> false;
+present(<<>>) -> false;
+present([]) -> false;
+present(_) -> true.
 
 content_version(Body) ->
     application:ensure_all_started(crypto),

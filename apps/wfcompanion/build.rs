@@ -26,12 +26,22 @@ fn main() {
     println!("cargo:rerun-if-changed={}", version_file.display());
     println!("cargo:rustc-env=WFCLI_VERSION={version}");
 
+    let protocol_file = manifest_dir.join("../wfdaemon/src/runtime/wfcli_local_protocol.erl");
+    let protocol = local_protocol(&protocol_file);
+    println!("cargo:rerun-if-changed={}", protocol_file.display());
+    let out_dir = PathBuf::from(env::var_os("OUT_DIR").unwrap());
+    fs::write(
+        out_dir.join("local_protocol.rs"),
+        format!("const PROTOCOL_VERSION: u32 = {protocol};\n"),
+    )
+    .expect("write generated local protocol constant");
+
     let blend2d_dir = manifest_dir.join(BLEND2D_SOURCE);
     let asmjit_dir = manifest_dir.join(ASMJIT_SOURCE);
     require_submodule(&blend2d_dir, "Blend2D");
     require_submodule(&asmjit_dir, "AsmJit");
 
-    let build_dir = PathBuf::from(env::var_os("OUT_DIR").unwrap()).join("native");
+    let build_dir = out_dir.join("native");
     let mut configure = Command::new("cmake");
     configure
         .arg("-S")
@@ -70,6 +80,18 @@ fn main() {
     println!("cargo:rustc-link-lib=dylib=pthread");
     println!("cargo:rustc-link-lib=dylib=dl");
     println!("cargo:rustc-link-lib=dylib=m");
+}
+
+fn local_protocol(path: &Path) -> u32 {
+    fs::read_to_string(path)
+        .expect("read wfdaemon local protocol")
+        .lines()
+        .find_map(|line| {
+            line.strip_prefix("-define(PROTOCOL_VERSION,")
+                .and_then(|value| value.strip_suffix(")."))
+                .and_then(|value| value.trim().parse().ok())
+        })
+        .expect("parse wfdaemon local protocol")
 }
 
 fn require_submodule(path: &Path, name: &str) {

@@ -119,6 +119,117 @@ QFrame#settingsSeparator {
   margin-left: 16px;
 }
 
+QFrame#buildPane {
+  background: #171e30;
+  border: none;
+  border-radius: 8px;
+}
+
+QListView#buildEquipmentList,
+QListView#buildEquipmentList QWidget#qt_scrollarea_viewport,
+QListView#buildSourceItemList,
+QListView#buildSourceItemList QWidget#qt_scrollarea_viewport,
+QListView#buildSourceList,
+QListView#buildSourceList QWidget#qt_scrollarea_viewport,
+QListView#buildGroupList,
+QListView#buildGroupList QWidget#qt_scrollarea_viewport,
+QListWidget#buildCopyList,
+QListWidget#buildCopyList QWidget#qt_scrollarea_viewport,
+QListWidget#buildGroupMembers,
+QListWidget#buildGroupMembers QWidget#qt_scrollarea_viewport,
+QListWidget#buildSlotList,
+QListWidget#buildSlotList QWidget#qt_scrollarea_viewport {
+  background: transparent;
+  border: none;
+  outline: none;
+}
+
+QListView#buildEquipmentList::item,
+QListView#buildSourceItemList::item,
+QListView#buildSourceList::item,
+QListView#buildGroupList::item,
+QListWidget#buildCopyList::item,
+QListWidget#buildGroupMembers::item,
+QListWidget#buildSlotList::item {
+  background: #20283e;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  margin: 2px 0;
+  padding: 8px 10px;
+}
+
+QListView#buildEquipmentList::item:hover,
+QListView#buildSourceItemList::item:hover,
+QListView#buildSourceList::item:hover,
+QListView#buildGroupList::item:hover,
+QListWidget#buildCopyList::item:hover {
+  background: #272f47;
+}
+
+QListView#buildEquipmentList::item:selected,
+QListView#buildSourceItemList::item:selected,
+QListView#buildSourceList::item:selected,
+QListView#buildGroupList::item:selected,
+QListWidget#buildCopyList::item:selected {
+  background: #2c3150;
+  border-color: #8c6ee8;
+  color: #ffffff;
+}
+
+QLabel#buildWorkspaceState {
+  background: #101623;
+  border-radius: 6px;
+  color: #b8bfd3;
+  padding: 10px;
+}
+
+QScrollArea#buildTopologyScroll,
+QScrollArea#buildTopologyScroll QWidget#qt_scrollarea_viewport,
+QWidget#buildTopology,
+QWidget#buildTopologyBody {
+  background: transparent;
+  border: none;
+}
+
+QLabel#buildRegionTitle {
+  color: #b8bfd3;
+  font-size: 10pt;
+  font-weight: 500;
+  padding-top: 3px;
+}
+
+QFrame#buildTopologySlot {
+  background: #20283e;
+  border: 1px solid #313a58;
+  border-radius: 6px;
+  min-height: 58px;
+}
+
+QWidget#buildSlotArtwork {
+  background: transparent;
+  border: none;
+}
+
+QLabel#buildSlotLabel,
+QLabel#buildSlotMeta,
+QLabel#buildSlotPolarity {
+  color: #8a8c95;
+  font-size: 9pt;
+}
+
+QLabel#buildSlotName {
+  color: #ffffff;
+  font-weight: 400;
+}
+
+QLabel#buildAbilityOverride {
+  background: #251d3d;
+  border: 1px solid #5e44af;
+  border-radius: 6px;
+  color: #d8cfff;
+  padding: 7px 9px;
+}
+
 QLabel#settingsSectionHeading {
   color: #8a8c95;
   font-size: 9pt;

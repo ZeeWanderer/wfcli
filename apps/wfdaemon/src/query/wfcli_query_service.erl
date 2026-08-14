@@ -206,6 +206,13 @@ execute_dataset(market, _Query, Ast, Request) ->
                       raw => maps:get(raw, Request, false),
                       output_format => maps:get(output_format, Request, table)},
     #{dataset => market, reply => submit_and_wait(wfcli_market_service, WorkerRequest)};
+execute_dataset(diagnostics, _Query, Ast, Request) ->
+    Reply = case wfcli_resolution_issues:refresh() of
+        ok -> wfcli_diagnostics_query:execute(
+                Ast, Request, wfcli_resolution_issues:list());
+        {error, _Reason} = Error -> Error
+    end,
+    #{dataset => diagnostics, reply => Reply};
 execute_dataset(Dataset, _Query, Ast, Request) ->
     Command = atom_to_list(Dataset),
     QueryMap = catalog_query(Dataset, Ast, Request),
@@ -312,7 +319,7 @@ parse_datasets(Value) ->
             end;
         [Unknown | _] ->
             {error, lists:flatten(io_lib:format(
-              "unknown dataset: ~s (use default, worldstate, mods, items, codex, enemies, drops, player, market, or all)",
+              "unknown dataset: ~s (use default, worldstate, mods, items, codex, enemies, drops, player, market, diagnostics, or all)",
               [Unknown]))}
     end.
 
@@ -324,6 +331,7 @@ dataset_name("enemies") -> enemies;
 dataset_name("drops") -> drops;
 dataset_name("player") -> player;
 dataset_name("market") -> market;
+dataset_name("diagnostics") -> diagnostics;
 dataset_name("default") -> default;
 dataset_name("all") -> all;
 dataset_name(_) -> undefined.

@@ -796,8 +796,8 @@ mod tests {
     #[test]
     fn only_synthetic_assets_bypass_daemon_cache() {
         let forma = embedded_asset(&AssetSpec {
-            id: "embedded:forma".to_owned(),
-            source: "embedded".to_owned(),
+            id: "builtin:forma".to_owned(),
+            source: "builtin".to_owned(),
             image_name: "forma.png".to_owned(),
         })
         .unwrap();

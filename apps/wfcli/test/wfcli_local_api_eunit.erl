@@ -20,6 +20,9 @@ setup() ->
     NotificationSettings = filename:join(Root, "notifications.json"),
     MarketToken = filename:join(Root, "market-token"),
     MarketPresence = filename:join(Root, "market-presence.json"),
+    OverframeSession = filename:join(Root, "overframe-session.json"),
+    BuildStore = filename:join(Root, "builds.term"),
+    ResolutionIssues = filename:join(Root, "resolution-issues.json"),
     ItemCatalog = filename:join(Root, "WFCDItems.json"),
     StarChart = filename:join(Root, "StarChart.json"),
     ok = filelib:ensure_dir(filename:join(Root, "placeholder")),
@@ -41,13 +44,22 @@ setup() ->
     application:set_env(wfdaemon, notification_settings_file, NotificationSettings),
     application:set_env(wfdaemon, market_account_file, MarketToken),
     application:set_env(wfdaemon, market_presence_file, MarketPresence),
+    application:set_env(wfdaemon, overframe_account_file, OverframeSession),
+    application:set_env(wfdaemon, overframe_http_fun, fun overframe_http/2),
+    application:set_env(wfdaemon, build_store_file, BuildStore),
+    application:set_env(wfdaemon, resolution_issues_file, ResolutionIssues),
+    application:set_env(wfdaemon, build_catalog_fun, fun build_catalog/0),
+    application:set_env(wfdaemon, build_source_fun, fun build_source/2),
     application:set_env(wfdaemon, item_catalog_file, ItemCatalog),
     application:set_env(wfdaemon, star_chart_file, StarChart),
     application:set_env(wfdaemon, local_request_workers, 2),
     application:set_env(wfdaemon, local_request_global_workers, 2),
     application:set_env(wfdaemon, daemon_idle_shutdown, false),
     {ok, _Worldstate} = wfcli_worldstate_service:start_link(),
+    {ok, _Forma} = wfcli_forma_service:start_link(),
     {ok, _Player} = wfcli_player_service:start_link(),
+    {ok, _ResolutionIssues} = wfcli_resolution_issues:start_link(),
+    {ok, _Builds} = wfcli_build_service:start_link(),
     {ok, _MarketLimiter} = wfcli_market_limiter:start_link(),
     {ok, _Market} = wfcli_market_service:start_link(),
     {ok, _MarketAccount} = wfcli_market_account_service:start_link(),
@@ -58,11 +70,17 @@ setup() ->
     #{root => Root, socket => SocketPath, cache => CachePath,
       market_cache => MarketCache, market_token => MarketToken,
       market_presence => MarketPresence,
+      build_store => BuildStore,
+      resolution_issues => ResolutionIssues,
+      overframe_session => OverframeSession,
       notification_settings => NotificationSettings}.
 
 cleanup(#{root := Root, socket := SocketPath, cache := CachePath,
           market_cache := MarketCache, market_token := MarketToken,
           market_presence := MarketPresence,
+          build_store := BuildStore,
+          resolution_issues := ResolutionIssues,
+          overframe_session := OverframeSession,
           notification_settings := NotificationSettings}) ->
     gen_server:stop(wfcli_local_api),
     gen_server:stop(wfcli_notification_service),
@@ -71,7 +89,10 @@ cleanup(#{root := Root, socket := SocketPath, cache := CachePath,
     gen_server:stop(wfcli_market_account_service),
     gen_server:stop(wfcli_market_service),
     gen_server:stop(wfcli_market_limiter),
+    gen_server:stop(wfcli_build_service),
+    gen_server:stop(wfcli_resolution_issues),
     gen_server:stop(wfcli_player_service),
+    gen_server:stop(wfcli_forma_service),
     gen_server:stop(wfcli_worldstate_service),
     application:unset_env(wfdaemon, local_socket),
     application:unset_env(wfdaemon, player_cache),
@@ -82,6 +103,12 @@ cleanup(#{root := Root, socket := SocketPath, cache := CachePath,
     application:unset_env(wfdaemon, notification_settings_file),
     application:unset_env(wfdaemon, market_account_file),
     application:unset_env(wfdaemon, market_presence_file),
+    application:unset_env(wfdaemon, overframe_account_file),
+    application:unset_env(wfdaemon, overframe_http_fun),
+    application:unset_env(wfdaemon, build_store_file),
+    application:unset_env(wfdaemon, resolution_issues_file),
+    application:unset_env(wfdaemon, build_catalog_fun),
+    application:unset_env(wfdaemon, build_source_fun),
     application:unset_env(wfdaemon, item_catalog_file),
     application:unset_env(wfdaemon, star_chart_file),
     application:unset_env(wfdaemon, local_request_workers),
@@ -100,6 +127,12 @@ cleanup(#{root := Root, socket := SocketPath, cache := CachePath,
     _ = file:delete(MarketToken ++ ".tmp"),
     _ = file:delete(MarketPresence),
     _ = file:delete(MarketPresence ++ ".tmp"),
+    _ = file:delete(OverframeSession),
+    _ = file:delete(OverframeSession ++ ".tmp"),
+    _ = file:delete(BuildStore),
+    _ = file:delete(BuildStore ++ ".tmp"),
+    _ = file:delete(ResolutionIssues),
+    _ = file:delete(ResolutionIssues ++ ".tmp"),
     _ = file:del_dir_r(Root),
     ok.
 
@@ -108,10 +141,15 @@ lifecycle(#{socket := SocketPath}) ->
     TestSocket = connect_client(SocketPath, <<"test">>, #{}),
     ?assertMatch(#{external_activity := 0}, wfcli_worldstate_service:status()),
     request_mastery_view_from_raw_publish(TestSocket),
+    request_build_equipment_view(TestSocket),
+    request_build_source_views(TestSocket),
+    request_build_groups(TestSocket),
     request_market_resolve(TestSocket),
     request_market_describe(TestSocket),
     reject_invalid_market_resolve(TestSocket),
     request_market_account(TestSocket),
+    request_overframe_account(TestSocket),
+    reject_invalid_overframe_session(TestSocket),
     request_market_presence(TestSocket),
     reject_invalid_market_order(TestSocket),
     route_market_order_mutations(TestSocket),
@@ -381,6 +419,8 @@ connect_client(SocketPath, Client, Extra) ->
     ?assert(lists:member(<<"market.account">>, maps:get(<<"capabilities">>, Reply))),
     ?assert(lists:member(<<"market.orders">>, maps:get(<<"capabilities">>, Reply))),
     ?assert(lists:member(<<"market.presence">>, maps:get(<<"capabilities">>, Reply))),
+    ?assert(lists:member(<<"overframe.account">>,
+                         maps:get(<<"capabilities">>, Reply))),
     ?assert(lists:member(<<"market.quote.variant">>,
                          maps:get(<<"capabilities">>, Reply))),
     ?assert(lists:member(<<"dataset.subscribe.metadata">>,
@@ -392,12 +432,153 @@ connect_client(SocketPath, Client, Extra) ->
     ?assert(lists:member(<<"player.foundry">>, maps:get(<<"capabilities">>, Reply))),
     ?assert(lists:member(<<"player.inventory">>, maps:get(<<"capabilities">>, Reply))),
     ?assert(lists:member(<<"player.mastery">>, maps:get(<<"capabilities">>, Reply))),
+    ?assert(lists:member(<<"build.equipment">>, maps:get(<<"capabilities">>, Reply))),
+    ?assert(lists:member(<<"build.sources">>, maps:get(<<"capabilities">>, Reply))),
+    ?assert(lists:member(<<"build.revisions">>, maps:get(<<"capabilities">>, Reply))),
+    ?assert(lists:member(<<"build.groups">>, maps:get(<<"capabilities">>, Reply))),
+    ?assert(lists:member(<<"build.plans">>, maps:get(<<"capabilities">>, Reply))),
     ?assert(lists:member(<<"asset.cache">>, maps:get(<<"capabilities">>, Reply))),
     ?assert(lists:member(<<"asset.refresh">>, maps:get(<<"capabilities">>, Reply))),
     ?assert(lists:member(<<"notifications.fissures">>,
                          maps:get(<<"capabilities">>, Reply))),
     ?assert(lists:member(<<"asset.resolve">>, maps:get(<<"capabilities">>, Reply))),
     Socket.
+
+request_build_equipment_view(Socket) ->
+    Observation = #{
+        <<"schema">> => 2,
+        <<"raw">> => #{
+            <<"SpecialItems">> => [
+                #{<<"ItemId">> => #{<<"$oid">> => <<"exalted-1">>},
+                  <<"ItemType">> => <<"/Lotus/Powersuits/Excalibur/DoomSword">>,
+                  <<"Features">> => 547,
+                  <<"Polarized">> => 2,
+                  <<"Configs">> => [#{<<"Name">> => <<"Config A">>,
+                                      <<"Upgrades">> => []}]}
+            ]
+        }
+    },
+    Publish = #{<<"op">> => <<"publish">>, <<"id">> => 42,
+                <<"dataset">> => <<"player">>, <<"source">> => <<"inventory">>,
+                <<"data">> => Observation},
+    ok = socket:send(Socket, wfcli_local_protocol:encode(Publish)),
+    {ok, PublishLine} = socket:recv(Socket, 0, 5000),
+    {ok, PublishReply} = wfcli_local_protocol:decode(string:trim(PublishLine)),
+    ?assertEqual(true, maps:get(<<"ok">>, PublishReply)),
+
+    Request = #{<<"op">> => <<"build_equipment">>, <<"id">> => 43},
+    ok = socket:send(Socket, wfcli_local_protocol:encode(Request)),
+    {ok, ReplyLine} = socket:recv(Socket, 0, 5000),
+    {ok, Reply} = wfcli_local_protocol:decode(string:trim(ReplyLine)),
+    ?assertEqual(true, maps:get(<<"ok">>, Reply)),
+    Data = maps:get(<<"data">>, Reply),
+    [Instance] = maps:get(<<"instances">>, Data),
+    ?assertEqual(<<"exalted">>, maps:get(<<"class">>, Instance)),
+    ?assertEqual(2, maps:get(<<"forma_count">>, Instance)).
+
+request_build_source_views(Socket) ->
+    Requests = [
+        {44, #{<<"op">> => <<"build_search">>, <<"query">> => <<"revenant">>},
+         <<"build_items">>},
+        {45, #{<<"op">> => <<"build_list">>,
+               <<"item">> => <<"/Lotus/Powersuits/Revenant/RevenantPrime">>},
+         <<"builds">>},
+        {46, #{<<"op">> => <<"build_detail">>, <<"build_id">> => 374539},
+         <<"build_revision">>}
+    ],
+    lists:foreach(
+      fun({Id, Request, Dataset}) ->
+          ok = socket:send(Socket,
+                           wfcli_local_protocol:encode(Request#{<<"id">> => Id})),
+          {ok, ReplyLine} = socket:recv(Socket, 0, 5000),
+          {ok, Reply} = wfcli_local_protocol:decode(string:trim(ReplyLine)),
+          ?assertEqual(true, maps:get(<<"ok">>, Reply)),
+          ?assertEqual(Dataset, maps:get(<<"dataset">>, Reply))
+      end, Requests).
+
+request_build_groups(Socket) ->
+    Create = #{<<"op">> => <<"build_group_create">>, <<"id">> => 80,
+               <<"group">> =>
+                   #{<<"definition_id">> =>
+                         <<"/Lotus/Powersuits/Excalibur/DoomSword">>,
+                     <<"instance_id">> => <<"exalted-1">>,
+                     <<"name">> => <<"Exalted plans">>}},
+    ok = socket:send(Socket, wfcli_local_protocol:encode(Create)),
+    {CreateReply, CreateEvent} = receive_group_mutation(Socket, 80),
+    ?assertEqual(true, maps:get(<<"ok">>, CreateReply)),
+    ?assertEqual(<<"created">>, maps:get(<<"action">>, CreateEvent)),
+    Group0 = maps:get(<<"data">>, CreateReply),
+    GroupId = maps:get(<<"id">>, Group0),
+
+    AddConfig = #{<<"op">> => <<"build_group_add_config">>, <<"id">> => 81,
+                  <<"group_id">> => GroupId, <<"revision">> => 1,
+                  <<"instance_id">> => <<"exalted-1">>, <<"config_index">> => 0},
+    ok = socket:send(Socket, wfcli_local_protocol:encode(AddConfig)),
+    {ConfigReply, ConfigEvent} = receive_group_mutation(Socket, 81),
+    ?assertEqual(<<"member_added">>, maps:get(<<"action">>, ConfigEvent)),
+    Group1 = maps:get(<<"data">>, ConfigReply),
+    ?assertEqual(1, maps:get(<<"config_member_count">>, Group1)),
+
+    AddSource = #{<<"op">> => <<"build_group_add_source">>, <<"id">> => 82,
+                  <<"group_id">> => GroupId, <<"revision">> => 2,
+                  <<"source">> => <<"overframe">>, <<"external_id">> => 374539,
+                  <<"fingerprint">> => <<"test-revision">>},
+    ok = socket:send(Socket, wfcli_local_protocol:encode(AddSource)),
+    {SourceReply, _SourceEvent} = receive_group_mutation(Socket, 82),
+    Group2 = maps:get(<<"data">>, SourceReply),
+    ?assertEqual(2, maps:get(<<"member_count">>, Group2)),
+
+    Plan = #{<<"op">> => <<"build_group_plan">>, <<"id">> => 84,
+             <<"group_id">> => GroupId, <<"revision">> => 3},
+    ok = socket:send(Socket, wfcli_local_protocol:encode(Plan)),
+    {PlanReply, PlanEvent} = receive_group_mutation(Socket, 84),
+    ?assertEqual(<<"planned">>, maps:get(<<"action">>, PlanEvent)),
+    ?assertEqual(<<"build_plan">>, maps:get(<<"dataset">>, PlanReply)),
+    ?assertEqual(<<"ready">>,
+                 maps:get(<<"status">>, maps:get(<<"data">>, PlanReply))),
+
+    List = #{<<"op">> => <<"build_group_list">>, <<"id">> => 83},
+    ok = socket:send(Socket, wfcli_local_protocol:encode(List)),
+    ListReply = receive_response(Socket, 83, <<>>),
+    [Summary] = maps:get(<<"groups">>, maps:get(<<"data">>, ListReply)),
+    ?assertEqual(GroupId, maps:get(<<"id">>, Summary)),
+    ?assertEqual(2, maps:get(<<"member_count">>, Summary)),
+    ?assertEqual(<<"ready">>,
+                 maps:get(<<"status">>, maps:get(<<"plan_result">>, Summary))),
+    ok = wfcli_player_service:clear().
+
+receive_group_mutation(Socket, Id) ->
+    receive_group_mutation(Socket, Id, <<>>, undefined, undefined).
+
+receive_group_mutation(_Socket, _Id, _Buffer, Reply, Event)
+  when Reply =/= undefined, Event =/= undefined -> {Reply, Event};
+receive_group_mutation(Socket, Id, Buffer, Reply, Event) ->
+    {ok, Data} = socket:recv(Socket, 0, 5000),
+    Parts = binary:split(<<Buffer/binary, Data/binary>>, <<"\n">>, [global]),
+    [Rest | Reversed] = lists:reverse(Parts),
+    {NextReply, NextEvent} = lists:foldl(
+      fun(Line, {ReplyAcc, EventAcc}) when Line =/= <<>> ->
+              {ok, Message} = wfcli_local_protocol:decode(Line),
+              case Message of
+                  #{<<"id">> := Id} -> {Message, EventAcc};
+                  #{<<"event">> := <<"build_group">>} -> {ReplyAcc, Message};
+                  _ -> {ReplyAcc, EventAcc}
+              end;
+         (_Line, Acc) -> Acc
+      end, {Reply, Event}, lists:reverse(Reversed)),
+    receive_group_mutation(Socket, Id, Rest, NextReply, NextEvent).
+
+receive_response(Socket, Id, Buffer) ->
+    {ok, Data} = socket:recv(Socket, 0, 5000),
+    Parts = binary:split(<<Buffer/binary, Data/binary>>, <<"\n">>, [global]),
+    [Rest | Reversed] = lists:reverse(Parts),
+    case [Message || Line <- lists:reverse(Reversed), Line =/= <<>>,
+                     {ok, Message = #{<<"id">> := MessageId}} <-
+                         [wfcli_local_protocol:decode(Line)],
+                     MessageId =:= Id] of
+        [Reply | _] -> Reply;
+        [] -> receive_response(Socket, Id, Rest)
+    end.
 
 request_player_metadata_subscription(SocketPath) ->
     Socket = connect_client(SocketPath, <<"test">>, #{}),
@@ -534,6 +715,25 @@ request_market_account(Socket) ->
     ?assertEqual(false, maps:get(<<"authenticated">>, Data)),
     ?assertMatch(#{<<"mode">> := <<"invisible">>}, maps:get(<<"presence">>, Data)).
 
+request_overframe_account(Socket) ->
+    Request = #{<<"op">> => <<"overframe_account">>, <<"id">> => 25},
+    ok = socket:send(Socket, wfcli_local_protocol:encode(Request)),
+    {ok, ReplyLine} = socket:recv(Socket, 0, 5000),
+    {ok, Reply} = wfcli_local_protocol:decode(string:trim(ReplyLine)),
+    ?assertEqual(true, maps:get(<<"ok">>, Reply)),
+    ?assertEqual(<<"overframe_account">>, maps:get(<<"dataset">>, Reply)),
+    Data = maps:get(<<"data">>, Reply),
+    ?assertEqual(false, maps:get(<<"authenticated">>, Data)),
+    ?assertEqual(false, maps:get(<<"stale">>, Data)).
+
+reject_invalid_overframe_session(Socket) ->
+    Request = #{<<"op">> => <<"overframe_session_import">>, <<"id">> => 26},
+    ok = socket:send(Socket, wfcli_local_protocol:encode(Request)),
+    {ok, ReplyLine} = socket:recv(Socket, 0, 5000),
+    {ok, Reply} = wfcli_local_protocol:decode(string:trim(ReplyLine)),
+    ?assertEqual(false, maps:get(<<"ok">>, Reply)),
+    ?assertEqual(<<"invalid_overframe_session">>, maps:get(<<"error">>, Reply)).
+
 request_market_presence(Socket) ->
     Request = #{<<"op">> => <<"market_presence_set">>, <<"id">> => 20,
                 <<"mode">> => <<"auto">>},
@@ -641,6 +841,36 @@ market_http(Url, _Headers) ->
                                 <<"buy">> => [#{<<"platinum">> => 35}]}}
     end,
     {ok, 200, jsone:encode(Body)}.
+
+overframe_http(_Url, _Headers) ->
+    {ok, 200, jsone:encode(#{<<"user">> => null})}.
+
+build_catalog() ->
+    {ok, #{fetched_at => erlang:system_time(millisecond),
+           items_by_path => #{}, items_by_id => #{},
+           mods_by_id => #{}, rivens_by_id => #{}}}.
+
+build_source(#{action := search}, _Catalog) ->
+    {ok, #{<<"source">> => <<"overframe">>, <<"count">> => 1,
+           <<"items">> => [#{<<"canonical_id">> =>
+                                  <<"/Lotus/Powersuits/Revenant/RevenantPrime">>,
+                              <<"name">> => <<"Revenant Prime">>}]}};
+build_source(#{action := list}, _Catalog) ->
+    {ok, #{<<"source">> => <<"overframe">>, <<"count">> => 1,
+           <<"builds">> => [#{<<"identity">> =>
+                                   #{<<"source">> => <<"overframe">>,
+                                     <<"external_id">> => 374539},
+                               <<"title">> => <<"Test Build">>}]}};
+build_source(#{action := detail, id := Id}, _Catalog) ->
+    {ok, #{<<"schema">> => 1,
+           <<"identity">> => #{<<"source">> => <<"overframe">>,
+                                <<"external_id">> => Id},
+           <<"fingerprint">> => <<"test-revision">>,
+           <<"content">> =>
+               #{<<"item">> => <<"/Lotus/Powersuits/Excalibur/DoomSword">>,
+                 <<"slots">> => []},
+           <<"metadata">> => #{}, <<"raw">> => #{},
+           <<"fetched_at">> => 1}}.
 
 await_external_activity(_Expected, 0) ->
     ?assert(false);

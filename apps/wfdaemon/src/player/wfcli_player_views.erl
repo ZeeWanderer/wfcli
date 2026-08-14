@@ -50,7 +50,7 @@ foundry(Snapshot, Catalog) ->
 -spec inventory(map(), [map()]) -> {ok, map()}.
 inventory(Snapshot, Catalog) ->
     Player = wfcli_player_projection:build(Snapshot),
-    CatalogIndex = catalog_index(Catalog),
+    CatalogIndex = wfcli_item_catalog:index(Catalog),
     Mastery = mastery_index(maps:get(<<"mastery">>, Player, [])),
     Stacks = aggregate(maps:get(<<"stacks">>, Player, [])),
     StackItems = [inventory_item(Unique, Entry,
@@ -168,42 +168,6 @@ rank_asset(Level) ->
       <<"source">> => <<"mastery">>,
       <<"image_name">> => <<Rank/binary, ".webp">>}.
 
-catalog_index(Catalog) ->
-    lists:foldl(
-      fun(Item, Acc) ->
-          Acc1 = put_catalog(Item, Item, false, Acc),
-          lists:foldl(fun(Component, A) -> put_catalog(Component, Item, true, A) end,
-                      Acc1, maps:get(<<"components">>, Item, []))
-      end, #{}, Catalog).
-
-put_catalog(Item, Parent, Component, Acc) when is_map(Item) ->
-    case maps:get(<<"uniqueName">>, Item, undefined) of
-        Unique when is_binary(Unique) ->
-            Candidate = Item#{<<"parentCategory">> => maps:get(<<"category">>, Parent, <<>>),
-                              <<"parentName">> => maps:get(<<"name">>, Parent, <<>>),
-                              <<"parentUniqueName">> => maps:get(<<"uniqueName">>, Parent,
-                                                                  undefined),
-                              <<"parentType">> => maps:get(<<"type">>, Parent, <<>>),
-                              <<"parentIsPrime">> =>
-                                  maps:get(<<"isPrime">>, Parent, false),
-                              <<"parentVaulted">> =>
-                                  maps:get(<<"vaulted">>, Parent, undefined),
-                              <<"component">> => Component},
-            case maps:get(Unique, Acc, undefined) of
-                undefined -> Acc#{Unique => Candidate};
-                Existing -> Acc#{Unique => prefer_catalog(Existing, Candidate)}
-            end;
-        _ -> Acc
-    end;
-put_catalog(_Item, _Parent, _Component, Acc) -> Acc.
-
-prefer_catalog(Existing, Candidate) ->
-    case {present(maps:get(<<"imageName">>, Existing, undefined)),
-          present(maps:get(<<"imageName">>, Candidate, undefined))} of
-        {false, true} -> maps:merge(Existing, Candidate);
-        _ -> maps:merge(Candidate, Existing)
-    end.
-
 aggregate(Entries) when is_list(Entries) ->
     lists:foldl(fun aggregate_entry/2, #{}, Entries);
 aggregate(_Entries) -> #{}.
@@ -263,7 +227,7 @@ subsumed_index(Raw) when is_map(Raw) ->
 subsumed_index(_Raw) -> #{}.
 
 inventory_item(Unique, Entry, Catalog, Mastery) ->
-    Name = item_name(Unique, Entry, Catalog),
+    {Name, NameSource} = item_name(Unique, Entry, Catalog),
     Category = maps:get(<<"category">>, Catalog,
                         maps:get(<<"parentCategory">>, Catalog, <<>>)),
     Collections = maps:get(collections, Entry, []),
@@ -275,6 +239,7 @@ inventory_item(Unique, Entry, Catalog, Mastery) ->
                  end,
     #{<<"id">> => Unique,
       <<"name">> => Name,
+      <<"name_source">> => NameSource,
       <<"market_name">> => inventory_market_name(Name, Group, Catalog, Tradable),
       <<"group">> => Group,
       <<"category">> => Category,
@@ -333,6 +298,7 @@ inventory_set(Item, Stacks, Mastery) ->
         false -> undefined;
         true ->
             Unique = maps:get(<<"uniqueName">>, Item),
+            {ItemName, NameSource} = catalog_item_name(Unique, Item),
             Quantity = lists:min(
                          [maps:get(<<"owned">>, Component) div
                           maps:get(<<"required">>, Component)
@@ -342,12 +308,10 @@ inventory_set(Item, Stacks, Mastery) ->
                         maps:get(<<"ducats">>, Component)
                         || Component <- OwnedComponents]),
             #{<<"id">> => <<"set:", Unique/binary>>,
-              <<"name">> => <<(maps:get(<<"name">>, Item,
-                                           fallback_name(Unique)))/binary,
-                                " Set">>,
-              <<"market_name">> => <<(maps:get(<<"name">>, Item,
-                                                  fallback_name(Unique)))/binary,
-                                       " Set">>,
+              <<"item_type">> => Unique,
+              <<"name">> => <<ItemName/binary, " Set">>,
+              <<"name_source">> => NameSource,
+              <<"market_name">> => <<ItemName/binary, " Set">>,
               <<"group">> => <<"sets">>,
               <<"category">> => Category,
               <<"type">> => <<"Set">>,
@@ -366,8 +330,10 @@ inventory_set(Item, Stacks, Mastery) ->
 
 inventory_set_component(Component, Stacks) ->
     Unique = maps:get(<<"uniqueName">>, Component),
+    {Name, NameSource} = catalog_item_name(Unique, Component),
     #{<<"id">> => Unique,
-      <<"name">> => maps:get(<<"name">>, Component, fallback_name(Unique)),
+      <<"name">> => Name,
+      <<"name_source">> => NameSource,
       <<"required">> => max(1, number(maps:get(<<"itemCount">>, Component, 1))),
       <<"owned">> => maps:get(count, maps:get(Unique, Stacks, #{}), 0),
       <<"ducats">> => number(maps:get(<<"primeSellingPrice">>, Component, 0)),
@@ -403,7 +369,7 @@ mastery_item(Item, Owned, Mastery, Pending) ->
     Unique = maps:get(<<"uniqueName">>, Item),
     Category = maps:get(<<"category">>, Item, <<>>),
     Type = maps:get(<<"type">>, Item, <<>>),
-    Name = maps:get(<<"name">>, Item, fallback_name(Unique)),
+    {Name, NameSource} = catalog_item_name(Unique, Item),
     Xp = maps:get(Unique, Mastery, maps:get(xp, maps:get(Unique, Owned, #{}), 0)),
     Progress = wfcli_player_mastery:progress(Item, Xp),
     MaxRank = maps:get(max_rank, Progress),
@@ -417,6 +383,7 @@ mastery_item(Item, Owned, Mastery, Pending) ->
     OwnedCount = maps:get(count, maps:get(Unique, Owned, #{}), 0),
     #{<<"id">> => Unique,
       <<"name">> => Name,
+      <<"name_source">> => NameSource,
       <<"group">> => mastery_group(Category, Type),
       <<"category">> => Category,
       <<"type">> => Type,
@@ -478,10 +445,12 @@ mastery_components(Item, Owned) ->
 
 mastery_component(Item, Component, Required, OwnedCount, Owned) ->
     Unique = maps:get(<<"uniqueName">>, Component),
+    {Name, NameSource} = catalog_item_name(Unique, Component),
     ExternalName = component_external_name(Item, Component),
     MarketName = component_market_name(Component, ExternalName),
     #{<<"id">> => Unique,
-      <<"name">> => maps:get(<<"name">>, Component, fallback_name(Unique)),
+      <<"name">> => Name,
+      <<"name_source">> => NameSource,
       <<"market_name">> => MarketName,
       <<"market_required">> =>
           contains(ExternalName, <<"Blueprint">>) andalso
@@ -523,9 +492,9 @@ component_external_name(Item, Component) ->
     Unique = maps:get(<<"uniqueName">>, Component, <<>>),
     Parent = maps:get(<<"name">>, Item, <<>>),
     Category = maps:get(<<"category">>, Item, <<>>),
-    case Name of
-        <<"Forma">> -> <<"Forma Blueprint">>;
-        _ ->
+    case wfcli_builtin_metadata:component_name(Unique, Name) of
+        {Override, <<"builtin">>} -> Override;
+        {_Default, _Source} ->
             case contains(Name, <<"Kavasa Prime">>) orelse
                  resource_component(Unique) orelse standalone_component(Unique) of
                 true -> Name;
@@ -903,11 +872,18 @@ item_name(Unique, Entry, Catalog) ->
           maps:get(<<"name">>, Catalog, undefined)} of
         {true, Parent, Component} when is_binary(Parent), byte_size(Parent) > 0,
                                        is_binary(Component), byte_size(Component) > 0 ->
-            <<Parent/binary, " ", Component/binary>>;
+            {<<Parent/binary, " ", Component/binary>>, <<"wfcd">>};
         _ ->
-            first_present([maps:get(<<"name">>, Catalog, undefined),
-                           maps:get(name, Entry, undefined), fallback_name(Unique)])
+            first_present_with_source(
+              [{maps:get(<<"name">>, Catalog, undefined), <<"wfcd">>},
+               {maps:get(name, Entry, undefined), <<"player">>},
+               {fallback_name(Unique), <<"path">>}])
     end.
+
+catalog_item_name(Unique, Catalog) ->
+    first_present_with_source(
+      [{maps:get(<<"name">>, Catalog, undefined), <<"wfcd">>},
+       {fallback_name(Unique), <<"path">>}]).
 
 fallback_name(Unique) when is_binary(Unique) ->
     case binary:split(Unique, <<"/">>, [global, trim_all]) of
@@ -925,6 +901,12 @@ asset(_Unique, _ImageName) -> null.
 first_present([]) -> undefined;
 first_present([Value | Rest]) ->
     case present(Value) of true -> Value; false -> first_present(Rest) end.
+
+first_present_with_source([{Value, Source} | Rest]) ->
+    case present(Value) of
+        true -> {Value, Source};
+        false -> first_present_with_source(Rest)
+    end.
 
 present(undefined) -> false;
 present(null) -> false;

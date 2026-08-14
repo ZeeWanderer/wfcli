@@ -12,6 +12,7 @@ class QEvent;
 class QPushButton;
 class QStackedWidget;
 class ActivityRailWidget;
+class BuildPlannerWidget;
 class PlayerIdentityWidget;
 class QResizeEvent;
 class TitleBarWidget;
@@ -23,6 +24,7 @@ class MainWindow final : public QMainWindow {
 public:
   explicit MainWindow(QWidget *parent = nullptr);
   bool setPage(const QString &page);
+  bool setBuildPlannerMode(const QString &mode);
   bool setActivityTab(const QString &tab);
   void showMarketItem(const QString &item, const QString &side = "sell");
   QWidget *screenshotTarget();
@@ -46,6 +48,7 @@ private:
   QList<QPushButton *> navigationButtons_;
   QStringList navigationLabels_;
   QStackedWidget *pages_;
+  BuildPlannerWidget *buildPlanner_;
   ActivityRailWidget *activityRail_;
   MarketItemDialog *marketDialog_;
   TitleBarWidget *titleBar_;

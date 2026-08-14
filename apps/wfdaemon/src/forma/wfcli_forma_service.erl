@@ -29,9 +29,8 @@ status() ->
 -doc "Load, normalize, and plan configs without presentation formatting.".
 -spec plan_request(map()) -> {ok, map()} | {error, term()}.
 plan_request(Request) ->
-    Files = maps:get(configs, Request, []),
     Flags = maps:get(flags, Request, #{}),
-    case wfcli_forma_config:load_files(Files) of
+    case raw_configs(Request) of
         {ok, RawConfigs} ->
             case normalize_configs(RawConfigs) of
                 {ok, Configs} ->
@@ -47,6 +46,11 @@ plan_request(Request) ->
             end;
         {error, Errors} -> {error, {config_errors, Errors}}
     end.
+
+raw_configs(#{config_data := Configs}) when is_list(Configs) ->
+    {ok, Configs};
+raw_configs(Request) ->
+    wfcli_forma_config:load_files(maps:get(configs, Request, [])).
 
 init([]) ->
     {ok, #{queue => queue:new(), current => undefined, client_monitors => #{}}}.

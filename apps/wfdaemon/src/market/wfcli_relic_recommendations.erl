@@ -375,16 +375,15 @@ public_reward(Reward, Items, Quotes, Owned) ->
       <<"asset">> => reward_asset(Name, Slug, Item)}.
 
 public_reward_platinum(Name, Quote) ->
-    case is_forma(Name) of
-        true -> 2;
-        false -> nullable_number(maps:get(lowest_sell, Quote, undefined))
+    case wfcli_builtin_metadata:reward(Name) of
+        #{platinum := Platinum} -> Platinum;
+        undefined -> nullable_number(maps:get(lowest_sell, Quote, undefined))
     end.
 
 reward_asset(Name, Slug, Item) ->
-    case is_forma(Name) of
-        true -> #{<<"id">> => <<"embedded:forma">>, <<"source">> => <<"embedded">>,
-                  <<"image_name">> => <<"forma.png">>};
-        false -> market_asset(Slug, Item)
+    case wfcli_builtin_metadata:reward(Name) of
+        #{asset := Asset} -> Asset;
+        undefined -> market_asset(Slug, Item)
     end.
 
 market_asset(Slug, Item) when is_binary(Slug) ->
@@ -406,7 +405,10 @@ nullable_number(Value) when is_integer(Value); is_float(Value) -> Value;
 nullable_number(_Value) -> null.
 
 reward_platinum(#{slug := undefined, name := Name}, _Quotes) ->
-    case is_forma(Name) of true -> 2; false -> 0 end;
+    case wfcli_builtin_metadata:reward(Name) of
+        #{platinum := Platinum} -> Platinum;
+        undefined -> 0
+    end;
 reward_platinum(#{slug := Slug}, Quotes) ->
     value(maps:get(lowest_sell, maps:get(Slug, Quotes, #{}), 0)).
 
@@ -415,7 +417,7 @@ reward_ducats(#{slug := Slug}, Items) ->
     value(maps:get(<<"ducats">>, maps:get(Slug, Items, #{}), 0)).
 
 is_forma(Name) when is_binary(Name) ->
-    binary:match(string:lowercase(Name), <<"forma blueprint">>) =/= nomatch;
+    wfcli_builtin_metadata:reward(Name) =/= undefined;
 is_forma(_Name) -> false.
 
 value(Number) when is_integer(Number); is_float(Number) -> Number;

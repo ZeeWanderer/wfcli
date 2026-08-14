@@ -20,6 +20,7 @@
     stop |
     player_snapshot |
     player_clear |
+    resolution_issues |
     notification_settings |
     {notification_settings, map()} |
     {companion_command, map()} |
@@ -119,6 +120,12 @@ handle_call(player_snapshot, _From, State) ->
     {reply, Snapshot#{projection_summary => wfcli_player_projection:summary(Snapshot)}, State};
 handle_call(player_clear, _From, State) ->
     {reply, wfcli_player_service:clear(), State};
+handle_call(resolution_issues, _From, State) ->
+    Reply = case wfcli_resolution_issues:refresh() of
+        ok -> wfcli_resolution_issues:list();
+        {error, _Reason} = Error -> Error
+    end,
+    {reply, Reply, State};
 handle_call(notification_settings, _From, State) ->
     {reply, safe_worker_call(wfcli_notification_service,
                              fun wfcli_notification_service:settings/0), State};
@@ -237,6 +244,7 @@ status(State = #{started_at := StartedAt}) ->
         forma => FormaStatus,
         query => safe_status(wfcli_query_service),
         player => safe_status(wfcli_player_service),
+        resolution_issues => safe_status(wfcli_resolution_issues),
         market => safe_status(wfcli_market_service),
         assets => AssetStatus,
         market_account => safe_status(wfcli_market_account_service),

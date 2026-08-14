@@ -207,6 +207,7 @@ dataset_name(<<"enemies">>) -> "enemies";
 dataset_name(<<"drops">>) -> "drops";
 dataset_name(<<"player">>) -> "player";
 dataset_name(<<"market">>) -> "market";
+dataset_name(<<"diagnostics">>) -> "diagnostics";
 dataset_name(<<"all">>) -> "all";
 dataset_name(Value) -> invalid(<<"datasets">>, {unknown_dataset, Value}).
 
@@ -230,7 +231,8 @@ update_selection(Value) -> invalid(<<"selections">>, {unknown_selection, Value})
 
 dataset_names() ->
     [<<"default">>, <<"worldstate">>, <<"mods">>, <<"items">>, <<"codex">>,
-     <<"enemies">>, <<"drops">>, <<"player">>, <<"market">>, <<"all">>].
+     <<"enemies">>, <<"drops">>, <<"player">>, <<"market">>,
+     <<"diagnostics">>, <<"all">>].
 
 update_names() ->
     [<<"default">>, <<"all">>, <<"nodes">>, <<"languages">>, <<"manifest">>,

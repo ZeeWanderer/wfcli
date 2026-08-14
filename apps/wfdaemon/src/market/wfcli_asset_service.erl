@@ -274,13 +274,20 @@ prepare_asset(#{<<"id">> := Id, <<"image_name">> := Name} = Spec, State)
     Source = maps:get(<<"source">>, Spec, <<"wfcd">>),
     case valid_asset_name(Source, Name) of
         true -> prepare_valid(Id, Source, Name, State);
-        false -> {ready, unavailable(Id, invalid_image_name)}
+        false ->
+            track_asset(Source, Name, {error, invalid_image_name}),
+            {ready, unavailable(Id, invalid_image_name)}
     end;
 prepare_asset(Spec, _State) ->
     Id = case Spec of
         #{<<"id">> := Value} when is_binary(Value) -> Value;
         _ -> <<>>
     end,
+    Source = case Spec of
+        #{<<"source">> := Source0} when is_binary(Source0) -> Source0;
+        _ -> <<"unknown">>
+    end,
+    track_asset(Source, Id, {error, invalid_asset}),
     {ready, unavailable(Id, invalid_asset)}.
 
 prepare_valid(Id, Source, Name, State) ->
@@ -288,8 +295,11 @@ prepare_valid(Id, Source, Name, State) ->
     Key = {Source, Name},
     Cached = maps:get(Key, Entries, undefined),
     case {usable_cached(Cached), fresh(Cached)} of
-        {true, true} -> {ready, descriptor(Id, Source, Name, Cached, false)};
+        {true, true} ->
+            track_asset(Source, Name, ok),
+            {ready, descriptor(Id, Source, Name, Cached, false)};
         {true, false} ->
+            track_asset(Source, Name, ok),
             Request = {Source, Name, Cached},
             {stale, descriptor(Id, Source, Name, Cached, true), Request};
         _ -> {fetch, {Id, Source, Name, Cached}}
@@ -377,6 +387,7 @@ finish_fetch(Pid, Key, Result, State) ->
                     {Resolved, State1} = commit_fetch(Source, Name, Cached, Result,
                                                       State#{workers => Workers,
                                                              pending => Pending}),
+                    track_asset(Source, Name, Resolved),
                     State2 = complete_waiters(maps:get(waiters, Task), Source, Name,
                                               Resolved, State1),
                     dispatch(State2)
@@ -524,6 +535,30 @@ descriptor(Id, Source, Name, Entry, Stale) ->
 unavailable(Id, Reason) ->
     #{<<"id">> => Id, <<"ok">> => false,
       <<"error">> => iolist_to_binary(io_lib:format("~p", [Reason]))}.
+
+track_asset(Source, Name, Result) when is_binary(Source), is_binary(Name) ->
+    case whereis(wfcli_resolution_issues) of
+        undefined -> ok;
+        _Pid ->
+            Scope = <<"asset_fetch:", Source/binary, ":", Name/binary>>,
+            Issues = case Result of
+                ok -> [];
+                {ok, _Entry, _Stale} -> [];
+                {error, Reason} ->
+                    [#{<<"kind">> => <<"asset_fetch">>,
+                       <<"identity">> => <<Source/binary, ":", Name/binary>>,
+                       <<"fallback">> => Name,
+                       <<"collection">> => Source,
+                       <<"reason">> => error_text(Reason),
+                       <<"attempts">> => [Source]}]
+            end,
+            try wfcli_resolution_issues:reconcile(Scope, Issues)
+            catch exit:_ -> ok
+            end
+    end;
+track_asset(_Source, _Name, _Result) -> ok.
+
+error_text(Reason) -> iolist_to_binary(io_lib:format("~p", [Reason])).
 
 valid_asset_name(<<"wfcd">>, Name) -> valid_image_name(Name);
 valid_asset_name(<<"market">>, Name) -> valid_market_path(Name);

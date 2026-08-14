@@ -11,6 +11,8 @@ start() ->
                  "/tmp", "wfcli-test-" ++ os:getpid() ++ "-" ++
                      integer_to_list(erlang:unique_integer([positive]))),
     application:set_env(wfdaemon, player_cache, filename:join(TestRoot, "player.term")),
+    application:set_env(wfdaemon, resolution_issues_file,
+                        filename:join(TestRoot, "resolution-issues.json")),
     application:set_env(wfdaemon, local_socket, filename:join(TestRoot, "wfdaemon.sock")),
     application:set_env(wfdaemon, notification_settings_file,
                         filename:join(TestRoot, "notifications.json")),
@@ -37,6 +39,7 @@ stop() ->
     cleanup_test_root(persistent_term:get({?MODULE, test_root}, undefined)),
     persistent_term:erase({?MODULE, test_root}),
     application:unset_env(wfdaemon, player_cache),
+    application:unset_env(wfdaemon, resolution_issues_file),
     application:unset_env(wfdaemon, local_socket),
     application:unset_env(wfdaemon, notification_settings_file),
     application:unset_env(wfdaemon, market_account_file),
@@ -47,6 +50,8 @@ cleanup_test_root(undefined) -> ok;
 cleanup_test_root(TestRoot) ->
     _ = file:delete(filename:join(TestRoot, "player.term.tmp")),
     _ = file:delete(filename:join(TestRoot, "player.term")),
+    _ = file:delete(filename:join(TestRoot, "resolution-issues.json.tmp")),
+    _ = file:delete(filename:join(TestRoot, "resolution-issues.json")),
     _ = file:delete(filename:join(TestRoot, "notifications.json.tmp")),
     _ = file:delete(filename:join(TestRoot, "notifications.json")),
     _ = file:delete(filename:join(TestRoot, "market-token.tmp")),

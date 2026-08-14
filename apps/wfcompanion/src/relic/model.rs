@@ -115,8 +115,8 @@ impl Reward {
             vaulted: false,
             set_price: None,
             asset: Some(Asset {
-                id: "embedded:forma".to_owned(),
-                source: "embedded".to_owned(),
+                id: "builtin:forma".to_owned(),
+                source: "builtin".to_owned(),
                 image_name: "forma.png".to_owned(),
                 path: String::new(),
                 digest: assets::FORMA_ASSET.image.key.to_owned(),

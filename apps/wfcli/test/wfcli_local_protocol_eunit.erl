@@ -17,4 +17,4 @@ invalid_json_is_data_error_test() ->
     ?assertMatch({error, {invalid_json, _}}, wfcli_local_protocol:decode(<<"{">>)).
 
 protocol_version_tracks_companion_command_contract_test() ->
-    ?assertEqual(9, wfcli_local_protocol:protocol_version()).
+    ?assertEqual(13, wfcli_local_protocol:protocol_version()).

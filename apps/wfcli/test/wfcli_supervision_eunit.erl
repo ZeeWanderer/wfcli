@@ -14,7 +14,9 @@ registered_processes_are_declared_test() ->
     ?assertEqual(
        [wfcli_sup, wfcli_daemon, wfcli_worldstate_service, wfcli_exports_store,
         wfcli_source_manager, wfcli_query_service, wfcli_forma_service,
-        wfcli_player_service, wfcli_market_limiter, wfcli_market_service,
+        wfcli_player_service, wfcli_resolution_issues, wfcli_build_service,
+        wfcli_market_limiter,
+        wfcli_market_service,
         wfcli_market_account_service, wfcli_market_presence_service,
         wfcli_asset_service,
         wfcli_notification_service, wfcli_local_api],
@@ -32,6 +34,15 @@ query_worker_is_restarted_test() ->
         New = await_replacement(wfcli_query_service, Old, 100),
         ?assert(is_pid(New)),
         ?assert(is_process_alive(Supervisor))
+    after
+        case Started of true -> wfcli_test_daemon:stop(); false -> ok end
+    end.
+
+resolution_issue_request_returns_data_directly_test() ->
+    Started = whereis(wfcli_sup) =:= undefined,
+    case Started of true -> ok = wfcli_test_daemon:start(); false -> ok end,
+    try
+        ?assert(is_list(gen_server:call(wfcli_daemon, resolution_issues)))
     after
         case Started of true -> wfcli_test_daemon:stop(); false -> ok end
     end.

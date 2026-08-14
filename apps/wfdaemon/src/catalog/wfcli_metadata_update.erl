@@ -260,8 +260,7 @@ clear_export_cache(Name) ->
     end,
     case lists:prefix("ExportUpgrades", Name) of
         true ->
-            persistent_term:erase({wfcli, mod_map}),
-            persistent_term:erase({wfcli, mod_name_index}),
+            wfcli_resolve_registry:invalidate_mod_cache(),
             persistent_term:erase({wfcli, mod_db});
         false ->
             ok

@@ -3,7 +3,7 @@
 %%%-------------------------------------------------------------------
 -module(wfcli_player_items).
 
--export([build/1, equipment_collections/0]).
+-export([build/1, configurable_equipment/1, equipment_collections/0]).
 
 -type projection() :: #{
     binary() := [map()],
@@ -138,7 +138,8 @@ item_record(Collection, Index, Raw, UpgradeIndex,
     end.
 
 item_kind(Collection, Raw) ->
-    case lists:member(Collection, equipment_collections()) of
+    case lists:member(Collection, equipment_collections()) orelse
+         configurable_equipment(Raw) of
         true -> equipment;
         false ->
             case {maps:is_key(<<"ItemId">>, Raw), maps:is_key(<<"ItemCount">>, Raw)} of
@@ -147,6 +148,16 @@ item_kind(Collection, Raw) ->
                 _ -> skip
             end
     end.
+
+-doc "Return whether an otherwise unknown record has configurable equipment shape.".
+-spec configurable_equipment(term()) -> boolean().
+configurable_equipment(Raw) when is_map(Raw) ->
+    maps:is_key(<<"ItemId">>, Raw) andalso
+    is_list(maps:get(<<"Configs">>, Raw, undefined)) andalso
+    lists:any(fun(Key) -> maps:is_key(Key, Raw) end,
+              [<<"XP">>, <<"UpgradeVer">>, <<"Features">>, <<"Polarized">>,
+               <<"Polarity">>, <<"ModSlotPurchases">>]);
+configurable_equipment(_Raw) -> false.
 
 equipment_record(Collection, Index, Raw, UpgradeIndex) ->
     instance_record(player_equipment, Collection, Index, Raw, UpgradeIndex, 1).
@@ -172,6 +183,8 @@ instance_record(Type, Collection, Index, Raw, UpgradeIndex, DefaultCount) ->
        {<<"upgrade_version">>, <<"UpgradeVer">>},
        {<<"forma_count">>, <<"Polarized">>},
        {<<"feature_flags">>, <<"Features">>},
+       {<<"mod_slot_purchases">>, <<"ModSlotPurchases">>},
+       {<<"customization_slot_purchases">>, <<"CustomizationSlotPurchases">>},
        {<<"focus_lens">>, <<"FocusLens">>},
        {<<"polarity_overrides">>, <<"Polarity">>},
        {<<"modular_parts">>, <<"ModularParts">>},
@@ -180,7 +193,24 @@ instance_record(Type, Collection, Index, Raw, UpgradeIndex, DefaultCount) ->
        {<<"upgrade_type">>, <<"UpgradeType">>},
        {<<"upgrade_fingerprint">>, <<"UpgradeFingerprint">>}],
       Raw, Fields0),
-    {record(Type, [Collection, Index], Raw, Fields1), Configs}.
+    Fields2 = attach_features(maps:get(<<"Features">>, Raw, undefined), Fields1),
+    {record(Type, [Collection, Index], Raw, Fields2), Configs}.
+
+attach_features(Flags, Fields) when is_integer(Flags), Flags >= 0 ->
+    Known = 1 bor 2 bor 4 bor 8 bor 32 bor 64 bor 512 bor 1024,
+    Fields#{<<"features">> =>
+                #{<<"double_capacity">> => enabled(Flags, 1),
+                  <<"utility_slot">> => enabled(Flags, 2),
+                  <<"gravimag">> => enabled(Flags, 4),
+                  <<"gilded">> => enabled(Flags, 8),
+                  <<"arcane_slot">> => enabled(Flags, 32),
+                  <<"second_arcane_slot">> => enabled(Flags, 64),
+                  <<"incarnon_genesis">> => enabled(Flags, 512),
+                  <<"valence_swap">> => enabled(Flags, 1024)},
+            <<"unknown_feature_flags">> => Flags band bnot Known};
+attach_features(_Flags, Fields) -> Fields.
+
+enabled(Flags, Bit) -> Flags band Bit =/= 0.
 
 stack_record(Collection, Index, Raw) ->
     ItemType = maps:get(<<"ItemType">>, Raw, <<>>),
@@ -233,21 +263,34 @@ upgrade_slots(Values, UpgradeIndex) when is_list(Values) ->
 upgrade_slots(_Values, _UpgradeIndex) -> [].
 
 upgrade_slot(Index, Id, Upgrade) ->
-    Base = #{<<"slot">> => Index, <<"instance_id">> => Id},
-    copy_present([<<"item_type">>, <<"rank">>, <<"kind">>], Upgrade, Base).
+    case {map_size(Upgrade), Id} of
+        {0, <<"/", _/binary>>} ->
+            #{<<"slot">> => Index, <<"instance_id">> => null,
+              <<"item_type">> => Id, <<"rank">> => 0,
+              <<"kind">> => <<"definition">>};
+        _ ->
+            Base = #{<<"slot">> => Index, <<"instance_id">> => Id},
+            copy_present([<<"item_type">>, <<"rank">>, <<"kind">>], Upgrade, Base)
+    end.
 
 upgrade_usage(Configs) ->
     lists:foldl(
       fun(Config, Acc0) ->
           lists:foldl(
             fun(Slot, Acc) ->
-                Id = maps:get(<<"instance_id">>, Slot),
-                Usage = #{<<"equipment_id">> => maps:get(<<"equipment_id">>, Config),
-                          <<"config_id">> => maps:get(<<"id">>, Config),
-                          <<"config_index">> => maps:get(<<"config_index">>, Config),
-                          <<"slot">> => maps:get(<<"slot">>, Slot)},
-                maps:update_with(Id, fun(Values) -> [Usage | Values] end,
-                                 [Usage], Acc)
+                case maps:get(<<"instance_id">>, Slot, undefined) of
+                    Id when is_binary(Id), byte_size(Id) > 0 ->
+                        Usage =
+                            #{<<"equipment_id">> =>
+                                  maps:get(<<"equipment_id">>, Config),
+                              <<"config_id">> => maps:get(<<"id">>, Config),
+                              <<"config_index">> =>
+                                  maps:get(<<"config_index">>, Config),
+                              <<"slot">> => maps:get(<<"slot">>, Slot)},
+                        maps:update_with(Id, fun(Values) -> [Usage | Values] end,
+                                         [Usage], Acc);
+                    _ -> Acc
+                end
             end,
             Acc0,
             maps:get(<<"upgrade_slots">>, Config, []))

@@ -25,7 +25,16 @@ constexpr int MarketCacheBatchSize = 100;
 constexpr int MarketDescriptionBatchSize = 100;
 constexpr int MaxActiveMarketDescriptionRequests = 2;
 constexpr int MaxActiveMarketQuoteRequests = 3;
+constexpr int MaxActiveBuildRequests = 4;
 constexpr int MarketQuoteTtlSeconds = 15 * 60;
+
+bool isBuildMutation(const QJsonObject &request) {
+  const QString op = request.value("op").toString();
+  return op == "build_group_create" || op == "build_group_update" ||
+         op == "build_group_delete" || op == "build_group_add_source" ||
+         op == "build_group_add_config" ||
+         op == "build_group_remove_member" || op == "build_group_plan";
+}
 } // namespace
 
 DaemonClient::DaemonClient(QObject *parent)
@@ -125,6 +134,32 @@ DaemonClient::DaemonClient(QObject *parent)
         pendingMarketAccountSnapshot_ = true;
       }
     }
+    for (const QString &action :
+         std::as_const(activeOverframeAccountRequests_)) {
+      if (action == "snapshot") {
+        pendingOverframeAccountSnapshot_ = true;
+      } else {
+        emit overframeAccountFailed(
+            action, "wfdaemon disconnected; operation result is unknown");
+        pendingOverframeAccountSnapshot_ = true;
+      }
+    }
+    bool reconcileBuildGroups = false;
+    for (const QJsonObject &request : std::as_const(activeBuildRequests_)) {
+      if (isBuildMutation(request)) {
+        emit buildSourceFailed(
+            request, "wfdaemon disconnected; operation result is unknown");
+        reconcileBuildGroups = true;
+      } else if (!pendingBuildRequests_.contains(request)) {
+        pendingBuildRequests_.prepend(request);
+      }
+    }
+    if (reconcileBuildGroups) {
+      const QJsonObject list{{"op", "build_group_list"}};
+      if (!pendingBuildRequests_.contains(list)) {
+        pendingBuildRequests_.append(list);
+      }
+    }
     activeRelicRequests_.clear();
     activePlayerViews_.clear();
     activeActivityRequest_ = 0;
@@ -139,6 +174,8 @@ DaemonClient::DaemonClient(QObject *parent)
     activeMarketResolveRequests_.clear();
     activeMarketDescriptionRequests_.clear();
     activeMarketAccountRequests_.clear();
+    activeOverframeAccountRequests_.clear();
+    activeBuildRequests_.clear();
     ready_ = false;
     setConnected(false);
     setStatus("wfdaemon disconnected");
@@ -184,6 +221,19 @@ DaemonClient::DaemonClient(QObject *parent)
               reconnectTimer_->start(250);
             }
           });
+}
+
+DaemonClient::~DaemonClient() {
+  reconnectTimer_->stop();
+  socket_->abort();
+  if (ensureProcess_.state() == QProcess::NotRunning) {
+    return;
+  }
+  ensureProcess_.terminate();
+  if (!ensureProcess_.waitForFinished(500)) {
+    ensureProcess_.kill();
+    ensureProcess_.waitForFinished(500);
+  }
 }
 
 bool DaemonClient::connected() const { return connected_; }
@@ -342,6 +392,114 @@ void DaemonClient::marketLogout() {
   queueMarketAccountRequest("logout", {{"op", "market_logout"}});
 }
 
+void DaemonClient::requestOverframeAccount() {
+  pendingOverframeAccountSnapshot_ = true;
+  sendPendingOverframeAccount();
+}
+
+void DaemonClient::importOverframeSession(const QJsonArray &cookies) {
+  queueOverframeAccountRequest(
+      "import", {{"op", "overframe_session_import"}, {"cookies", cookies}});
+}
+
+void DaemonClient::overframeLogout() {
+  queueOverframeAccountRequest("logout", {{"op", "overframe_logout"}});
+}
+
+void DaemonClient::searchBuildItems(const QString &query,
+                                    const QString &category, int limit) {
+  queueBuildRequest({{"op", "build_search"},
+                     {"query", query},
+                     {"class", category},
+                     {"limit", limit}});
+}
+
+void DaemonClient::requestBuildList(const QString &item, const QString &query,
+                                    const QString &scope,
+                                    const QString &ordering, int limit,
+                                    int offset, bool refresh) {
+  queueBuildRequest({{"op", "build_list"},
+                     {"item", item},
+                     {"query", query},
+                     {"scope", scope},
+                     {"ordering", ordering},
+                     {"limit", limit},
+                     {"offset", offset},
+                     {"refresh", refresh}});
+}
+
+void DaemonClient::requestBuildDetail(qint64 buildId, bool refresh) {
+  queueBuildRequest({{"op", "build_detail"},
+                     {"build_id", buildId},
+                     {"refresh", refresh}});
+}
+
+void DaemonClient::requestBuildGroups() {
+  queueBuildRequest({{"op", "build_group_list"}});
+}
+
+void DaemonClient::requestBuildGroup(const QString &groupId) {
+  queueBuildRequest({{"op", "build_group_get"}, {"group_id", groupId}});
+}
+
+void DaemonClient::createBuildGroup(const QJsonObject &group) {
+  queueBuildRequest({{"op", "build_group_create"}, {"group", group}});
+}
+
+void DaemonClient::updateBuildGroup(const QString &groupId, qint64 revision,
+                                    const QJsonObject &patch) {
+  queueBuildRequest({{"op", "build_group_update"},
+                     {"group_id", groupId},
+                     {"revision", revision},
+                     {"patch", patch}});
+}
+
+void DaemonClient::deleteBuildGroup(const QString &groupId, qint64 revision) {
+  queueBuildRequest({{"op", "build_group_delete"},
+                     {"group_id", groupId},
+                     {"revision", revision}});
+}
+
+void DaemonClient::addBuildSourceToGroup(const QString &groupId,
+                                         qint64 revision, qint64 externalId,
+                                         const QString &fingerprint) {
+  QJsonObject request{{"op", "build_group_add_source"},
+                      {"group_id", groupId},
+                      {"revision", revision},
+                      {"source", "overframe"},
+                      {"external_id", externalId}};
+  if (!fingerprint.isEmpty()) {
+    request.insert("fingerprint", fingerprint);
+  }
+  queueBuildRequest(request);
+}
+
+void DaemonClient::addBuildConfigToGroup(const QString &groupId,
+                                         qint64 revision,
+                                         const QString &instanceId,
+                                         int configIndex) {
+  queueBuildRequest({{"op", "build_group_add_config"},
+                     {"group_id", groupId},
+                     {"revision", revision},
+                     {"instance_id", instanceId},
+                     {"config_index", configIndex}});
+}
+
+void DaemonClient::removeBuildGroupMember(const QString &groupId,
+                                          qint64 revision,
+                                          const QString &memberId) {
+  queueBuildRequest({{"op", "build_group_remove_member"},
+                     {"group_id", groupId},
+                     {"revision", revision},
+                     {"member_id", memberId}});
+}
+
+void DaemonClient::planBuildGroup(const QString &groupId, qint64 revision) {
+  queueBuildRequest({{"op", "build_group_plan"},
+                     {"group_id", groupId},
+                     {"revision", revision}});
+}
+
 void DaemonClient::marketCreateOrder(const QJsonObject &order) {
   queueMarketAccountRequest("create",
                             {{"op", "market_order_create"}, {"order", order}});
@@ -456,6 +614,12 @@ void DaemonClient::handleLine(const QByteArray &line) {
     emit assetRefreshed(message.value("data").toObject());
     return;
   }
+  if (message.value("event").toString() == "build_group" &&
+      message.value("data").isObject()) {
+    emit buildGroupEvent(message.value("action").toString(),
+                         message.value("data").toObject());
+    return;
+  }
   const qint64 id = message.value("id").toInteger();
   if (id == HelloRequestId) {
     if (!message.value("ok").toBool() ||
@@ -469,15 +633,28 @@ void DaemonClient::handleLine(const QByteArray &line) {
       return;
     }
     const QJsonArray capabilities = message.value("capabilities").toArray();
-    const QStringList requiredCapabilities = {
-        "relic.planner",          "worldstate.activity",
-        "player.foundry",         "player.inventory",
-        "player.mastery",         "market.quote",
-        "market.resolve",         "market.describe",
-        "market.account",         "market.orders",
-        "market.quote.variant",   "market.presence",
-        "notifications.fissures", "asset.cache",
-        "dataset.subscribe",      "dataset.subscribe.metadata"};
+    const QStringList requiredCapabilities = {"relic.planner",
+                                              "worldstate.activity",
+                                              "player.foundry",
+                                              "player.inventory",
+                                              "player.mastery",
+                                              "build.equipment",
+                                              "build.sources",
+                                              "build.revisions",
+                                              "build.groups",
+                                              "build.plans",
+                                              "market.quote",
+                                              "market.resolve",
+                                              "market.describe",
+                                              "market.account",
+                                              "market.orders",
+                                              "market.quote.variant",
+                                              "market.presence",
+                                              "overframe.account",
+                                              "notifications.fissures",
+                                              "asset.cache",
+                                              "dataset.subscribe",
+                                              "dataset.subscribe.metadata"};
     const bool capable = std::ranges::all_of(
         requiredCapabilities, [&capabilities](const QString &capability) {
           return capabilities.contains(QJsonValue(capability));
@@ -506,6 +683,8 @@ void DaemonClient::handleLine(const QByteArray &line) {
     sendPendingMarketResolve();
     sendPendingMarketDescriptions();
     sendPendingMarketAccount();
+    sendPendingOverframeAccount();
+    sendPendingBuildRequests();
     return;
   }
 
@@ -770,6 +949,52 @@ void DaemonClient::handleLine(const QByteArray &line) {
     return;
   }
 
+  const auto overframeRequest = activeOverframeAccountRequests_.find(id);
+  if (overframeRequest != activeOverframeAccountRequests_.end()) {
+    const QString action = overframeRequest.value();
+    activeOverframeAccountRequests_.erase(overframeRequest);
+    if (!message.value("ok").toBool()) {
+      emit overframeAccountFailed(
+          action,
+          message.value("error").toString("Overframe account request failed"));
+      sendPendingOverframeAccount();
+      return;
+    }
+    const QJsonValue data = message.value("data");
+    if (!data.isObject()) {
+      emit overframeAccountFailed(
+          action, "daemon returned malformed Overframe account data");
+      sendPendingOverframeAccount();
+      return;
+    }
+    emit overframeAccountReady(action, data.toObject());
+    sendPendingOverframeAccount();
+    return;
+  }
+
+  const auto buildRequest = activeBuildRequests_.find(id);
+  if (buildRequest != activeBuildRequests_.end()) {
+    const QJsonObject request = buildRequest.value();
+    activeBuildRequests_.erase(buildRequest);
+    if (!message.value("ok").toBool()) {
+      emit buildSourceFailed(
+          request,
+          message.value("error").toString("build source request failed"));
+      sendPendingBuildRequests();
+      return;
+    }
+    const QJsonValue data = message.value("data");
+    if (!data.isObject()) {
+      emit buildSourceFailed(request,
+                             "daemon returned malformed build source data");
+      sendPendingBuildRequests();
+      return;
+    }
+    emit buildSourceReady(request, data.toObject());
+    sendPendingBuildRequests();
+    return;
+  }
+
   const auto playerRequest = activePlayerViews_.find(id);
   if (playerRequest == activePlayerViews_.end()) {
     return;
@@ -815,10 +1040,13 @@ void DaemonClient::sendHello() {
       {"capabilities",
        QJsonArray{"dataset.subscribe", "dataset.subscribe.metadata",
                   "relic.planner", "worldstate.activity", "player.foundry",
-                  "player.inventory", "player.mastery", "market.quote",
+                  "player.inventory", "player.mastery", "build.equipment",
+                  "build.sources", "build.revisions", "build.groups",
+                  "build.plans",
+                  "market.quote",
                   "market.resolve", "market.describe", "market.account",
                   "market.orders", "market.quote.variant", "market.presence",
-                  "notifications.fissures"}},
+                  "overframe.account", "notifications.fissures"}},
   });
 }
 
@@ -846,6 +1074,8 @@ void DaemonClient::sendPendingPlayerViews() {
       operation = "foundry_view";
     } else if (view == "inventory") {
       operation = "inventory_view";
+    } else if (view == "build_equipment") {
+      operation = "build_equipment";
     }
     write({{"op", operation}, {"id", id}});
   }
@@ -1069,6 +1299,54 @@ void DaemonClient::queueMarketAccountRequest(const QString &action,
                                              const QJsonObject &message) {
   pendingMarketAccountRequests_.append({.action = action, .message = message});
   sendPendingMarketAccount();
+}
+
+void DaemonClient::sendPendingOverframeAccount() {
+  if (!ready_ || !activeOverframeAccountRequests_.isEmpty()) {
+    return;
+  }
+  if (!pendingOverframeAccountRequests_.isEmpty()) {
+    OverframeAccountRequest request =
+        pendingOverframeAccountRequests_.takeFirst();
+    const qint64 id = nextRequestId_++;
+    request.message.insert("id", id);
+    activeOverframeAccountRequests_.insert(id, request.action);
+    write(request.message);
+    return;
+  }
+  if (!pendingOverframeAccountSnapshot_) {
+    return;
+  }
+  pendingOverframeAccountSnapshot_ = false;
+  const qint64 id = nextRequestId_++;
+  activeOverframeAccountRequests_.insert(id, "snapshot");
+  write({{"op", "overframe_account"}, {"id", id}});
+}
+
+void DaemonClient::queueOverframeAccountRequest(const QString &action,
+                                                const QJsonObject &message) {
+  pendingOverframeAccountRequests_.append(
+      {.action = action, .message = message});
+  sendPendingOverframeAccount();
+}
+
+void DaemonClient::sendPendingBuildRequests() {
+  while (ready_ && !pendingBuildRequests_.isEmpty() &&
+         activeBuildRequests_.size() < MaxActiveBuildRequests) {
+    QJsonObject request = pendingBuildRequests_.takeFirst();
+    const qint64 id = nextRequestId_++;
+    activeBuildRequests_.insert(id, request);
+    request.insert("id", id);
+    write(request);
+  }
+}
+
+void DaemonClient::queueBuildRequest(const QJsonObject &request) {
+  if (!pendingBuildRequests_.contains(request) &&
+      !activeBuildRequests_.values().contains(request)) {
+    pendingBuildRequests_.append(request);
+  }
+  sendPendingBuildRequests();
 }
 
 void DaemonClient::sendAssetBatch(const QJsonArray &assets) {

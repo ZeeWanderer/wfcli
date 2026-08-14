@@ -49,7 +49,8 @@ dataset_descriptions() ->
       enemies => <<"WFCD enemy knowledge.">>,
       drops => <<"WFCD drop knowledge.">>,
       player => <<"Local companion-published player observations.">>,
-      market => <<"Warframe Market item catalog plus already-cached quotes.">>}.
+      market => <<"Warframe Market item catalog plus already-cached quotes.">>,
+      diagnostics => <<"Current daemon metadata-resolution failures.">>}.
 
 type_columns() ->
     Types = [alert, fissure, sortie, invasion, void_storm, event, calendar,
@@ -64,7 +65,7 @@ query_language() ->
       "Filters use `key=value`, `key!=value`, `key~value`, `key>=value`, `key<=value`, "
       "`key>value`, `key<value`, or `key:value`. `a|b` means either value inside one "
       "filter. `sort=field` and `sort=-field` control ordering.\n\n"
-      "Datasets: `dataset=default|worldstate|mods|items|codex|enemies|drops|player|market|all`. "
-      "Default includes all public datasets; all also includes local player and market data.\n\n"
+      "Datasets: `dataset=default|worldstate|mods|items|codex|enemies|drops|player|market|diagnostics|all`. "
+      "Default includes public datasets; all also includes local player, market, and diagnostic data.\n\n"
       "Examples: `type=Fissure void`, `(fissure OR alert) NOT expired`, "
       "`enemy~corrupted rarity=Rare`.\n">>.
