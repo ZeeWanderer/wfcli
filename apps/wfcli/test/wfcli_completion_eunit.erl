@@ -31,8 +31,8 @@ nested_command_completion_test() ->
                  wfcli_completion:candidates(["diagnostics", "u"])),
     ?assertEqual(["--json"],
                  wfcli_completion:candidates(["diagnostics", "unresolved", "--j"])),
-    ?assertEqual(["--file"],
-                 wfcli_completion:candidates(["completion", "install", "--f"])).
+    ?assertEqual(["--dir"],
+                 wfcli_completion:candidates(["completion", "install", "--d"])).
 
 option_value_completion_test() ->
     Values = wfcli_completion:candidates(["query", "--format", ""]),
@@ -56,59 +56,88 @@ option_value_completion_test() ->
 generated_bash_completes_without_wfcli_process_test() ->
     Script = iolist_to_binary(wfcli_completion:script()),
     ?assertEqual(nomatch, binary:match(Script, <<"completion candidates">>)),
-    ?assertNotEqual(nomatch, binary:match(Script, <<"compgen -W">>)),
+    ?assertNotEqual(nomatch, binary:match(Script, <<"compgen -V COMPREPLY">>)),
+    ?assertEqual(nomatch, binary:match(Script, <<"mapfile">>)),
     ?assertNotEqual(nomatch, binary:match(Script, <<"complete -F _wfcli_complete wfcli wfclid">>)).
 
 managed_completion_lifecycle_test() ->
-    Path = temp_path("lifecycle"),
-    Original = <<"export WFCLI_TEST=1\n">>,
+    Dir = temp_path("lifecycle_dir"),
+    Bashrc = temp_path("lifecycle_bashrc"),
+    Clean = <<"export WFCLI_TEST=1\n">>,
+    Original = legacy_startup(Clean),
     try
-        ok = file:write_file(Path, Original),
-        ?assertEqual({ok, false}, wfcli_completion:installed(Path)),
-        ok = wfcli_completion:install(Path),
-        ?assertEqual({ok, true}, wfcli_completion:installed(Path)),
-        {ok, Installed} = file:read_file(Path),
-        ?assertEqual(1, length(binary:matches(
-                                 Installed, <<"# >>> wfcli completion >>>">>))),
-        ok = wfcli_completion:install(Path),
-        {ok, Reinstalled} = file:read_file(Path),
-        ?assertEqual(Installed, Reinstalled),
-        ok = wfcli_completion:uninstall(Path),
-        ?assertEqual({ok, false}, wfcli_completion:installed(Path)),
-        ?assertEqual({ok, Original}, file:read_file(Path))
+        ok = file:make_dir(Dir),
+        ok = file:write_file(Bashrc, Original),
+        ?assertEqual({ok, false}, wfcli_completion:installed(Dir)),
+        ok = wfcli_completion:install(Dir, Bashrc),
+        ?assertEqual({ok, true}, wfcli_completion:installed(Dir)),
+        Expected = iolist_to_binary(wfcli_completion:script()),
+        ?assertEqual({ok, Expected}, file:read_file(filename:join(Dir, "wfcli.bash"))),
+        ?assertEqual({ok, Expected}, file:read_file(filename:join(Dir, "wfclid.bash"))),
+        ?assertEqual({ok, Clean}, file:read_file(Bashrc)),
+        ok = file:write_file(filename:join(Dir, "wfcli.bash"), <<"stale">>),
+        ?assertEqual({ok, false}, wfcli_completion:installed(Dir)),
+        ok = wfcli_completion:install(Dir, Bashrc),
+        ?assertEqual({ok, true}, wfcli_completion:installed(Dir)),
+        ok = wfcli_completion:uninstall(Dir, Bashrc),
+        ?assertEqual({ok, false}, wfcli_completion:installed(Dir)),
+        ?assertEqual({ok, Clean}, file:read_file(Bashrc))
     after
-        _ = file:delete(Path)
+        cleanup_completion_dir(Dir),
+        _ = file:delete(Bashrc)
     end.
 
 malformed_completion_block_is_not_modified_test() ->
-    Path = temp_path("malformed"),
+    Dir = temp_path("malformed_dir"),
+    Bashrc = temp_path("malformed_bashrc"),
     Content = <<"# >>> wfcli completion >>>\n">>,
     try
-        ok = file:write_file(Path, Content),
+        ok = file:make_dir(Dir),
+        ok = file:write_file(Bashrc, Content),
         ?assertEqual({error, malformed_completion_block},
-                     wfcli_completion:install(Path)),
-        ?assertEqual({ok, Content}, file:read_file(Path))
+                     wfcli_completion:install(Dir, Bashrc)),
+        ?assertEqual({ok, Content}, file:read_file(Bashrc)),
+        ?assertEqual({ok, false}, wfcli_completion:installed(Dir))
     after
-        _ = file:delete(Path)
+        cleanup_completion_dir(Dir),
+        _ = file:delete(Bashrc)
     end.
 
 symlinked_startup_file_is_preserved_test() ->
+    Dir = temp_path("symlink_dir"),
     Target = temp_path("target"),
     Link = temp_path("link"),
-    Original = <<"export WFCLI_TEST=1\n">>,
+    Clean = <<"export WFCLI_TEST=1\n">>,
     try
-        ok = file:write_file(Target, Original),
+        ok = file:make_dir(Dir),
+        ok = file:write_file(Target, legacy_startup(Clean)),
         ok = file:make_symlink(Target, Link),
-        ok = wfcli_completion:install(Link),
+        ok = wfcli_completion:install(Dir, Link),
         ?assertEqual({ok, Target}, file:read_link(Link)),
-        ?assertEqual({ok, true}, wfcli_completion:installed(Link)),
-        ok = wfcli_completion:uninstall(Link),
+        ?assertEqual({ok, true}, wfcli_completion:installed(Dir)),
+        ?assertEqual({ok, Clean}, file:read_file(Target)),
+        ok = wfcli_completion:uninstall(Dir, Link),
         ?assertEqual({ok, Target}, file:read_link(Link)),
-        ?assertEqual({ok, Original}, file:read_file(Target))
+        ?assertEqual({ok, Clean}, file:read_file(Target))
     after
+        cleanup_completion_dir(Dir),
         _ = file:delete(Link),
         _ = file:delete(Target)
     end.
+
+legacy_startup(Prefix) ->
+    <<Prefix/binary,
+      "# >>> wfcli completion >>>\n"
+      "if command -v wfcli >/dev/null 2>&1; then\n"
+      "  eval \"$(wfcli completion bash)\"\n"
+      "fi\n"
+      "# <<< wfcli completion <<<\n">>.
+
+cleanup_completion_dir(Dir) ->
+    _ = file:delete(filename:join(Dir, "wfcli.bash")),
+    _ = file:delete(filename:join(Dir, "wfclid.bash")),
+    _ = file:del_dir(Dir),
+    ok.
 
 temp_path(Name) ->
     filename:join(

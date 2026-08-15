@@ -12,10 +12,15 @@
     install/1,
     uninstall/1,
     installed/1,
+    completion_dir/0,
     bashrc_path/0,
     help/0,
     help/1
 ]).
+
+-ifdef(TEST).
+-export([install/2, uninstall/2]).
+-endif.
 
 -define(START_MARKER, <<"# >>> wfcli completion >>>">>).
 -define(END_MARKER, <<"# <<< wfcli completion <<<">>).
@@ -29,17 +34,17 @@ run(["candidates", "--" | Args]) ->
     lists:foreach(fun(Candidate) -> io:format("~s~n", [Candidate]) end,
                   candidates(Args));
 run(["install" | Args]) ->
-    edit_startup(install, Args);
+    edit_install(install, Args);
 run(["uninstall" | Args]) ->
-    edit_startup(uninstall, Args);
+    edit_install(uninstall, Args);
 run(["status" | Args]) ->
-    with_path(
+    with_directory(
       Args,
-      fun(Path) ->
-          case installed(Path) of
+      fun(Dir) ->
+          case installed(Dir) of
               {ok, Present} ->
-                  io:format("Bash completion~n  file: ~s~n  installed: ~s~n",
-                            [Path, yes_no(Present)]);
+                  io:format("Bash completion~n  directory: ~s~n  current: ~s~n",
+                            [Dir, yes_no(Present)]);
               {error, Reason} -> fail(Reason)
           end
       end);
@@ -47,17 +52,17 @@ run(_) ->
     help(),
     halt(1).
 
-edit_startup(Action, Args) ->
-    with_path(
+edit_install(Action, Args) ->
+    with_directory(
       Args,
-      fun(Path) ->
+      fun(Dir) ->
           Result = case Action of
-              install -> install(Path);
-              uninstall -> uninstall(Path)
+              install -> install(Dir);
+              uninstall -> uninstall(Dir)
           end,
           case Result of
-              ok -> io:format("Bash completion ~s~n  file: ~s~n",
-                              [action_text(Action), Path]);
+              ok -> io:format("Bash completion ~s~n  directory: ~s~n",
+                              [action_text(Action), Dir]);
               {error, Reason} -> fail(Reason)
           end
       end).
@@ -73,17 +78,18 @@ help() ->
 help([Command | _]) when Command =:= "install";
                          Command =:= "uninstall";
                          Command =:= "status" ->
-    io:format("USAGE:~n  wfcli completion ~s [--file PATH]~n", [Command]);
+    io:format("USAGE:~n  wfcli completion ~s [--dir PATH]~n", [Command]);
 help(_) ->
     io:put_chars(
       "USAGE:\n"
       "  wfcli completion bash\n"
-      "  wfcli completion install [--file PATH]\n"
-      "  wfcli completion status [--file PATH]\n"
-      "  wfcli completion uninstall [--file PATH]\n"
+      "  wfcli completion install [--dir PATH]\n"
+      "  wfcli completion status [--dir PATH]\n"
+      "  wfcli completion uninstall [--dir PATH]\n"
       "\n"
       "BASH:\n"
-      "  source <(wfcli completion bash)\n").
+      "  Install writes lazy bash-completion files; no shell eval is needed.\n"
+      "  Temporary session: source <(wfcli completion bash)\n").
 
 -doc "Return context-sensitive command and option candidates for one shell word.".
 -spec candidates([string()]) -> [string()].
@@ -164,9 +170,9 @@ contexts() ->
         {["companion", "uninstall"], ["--dry-run" | help_flags()]},
         {["gui"], wfcli_gui_cli:known_commands()},
         {["completion"], ["bash", "install", "status", "uninstall" | help_flags()]},
-        {["completion", "install"], ["--file" | help_flags()]},
-        {["completion", "status"], ["--file" | help_flags()]},
-        {["completion", "uninstall"], ["--file" | help_flags()]},
+        {["completion", "install"], ["--dir" | help_flags()]},
+        {["completion", "status"], ["--dir" | help_flags()]},
+        {["completion", "uninstall"], ["--dir" | help_flags()]},
         {["paths"], ["--apps", "wfcli", "wfdaemon", "wfcompanion", "wfgui"
                      | help_flags()]},
         {["help"], help_choices()}
@@ -193,7 +199,7 @@ values() ->
     [
         {{"*", "--diff-style"}, ["inline", "list", "diff", "none"]},
         {{"*", "--viz"}, ["html", "image"]},
-        {{"completion", "--file"}, []},
+        {{"completion", "--dir"}, []},
         {{"daemon", "--beam-dir"}, []}
     ].
 
@@ -249,7 +255,8 @@ script() ->
         "      fi\n",
         "    done\n",
         "  fi\n",
-        "  mapfile -t COMPREPLY < <(compgen -W \"$choices\" -- \"$current\")\n",
+        "  COMPREPLY=()\n",
+        "  compgen -V COMPREPLY -W \"$choices\" -- \"$current\" || true\n",
         "  if ((${#COMPREPLY[@]} == 0)); then\n",
         "    compopt -o default\n",
         "  fi\n",
@@ -278,49 +285,66 @@ bash_map(Name, Entries) ->
 shell_quote(Text) ->
     [$', string:replace(Text, "'", "'\"'\"'", all), $'].
 
--doc "Install the managed completion block in a Bash startup file.".
+-doc "Install current scripts in the user bash-completion directory.".
 -spec install(file:filename_all()) -> ok | {error, term()}.
-install(Path) ->
-    case read_startup(Path) of
+install(Dir) ->
+    case bashrc_path() of
+        {ok, Bashrc} -> install(Dir, Bashrc);
+        {error, _Reason} = Error -> Error
+    end.
+
+install(Dir, Bashrc) ->
+    case read_startup(Bashrc) of
         {ok, Content} ->
             case managed_span(Content) of
-                absent -> write_startup(Path, append_block(Content));
-                {present, Start, Finish} ->
-                    Prefix = binary:part(Content, 0, Start),
-                    Suffix = binary:part(Content, Finish, byte_size(Content) - Finish),
-                    write_startup(Path, [Prefix, managed_block(), Suffix]);
-                {error, _Reason} = Error -> Error
+                {error, _Reason} = Error -> Error;
+                Span ->
+                    case write_completion_files(Dir) of
+                        ok -> remove_managed_startup(Bashrc, Content, Span);
+                        {error, _Reason} = Error -> Error
+                    end
             end;
         {error, _Reason} = Error -> Error
     end.
 
--doc "Remove the managed completion block from a Bash startup file.".
+-doc "Remove user-installed completion files and the obsolete startup block.".
 -spec uninstall(file:filename_all()) -> ok | {error, term()}.
-uninstall(Path) ->
-    case read_startup(Path) of
+uninstall(Dir) ->
+    case bashrc_path() of
+        {ok, Bashrc} -> uninstall(Dir, Bashrc);
+        {error, _Reason} = Error -> Error
+    end.
+
+uninstall(Dir, Bashrc) ->
+    case read_startup(Bashrc) of
         {ok, Content} ->
             case managed_span(Content) of
-                absent -> ok;
-                {present, Start, Finish} ->
-                    Prefix = binary:part(Content, 0, Start),
-                    Suffix0 = binary:part(Content, Finish, byte_size(Content) - Finish),
-                    write_startup(Path, [Prefix, drop_leading_newline(Suffix0)]);
-                {error, _Reason} = Error -> Error
+                {error, _Reason} = Error -> Error;
+                Span ->
+                    case delete_completion_files(Dir) of
+                        ok -> remove_managed_startup(Bashrc, Content, Span);
+                        {error, _Reason} = Error -> Error
+                    end
             end;
         {error, _Reason} = Error -> Error
     end.
 
--doc "Return whether a Bash startup file contains the complete managed block.".
+-doc "Return whether both user completion files match this build.".
 -spec installed(file:filename_all()) -> {ok, boolean()} | {error, term()}.
-installed(Path) ->
-    case read_startup(Path) of
-        {ok, Content} ->
-            case managed_span(Content) of
-                absent -> {ok, false};
-                {present, _Start, _Finish} -> {ok, true};
+installed(Dir) ->
+    completion_files_match(completion_files(Dir), iolist_to_binary(script())).
+
+-doc "Return the default per-user bash-completion directory.".
+-spec completion_dir() -> path_result().
+completion_dir() ->
+    case first_env_path("BASH_COMPLETION_USER_DIR") of
+        {ok, Root} -> {ok, filename:join(Root, "completions")};
+        not_set ->
+            case data_home() of
+                {ok, DataHome} ->
+                    {ok, filename:join([DataHome, "bash-completion", "completions"])};
                 {error, _Reason} = Error -> Error
-            end;
-        {error, _Reason} = Error -> Error
+            end
     end.
 
 -doc "Return the default Bash startup file.".
@@ -333,16 +357,79 @@ bashrc_path() ->
         Home -> {ok, filename:join(Home, ".bashrc")}
     end.
 
-with_path(Args, Fun) ->
-    case parse_path(Args) of
-        {ok, Path} -> Fun(Path);
+with_directory(Args, Fun) ->
+    case parse_directory(Args) of
+        {ok, Dir} -> Fun(Dir);
         {error, Reason} -> fail(Reason)
     end.
 
-parse_path([]) -> bashrc_path();
-parse_path(["--file", Path]) -> {ok, filename:absname(Path)};
-parse_path(["--file"]) -> {error, completion_file_missing};
-parse_path(Args) -> {error, {invalid_completion_args, Args}}.
+parse_directory([]) -> completion_dir();
+parse_directory(["--dir", Dir]) -> {ok, filename:absname(Dir)};
+parse_directory(["--dir"]) -> {error, completion_directory_missing};
+parse_directory(Args) -> {error, {invalid_completion_args, Args}}.
+
+first_env_path(Name) ->
+    case os:getenv(Name) of
+        false -> not_set;
+        undefined -> not_set;
+        "" -> not_set;
+        Value ->
+            case string:lexemes(Value, ":") of
+                [Path | _] -> {ok, filename:absname(Path)};
+                [] -> not_set
+            end
+    end.
+
+data_home() ->
+    case os:getenv("XDG_DATA_HOME") of
+        Value when is_list(Value), Value =/= "" -> {ok, filename:absname(Value)};
+        _ ->
+            case os:getenv("HOME") of
+                Home when is_list(Home), Home =/= "" ->
+                    {ok, filename:join(Home, ".local/share")};
+                _ -> {error, home_not_set}
+            end
+    end.
+
+completion_files(Dir) ->
+    [filename:join(Dir, "wfcli.bash"),
+     filename:join(Dir, "wfclid.bash")].
+
+write_completion_files(Dir) ->
+    write_completion_files(completion_files(Dir), script()).
+
+write_completion_files([], _Content) -> ok;
+write_completion_files([Path | Rest], Content) ->
+    case atomic_write(Path, Content) of
+        ok -> write_completion_files(Rest, Content);
+        {error, _Reason} = Error -> Error
+    end.
+
+delete_completion_files(Dir) ->
+    delete_completion_paths(completion_files(Dir)).
+
+delete_completion_paths([]) -> ok;
+delete_completion_paths([Path | Rest]) ->
+    case file:delete(Path) of
+        ok -> delete_completion_paths(Rest);
+        {error, enoent} -> delete_completion_paths(Rest);
+        {error, Reason} -> {error, {completion_delete_failed, Path, Reason}}
+    end.
+
+completion_files_match([], _Expected) -> {ok, true};
+completion_files_match([Path | Rest], Expected) ->
+    case file:read_file(Path) of
+        {ok, Expected} -> completion_files_match(Rest, Expected);
+        {ok, _Stale} -> {ok, false};
+        {error, enoent} -> {ok, false};
+        {error, Reason} -> {error, {completion_read_failed, Path, Reason}}
+    end.
+
+remove_managed_startup(_Path, _Content, absent) -> ok;
+remove_managed_startup(Path, Content, {present, Start, Finish}) ->
+    Prefix = binary:part(Content, 0, Start),
+    Suffix0 = binary:part(Content, Finish, byte_size(Content) - Finish),
+    write_startup(Path, [Prefix, drop_leading_newline(Suffix0)]).
 
 read_startup(Path) ->
     case file:read_file(Path) of
@@ -371,15 +458,16 @@ atomic_write(Path, Content) ->
     case filelib:ensure_dir(Path) of
         ok ->
             case file:write_file(Temp, Content) of
-                ok -> replace_startup(Path, Temp);
+                ok -> replace_file(Path, Temp);
                 {error, Reason} ->
+                    _ = file:delete(Temp),
                     {error, {completion_write_failed, Path, Reason}}
             end;
         {error, Reason} ->
             {error, {completion_directory_failed, Path, Reason}}
     end.
 
-replace_startup(Path, Temp) ->
+replace_file(Path, Temp) ->
     case file:read_file_info(Path) of
         {ok, #file_info{mode = Mode}} -> _ = file:change_mode(Temp, Mode);
         {error, _Reason} -> ok
@@ -390,23 +478,6 @@ replace_startup(Path, Temp) ->
             _ = file:delete(Temp),
             {error, {completion_install_failed, Path, Reason}}
     end.
-
-append_block(<<>>) ->
-    [managed_block(), "\n"];
-append_block(Content) ->
-    Separator = case binary:last(Content) of $\n -> <<>>; _ -> <<"\n">> end,
-    [Content, Separator, managed_block(), "\n"].
-
-managed_block() ->
-    [
-        ?START_MARKER, "\n",
-        "if command -v wfcli >/dev/null 2>&1; then\n",
-        "  eval \"$(wfcli completion bash)\"\n",
-        "elif command -v wfclid >/dev/null 2>&1; then\n",
-        "  eval \"$(wfclid completion bash)\"\n",
-        "fi\n",
-        ?END_MARKER
-    ].
 
 managed_span(Content) ->
     Starts = binary:matches(Content, ?START_MARKER),

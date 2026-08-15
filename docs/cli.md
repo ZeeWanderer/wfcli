@@ -62,7 +62,8 @@ wfcli archimedea --deep
 
 ## Bash Completion
 
-Install generated completion in `~/.bashrc`:
+Staged and packaged builds include lazy bash-completion files. Install a user copy when running
+the escript directly or overriding a packaged completion:
 
 ```bash
 wfcli completion install
@@ -70,13 +71,14 @@ wfcli completion status
 wfcli completion uninstall
 ```
 
-Use `--file PATH` for another Bash startup file. For one shell:
+Use `--dir PATH` for another completion directory. Bash 5.3 or newer and `bash-completion` are
+required. Rerun `install` after updating a direct escript. For one shell:
 
 ```bash
 source <(wfcli completion bash)
 ```
 
-Completion data is embedded in the generated shell function, so Tab completion does not start an
+The generated function contains all candidates. Shell startup and Tab completion do not start an
 Erlang VM.
 
 ## Application Paths

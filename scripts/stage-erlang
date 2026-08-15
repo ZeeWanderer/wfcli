@@ -33,6 +33,12 @@ cp -a "$release" "$stage/libexec/wfdaemon"
 install -m 0755 "$root/scripts/wfdaemon-wrapper" "$stage/bin/wfdaemon"
 printf '%s\n' "$mode" > "$stage/BUILD_FLAVOR"
 
+completion_dir="$stage/share/bash-completion/completions"
+rm -rf "$completion_dir"
+mkdir -p "$completion_dir"
+"$stage/bin/wfcli" completion bash > "$completion_dir/wfcli.bash"
+cp "$completion_dir/wfcli.bash" "$completion_dir/wfclid.bash"
+
 identity="$(
     WFCLI_CORE_EBIN="$core_ebin" WFCLI_DAEMON_EBIN="$daemon_ebin" \
         erl -pa "$daemon_ebin" -noshell -eval '
