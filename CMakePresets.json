@@ -25,6 +25,7 @@
         "CXX": "clang++",
         "LD_LIBRARY_PATH": "$env{LLVM_ROOT}/lib:$penv{LD_LIBRARY_PATH}",
         "SCCACHE_DIR": "${sourceDir}/.cache/sccache",
+        "SCCACHE_SERVER_UDS": "${sourceDir}/.cache/sccache.sock",
         "VCPKG_DEFAULT_BINARY_CACHE": "${sourceDir}/.cache/vcpkg/archives",
         "VCPKG_DOWNLOADS": "${sourceDir}/.cache/vcpkg/downloads"
       }

@@ -42,7 +42,7 @@ CMAKE_CXX_COMPILER_LAUNCHER ?= $(SCCACHE)
 export RUSTC_WRAPPER CMAKE_C_COMPILER_LAUNCHER CMAKE_CXX_COMPILER_LAUNCHER
 endif
 
-.PHONY: all build dev prod erlang cli daemon mcp companion gui gui-dev gui-prod sccache-start \
+.PHONY: all build dev prod erlang cli daemon mcp companion gui gui-dev gui-prod sccache-setup \
 	gui-configure-dev gui-configure-prod gui-reconfigure gui-reconfigure-dev gui-reconfigure-prod \
 	dev-erlang prod-erlang dev-companion prod-companion links \
 	debug-bridge native-bridges previews icon-optics aleca-layout-setup fix-executables \
@@ -51,12 +51,9 @@ endif
 all: dev
 build: dev prod native-compile-commands
 
-sccache-start:
+sccache-setup:
 ifneq ($(strip $(SCCACHE)),)
-	@mkdir -p "$(dir $(SCCACHE_SERVER_UDS))"
-	@if ! $(SCCACHE) --start-server >/dev/null 2>&1; then \
-		$(SCCACHE) --show-stats >/dev/null; \
-	fi
+	@mkdir -p "$(SCCACHE_DIR)" "$(dir $(SCCACHE_SERVER_UDS))"
 endif
 
 dev: dev-erlang dev-companion gui-dev links
@@ -69,37 +66,37 @@ companion: dev-companion
 
 gui: gui-dev
 
-gui-configure-dev: sccache-start
+gui-configure-dev: sccache-setup
 	test -n "$(LLVM_ROOT)"
 	test -n "$(NINJA)"
-	LLVM_ROOT="$(LLVM_ROOT)" cmake --preset gui-dev --log-level=WARNING -DCMAKE_MAKE_PROGRAM="$(NINJA)"
+	+LLVM_ROOT="$(LLVM_ROOT)" cmake --preset gui-dev --log-level=WARNING -DCMAKE_MAKE_PROGRAM="$(NINJA)"
 
 gui-dev: gui-configure-dev
-	LLVM_ROOT="$(LLVM_ROOT)" cmake --build --preset gui-dev
+	+LLVM_ROOT="$(LLVM_ROOT)" cmake --build --preset gui-dev
 	rm -rf dev/lib dev/Qt6
 	LLVM_ROOT="$(LLVM_ROOT)" cmake --install _build/cmake/gui-dev
 
-gui-configure-prod: sccache-start
+gui-configure-prod: sccache-setup
 	test -n "$(LLVM_ROOT)"
 	test -n "$(NINJA)"
-	LLVM_ROOT="$(LLVM_ROOT)" cmake --preset gui-prod --log-level=WARNING -DCMAKE_MAKE_PROGRAM="$(NINJA)"
+	+LLVM_ROOT="$(LLVM_ROOT)" cmake --preset gui-prod --log-level=WARNING -DCMAKE_MAKE_PROGRAM="$(NINJA)"
 
 gui-prod: gui-configure-prod
-	LLVM_ROOT="$(LLVM_ROOT)" cmake --build --preset gui-prod
+	+LLVM_ROOT="$(LLVM_ROOT)" cmake --build --preset gui-prod
 	rm -rf prod/lib prod/Qt6
 	LLVM_ROOT="$(LLVM_ROOT)" cmake --install _build/cmake/gui-prod
 
 gui-reconfigure: gui-reconfigure-dev gui-reconfigure-prod
 
-gui-reconfigure-dev: sccache-start
+gui-reconfigure-dev: sccache-setup
 	test -n "$(LLVM_ROOT)"
 	test -n "$(NINJA)"
-	LLVM_ROOT="$(LLVM_ROOT)" cmake --fresh --preset gui-dev --log-level=WARNING -DCMAKE_MAKE_PROGRAM="$(NINJA)"
+	+LLVM_ROOT="$(LLVM_ROOT)" cmake --fresh --preset gui-dev --log-level=WARNING -DCMAKE_MAKE_PROGRAM="$(NINJA)"
 
-gui-reconfigure-prod: sccache-start
+gui-reconfigure-prod: sccache-setup
 	test -n "$(LLVM_ROOT)"
 	test -n "$(NINJA)"
-	LLVM_ROOT="$(LLVM_ROOT)" cmake --fresh --preset gui-prod --log-level=WARNING -DCMAKE_MAKE_PROGRAM="$(NINJA)"
+	+LLVM_ROOT="$(LLVM_ROOT)" cmake --fresh --preset gui-prod --log-level=WARNING -DCMAKE_MAKE_PROGRAM="$(NINJA)"
 
 dev-erlang:
 	$(REBAR3) escriptize
@@ -113,11 +110,11 @@ prod-erlang:
 	$(REBAR3) as prod release
 	./scripts/stage-erlang prod
 
-dev-companion: sccache-start
-	./scripts/build-companion dev
+dev-companion: sccache-setup
+	+./scripts/build-companion dev
 
-prod-companion: sccache-start
-	./scripts/build-companion prod
+prod-companion: sccache-setup
+	+./scripts/build-companion prod
 
 links:
 	ln -sfn dev/bin/wfcli wfclid
@@ -129,12 +126,12 @@ links:
 	ln -sfn prod/bin/wfcompanion wfcompanion
 	ln -sfn prod/bin/wfgui wfgui
 
-debug-bridge: sccache-start
+debug-bridge: sccache-setup
 	./scripts/build-debug-bridge
 
 native-bridges: debug-bridge
 
-native-compile-commands: sccache-start
+native-compile-commands: sccache-setup
 	./scripts/native-compile-commands
 
 previews: $(PREVIEW_DEPS)
