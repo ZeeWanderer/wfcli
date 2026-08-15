@@ -16,6 +16,13 @@
 class QLocalSocket;
 class QTimer;
 
+namespace wfgui {
+[[nodiscard]] bool
+daemonContractNeedsUpdate(const QJsonObject &reply,
+                          const QJsonObject &requiredInterfaces,
+                          int requiredEnvelope);
+}
+
 class DaemonClient final : public QObject {
   Q_OBJECT
 
@@ -75,6 +82,9 @@ public:
   void marketCloseOrder(const QString &id, int quantity);
   void setMarketOrdersVisible(bool visible, const QString &type = QString());
   void setMarketPresenceMode(const QString &mode);
+  void setResolutionIssue(const QString &kind, const QString &identity,
+                          const QString &reason, const QString &fallback);
+  void clearResolutionIssue(const QString &kind, const QString &identity);
 
 signals:
   void connectionChanged();
@@ -138,6 +148,7 @@ private:
   void sendPendingMarketAccount();
   void sendPendingOverframeAccount();
   void sendPendingBuildRequests();
+  void sendPendingDiagnostics();
   void queueBuildRequest(const QJsonObject &request);
   void queueMarketAccountRequest(const QString &action,
                                  const QJsonObject &message);
@@ -221,6 +232,10 @@ private:
   QHash<qint64, QString> activeOverframeAccountRequests_;
   QList<QJsonObject> pendingBuildRequests_;
   QHash<qint64, QJsonObject> activeBuildRequests_;
+  QHash<QString, QJsonObject> resolutionIssues_;
+  QSet<QString> negotiatedFeatures_;
+  qint64 activeDiagnosticsRequest_ = 0;
+  bool diagnosticsDirty_ = true;
   bool ready_ = false;
   bool pendingActivity_ = false;
   bool pendingAssetCacheStatus_ = false;

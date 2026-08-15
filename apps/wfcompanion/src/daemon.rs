@@ -60,12 +60,13 @@ impl RequestReply {
 enum ClientMessage<'a> {
     Hello {
         id: u64,
-        protocol: u32,
+        envelope: u32,
+        interfaces: &'a BTreeMap<&'static str, u32>,
+        features: &'a [&'static str],
         client: &'a str,
         version: &'a str,
         pid: u32,
         mode: &'a str,
-        capabilities: &'a [&'a str],
     },
     Get {
         id: u64,
@@ -100,6 +101,10 @@ enum ClientMessage<'a> {
         fetch_prices: bool,
         limit: u64,
     },
+    DiagnosticsReport {
+        id: u64,
+        issues: &'a [Value],
+    },
 }
 
 #[derive(Debug)]
@@ -127,6 +132,13 @@ pub(crate) enum Outbound {
         limit: u64,
         reply: RequestReply,
     },
+    DiagnosticsReport {
+        issues: Vec<Value>,
+    },
+}
+
+pub(crate) fn report_diagnostics(outbound: &OutboundSender, issues: Vec<Value>) {
+    let _ = outbound.send(Outbound::DiagnosticsReport { issues });
 }
 
 pub(crate) fn market_resolve(
@@ -256,10 +268,10 @@ async fn connection_loop(
                 )
                 .await
                 {
-                    let incompatible = error.kind() == io::ErrorKind::InvalidData;
+                    let daemon_outdated = error.kind() == io::ErrorKind::Unsupported;
                     incident::warn("daemon.disconnected", error.to_string());
                     let _ = ui.send(UiEvent::Disconnected(error.to_string()));
-                    if incompatible {
+                    if daemon_outdated {
                         ensure_daemon();
                     }
                 }
@@ -324,25 +336,20 @@ async fn connection_session(
 ) -> io::Result<()> {
     let (reader, mut writer) = stream.split();
     let mut reader = BufReader::new(reader).lines();
+    let interfaces = companion_interfaces();
+    let features = ["companion.command", "diagnostics.report"];
     let hello = time::timeout(HANDSHAKE_TIMEOUT, async {
         send_message(
             &mut writer,
             &ClientMessage::Hello {
                 id: 1,
-                protocol: PROTOCOL_VERSION,
+                envelope: ENVELOPE_VERSION,
+                interfaces: &interfaces,
+                features: &features,
                 client: "wfcompanion",
                 version: CLIENT_VERSION,
                 pid: std::process::id(),
                 mode,
-                capabilities: &[
-                    "player.publish",
-                    "dataset.subscribe",
-                    "market.resolve",
-                    "market.quote",
-                    "relic.context",
-                    "asset.resolve",
-                    "overlay",
-                ],
             },
         )
         .await?;
@@ -350,10 +357,10 @@ async fn connection_session(
     })
     .await
     .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "daemon handshake timed out"))??;
-    validate_hello(&hello)?;
+    let negotiated = validate_hello(&hello)?;
     incident::info(
         "daemon.connected",
-        format!("local_protocol={PROTOCOL_VERSION} mode={mode}"),
+        format!("local_envelope={ENVELOPE_VERSION} mode={mode}"),
     );
     let _ = ui.send(UiEvent::Connected(hello));
 
@@ -382,7 +389,15 @@ async fn connection_session(
 
     let mut pending = BTreeMap::new();
     while let Some(message) = queued.pop_front() {
-        if let Err(error) = send_outbound(&mut writer, next_id, message, latest, &mut pending).await
+        if let Err(error) = send_outbound(
+            &mut writer,
+            next_id,
+            message,
+            latest,
+            &mut pending,
+            negotiated.diagnostics_report,
+        )
+        .await
         {
             fail_pending(&mut pending, "daemon connection closed");
             return Err(error);
@@ -399,6 +414,7 @@ async fn connection_session(
         stopping,
         next_id,
         pending: &mut pending,
+        diagnostics_report: negotiated.diagnostics_report,
     })
     .await;
     fail_pending(&mut pending, "daemon connection closed");
@@ -414,6 +430,7 @@ struct ActiveSession<'a, R, W> {
     stopping: &'a AtomicBool,
     next_id: u64,
     pending: &'a mut BTreeMap<u64, RequestReply>,
+    diagnostics_report: bool,
 }
 
 async fn active_session<R, W>(session: ActiveSession<'_, R, W>) -> io::Result<()>
@@ -430,6 +447,7 @@ where
         stopping,
         mut next_id,
         pending,
+        diagnostics_report,
     } = session;
     let mut stop_check = time::interval(STOP_CHECK_INTERVAL);
     stop_check.set_missed_tick_behavior(MissedTickBehavior::Skip);
@@ -437,7 +455,15 @@ where
         tokio::select! {
             message = outbound.recv() => match message {
                 Some(message) => {
-                    send_outbound(writer, next_id, message, latest, pending).await?;
+                    send_outbound(
+                        writer,
+                        next_id,
+                        message,
+                        latest,
+                        pending,
+                        diagnostics_report,
+                    )
+                    .await?;
                     next_id += 1;
                 }
                 None => return Ok(()),
@@ -480,6 +506,10 @@ fn retain_outbound(
         Outbound::Publish { source, data } => {
             latest.insert(source, data);
         }
+        report @ Outbound::DiagnosticsReport { .. } => {
+            queued.retain(|item| !matches!(item, Outbound::DiagnosticsReport { .. }));
+            queued.push_back(report);
+        }
         request => queued.push_back(request),
     }
 }
@@ -490,6 +520,7 @@ async fn send_outbound<W>(
     message: Outbound,
     latest: &mut BTreeMap<&'static str, Value>,
     pending: &mut BTreeMap<u64, RequestReply>,
+    diagnostics_report: bool,
 ) -> io::Result<()>
 where
     W: AsyncWrite + Unpin,
@@ -556,6 +587,19 @@ where
             )
             .await
         }
+        Outbound::DiagnosticsReport { issues } => {
+            if !diagnostics_report {
+                return Ok(());
+            }
+            send_message(
+                writer,
+                &ClientMessage::DiagnosticsReport {
+                    id,
+                    issues: &issues,
+                },
+            )
+            .await
+        }
     }
 }
 
@@ -590,47 +634,109 @@ fn fail_pending(pending: &mut BTreeMap<u64, RequestReply>, reason: &str) {
     }
 }
 
-fn validate_hello(message: &Value) -> io::Result<()> {
+#[derive(Debug, Default, PartialEq, Eq)]
+struct NegotiatedFeatures {
+    diagnostics_report: bool,
+}
+
+fn validate_hello(message: &Value) -> io::Result<NegotiatedFeatures> {
     let compatible = message.get("id").and_then(Value::as_u64) == Some(1)
         && message.get("ok").and_then(Value::as_bool) == Some(true)
         && message.get("compatible").and_then(Value::as_bool) == Some(true);
     if !compatible {
-        let daemon_protocol = message
-            .get("protocol")
+        let daemon_envelope = message
+            .get("envelope")
             .and_then(Value::as_u64)
             .map_or_else(|| "unknown".to_owned(), |value| value.to_string());
+        let mismatches = message
+            .get("mismatches")
+            .map_or_else(|| "unknown".to_owned(), Value::to_string);
+        let kind = if daemon_contract_outdated(message) {
+            io::ErrorKind::Unsupported
+        } else {
+            io::ErrorKind::InvalidData
+        };
         return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
+            kind,
             format!(
-                "local protocol mismatch: companion {PROTOCOL_VERSION}, daemon {daemon_protocol}"
+                "daemon contract mismatch: companion envelope {ENVELOPE_VERSION}, daemon {daemon_envelope}; {mismatches}"
             ),
         ));
     }
 
-    const REQUIRED: &[&str] = &[
-        "player.publish",
-        "dataset.subscribe",
-        "market.resolve",
-        "market.quote",
-        "relic.context",
-        "asset.resolve",
-    ];
-    let capabilities = message
-        .get("capabilities")
-        .and_then(Value::as_array)
-        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "daemon sent no capabilities"))?;
-    let missing = REQUIRED.iter().find(|required| {
-        !capabilities
-            .iter()
-            .any(|capability| capability.as_str() == Some(**required))
-    });
-    match missing {
-        Some(capability) => Err(io::Error::new(
+    if message.get("envelope").and_then(Value::as_u64) != Some(u64::from(ENVELOPE_VERSION)) {
+        return Err(io::Error::new(
             io::ErrorKind::InvalidData,
-            format!("daemon missing required capability: {capability}"),
-        )),
-        None => Ok(()),
+            "daemon returned a different handshake envelope",
+        ));
     }
+    let offered = message
+        .get("interfaces")
+        .and_then(Value::as_object)
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "daemon sent no interfaces"))?;
+    for (name, version) in companion_interfaces() {
+        if offered.get(name).and_then(Value::as_u64) != Some(u64::from(version)) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("daemon interface mismatch: {name} requires {version}"),
+            ));
+        }
+    }
+    let diagnostics_report = message
+        .get("features")
+        .and_then(Value::as_array)
+        .is_some_and(|features| {
+            features
+                .iter()
+                .any(|value| value.as_str() == Some("diagnostics.report"))
+        })
+        && offered.get("diagnostics").and_then(Value::as_u64)
+            == Some(u64::from(INTERFACE_DIAGNOSTICS));
+    Ok(NegotiatedFeatures { diagnostics_report })
+}
+
+fn companion_interfaces() -> BTreeMap<&'static str, u32> {
+    BTreeMap::from([
+        ("datasets", INTERFACE_DATASETS),
+        ("player", INTERFACE_PLAYER),
+        ("market", INTERFACE_MARKET),
+        ("relics", INTERFACE_RELICS),
+        ("assets", INTERFACE_ASSETS),
+        ("diagnostics", INTERFACE_DIAGNOSTICS),
+    ])
+}
+
+fn daemon_contract_outdated(message: &Value) -> bool {
+    if message.get("envelope").is_none()
+        && message.get("protocol").and_then(Value::as_u64).is_some()
+    {
+        return true;
+    }
+    let Some(envelope) = message.get("envelope").and_then(Value::as_u64) else {
+        return false;
+    };
+    let Some(offered) = message.get("interfaces").and_then(Value::as_object) else {
+        return false;
+    };
+
+    let mut mismatch = false;
+    if envelope != u64::from(ENVELOPE_VERSION) {
+        mismatch = true;
+        if u64::from(ENVELOPE_VERSION) <= envelope {
+            return false;
+        }
+    }
+    for (name, required) in companion_interfaces() {
+        let available = offered.get(name).and_then(Value::as_u64);
+        if available == Some(u64::from(required)) {
+            continue;
+        }
+        mismatch = true;
+        if available.is_some_and(|version| u64::from(required) <= version) {
+            return false;
+        }
+    }
+    mismatch
 }
 
 async fn read_message<R>(reader: &mut Lines<R>) -> io::Result<Value>
@@ -852,6 +958,32 @@ mod tests {
     }
 
     #[test]
+    fn coalesces_disconnected_diagnostics_reports() {
+        let mut latest = BTreeMap::new();
+        let mut queued = VecDeque::new();
+        retain_outbound(
+            Outbound::DiagnosticsReport {
+                issues: vec![serde_json::json!({"identity": "old"})],
+            },
+            &mut latest,
+            &mut queued,
+        );
+        retain_outbound(
+            Outbound::DiagnosticsReport {
+                issues: vec![serde_json::json!({"identity": "new"})],
+            },
+            &mut latest,
+            &mut queued,
+        );
+
+        assert_eq!(queued.len(), 1);
+        let Some(Outbound::DiagnosticsReport { issues }) = queued.pop_front() else {
+            panic!("expected diagnostics report");
+        };
+        assert_eq!(issues[0]["identity"], "new");
+    }
+
+    #[test]
     fn active_session_wakes_for_outbound_publish() {
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_io()
@@ -877,6 +1009,7 @@ mod tests {
                 stopping: &stopping,
                 next_id: 10,
                 pending: &mut pending,
+                diagnostics_report: false,
             });
             tokio::pin!(session);
 
@@ -933,45 +1066,93 @@ mod tests {
             "id": 1,
             "ok": false,
             "compatible": false,
-            "protocol": 2
+            "envelope": 2,
+            "mismatches": [{"kind": "envelope"}]
         }));
         assert_eq!(result.unwrap_err().kind(), io::ErrorKind::InvalidData);
     }
 
     #[test]
-    fn rejects_handshake_missing_required_capability() {
+    fn requests_update_only_for_older_daemon_contract() {
+        let result = validate_hello(&serde_json::json!({
+            "id": 1,
+            "ok": false,
+            "compatible": false,
+            "envelope": ENVELOPE_VERSION,
+            "interfaces": {
+                "player": INTERFACE_PLAYER,
+                "market": INTERFACE_MARKET,
+                "relics": INTERFACE_RELICS,
+                "assets": INTERFACE_ASSETS,
+                "diagnostics": INTERFACE_DIAGNOSTICS
+            }
+        }));
+        assert_eq!(result.unwrap_err().kind(), io::ErrorKind::Unsupported);
+
+        let result = validate_hello(&serde_json::json!({
+            "id": 1,
+            "ok": false,
+            "compatible": false,
+            "envelope": ENVELOPE_VERSION,
+            "interfaces": {
+                "datasets": INTERFACE_DATASETS + 1,
+                "player": INTERFACE_PLAYER,
+                "market": INTERFACE_MARKET,
+                "relics": INTERFACE_RELICS,
+                "assets": INTERFACE_ASSETS,
+                "diagnostics": INTERFACE_DIAGNOSTICS
+            }
+        }));
+        assert_eq!(result.unwrap_err().kind(), io::ErrorKind::InvalidData);
+
+        let result = validate_hello(&serde_json::json!({
+            "id": 1,
+            "ok": false,
+            "compatible": false,
+            "protocol": 13
+        }));
+        assert_eq!(result.unwrap_err().kind(), io::ErrorKind::Unsupported);
+    }
+
+    #[test]
+    fn rejects_handshake_missing_required_interface() {
         let result = validate_hello(&serde_json::json!({
             "id": 1,
             "ok": true,
             "compatible": true,
-            "protocol": PROTOCOL_VERSION,
-            "capabilities": ["player.publish"]
+            "envelope": ENVELOPE_VERSION,
+            "interfaces": {
+                "datasets": INTERFACE_DATASETS,
+                "player": INTERFACE_PLAYER
+            }
         }));
         assert!(
             result
                 .unwrap_err()
                 .to_string()
-                .contains("dataset.subscribe")
+                .contains("interface mismatch")
         );
     }
 
     #[test]
-    fn accepts_handshake_with_required_capabilities() {
-        validate_hello(&serde_json::json!({
+    fn accepts_handshake_with_required_interfaces() {
+        let negotiated = validate_hello(&serde_json::json!({
             "id": 1,
             "ok": true,
             "compatible": true,
-            "protocol": PROTOCOL_VERSION,
-            "capabilities": [
-                "player.publish",
-                "dataset.subscribe",
-                "market.resolve",
-                "market.quote",
-                "relic.context",
-                "asset.resolve"
-            ]
+            "envelope": ENVELOPE_VERSION,
+            "interfaces": {
+                "datasets": INTERFACE_DATASETS,
+                "player": INTERFACE_PLAYER,
+                "market": INTERFACE_MARKET,
+                "relics": INTERFACE_RELICS,
+                "assets": INTERFACE_ASSETS,
+                "diagnostics": INTERFACE_DIAGNOSTICS
+            },
+            "features": ["companion.command", "diagnostics.report"]
         }))
         .unwrap();
+        assert!(negotiated.diagnostics_report);
     }
 
     #[test]

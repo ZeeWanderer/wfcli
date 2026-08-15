@@ -6,16 +6,23 @@ string(JSON WFCLI_VCPKG_VERSION GET "${WFCLI_VCPKG_MANIFEST}" version-string)
 if(NOT WFCLI_VCPKG_VERSION STREQUAL WFCLI_VERSION)
   message(FATAL_ERROR "apps/wfgui/vcpkg.json version must match root VERSION")
 endif()
-file(STRINGS
-  "${CMAKE_CURRENT_SOURCE_DIR}/apps/wfdaemon/src/runtime/wfcli_local_protocol.erl"
-  WFCLI_LOCAL_PROTOCOL_LINE
-  REGEX "^-define\\(PROTOCOL_VERSION,"
-  LIMIT_COUNT 1
-)
-string(REGEX MATCH "[0-9]+" WFCLI_LOCAL_PROTOCOL "${WFCLI_LOCAL_PROTOCOL_LINE}")
-if(NOT WFCLI_LOCAL_PROTOCOL)
-  message(FATAL_ERROR "Could not read wfdaemon local protocol version")
-endif()
+set(WFCLI_LOCAL_PROTOCOL_FILE
+  "${CMAKE_CURRENT_SOURCE_DIR}/apps/wfdaemon/src/runtime/wfcli_local_protocol.erl")
+function(wfcli_protocol_define NAME OUTPUT)
+  file(STRINGS "${WFCLI_LOCAL_PROTOCOL_FILE}" LINE
+    REGEX "^-define\\(${NAME}," LIMIT_COUNT 1)
+  string(REGEX MATCH "[0-9]+" VALUE "${LINE}")
+  if(NOT VALUE)
+    message(FATAL_ERROR "Could not read wfdaemon protocol define ${NAME}")
+  endif()
+  set(${OUTPUT} "${VALUE}" PARENT_SCOPE)
+endfunction()
+
+wfcli_protocol_define(ENVELOPE_VERSION WFCLI_LOCAL_ENVELOPE)
+foreach(INTERFACE DATASETS PLAYER WORLDSTATE NOTIFICATIONS MARKET OVERFRAME
+                  RELICS ASSETS BUILDS DIAGNOSTICS)
+  wfcli_protocol_define("INTERFACE_${INTERFACE}" "WFCLI_INTERFACE_${INTERFACE}")
+endforeach()
 
 find_program(WFCLI_SCCACHE NAMES sccache)
 if(WFCLI_SCCACHE)

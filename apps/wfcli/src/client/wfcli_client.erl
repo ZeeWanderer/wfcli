@@ -110,8 +110,8 @@ release_script_candidates() -> wfcli_daemon_client:release_script_candidates().
 release_environment() -> wfcli_daemon_client:release_environment().
 
 -ifdef(TEST).
-handshake_compatibility(Reply, Version) ->
-    wfcli_daemon_client:handshake_compatibility(Reply, Version).
+handshake_compatibility(Reply, Contract) ->
+    wfcli_daemon_client:handshake_compatibility(Reply, Contract).
 
 readiness_result(Ping, Call) -> wfcli_daemon_client:readiness_result(Ping, Call).
 

@@ -26,9 +26,9 @@ status_request_returns_running_map_test() ->
         ?assertEqual(wfcli_build:installation(), maps:get(installation, Status)),
         ?assertEqual(wfcli_build:install_root(), maps:get(install_root, Status)),
         Protocols = maps:get(protocols, Status),
-        ?assertEqual(wfcli_protocol:version(),
+        ?assertEqual(wfcli_protocol:contract(),
                      maps:get(erlang_distribution_rpc, Protocols)),
-        ?assertEqual(wfcli_local_protocol:protocol_version(),
+        ?assertEqual(wfcli_local_protocol:contract(),
                      maps:get(native_socket_api, Protocols)),
         Paths = maps:get(paths, Status),
         ?assert(lists:keymember(assets, 1, Paths)),
@@ -62,12 +62,23 @@ release_update_requires_name_test() ->
 protocol_handshake_test() ->
     Started = setup_daemon(),
     try
-        Reply = wfcli_daemon:request({hello, wfcli_daemon:protocol_version()}),
+        Reply = wfcli_daemon:request({hello, wfcli_protocol:contract()}),
         ?assertEqual(true, maps:get(compatible, Reply)),
-        ?assertEqual(wfcli_daemon:protocol_version(), maps:get(protocol, Reply)),
+        ?assertEqual(wfcli_protocol:handshake_version(), maps:get(handshake, Reply)),
+        ?assertEqual(wfcli_protocol:interfaces(), maps:get(interfaces, Reply)),
         ?assertEqual(wfcli_build:version(), maps:get(version, Reply)),
         ?assertEqual(wfcli_build:flavor(), maps:get(flavor, Reply)),
         ?assertEqual(64, byte_size(maps:get(build, Reply)))
+    after
+        cleanup_daemon(Started)
+    end.
+
+legacy_protocol_handshake_is_rejected_test() ->
+    Started = setup_daemon(),
+    try
+        Reply = wfcli_daemon:request({hello, 13}),
+        ?assertEqual(false, maps:get(compatible, Reply)),
+        ?assert(is_pid(whereis(wfcli_daemon)))
     after
         cleanup_daemon(Started)
     end.

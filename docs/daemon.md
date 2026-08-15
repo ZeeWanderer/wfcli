@@ -15,7 +15,7 @@ wfcli daemon restart
 wfcli daemon stop
 ```
 
-`status` reports installation source and root, build identity, both client protocol versions,
+`status` reports installation source and root, build identity, both client protocol contracts,
 runtime queues, and idle policy.
 
 Implicit startup stops the daemon after ten idle minutes. Explicit `start` and `restart` keep it
@@ -45,8 +45,9 @@ The client detects its installation and refreshes stale service ownership before
 
 ## Updates
 
-Each connection checks protocol, build flavor, and a fingerprint of `wfcore` and `wfdaemon`.
-Compatible stale modules are hot-loaded automatically; incompatible releases are restarted.
+Each connection checks required interface versions, build flavor, and a fingerprint of `wfcore`
+and `wfdaemon`. Stale modules are hot-loaded automatically; unresolved mismatches restart the
+requested release.
 
 A running daemon also watches the staged `BUILD_ID`, so replacing a repository or packaged build
 does not require a client request. Manual update remains available:

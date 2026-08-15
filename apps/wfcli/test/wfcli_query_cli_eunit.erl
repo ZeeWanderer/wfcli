@@ -24,8 +24,9 @@ parse_args_near_miss_suggests_test() ->
 query_has_no_default_limit_test() ->
     ?assertNot(maps:is_key(limit, wfcli_query_cli:default_opts())).
 
-daemon_protocol_tracks_market_source_test() ->
-    ?assertEqual(6, wfcli_protocol:version()),
+daemon_contract_tracks_market_source_test() ->
+    ?assertEqual(1, wfcli_protocol:handshake_version()),
+    ?assertEqual(1, maps:get(market, wfcli_protocol:interfaces())),
     ?assertEqual(wfcli_market_service, wfcli_protocol:owner(#{source => market})).
 
 explicit_limit_is_parsed_test() ->

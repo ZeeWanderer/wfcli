@@ -222,7 +222,12 @@ fn run_overlay(
     let outbound = daemon::spawn(ui_tx.clone(), Arc::clone(&stopping), mode);
     let (relic_tx, relic_rx) = mpsc::channel();
     observer::spawn(outbound.clone(), relic_tx.clone(), Arc::clone(&stopping));
-    relic::spawn(relic_rx, outbound, ui_tx.clone(), Arc::clone(&stopping));
+    relic::spawn(
+        relic_rx,
+        outbound.clone(),
+        ui_tx.clone(),
+        Arc::clone(&stopping),
+    );
     if let Some(path) = relic_screenshot {
         let _ = relic_tx.send(relic::Trigger::Screenshot(path));
     }
@@ -231,7 +236,7 @@ fn run_overlay(
     }
 
     let shortcut = shortcut::spawn(ui_tx);
-    let result = overlay::run(ui_rx, relic_tx, shortcut, Arc::clone(&stopping));
+    let result = overlay::run(ui_rx, relic_tx, outbound, shortcut, Arc::clone(&stopping));
     stopping.store(true, Ordering::Relaxed);
     incident::info("process.stop", format!("mode={mode}"));
     result.map_err(|error| error.to_string())

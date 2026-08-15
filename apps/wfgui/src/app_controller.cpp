@@ -3,8 +3,11 @@
 #include <QDateTime>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QPointer>
 #include <QSet>
 #include <QTimer>
+
+#include "image_cache.h"
 
 namespace {
 constexpr int AssetRefreshIntervalMs = 30 * 60'000;
@@ -51,6 +54,22 @@ AppController::AppController(QObject *parent)
   filteredRelics_.setSourceModel(&relics_);
   assets_.insert("builtin:forma", wfgui::AssetRef::embedded(
                                       "builtin:forma", ":/assets/forma.png"));
+  const QPointer<DaemonClient> daemon(&daemon_);
+  wfgui::setImageIssueReporter(
+      [daemon](const wfgui::AssetRef &asset, const QString &reason,
+               bool resolved) {
+        if (!daemon) {
+          return;
+        }
+        if (resolved) {
+          daemon->clearResolutionIssue("asset_decode", asset.id);
+        } else {
+          const QString fallback =
+              asset.imageName.isEmpty() ? asset.path : asset.imageName;
+          daemon->setResolutionIssue("asset_decode", asset.id, reason,
+                                     fallback);
+        }
+      });
 
   connect(&daemon_, &DaemonClient::connectionChanged, this,
           &AppController::connectedChanged);

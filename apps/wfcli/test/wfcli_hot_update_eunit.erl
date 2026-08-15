@@ -119,6 +119,11 @@ local_api_can_be_restarted_for_code_purge_test() ->
         case Started of true -> wfcli_test_daemon:stop(); false -> ok end
     end.
 
+local_protocol_changes_restart_native_connections_test() ->
+    ?assert(wfcli_hot_update:runtime_restart_required([wfcli_local_protocol])),
+    ?assert(wfcli_hot_update:runtime_restart_required([wfcli_local_api])),
+    ?assertNot(wfcli_hot_update:runtime_restart_required([wfcli_protocol])).
+
 compile_fixture(Module, Value) ->
     Forms = [
         {attribute, 1, module, Module},

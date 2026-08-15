@@ -96,6 +96,7 @@ private slots:
   void masteryGridRequestsAllComponentQuotes();
   void playerGridRequestsAssetsWhenShown();
   void subscribesToPlayerUpdatesAndCoalescesViews();
+  void updatesOnlyOlderDaemonContracts();
   void cacheMissDoesNotBecomeMarketMiss();
   void playerGridPreservesScrollAcrossResort();
   void busyProgressAnimates();
@@ -103,6 +104,7 @@ private slots:
   void compactSearchExpandsOnClick();
   void normalizesUiScaleInFivePercentSteps();
   void thumbnailCacheDecodesJpeg();
+  void reportsThumbnailDecodeFailures();
   void thumbnailCacheRespectsSizeAndDpr();
   void alignsFractionalDprThumbnailsToDevicePixels();
   void widgetThumbnailDecodeCompletesOffPaintPath();
@@ -189,6 +191,27 @@ QJsonObject recommendations() {
                        {"expected_platinum", QJsonValue(QJsonValue::Null)},
                        {"expected_ducats", 70}},
        }},
+  };
+}
+
+QJsonObject localContractReply() {
+  return {
+      {"id", 1},
+      {"ok", true},
+      {"compatible", true},
+      {"envelope", WFCLI_LOCAL_ENVELOPE},
+      {"interfaces",
+       QJsonObject{{"datasets", WFCLI_INTERFACE_DATASETS},
+                   {"player", WFCLI_INTERFACE_PLAYER},
+                   {"worldstate", WFCLI_INTERFACE_WORLDSTATE},
+                   {"notifications", WFCLI_INTERFACE_NOTIFICATIONS},
+                   {"market", WFCLI_INTERFACE_MARKET},
+                   {"overframe", WFCLI_INTERFACE_OVERFRAME},
+                   {"relics", WFCLI_INTERFACE_RELICS},
+                   {"assets", WFCLI_INTERFACE_ASSETS},
+                   {"builds", WFCLI_INTERFACE_BUILDS},
+                   {"diagnostics", WFCLI_INTERFACE_DIAGNOSTICS}}},
+      {"features", QJsonArray{"diagnostics.report"}},
   };
 }
 } // namespace
@@ -1613,47 +1636,65 @@ void RelicModelTest::subscribesToPlayerUpdatesAndCoalescesViews() {
   QLocalSocket *peer = server.nextPendingConnection();
   QVERIFY(peer);
   QTRY_VERIFY(peer->canReadLine());
-  QCOMPARE(
-      QJsonDocument::fromJson(peer->readLine()).object().value("op").toString(),
-      QString("hello"));
+  const QJsonObject hello = QJsonDocument::fromJson(peer->readLine()).object();
+  QCOMPARE(hello.value("op").toString(), QString("hello"));
+  QCOMPARE(hello.value("interfaces").toObject().value("diagnostics").toInt(),
+           WFCLI_INTERFACE_DIAGNOSTICS);
 
-  const QJsonArray capabilities{
-      "dataset.subscribe",      "dataset.subscribe.metadata",
-      "relic.planner",          "worldstate.activity",
-      "player.foundry",         "player.inventory",
-      "player.mastery",         "build.equipment",
-      "build.sources",          "build.revisions",
-      "build.groups",           "build.plans",
-      "market.quote",
-      "market.resolve",         "market.describe",
-      "market.account",         "market.orders",
-      "market.presence",        "market.quote.variant",
-      "overframe.account",      "notifications.fissures",
-      "asset.cache",
-  };
-  peer->write(QJsonDocument(QJsonObject{{"id", 1},
-                                        {"ok", true},
-                                        {"compatible", true},
-                                        {"capabilities", capabilities}})
-                  .toJson(QJsonDocument::Compact) +
-              '\n');
+  peer->write(
+      QJsonDocument(localContractReply()).toJson(QJsonDocument::Compact) +
+      '\n');
   peer->flush();
   QTRY_VERIFY(client.connected());
 
   QJsonObject subscription;
+  QJsonObject initialDiagnostics;
   QTRY_VERIFY(([&] {
     while (peer->canReadLine()) {
       const QJsonObject request =
           QJsonDocument::fromJson(peer->readLine()).object();
       if (request.value("op").toString() == "subscribe") {
         subscription = request;
+      } else if (request.value("op").toString() == "diagnostics_report") {
+        initialDiagnostics = request;
       }
     }
-    return !subscription.isEmpty();
+    return !subscription.isEmpty() && !initialDiagnostics.isEmpty();
   })());
   QCOMPARE(subscription.value("id").toInteger(), qint64(2));
   QCOMPARE(subscription.value("dataset").toString(), QString("player"));
   QCOMPARE(subscription.value("include_data").toBool(), false);
+  QCOMPARE(initialDiagnostics.value("issues").toArray().size(), 0);
+  peer->write(QJsonDocument(QJsonObject{
+                                {"id", initialDiagnostics.value("id")},
+                                {"ok", true},
+                            })
+                  .toJson(QJsonDocument::Compact) +
+              '\n');
+  peer->flush();
+
+  client.setResolutionIssue("asset_decode", "wfcd:test.png", "invalid image",
+                            "test.png");
+  QJsonObject diagnostics;
+  QTRY_VERIFY(([&] {
+    while (peer->canReadLine()) {
+      const QJsonObject request =
+          QJsonDocument::fromJson(peer->readLine()).object();
+      if (request.value("op").toString() == "diagnostics_report") {
+        diagnostics = request;
+      }
+    }
+    return !diagnostics.isEmpty();
+  })());
+  const QJsonArray issues = diagnostics.value("issues").toArray();
+  QCOMPARE(issues.size(), 1);
+  QCOMPARE(issues.first().toObject().value("identity").toString(),
+           QString("wfcd:test.png"));
+  peer->write(
+      QJsonDocument(QJsonObject{{"id", diagnostics.value("id")}, {"ok", true}})
+          .toJson(QJsonDocument::Compact) +
+      '\n');
+  peer->flush();
 
   peer->write(QJsonDocument(QJsonObject{
                                 {"id", 2},
@@ -1794,21 +1835,41 @@ void RelicModelTest::subscribesToPlayerUpdatesAndCoalescesViews() {
                    {"content", QJsonObject{}}}},
   };
   for (auto it = buildRequests.cbegin(); it != buildRequests.cend(); ++it) {
-    peer->write(QJsonDocument(QJsonObject{{"id", it.value().value("id")},
-                                          {"ok", true},
-                                          {"data", buildReplies.value(it.key())}})
-                    .toJson(QJsonDocument::Compact) +
-                '\n');
+    peer->write(
+        QJsonDocument(QJsonObject{{"id", it.value().value("id")},
+                                  {"ok", true},
+                                  {"data", buildReplies.value(it.key())}})
+            .toJson(QJsonDocument::Compact) +
+        '\n');
   }
   peer->flush();
   QTRY_COMPARE(buildReady.count(), 3);
   QSet<QString> completedOps;
   for (const QList<QVariant> &arguments : buildReady) {
-    completedOps.insert(
-        arguments.at(0).toJsonObject().value("op").toString());
+    completedOps.insert(arguments.at(0).toJsonObject().value("op").toString());
   }
   QCOMPARE(completedOps,
            QSet<QString>({"build_search", "build_list", "build_detail"}));
+}
+
+void RelicModelTest::updatesOnlyOlderDaemonContracts() {
+  const QJsonObject required{{"datasets", 2}, {"assets", 1}};
+  QVERIFY(wfgui::daemonContractNeedsUpdate(
+      {{"protocol", 13}, {"compatible", false}}, required, 1));
+  QVERIFY(wfgui::daemonContractNeedsUpdate(
+      {{"envelope", 1},
+       {"interfaces", QJsonObject{{"datasets", 1}, {"assets", 1}}}},
+      required, 1));
+  QVERIFY(!wfgui::daemonContractNeedsUpdate(
+      {{"envelope", 2},
+       {"interfaces", QJsonObject{{"datasets", 2}, {"assets", 1}}}},
+      required, 1));
+  QVERIFY(!wfgui::daemonContractNeedsUpdate(
+      {{"envelope", 1},
+       {"interfaces", QJsonObject{{"datasets", 3}, {"assets", 1}}}},
+      required, 1));
+  QVERIFY(!wfgui::daemonContractNeedsUpdate(
+      {{"envelope", "invalid"}, {"interfaces", QJsonObject{}}}, required, 1));
 }
 
 void RelicModelTest::cacheMissDoesNotBecomeMarketMiss() {
@@ -1838,26 +1899,9 @@ void RelicModelTest::cacheMissDoesNotBecomeMarketMiss() {
         QJsonDocument::fromJson(peer->readLine()).object();
     QCOMPARE(hello.value("op").toString(), QString("hello"));
 
-    const QJsonArray capabilities{
-        "dataset.subscribe",      "dataset.subscribe.metadata",
-        "relic.planner",          "worldstate.activity",
-        "player.foundry",         "player.inventory",
-        "player.mastery",         "build.equipment",
-        "build.sources",          "build.revisions",
-        "build.groups",           "build.plans",
-        "market.quote",
-        "market.resolve",         "market.describe",
-        "market.account",         "market.orders",
-        "market.presence",        "market.quote.variant",
-        "overframe.account",      "notifications.fissures",
-        "asset.cache",
-    };
-    peer->write(QJsonDocument(QJsonObject{{"id", 1},
-                                          {"ok", true},
-                                          {"compatible", true},
-                                          {"capabilities", capabilities}})
-                    .toJson(QJsonDocument::Compact) +
-                '\n');
+    peer->write(
+        QJsonDocument(localContractReply()).toJson(QJsonDocument::Compact) +
+        '\n');
     peer->flush();
     QTRY_VERIFY(client.connected());
     while (peer->canReadLine()) {
@@ -2302,6 +2346,28 @@ void RelicModelTest::thumbnailCacheDecodesJpeg() {
   const QPixmap thumbnail =
       wfgui::cachedThumbnail(painter, path, QSize(20, 20));
   QCOMPARE(thumbnail.deviceIndependentSize(), QSizeF(20, 10));
+}
+
+void RelicModelTest::reportsThumbnailDecodeFailures() {
+  wfgui::AssetRef reported;
+  QString error;
+  bool resolved = true;
+  wfgui::setImageIssueReporter(
+      [&](const wfgui::AssetRef &asset, const QString &reason, bool fixed) {
+        reported = asset;
+        error = reason;
+        resolved = fixed;
+      });
+  const auto reset = qScopeGuard([] { wfgui::setImageIssueReporter({}); });
+
+  QImage canvas(32, 32, QImage::Format_ARGB32_Premultiplied);
+  QPainter painter(&canvas);
+  const wfgui::AssetRef missing =
+      wfgui::AssetRef::embedded("missing:test", ":/missing-test.png");
+  QVERIFY(wfgui::cachedThumbnail(painter, missing, QSize(24, 24)).isNull());
+  QCOMPARE(reported.id, QString("missing:test"));
+  QVERIFY(!error.isEmpty());
+  QCOMPARE(resolved, false);
 }
 
 void RelicModelTest::thumbnailCacheRespectsSizeAndDpr() {

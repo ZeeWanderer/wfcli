@@ -4,7 +4,7 @@
 application owner; compiling the same source into both executable applications creates module
 clashes in xref and ambiguous debugger paths.
 
-- `wfcli_protocol`: protocol version, request ownership, and dataset contracts.
+- `wfcli_protocol`: handshake, interface groups, request ownership, and dataset contracts.
 - `wfcli_build`: staged artifact flavor, install root, and update paths.
 - `wfcli_paths`: XDG cache, state, config, and runtime paths.
 - `wfcli_*_schema`: column contracts used by daemon sorting and CLI tables.

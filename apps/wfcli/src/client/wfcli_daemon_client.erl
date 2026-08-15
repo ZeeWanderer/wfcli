@@ -23,7 +23,8 @@
 ]).
 
 -ifdef(TEST).
--export([handshake_compatibility/2, readiness_result/2, terminate_port_process/1]).
+-export([handshake_compatibility/2, recoverable_contract_mismatch/1,
+         readiness_result/2, terminate_port_process/1]).
 -endif.
 
 -define(START_RETRIES, 300).
@@ -181,9 +182,11 @@ ensure_running() ->
         {ok, Status, Node} ->
             case ensure_compatible(Node) of
                 ok -> {ok, Status, Node};
-                {error, {protocol_mismatch, Client, Server} = Mismatch}
-                  when Client > Server ->
-                    recover_compatibility(Status, Node, Mismatch);
+                {error, {daemon_contract_mismatch, Details} = Mismatch} ->
+                    case recoverable_contract_mismatch(Details) of
+                        true -> recover_compatibility(Status, Node, Mismatch);
+                        false -> {error, Mismatch}
+                    end;
                 {error, {daemon_build_mismatch, _Client, _Server} = Mismatch} ->
                     recover_compatibility(Status, Node, Mismatch);
                 {error, {daemon_flavor_mismatch, _Client, _Server} = Mismatch} ->
@@ -194,9 +197,10 @@ ensure_running() ->
     end.
 
 ensure_compatible(Node) ->
-    ClientVersion = wfcli_protocol:version(),
-    case daemon_call(Node, {hello, ClientVersion}) of
-        {ok, Reply} when is_map(Reply) -> handshake_compatibility(Reply, ClientVersion);
+    ClientContract = wfcli_protocol:contract(),
+    case daemon_call(Node, {hello, ClientContract}) of
+        {ok, Reply} when is_map(Reply) ->
+            handshake_compatibility(Reply, ClientContract);
         {ok, Other} -> {error, {invalid_handshake, Other}};
         {error, _Reason} = Error -> Error
     end.
@@ -234,18 +238,43 @@ restart_incompatible_daemon(Node, Mismatch, UpdateReason) ->
             {error, {restart_incompatible, Mismatch, UpdateReason, Reason}}
     end.
 
-handshake_compatibility(#{compatible := true} = Reply, _ClientVersion) ->
-    ClientFlavor = wfcli_build:flavor(),
-    case maps:get(flavor, Reply, undefined) of
-        ServerFlavor when ServerFlavor =/= undefined, ServerFlavor =/= ClientFlavor ->
-            {error, {daemon_flavor_mismatch, ClientFlavor, ServerFlavor}};
-        _ ->
-            compare_build_identity(Reply)
+handshake_compatibility(Reply, ClientContract) when is_map(Reply),
+                                                     is_map(ClientContract) ->
+    case {wfcli_protocol:compatibility(ClientContract, Reply),
+          maps:get(compatible, Reply, false)} of
+        {ok, true} ->
+            ClientFlavor = wfcli_build:flavor(),
+            case maps:get(flavor, Reply, undefined) of
+                ServerFlavor when ServerFlavor =/= undefined,
+                                  ServerFlavor =/= ClientFlavor ->
+                    {error, {daemon_flavor_mismatch, ClientFlavor, ServerFlavor}};
+                _ ->
+                    compare_build_identity(Reply)
+            end;
+        {{error, Mismatches}, _} ->
+            {error, {daemon_contract_mismatch, Mismatches}};
+        {ok, false} ->
+            {error, {daemon_contract_mismatch,
+                     maps:get(mismatches, Reply, [daemon_rejected_contract])}}
     end;
-handshake_compatibility(#{protocol := Version}, ClientVersion) ->
-    {error, {protocol_mismatch, ClientVersion, Version}};
-handshake_compatibility(Reply, _ClientVersion) ->
+handshake_compatibility(Reply, _ClientContract) ->
     {error, {invalid_handshake, Reply}}.
+
+recoverable_contract_mismatch(Mismatches) when is_list(Mismatches),
+                                               Mismatches =/= [] ->
+    lists:all(fun mismatch_marks_daemon_outdated/1, Mismatches);
+recoverable_contract_mismatch(_Mismatches) ->
+    false.
+
+mismatch_marks_daemon_outdated(#{required := Required, available := Available})
+  when is_integer(Required), Required > 0,
+       is_integer(Available), Available > 0 ->
+    Required > Available;
+mismatch_marks_daemon_outdated(#{required := Required, available := undefined})
+  when is_integer(Required), Required > 0 ->
+    true;
+mismatch_marks_daemon_outdated(_Mismatch) ->
+    false.
 
 client_build_identity() ->
     wfcli_hot_update:current_build_identity().
@@ -325,10 +354,10 @@ sibling_ebin_dirs(Dir) ->
 
 -doc "Format daemon/protocol failures for CLI error messages.".
 -spec format_error(term()) -> string().
-format_error({protocol_mismatch, Client, Server}) ->
+format_error({daemon_contract_mismatch, Mismatches}) ->
     lists:flatten(io_lib:format(
-      "client protocol ~p is incompatible with daemon protocol ~p; use matching wfcli and wfdaemon builds",
-      [Client, Server]));
+      "client requires daemon interfaces not offered by the running build: ~p",
+      [Mismatches]));
 format_error({daemon_build_mismatch, Client, Server}) ->
     lists:flatten(io_lib:format(
       "client daemon build ~s differs from running daemon build ~s",
@@ -647,7 +676,7 @@ wait_for_daemon(Node, 0) ->
 wait_for_daemon(Node, Retries) ->
     Ping = ping(Node),
     Call = case Ping of
-        pong -> daemon_call(Node, {hello, wfcli_protocol:version()});
+        pong -> daemon_call(Node, {hello, wfcli_protocol:contract()});
         pang -> not_called
     end,
     case readiness_result(Ping, Call) of

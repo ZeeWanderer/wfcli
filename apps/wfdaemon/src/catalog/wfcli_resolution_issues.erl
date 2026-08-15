@@ -1,5 +1,5 @@
 %%%-------------------------------------------------------------------
-%% Current metadata-resolution failures, persisted for diagnostics.
+%% Current identity, metadata, and asset-resolution failures.
 %%%-------------------------------------------------------------------
 -module(wfcli_resolution_issues).
 

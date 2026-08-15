@@ -7,7 +7,8 @@
          build_identity/1, current_build_identity/0, apply/1]).
 
 -ifdef(TEST).
--export([stateful_candidates/0, restart_supervised_child/1]).
+-export([stateful_candidates/0, restart_supervised_child/1,
+         runtime_restart_required/1]).
 -endif.
 
 -define(SYS_TIMEOUT_MS, 5000).
@@ -288,7 +289,7 @@ recover_busy_old_code(_Module) ->
     {error, unsupported_busy_module}.
 
 maybe_restart_runtime_workers({ok, Result = #{loaded := Loaded}}) ->
-    case lists:member(wfcli_local_api, Loaded) of
+    case runtime_restart_required(Loaded) of
         true ->
             case restart_supervised_child(wfcli_local_api) of
                 ok -> {ok, Result};
@@ -297,6 +298,10 @@ maybe_restart_runtime_workers({ok, Result = #{loaded := Loaded}}) ->
         false -> {ok, Result}
     end;
 maybe_restart_runtime_workers(Result) -> Result.
+
+runtime_restart_required(Loaded) ->
+    lists:any(fun(Module) -> lists:member(Module, Loaded) end,
+              [wfcli_local_api, wfcli_local_protocol]).
 
 restart_supervised_child(Child) ->
     case whereis(wfcli_sup) of

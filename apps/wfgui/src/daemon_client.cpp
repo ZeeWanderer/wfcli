@@ -28,14 +28,76 @@ constexpr int MaxActiveMarketQuoteRequests = 3;
 constexpr int MaxActiveBuildRequests = 4;
 constexpr int MarketQuoteTtlSeconds = 15 * 60;
 
+QJsonObject guiInterfaces() {
+  return {
+      {"datasets", WFCLI_INTERFACE_DATASETS},
+      {"player", WFCLI_INTERFACE_PLAYER},
+      {"worldstate", WFCLI_INTERFACE_WORLDSTATE},
+      {"notifications", WFCLI_INTERFACE_NOTIFICATIONS},
+      {"market", WFCLI_INTERFACE_MARKET},
+      {"overframe", WFCLI_INTERFACE_OVERFRAME},
+      {"relics", WFCLI_INTERFACE_RELICS},
+      {"assets", WFCLI_INTERFACE_ASSETS},
+      {"builds", WFCLI_INTERFACE_BUILDS},
+      {"diagnostics", WFCLI_INTERFACE_DIAGNOSTICS},
+  };
+}
+
+bool validProtocolNumber(const QJsonValue &value) {
+  return value.isDouble() && value.toInteger() > 0 &&
+         value.toDouble() == static_cast<double>(value.toInteger());
+}
+
 bool isBuildMutation(const QJsonObject &request) {
   const QString op = request.value("op").toString();
   return op == "build_group_create" || op == "build_group_update" ||
          op == "build_group_delete" || op == "build_group_add_source" ||
-         op == "build_group_add_config" ||
-         op == "build_group_remove_member" || op == "build_group_plan";
+         op == "build_group_add_config" || op == "build_group_remove_member" ||
+         op == "build_group_plan";
 }
 } // namespace
+
+bool wfgui::daemonContractNeedsUpdate(const QJsonObject &reply,
+                                      const QJsonObject &requiredInterfaces,
+                                      int requiredEnvelope) {
+  if (!reply.contains("envelope") &&
+      validProtocolNumber(reply.value("protocol"))) {
+    return true;
+  }
+  const QJsonValue offeredEnvelope = reply.value("envelope");
+  const QJsonValue offeredInterfaces = reply.value("interfaces");
+  if (!validProtocolNumber(offeredEnvelope) || !offeredInterfaces.isObject()) {
+    return false;
+  }
+
+  bool mismatch = false;
+  const qint64 envelope = offeredEnvelope.toInteger();
+  if (envelope != requiredEnvelope) {
+    mismatch = true;
+    if (requiredEnvelope <= envelope) {
+      return false;
+    }
+  }
+
+  const QJsonObject offered = offeredInterfaces.toObject();
+  for (auto required = requiredInterfaces.constBegin();
+       required != requiredInterfaces.constEnd(); ++required) {
+    const QJsonValue available = offered.value(required.key());
+    if (available == required.value()) {
+      continue;
+    }
+    mismatch = true;
+    if (!validProtocolNumber(required.value())) {
+      return false;
+    }
+    if (!available.isUndefined() && !available.isNull() &&
+        (!validProtocolNumber(available) ||
+         required.value().toInteger() <= available.toInteger())) {
+      return false;
+    }
+  }
+  return mismatch;
+}
 
 DaemonClient::DaemonClient(QObject *parent)
     : QObject(parent), socket_(new QLocalSocket(this)),
@@ -176,6 +238,9 @@ DaemonClient::DaemonClient(QObject *parent)
     activeMarketAccountRequests_.clear();
     activeOverframeAccountRequests_.clear();
     activeBuildRequests_.clear();
+    activeDiagnosticsRequest_ = 0;
+    diagnosticsDirty_ = true;
+    negotiatedFeatures_.clear();
     ready_ = false;
     setConnected(false);
     setStatus("wfdaemon disconnected");
@@ -429,9 +494,8 @@ void DaemonClient::requestBuildList(const QString &item, const QString &query,
 }
 
 void DaemonClient::requestBuildDetail(qint64 buildId, bool refresh) {
-  queueBuildRequest({{"op", "build_detail"},
-                     {"build_id", buildId},
-                     {"refresh", refresh}});
+  queueBuildRequest(
+      {{"op", "build_detail"}, {"build_id", buildId}, {"refresh", refresh}});
 }
 
 void DaemonClient::requestBuildGroups() {
@@ -536,6 +600,36 @@ void DaemonClient::setMarketPresenceMode(const QString &mode) {
                             {{"op", "market_presence_set"}, {"mode", mode}});
 }
 
+void DaemonClient::setResolutionIssue(const QString &kind,
+                                      const QString &identity,
+                                      const QString &reason,
+                                      const QString &fallback) {
+  if (kind.isEmpty() || identity.isEmpty()) {
+    return;
+  }
+  const QString key = kind + QChar::Null + identity;
+  const QJsonObject issue{{"kind", kind},
+                          {"identity", identity},
+                          {"reason", reason},
+                          {"fallback", fallback},
+                          {"class", "gui"}};
+  if (resolutionIssues_.value(key) == issue) {
+    return;
+  }
+  resolutionIssues_.insert(key, issue);
+  diagnosticsDirty_ = true;
+  sendPendingDiagnostics();
+}
+
+void DaemonClient::clearResolutionIssue(const QString &kind,
+                                        const QString &identity) {
+  if (resolutionIssues_.remove(kind + QChar::Null + identity) == 0) {
+    return;
+  }
+  diagnosticsDirty_ = true;
+  sendPendingDiagnostics();
+}
+
 void DaemonClient::connectSocket() {
   if (socket_->state() != QLocalSocket::UnconnectedState) {
     return;
@@ -624,46 +718,39 @@ void DaemonClient::handleLine(const QByteArray &line) {
   if (id == HelloRequestId) {
     if (!message.value("ok").toBool() ||
         !message.value("compatible").toBool()) {
-      const int daemonProtocol = message.value("protocol").toInt(-1);
-      setStatus(QString("Protocol mismatch: GUI %1, daemon %2")
-                    .arg(WFCLI_LOCAL_PROTOCOL)
-                    .arg(daemonProtocol));
-      ensureDaemon(true);
+      const int daemonEnvelope = message.value("envelope").toInt(-1);
+      setStatus(QString("Daemon contract mismatch: GUI envelope %1, daemon %2")
+                    .arg(WFCLI_LOCAL_ENVELOPE)
+                    .arg(daemonEnvelope));
+      if (wfgui::daemonContractNeedsUpdate(message, guiInterfaces(),
+                                           WFCLI_LOCAL_ENVELOPE)) {
+        ensureDaemon(true);
+      }
       socket_->abort();
       return;
     }
-    const QJsonArray capabilities = message.value("capabilities").toArray();
-    const QStringList requiredCapabilities = {"relic.planner",
-                                              "worldstate.activity",
-                                              "player.foundry",
-                                              "player.inventory",
-                                              "player.mastery",
-                                              "build.equipment",
-                                              "build.sources",
-                                              "build.revisions",
-                                              "build.groups",
-                                              "build.plans",
-                                              "market.quote",
-                                              "market.resolve",
-                                              "market.describe",
-                                              "market.account",
-                                              "market.orders",
-                                              "market.quote.variant",
-                                              "market.presence",
-                                              "overframe.account",
-                                              "notifications.fissures",
-                                              "asset.cache",
-                                              "dataset.subscribe",
-                                              "dataset.subscribe.metadata"};
-    const bool capable = std::ranges::all_of(
-        requiredCapabilities, [&capabilities](const QString &capability) {
-          return capabilities.contains(QJsonValue(capability));
+    const QJsonObject offered = message.value("interfaces").toObject();
+    const QJsonObject required = guiInterfaces();
+    const bool compatibleInterfaces =
+        message.value("envelope").toInt(-1) == WFCLI_LOCAL_ENVELOPE &&
+        std::ranges::all_of(required.keys(), [&](const QString &name) {
+          return offered.value(name).toInt(-1) ==
+                 required.value(name).toInt(-2);
         });
-    if (!capable) {
-      setStatus("wfdaemon lacks GUI support");
-      ensureDaemon(true);
+    if (!compatibleInterfaces) {
+      setStatus("wfdaemon lacks required GUI interfaces");
+      if (wfgui::daemonContractNeedsUpdate(message, required,
+                                           WFCLI_LOCAL_ENVELOPE)) {
+        ensureDaemon(true);
+      }
       socket_->abort();
       return;
+    }
+    negotiatedFeatures_.clear();
+    for (const QJsonValue &feature : message.value("features").toArray()) {
+      if (feature.isString()) {
+        negotiatedFeatures_.insert(feature.toString());
+      }
     }
     ready_ = true;
     ensureAttempted_ = false;
@@ -685,6 +772,7 @@ void DaemonClient::handleLine(const QByteArray &line) {
     sendPendingMarketAccount();
     sendPendingOverframeAccount();
     sendPendingBuildRequests();
+    sendPendingDiagnostics();
     return;
   }
 
@@ -695,6 +783,12 @@ void DaemonClient::handleLine(const QByteArray &line) {
       return;
     }
     handlePlayerSnapshot(message.value("data").toObject(), QString());
+    return;
+  }
+
+  if (id == activeDiagnosticsRequest_) {
+    activeDiagnosticsRequest_ = 0;
+    sendPendingDiagnostics();
     return;
   }
 
@@ -977,9 +1071,8 @@ void DaemonClient::handleLine(const QByteArray &line) {
     const QJsonObject request = buildRequest.value();
     activeBuildRequests_.erase(buildRequest);
     if (!message.value("ok").toBool()) {
-      emit buildSourceFailed(
-          request,
-          message.value("error").toString("build source request failed"));
+      emit buildSourceFailed(request, message.value("error").toString(
+                                          "build source request failed"));
       sendPendingBuildRequests();
       return;
     }
@@ -1032,21 +1125,13 @@ void DaemonClient::sendHello() {
   write({
       {"op", "hello"},
       {"id", HelloRequestId},
-      {"protocol", WFCLI_LOCAL_PROTOCOL},
+      {"envelope", WFCLI_LOCAL_ENVELOPE},
+      {"interfaces", guiInterfaces()},
+      {"features", QJsonArray{"diagnostics.report"}},
       {"client", "wfgui"},
       {"version", WFCLI_VERSION},
       {"pid", QCoreApplication::applicationPid()},
       {"mode", "desktop"},
-      {"capabilities",
-       QJsonArray{"dataset.subscribe", "dataset.subscribe.metadata",
-                  "relic.planner", "worldstate.activity", "player.foundry",
-                  "player.inventory", "player.mastery", "build.equipment",
-                  "build.sources", "build.revisions", "build.groups",
-                  "build.plans",
-                  "market.quote",
-                  "market.resolve", "market.describe", "market.account",
-                  "market.orders", "market.quote.variant", "market.presence",
-                  "overframe.account", "notifications.fissures"}},
   });
 }
 
@@ -1339,6 +1424,24 @@ void DaemonClient::sendPendingBuildRequests() {
     request.insert("id", id);
     write(request);
   }
+}
+
+void DaemonClient::sendPendingDiagnostics() {
+  if (!ready_ || !diagnosticsDirty_ || activeDiagnosticsRequest_ != 0 ||
+      !negotiatedFeatures_.contains("diagnostics.report")) {
+    return;
+  }
+  QStringList keys = resolutionIssues_.keys();
+  keys.sort();
+  QJsonArray issues;
+  for (const QString &key : keys) {
+    issues.append(resolutionIssues_.value(key));
+  }
+  diagnosticsDirty_ = false;
+  activeDiagnosticsRequest_ = nextRequestId_++;
+  write({{"op", "diagnostics_report"},
+         {"id", activeDiagnosticsRequest_},
+         {"issues", issues}});
 }
 
 void DaemonClient::queueBuildRequest(const QJsonObject &request) {

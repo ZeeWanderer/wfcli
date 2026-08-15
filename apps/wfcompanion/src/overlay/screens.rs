@@ -4,6 +4,7 @@ mod status;
 use std::time::Duration;
 
 use fontdue::Font;
+use serde_json::Value;
 
 use super::scene::Scene;
 use crate::painter::Painter;
@@ -24,8 +25,8 @@ impl Assets {
         })
     }
 
-    pub(super) fn cache_relic_scene(&mut self, scene: &crate::relic::Scene) {
-        self.relic.cache_scene(scene);
+    pub(super) fn cache_relic_scene(&mut self, scene: &crate::relic::Scene) -> Vec<Value> {
+        self.relic.cache_scene(scene)
     }
 }
 

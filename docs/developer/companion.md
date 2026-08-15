@@ -108,10 +108,13 @@ Selection flow:
 is documented in [`assets.md`](assets.md); inventory indexing is documented in
 [`player-data.md`](player-data.md).
 
-## Local Protocol V7
+## Local Contract
 
 Transport is newline-delimited JSON over an owner-only Unix socket. Client must
-send `hello` first. This version is independent of the BEAM client protocol.
+send `hello` first. Envelope version covers framing and handshake. Exact interface
+versions cover `datasets`, `player`, `worldstate`, `notifications`, `market`,
+`overframe`, `relics`, `assets`, `builds`, and `diagnostics` independently.
+Clients send only required interfaces and request optional features.
 
 Requests:
 
@@ -122,17 +125,23 @@ Requests:
 - `relic_planner`
 - `relic_recommendations`
 - `asset_resolve`
+- build, notification, account, cache, and diagnostics operations owned by their
+  corresponding interface group
 
 Events:
 
 - `dataset`: replacement subscription snapshot
 - `command`: overlay diagnostic command
+- `asset`: refreshed asset descriptor
 
-Messages are capped at 1 MiB. Socket parent mode is `0700`; socket mode is
+Messages are capped at 8 MiB. Socket parent mode is `0700`; socket mode is
 `0600`. Same-user clients are trusted. Player data does not enter Erlang
 distribution or terminal formatting contracts.
 
-Breaking framing or request semantics requires a protocol increment.
+`companion.command` and `diagnostics.report` are optional negotiated features.
+Breaking framing changes the envelope; breaking domain semantics changes only
+that interface version. Release applications remain lockstep and carry no legacy
+wire adapters.
 
 ## Lifecycle
 

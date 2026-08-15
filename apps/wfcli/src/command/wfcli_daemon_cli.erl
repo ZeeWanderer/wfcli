@@ -226,19 +226,36 @@ format_value(Value) -> lists:flatten(io_lib:format("~p", [Value])).
 
 print_protocols(Info) ->
     Protocols = maps:get(protocols, Info, #{}),
-    ErlangRpc = maps:get(erlang_distribution_rpc, Protocols,
-                         maps:get(protocol, Info, undefined)),
-    LocalSocket = maps:get(native_socket_api, Protocols,
-                           local_socket_protocol(Info)),
-    io:format("  protocols:~n"),
-    io:format("    CLI/MCP Erlang RPC: ~s~n", [format_value(ErlangRpc)]),
-    io:format("    GUI/companion Unix socket: ~s~n", [format_value(LocalSocket)]).
+    io:format("  protocol contracts:~n"),
+    print_contract("CLI/MCP Erlang RPC",
+                   maps:get(erlang_distribution_rpc, Protocols, #{})),
+    print_contract("GUI/companion JSON-lines Unix socket",
+                   maps:get(native_socket_api, Protocols, #{})).
 
-local_socket_protocol(Info) ->
-    case maps:get(local_api, Info, unavailable) of
-        LocalApi when is_map(LocalApi) -> maps:get(protocol, LocalApi, undefined);
-        _ -> undefined
-    end.
+print_contract(Label, Contract) when is_map(Contract) ->
+    Handshake = maps:get(handshake, Contract,
+                         maps:get(<<"envelope">>, Contract, undefined)),
+    Interfaces = maps:get(interfaces, Contract,
+                          maps:get(<<"interfaces">>, Contract, #{})),
+    Features = maps:get(features, Contract,
+                        maps:get(<<"features">>, Contract, [])),
+    io:format("    ~s:~n", [Label]),
+    io:format("      handshake envelope: ~s~n", [format_value(Handshake)]),
+    io:format("      interfaces: ~s~n", [format_interfaces(Interfaces)]),
+    case Features of
+        [] -> ok;
+        _ -> io:format("      optional features: ~s~n",
+                       [string:join([format_value(Feature) || Feature <- Features], ", ")])
+    end;
+print_contract(Label, _Contract) ->
+    io:format("    ~s: unavailable~n", [Label]).
+
+format_interfaces(Interfaces) when is_map(Interfaces) ->
+    string:join(
+      [format_value(Name) ++ "=" ++ format_value(Version)
+       || {Name, Version} <- lists:sort(maps:to_list(Interfaces))],
+      ", ");
+format_interfaces(_Interfaces) -> "unknown".
 
 print_runtime_status(Service, Exports, Market) when is_map(Service), is_map(Exports) ->
     io:format("  worldstate: ~p snapshot(s), ~p watch(es), ~p queued, ~p fetching~n",

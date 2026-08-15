@@ -27,14 +27,29 @@ fn main() {
     println!("cargo:rustc-env=WFCLI_VERSION={version}");
 
     let protocol_file = manifest_dir.join("../wfdaemon/src/runtime/wfcli_local_protocol.erl");
-    let protocol = local_protocol(&protocol_file);
+    let protocol_source = fs::read_to_string(&protocol_file).expect("read wfdaemon local protocol");
+    let protocol_defines = [
+        ("ENVELOPE_VERSION", "ENVELOPE_VERSION"),
+        ("INTERFACE_DATASETS", "INTERFACE_DATASETS"),
+        ("INTERFACE_PLAYER", "INTERFACE_PLAYER"),
+        ("INTERFACE_MARKET", "INTERFACE_MARKET"),
+        ("INTERFACE_RELICS", "INTERFACE_RELICS"),
+        ("INTERFACE_ASSETS", "INTERFACE_ASSETS"),
+        ("INTERFACE_DIAGNOSTICS", "INTERFACE_DIAGNOSTICS"),
+    ];
+    let generated_protocol = protocol_defines
+        .iter()
+        .map(|(define, constant)| {
+            format!(
+                "const {constant}: u32 = {};\n",
+                protocol_define(&protocol_source, define)
+            )
+        })
+        .collect::<String>();
     println!("cargo:rerun-if-changed={}", protocol_file.display());
     let out_dir = PathBuf::from(env::var_os("OUT_DIR").unwrap());
-    fs::write(
-        out_dir.join("local_protocol.rs"),
-        format!("const PROTOCOL_VERSION: u32 = {protocol};\n"),
-    )
-    .expect("write generated local protocol constant");
+    fs::write(out_dir.join("local_protocol.rs"), generated_protocol)
+        .expect("write generated local protocol constants");
 
     let blend2d_dir = manifest_dir.join(BLEND2D_SOURCE);
     let asmjit_dir = manifest_dir.join(ASMJIT_SOURCE);
@@ -82,16 +97,15 @@ fn main() {
     println!("cargo:rustc-link-lib=dylib=m");
 }
 
-fn local_protocol(path: &Path) -> u32 {
-    fs::read_to_string(path)
-        .expect("read wfdaemon local protocol")
+fn protocol_define(source: &str, name: &str) -> u32 {
+    source
         .lines()
         .find_map(|line| {
-            line.strip_prefix("-define(PROTOCOL_VERSION,")
+            line.strip_prefix(&format!("-define({name},"))
                 .and_then(|value| value.strip_suffix(")."))
                 .and_then(|value| value.trim().parse().ok())
         })
-        .expect("parse wfdaemon local protocol")
+        .unwrap_or_else(|| panic!("parse wfdaemon protocol define {name}"))
 }
 
 fn require_submodule(path: &Path, name: &str) {

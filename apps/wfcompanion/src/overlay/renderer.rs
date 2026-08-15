@@ -41,8 +41,11 @@ impl Renderer {
         })
     }
 
-    pub(super) fn cache_scene_assets(&mut self, scene: &crate::relic::Scene) {
-        self.assets.cache_relic_scene(scene);
+    pub(super) fn cache_scene_assets(
+        &mut self,
+        scene: &crate::relic::Scene,
+    ) -> Vec<serde_json::Value> {
+        self.assets.cache_relic_scene(scene)
     }
 
     pub(super) fn prepare_frame(&mut self, key: FrameKey) -> Result<bool, String> {
@@ -169,7 +172,7 @@ fn render_relic_scene_preview_with_view(
     let mut overlay = vec![0; (width * height * 4) as usize];
     let mut renderer =
         Renderer::load().map_err(|error| format!("could not load overlay renderer: {error}"))?;
-    renderer.cache_scene_assets(scene);
+    let _ = renderer.cache_scene_assets(scene);
     let mut painter = Painter::new(&mut overlay, width, height)
         .map_err(|error| format!("could not create overlay painter: {error}"))?;
     let scene = Scene::Relic {

@@ -51,6 +51,7 @@ const DEBUG_HUD: bool = cfg!(debug_assertions);
 pub(crate) fn run(
     events: mpsc::Receiver<UiEvent>,
     relic: mpsc::Sender<crate::relic::Trigger>,
+    daemon: crate::daemon::OutboundSender,
     shortcut: crate::shortcut::Controller,
     stopping: Arc<AtomicBool>,
 ) -> Result<(), Box<dyn std::error::Error>> {
@@ -121,9 +122,11 @@ pub(crate) fn run(
         interaction_active: false,
         shortcut_scope: false,
         pending_asset_refreshes: BTreeMap::new(),
+        reported_asset_issues: None,
         presentation: Presentation::default(),
         events,
         relic,
+        daemon,
         shortcut,
         stopping,
         focus: FocusDetector::connect().ok(),
@@ -185,9 +188,11 @@ struct Overlay {
     interaction_active: bool,
     shortcut_scope: bool,
     pending_asset_refreshes: BTreeMap<(String, String), crate::relic::AssetRefresh>,
+    reported_asset_issues: Option<Vec<Value>>,
     presentation: Presentation,
     events: mpsc::Receiver<UiEvent>,
     relic: mpsc::Sender<crate::relic::Trigger>,
+    daemon: crate::daemon::OutboundSender,
     shortcut: crate::shortcut::Controller,
     stopping: Arc<AtomicBool>,
     focus: Option<FocusDetector>,
@@ -208,6 +213,14 @@ enum Redraw {
 }
 
 impl Overlay {
+    fn report_asset_issues(&mut self, issues: Vec<Value>) {
+        if self.reported_asset_issues.as_ref() == Some(&issues) {
+            return;
+        }
+        crate::daemon::report_diagnostics(&self.daemon, issues.clone());
+        self.reported_asset_issues = Some(issues);
+    }
+
     fn dispatch_interval(&self) -> Duration {
         if self.loading_active() && !self.frame_pending {
             EVENT_INTERVAL
@@ -280,7 +293,8 @@ impl Overlay {
                         Some(changed) => {
                             if changed {
                                 let scene = &self.relic_scene.as_ref().unwrap().0;
-                                self.renderer.cache_scene_assets(scene);
+                                let issues = self.renderer.cache_scene_assets(scene);
+                                self.report_asset_issues(issues);
                                 self.request_full_redraw();
                             }
                         }
@@ -351,7 +365,8 @@ impl Overlay {
                     );
                     self.pending_asset_refreshes
                         .retain(|_, refresh| scene.apply_asset_refresh(refresh).is_none());
-                    self.renderer.cache_scene_assets(&scene);
+                    let issues = self.renderer.cache_scene_assets(&scene);
+                    self.report_asset_issues(issues);
                     if matches!(scene, crate::relic::Scene::Suggestions(_))
                         && !updates_current_suggestions
                     {

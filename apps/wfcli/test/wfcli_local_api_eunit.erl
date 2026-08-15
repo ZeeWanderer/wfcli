@@ -9,6 +9,17 @@ unix_socket_lifecycle_test_() ->
     {setup, fun setup/0, fun cleanup/1,
      fun(State) -> fun() -> lifecycle(State) end end}.
 
+contract_change_disconnects_native_clients_test() ->
+    State = #{contract => #{}, connections => #{self() => #{}},
+              worker_holders => #{}, worker_waiters => queue:new(),
+              worker_count => 0, worker_limit => 1},
+    {ok, Updated} = wfcli_local_api:code_change(undefined, State, undefined),
+    receive shutdown -> ok after 1000 -> error(client_not_disconnected) end,
+    ?assertEqual(
+       maps:with([<<"envelope">>, <<"interfaces">>],
+                 wfcli_local_protocol:contract()),
+       maps:get(contract, Updated)).
+
 setup() ->
     Root = filename:join(
              "/tmp", "wfcli-local-api-" ++ os:getpid() ++ "-" ++
@@ -158,6 +169,8 @@ lifecycle(#{socket := SocketPath}) ->
     request_market_variant_quote(TestSocket),
     request_cached_market_quote(TestSocket),
     request_notification_settings(TestSocket),
+    request_diagnostics_report(TestSocket),
+    reject_unnegotiated_diagnostics(SocketPath),
     slow_asset_does_not_block_dataset(TestSocket),
     streams_stale_asset_refresh(TestSocket),
     local_request_limit_queues_excess_work(TestSocket),
@@ -405,43 +418,23 @@ connect_client(SocketPath, Client, Extra) ->
     {ok, Socket} = socket:open(local, stream, default),
     ok = socket:connect(Socket, #{family => local, path => SocketPath}),
     Hello = maps:merge(
-              #{<<"op">> => <<"hello">>, <<"id">> => 1,
-                <<"protocol">> => wfcli_local_protocol:protocol_version(),
-                <<"client">> => Client, <<"version">> => <<"test">>},
+              (wfcli_local_protocol:contract())#{
+                 <<"op">> => <<"hello">>, <<"id">> => 1,
+                 <<"client">> => Client, <<"version">> => <<"test">>},
               Extra),
     ok = socket:send(Socket, wfcli_local_protocol:encode(Hello)),
     {ok, ReplyLine} = socket:recv(Socket, 0, 5000),
     {ok, Reply} = wfcli_local_protocol:decode(string:trim(ReplyLine)),
     ?assertEqual(true, maps:get(<<"ok">>, Reply)),
     ?assertEqual(1, maps:get(<<"id">>, Reply)),
-    ?assert(lists:member(<<"market.resolve">>, maps:get(<<"capabilities">>, Reply))),
-    ?assert(lists:member(<<"market.describe">>, maps:get(<<"capabilities">>, Reply))),
-    ?assert(lists:member(<<"market.account">>, maps:get(<<"capabilities">>, Reply))),
-    ?assert(lists:member(<<"market.orders">>, maps:get(<<"capabilities">>, Reply))),
-    ?assert(lists:member(<<"market.presence">>, maps:get(<<"capabilities">>, Reply))),
-    ?assert(lists:member(<<"overframe.account">>,
-                         maps:get(<<"capabilities">>, Reply))),
-    ?assert(lists:member(<<"market.quote.variant">>,
-                         maps:get(<<"capabilities">>, Reply))),
-    ?assert(lists:member(<<"dataset.subscribe.metadata">>,
-                         maps:get(<<"capabilities">>, Reply))),
-    ?assert(lists:member(<<"relic.recommendations">>,
-                         maps:get(<<"capabilities">>, Reply))),
-    ?assert(lists:member(<<"relic.planner">>, maps:get(<<"capabilities">>, Reply))),
-    ?assert(lists:member(<<"worldstate.activity">>, maps:get(<<"capabilities">>, Reply))),
-    ?assert(lists:member(<<"player.foundry">>, maps:get(<<"capabilities">>, Reply))),
-    ?assert(lists:member(<<"player.inventory">>, maps:get(<<"capabilities">>, Reply))),
-    ?assert(lists:member(<<"player.mastery">>, maps:get(<<"capabilities">>, Reply))),
-    ?assert(lists:member(<<"build.equipment">>, maps:get(<<"capabilities">>, Reply))),
-    ?assert(lists:member(<<"build.sources">>, maps:get(<<"capabilities">>, Reply))),
-    ?assert(lists:member(<<"build.revisions">>, maps:get(<<"capabilities">>, Reply))),
-    ?assert(lists:member(<<"build.groups">>, maps:get(<<"capabilities">>, Reply))),
-    ?assert(lists:member(<<"build.plans">>, maps:get(<<"capabilities">>, Reply))),
-    ?assert(lists:member(<<"asset.cache">>, maps:get(<<"capabilities">>, Reply))),
-    ?assert(lists:member(<<"asset.refresh">>, maps:get(<<"capabilities">>, Reply))),
-    ?assert(lists:member(<<"notifications.fissures">>,
-                         maps:get(<<"capabilities">>, Reply))),
-    ?assert(lists:member(<<"asset.resolve">>, maps:get(<<"capabilities">>, Reply))),
+    ?assertEqual(wfcli_local_protocol:envelope_version(),
+                 maps:get(<<"envelope">>, Reply)),
+    ?assertEqual(wfcli_local_protocol:interfaces(),
+                 maps:get(<<"interfaces">>, Reply)),
+    Requested = maps:get(<<"features">>, Hello, []),
+    ExpectedFeatures = [Feature || Feature <- wfcli_local_protocol:features(),
+                                   lists:member(Feature, Requested)],
+    ?assertEqual(ExpectedFeatures, maps:get(<<"features">>, Reply)),
     Socket.
 
 request_build_equipment_view(Socket) ->
@@ -626,6 +619,43 @@ request_notification_settings(Socket) ->
     ?assertEqual(<<"session">>, maps:get(
                                   <<"mode">>,
                                   maps:get(<<"fissures">>, maps:get(<<"data">>, SetReply)))).
+
+request_diagnostics_report(Socket) ->
+    Scope = <<"client:test">>,
+    Issue = #{<<"kind">> => <<"asset_decode">>,
+              <<"identity">> => <<"wfcd:test.png">>,
+              <<"reason">> => <<"invalid image">>,
+              <<"fallback">> => <<"test.png">>},
+    Report = #{<<"op">> => <<"diagnostics_report">>, <<"id">> => 45,
+               <<"issues">> => [Issue]},
+    ok = socket:send(Socket, wfcli_local_protocol:encode(Report)),
+    {ok, ReportLine} = socket:recv(Socket, 0, 5000),
+    {ok, ReportReply} = wfcli_local_protocol:decode(string:trim(ReportLine)),
+    ?assertEqual(true, maps:get(<<"ok">>, ReportReply)),
+    [Stored] = [Entry || Entry <- wfcli_resolution_issues:list(),
+                         maps:get(<<"scope">>, Entry, undefined) =:= Scope,
+                         maps:get(<<"identity">>, Entry, undefined) =:=
+                             <<"wfcd:test.png">>],
+    ?assertEqual(<<"asset_decode">>, maps:get(<<"kind">>, Stored)),
+    Clear = #{<<"op">> => <<"diagnostics_report">>, <<"id">> => 46,
+              <<"issues">> => []},
+    ok = socket:send(Socket, wfcli_local_protocol:encode(Clear)),
+    {ok, ClearLine} = socket:recv(Socket, 0, 5000),
+    {ok, ClearReply} = wfcli_local_protocol:decode(string:trim(ClearLine)),
+    ?assertEqual(true, maps:get(<<"ok">>, ClearReply)),
+    ?assertEqual([], [Entry || Entry <- wfcli_resolution_issues:list(),
+                              maps:get(<<"scope">>, Entry, undefined) =:= Scope]).
+
+reject_unnegotiated_diagnostics(SocketPath) ->
+    Socket = connect_client(SocketPath, <<"limited">>, #{<<"features">> => []}),
+    Request = #{<<"op">> => <<"diagnostics_report">>, <<"id">> => 47,
+                <<"issues">> => []},
+    ok = socket:send(Socket, wfcli_local_protocol:encode(Request)),
+    {ok, ReplyLine} = socket:recv(Socket, 0, 5000),
+    {ok, Reply} = wfcli_local_protocol:decode(string:trim(ReplyLine)),
+    ?assertEqual(false, maps:get(<<"ok">>, Reply)),
+    ?assertEqual(<<"feature_not_negotiated">>, maps:get(<<"error">>, Reply)),
+    ok = socket:close(Socket).
 
 publish_game_running(Socket) ->
     Request = #{<<"op">> => <<"publish">>, <<"id">> => 2,

@@ -29,7 +29,8 @@ is empty until a companion or another owner-only local client publishes observat
 `market` loads the public item manifest and attaches quotes already present in daemon cache.
 Unified query never expands a broad catalog match into thousands of price requests. Use
 `wfcli market QUERY` for bounded live quotes.
-`diagnostics` contains current friendly-name and asset-resolution failures. Use
+`diagnostics` contains current identity, metadata, and asset-resolution failures reported by
+daemon, GUI, and companion. Use
 `wfcli diagnostics unresolved` for its focused table.
 
 Useful options:
@@ -118,7 +119,7 @@ Focused commands are convenience views over the same parser and query engine:
 - `player`: local source namespaces published through the daemon companion socket.
 - `market`: public item metadata plus daemon-cached top-order quotes. `wfcli market` adds
   bounded live quote fetching and price-specific formatting.
-- `diagnostics`: current daemon metadata-resolution failures.
+- `diagnostics`: current identity, metadata, and asset-resolution failures.
 
 They add useful defaults and dataset-specific formatting; they do not implement a
 separate query language.

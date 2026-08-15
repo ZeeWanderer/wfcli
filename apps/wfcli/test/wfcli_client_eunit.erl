@@ -93,34 +93,77 @@ autostart_unit_runs_supervised_persistent_release_test() ->
     ?assertNotEqual(nomatch, binary:match(Unit, <<"ERL_CRASH_DUMP=">>)),
     ?assertNotEqual(nomatch, binary:match(Unit, <<"Restart=on-failure">>)).
 
-protocol_mismatch_error_requests_matching_builds_test() ->
-    Error = wfcli_client:format_error({protocol_mismatch, 3, 2}),
-    ?assert(string:find(Error, "matching wfcli and wfdaemon builds") =/= nomatch).
+contract_mismatch_error_names_required_interfaces_test() ->
+    Error = wfcli_client:format_error(
+              {daemon_contract_mismatch,
+               [#{kind => interface, interface => market,
+                  required => 1, available => 2}]}),
+    ?assert(string:find(Error, "interfaces") =/= nomatch).
 
 matching_build_handshake_is_compatible_test() ->
     {ok, Build} = current_build_identity(),
-    Reply = #{compatible => true, protocol => wfcli_protocol:version(), build => Build},
-    ?assertEqual(ok, wfcli_client:handshake_compatibility(Reply, wfcli_protocol:version())).
+    Contract = wfcli_protocol:contract(),
+    Reply = (wfcli_protocol:negotiate(Contract))#{
+        build => Build, flavor => wfcli_build:flavor()},
+    ?assertEqual(ok, wfcli_client:handshake_compatibility(Reply, Contract)).
 
 legacy_handshake_requires_daemon_update_test() ->
     {ok, Build} = current_build_identity(),
-    Reply = #{compatible => true, protocol => wfcli_protocol:version()},
+    Contract = wfcli_protocol:contract(),
+    Reply = wfcli_protocol:negotiate(Contract),
     ?assertEqual({error, {daemon_build_mismatch, Build, undefined}},
-                 wfcli_client:handshake_compatibility(Reply, wfcli_protocol:version())).
+                 wfcli_client:handshake_compatibility(Reply, Contract)).
 
 different_build_handshake_requires_daemon_update_test() ->
     {ok, Build} = current_build_identity(),
     Other = <<"different">>,
-    Reply = #{compatible => true, protocol => wfcli_protocol:version(), build => Other},
+    Contract = wfcli_protocol:contract(),
+    Reply = (wfcli_protocol:negotiate(Contract))#{build => Other},
     ?assertEqual({error, {daemon_build_mismatch, Build, Other}},
-                 wfcli_client:handshake_compatibility(Reply, wfcli_protocol:version())).
+                 wfcli_client:handshake_compatibility(Reply, Contract)).
 
 different_flavor_handshake_requires_daemon_restart_test() ->
     OtherFlavor = case wfcli_build:flavor() of dev -> prod; prod -> dev end,
-    Reply = #{compatible => true, protocol => wfcli_protocol:version(),
-              flavor => OtherFlavor, build => <<"irrelevant">>},
+    Contract = wfcli_protocol:contract(),
+    Reply = (wfcli_protocol:negotiate(Contract))#{
+        flavor => OtherFlavor, build => <<"irrelevant">>},
     ?assertEqual({error, {daemon_flavor_mismatch, wfcli_build:flavor(), OtherFlavor}},
-                 wfcli_client:handshake_compatibility(Reply, wfcli_protocol:version())).
+                 wfcli_client:handshake_compatibility(Reply, Contract)).
+
+interface_mismatch_requires_daemon_update_test() ->
+    Contract = wfcli_protocol:contract(),
+    Offered = Contract#{interfaces => (wfcli_protocol:interfaces())#{market => 2},
+                        compatible => true},
+    ?assertMatch({error, {daemon_contract_mismatch,
+                          [#{kind := interface, interface := market}]}},
+                 wfcli_client:handshake_compatibility(Offered, Contract)).
+
+malformed_offered_interfaces_are_rejected_test() ->
+    Contract = wfcli_protocol:contract(),
+    Offered = Contract#{interfaces => invalid, compatible => true},
+    ?assertMatch({error, {daemon_contract_mismatch,
+                          [#{kind := interfaces, available := invalid}]}},
+                 wfcli_client:handshake_compatibility(Offered, Contract)).
+
+only_older_daemon_contracts_trigger_recovery_test() ->
+    ?assert(wfcli_daemon_client:recoverable_contract_mismatch(
+              [#{kind => interface, interface => market,
+                 required => 2, available => 1}])),
+    ?assert(wfcli_daemon_client:recoverable_contract_mismatch(
+              [#{kind => interface, interface => market,
+                 required => 1, available => undefined}])),
+    ?assertNot(wfcli_daemon_client:recoverable_contract_mismatch(
+                 [#{kind => interface, interface => market,
+                    required => 1, available => 2}])),
+    ?assertNot(wfcli_daemon_client:recoverable_contract_mismatch(
+                 [#{kind => interfaces, required => valid,
+                    available => invalid}])).
+
+legacy_integer_handshake_requires_daemon_update_test() ->
+    Contract = wfcli_protocol:contract(),
+    Legacy = #{compatible => true, protocol => 13, build => <<"legacy">>},
+    ?assertMatch({error, {daemon_contract_mismatch, [_ | _]}},
+                 wfcli_client:handshake_compatibility(Legacy, Contract)).
 
 query_errors_are_readable_test() ->
     ?assertEqual("bad syntax; unknown field",

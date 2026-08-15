@@ -33,6 +33,13 @@ constexpr int ReadyBatchSize = 4;
 constexpr qint64 MaximumSourcePixels = 64 * 1024 * 1024;
 constexpr int MaximumSourceDimension = 16384;
 
+wfgui::ImageIssueReporter imageIssueReporter;
+
+struct DecodedImage {
+  QImage image;
+  QString error;
+};
+
 bool oversized(const QSize &size) {
   return size.isValid() && (size.width() > MaximumSourceDimension ||
                             size.height() > MaximumSourceDimension ||
@@ -48,15 +55,15 @@ QImage normalized(QImage image) {
   return image;
 }
 
-QImage decodeThumbnail(const QString &path, const QSize &pixelBounds) {
+DecodedImage decodeThumbnail(const QString &path, const QSize &pixelBounds) {
   if (path.isEmpty() || pixelBounds.isEmpty()) {
-    return {};
+    return {{}, "invalid image path or bounds"};
   }
   QImageReader reader(path);
   reader.setAutoTransform(true);
   const QSize source = reader.size();
   if (oversized(source)) {
-    return {};
+    return {{}, "image dimensions exceed safety limit"};
   }
 
   QSize targetSize;
@@ -71,7 +78,8 @@ QImage decodeThumbnail(const QString &path, const QSize &pixelBounds) {
 
   QImage decoded = reader.read();
   if (decoded.isNull() || oversized(decoded.size())) {
-    return {};
+    return {{}, decoded.isNull() ? reader.errorString()
+                                 : QString("image dimensions exceed safety limit")};
   }
   if (!targetSize.isValid()) {
     targetSize = decoded.size().scaled(pixelBounds, Qt::KeepAspectRatio);
@@ -83,7 +91,7 @@ QImage decodeThumbnail(const QString &path, const QSize &pixelBounds) {
     decoded = decoded.scaled(targetSize, Qt::IgnoreAspectRatio,
                              Qt::SmoothTransformation);
   }
-  return decoded;
+  return {std::move(decoded), {}};
 }
 
 QPixmap toPixmap(QImage image, qreal dpr) {
@@ -160,8 +168,11 @@ public:
           derivativeCache().registerAsset(asset);
           QImage image = derivativeCache().load(asset, pixelBounds);
           const bool needsStore = image.isNull() && asset.isPersistent();
+          QString decodeError;
           if (image.isNull()) {
-            image = decodeThumbnail(asset.path, pixelBounds);
+            DecodedImage decoded = decodeThumbnail(asset.path, pixelBounds);
+            image = std::move(decoded.image);
+            decodeError = std::move(decoded.error);
           } else {
             image = normalized(std::move(image));
           }
@@ -171,7 +182,8 @@ public:
           if (!loader || loader->stopping_.load()) {
             return;
           }
-          loader->enqueueResult(key, std::move(image), dpr);
+          loader->enqueueResult(key, asset, std::move(image),
+                                std::move(decodeError), dpr);
         },
         nextPriority());
   }
@@ -184,7 +196,9 @@ public:
 private:
   struct ReadyResult {
     QString key;
+    wfgui::AssetRef asset;
     QImage image;
+    QString error;
     qreal dpr;
   };
 
@@ -236,14 +250,16 @@ private:
         -1);
   }
 
-  void enqueueResult(QString key, QImage image, qreal dpr) {
+  void enqueueResult(QString key, wfgui::AssetRef asset, QImage image,
+                     QString error, qreal dpr) {
     bool schedule = false;
     {
       const QMutexLocker lock(&readyMutex_);
       if (stopping_.load()) {
         return;
       }
-      ready_.enqueue(ReadyResult{std::move(key), std::move(image), dpr});
+      ready_.enqueue(ReadyResult{std::move(key), std::move(asset),
+                                 std::move(image), std::move(error), dpr});
       if (!drainScheduled_) {
         drainScheduled_ = true;
         schedule = true;
@@ -273,7 +289,8 @@ private:
     QHash<QWidget *, TargetUpdate> targets;
     while (!batch.isEmpty()) {
       ReadyResult result = batch.dequeue();
-      finish(result.key, std::move(result.image), result.dpr, targets);
+      finish(result.key, result.asset, std::move(result.image), result.error,
+             result.dpr, targets);
     }
     for (auto target = targets.cbegin(); target != targets.cend(); ++target) {
       if (target.value().full) {
@@ -287,7 +304,8 @@ private:
     }
   }
 
-  void finish(const QString &key, QImage image, qreal dpr,
+  void finish(const QString &key, const wfgui::AssetRef &asset, QImage image,
+              const QString &error, qreal dpr,
               QHash<QWidget *, TargetUpdate> &targets) {
     pending_.remove(key);
     if (image.isNull()) {
@@ -295,9 +313,17 @@ private:
       failure.attempts = std::min(failure.attempts + 1, 6);
       const qint64 delay = std::min<qint64>(60'000, 1000LL << failure.attempts);
       failure.retryAt = QDateTime::currentMSecsSinceEpoch() + delay;
+      if (imageIssueReporter) {
+        imageIssueReporter(asset, error.isEmpty() ? "image decode failed" : error,
+                           false);
+      }
     } else {
+      const bool wasFailed = failures_.contains(key);
       failures_.remove(key);
       QPixmapCache::insert(key, toPixmap(std::move(image), dpr));
+      if (wasFailed && imageIssueReporter) {
+        imageIssueReporter(asset, {}, true);
+      }
     }
     const auto waiters = waiters_.take(key);
     for (const Waiter &waiter : waiters) {
@@ -375,9 +401,15 @@ QPixmap cachedThumbnail(QPainter &painter, const AssetRef &asset,
     return {};
   }
 
-  image = toPixmap(decodeThumbnail(asset.path, pixelBounds), dpr);
+  DecodedImage decoded = decodeThumbnail(asset.path, pixelBounds);
+  image = toPixmap(std::move(decoded.image), dpr);
   if (!image.isNull()) {
     QPixmapCache::insert(key, image);
+  } else if (imageIssueReporter) {
+    imageIssueReporter(asset,
+                       decoded.error.isEmpty() ? "image decode failed"
+                                               : decoded.error,
+                       false);
   }
   return image;
 }
@@ -392,6 +424,10 @@ void clearThumbnailMemoryCache() { thumbnailLoader()->clearMemory(); }
 
 qint64 thumbnailMemoryCacheLimit() {
   return static_cast<qint64>(QPixmapCache::cacheLimit()) * 1024;
+}
+
+void setImageIssueReporter(ImageIssueReporter reporter) {
+  imageIssueReporter = std::move(reporter);
 }
 
 void drawContained(QPainter &painter, const QRectF &rect,

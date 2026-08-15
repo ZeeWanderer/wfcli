@@ -50,7 +50,7 @@ dataset_descriptions() ->
       drops => <<"WFCD drop knowledge.">>,
       player => <<"Local companion-published player observations.">>,
       market => <<"Warframe Market item catalog plus already-cached quotes.">>,
-      diagnostics => <<"Current daemon metadata-resolution failures.">>}.
+      diagnostics => <<"Current identity, metadata, and asset-resolution failures.">>}.
 
 type_columns() ->
     Types = [alert, fissure, sortie, invasion, void_storm, event, calendar,

@@ -24,23 +24,31 @@ replaced.
 
 ## Build Identity
 
-Protocol version describes request compatibility. Artifact flavor (`dev` or `prod`) prevents one
-environment from starting or updating the other. Build identity is SHA-256 over sorted module
-names and BEAM MD5 values for `wfcore` plus `wfdaemon`.
+Each transport has a stable handshake envelope and independently versioned interface groups.
+Clients require exact versions for groups they use and negotiate optional features. Artifact
+flavor (`dev` or `prod`) prevents one environment from starting or updating the other. Build
+identity is SHA-256 over sorted module names and BEAM MD5 values for `wfcore` plus `wfdaemon`.
 
 Handshake recovery:
 
-1. Compare protocol, flavor, and build identity.
-2. Hot-load a compatible stale build from the calling artifact.
+1. Compare required interfaces, flavor, and build identity.
+2. If the daemon contract is older, hot-load the calling artifact. An older client never
+   downgrades a newer daemon contract.
 3. Repeat handshake.
 4. Stop the old daemon and start the requested release if compatibility is still not established.
 
-Older clients do not downgrade newer daemon protocols.
+Repository applications are versioned and released in lockstep. Contract discipline:
 
-Repository applications are versioned and released in lockstep. A wire-contract change updates
-every affected client and increments that protocol; do not add compatibility shims between bundled
-apps. Migrate non-recoverable user state such as saved build groups. Recoverable observations,
-catalogs, asset caches, and derived views may be invalidated instead.
+- Change the envelope only when handshake or framing changes.
+- Increment only the interface group whose request, response, event, or semantics break.
+- Additive fields do not change an interface version.
+- Optional behavior uses a negotiated feature; absence disables that behavior.
+- Support one exact current interface version. Delete replaced code in the same change; do not add
+  ranges, adapters, fallbacks, or old-version test matrices.
+- Update daemon, CLI, MCP, GUI, companion, and contract tests together when affected.
+- Restart native socket connections after local envelope or interface definitions change.
+- Migrate non-recoverable user state such as saved build groups. Invalidate recoverable
+  observations, catalogs, asset caches, and derived views when migration adds needless code.
 
 ## Requests And Cancellation
 
@@ -83,6 +91,8 @@ Native clients use request IDs over newline-delimited JSON on the Unix socket. E
 can run independent reads concurrently; market mutation and rate-limited fetches remain serialized
 by their owning service. A representative 80 KB relic-planner response costs about 1 ms to encode
 or decode on BEAM, so JSON is retained until profiling shows transport encoding is material.
+GUI and companion can reconcile current decode failures through the optional diagnostics feature;
+the daemon stores them with its own name, metadata, and asset failures.
 
 ## Supervision
 

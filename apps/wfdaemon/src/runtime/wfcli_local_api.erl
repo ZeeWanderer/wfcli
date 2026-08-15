@@ -65,6 +65,7 @@ init([]) ->
             Parent = self(),
             Acceptor = spawn_link(fun() -> accept_loop(Listen, Parent) end),
             {ok, #{listen => Listen, path => Path, acceptor => Acceptor,
+                   contract => required_local_contract(),
                    connections => #{}, monitors => #{}, worker_holders => #{},
                    worker_waiters => queue:new(), worker_count => 0,
                    worker_limit => global_local_worker_limit()}};
@@ -88,7 +89,7 @@ handle_call(status, _From, State) ->
                                         maps:get(worker_waiters, State, queue:new())),
               local_worker_limit => maps:get(worker_limit, State,
                                              global_local_worker_limit()),
-              protocol => wfcli_local_protocol:protocol_version()}, State};
+              contract => wfcli_local_protocol:contract()}, State};
 handle_call({acquire_local_workers, Pid, Count}, _From, State)
   when is_pid(Pid), is_integer(Count), Count > 0 ->
     {Granted, Queued, State1} = acquire_local_workers(Pid, Count, State),
@@ -96,8 +97,12 @@ handle_call({acquire_local_workers, Pid, Count}, _From, State)
 handle_call({companion_command, Command}, _From, State) ->
     Count = maps:fold(
       fun(Pid, Info, Acc) ->
-          case maps:get(client, Info, undefined) of
-              <<"wfcompanion">> -> Pid ! {daemon_command, Command}, Acc + 1;
+          case {maps:get(client, Info, undefined),
+                lists:member(<<"companion.command">>,
+                             maps:get(features, Info, []))} of
+              {<<"wfcompanion">>, true} ->
+                  Pid ! {daemon_command, Command},
+                  Acc + 1;
               _ -> Acc
           end
       end,
@@ -167,7 +172,15 @@ terminate(_Reason, State) ->
 
 -spec code_change(term(), state(), term()) -> {ok, state()}.
 code_change(_OldVsn, State, _Extra) ->
-    {ok, State#{worker_holders => maps:get(worker_holders, State, #{}),
+    Contract = required_local_contract(),
+    case maps:get(contract, State, undefined) of
+        Contract -> ok;
+        _Changed ->
+            maps:foreach(fun(Pid, _Info) -> Pid ! shutdown end,
+                         maps:get(connections, State, #{}))
+    end,
+    {ok, State#{contract => Contract,
+                worker_holders => maps:get(worker_holders, State, #{}),
                 worker_waiters => maps:get(worker_waiters, State, queue:new()),
                 worker_count => maps:get(worker_count, State, 0),
                 worker_limit => maps:get(worker_limit, State,
@@ -295,7 +308,8 @@ connection(Socket, Parent) ->
     {Reader, ReaderMonitor} = spawn_monitor(fun() -> socket_reader(Socket, Handler) end),
     State = #{socket => Socket, parent => Parent, reader => Reader,
               reader_monitor => ReaderMonitor, buffer => <<>>,
-              hello => false, subscriptions => #{}, refs => #{}, market_refs => #{},
+              hello => false, client => <<"unknown">>, features => [],
+              subscriptions => #{}, refs => #{}, market_refs => #{},
               market_account_refs => #{},
               build_refs => #{},
               build_group_ref => undefined,
@@ -410,56 +424,48 @@ consume_lines([Line | Rest], State) ->
 
 handle_request(#{<<"op">> := <<"hello">>} = Request, State) ->
     Id = request_id(Request),
-    Protocol = maps:get(<<"protocol">>, Request, undefined),
-    Compatible = Protocol =:= wfcli_local_protocol:protocol_version(),
-    Client = maps:get(<<"client">>, Request, <<"unknown">>),
+    Negotiation = wfcli_local_protocol:negotiate(Request),
+    Compatible = maps:get(<<"compatible">>, Negotiation),
+    Features = maps:get(<<"features">>, Negotiation, []),
+    Client = valid_client_name(maps:get(<<"client">>, Request, undefined)),
     ClientInfo = #{client => Client,
                    version => maps:get(<<"version">>, Request, undefined),
                    os_pid => valid_os_pid(maps:get(<<"pid">>, Request, undefined)),
-                   mode => valid_client_mode(maps:get(<<"mode">>, Request, undefined))},
-    Reply = (daemon_identity())#{
-        <<"id">> => Id,
-        <<"ok">> => Compatible,
-        <<"compatible">> => Compatible,
-        <<"protocol">> => wfcli_local_protocol:protocol_version(),
-        <<"capabilities">> => [<<"dataset.get">>, <<"dataset.subscribe">>,
-                               <<"dataset.subscribe.metadata">>,
-                               <<"player.publish">>, <<"market.quote">>,
-                               <<"market.quote.variant">>,
-                               <<"market.resolve">>, <<"market.describe">>,
-                               <<"market.account">>, <<"market.orders">>,
-                               <<"market.presence">>,
-                               <<"overframe.account">>,
-                               <<"relic.context">>,
-                               <<"relic.planner">>,
-                               <<"relic.recommendations">>,
-                               <<"worldstate.activity">>,
-                               <<"player.foundry">>,
-                               <<"player.inventory">>,
-                               <<"player.mastery">>,
-                               <<"build.equipment">>,
-                               <<"build.sources">>,
-                               <<"build.revisions">>,
-                               <<"build.groups">>,
-                               <<"build.plans">>,
-                               <<"notifications.fissures">>,
-                               <<"asset.resolve">>,
-                               <<"asset.refresh">>,
-                               <<"asset.cache">>,
-                               <<"companion.command">>]
-    },
+                   mode => valid_client_mode(maps:get(<<"mode">>, Request, undefined)),
+                   features => Features},
+    Reply = maps:merge(
+              (daemon_identity())#{<<"id">> => Id, <<"ok">> => Compatible},
+              Negotiation),
     send_json(maps:get(socket, State), Reply),
     case Compatible of
         true -> maps:get(parent, State) ! {client_identified, self(), ClientInfo};
         false -> ok
     end,
-    State1 = State#{hello => Compatible},
+    State1 = State#{hello => Compatible, client => Client, features => Features},
     {ok, case Compatible of
              true -> ensure_build_group_subscription(State1);
              false -> State1
          end};
 handle_request(Request, State = #{hello := false}) ->
     send_error(maps:get(socket, State), request_id(Request), hello_required),
+    {ok, State};
+handle_request(#{<<"op">> := <<"diagnostics_report">>,
+                 <<"issues">> := Issues} = Request, State)
+  when is_list(Issues) ->
+    Id = request_id(Request),
+    case feature_enabled(<<"diagnostics.report">>, State) of
+        true ->
+            Client = maps:get(client, State, <<"unknown">>),
+            Scope = <<"client:", Client/binary>>,
+            ok = wfcli_resolution_issues:reconcile(Scope, Issues),
+            send_json(maps:get(socket, State), #{<<"id">> => Id, <<"ok">> => true});
+        false ->
+            send_error(maps:get(socket, State), Id, feature_not_negotiated)
+    end,
+    {ok, State};
+handle_request(#{<<"op">> := <<"diagnostics_report">>} = Request, State) ->
+    send_error(maps:get(socket, State), request_id(Request),
+               invalid_diagnostics_report),
     {ok, State};
 handle_request(#{<<"op">> := <<"get">>, <<"dataset">> := Dataset} = Request, State) ->
     Id = request_id(Request),
@@ -1371,6 +1377,13 @@ request_id(Request) ->
         _ -> 0
     end.
 
+feature_enabled(Feature, State) ->
+    lists:member(Feature, maps:get(features, State, [])).
+
+required_local_contract() ->
+    maps:with([<<"envelope">>, <<"interfaces">>],
+              wfcli_local_protocol:contract()).
+
 send_ok(Socket, Id, Dataset, Snapshot) ->
     send_json(Socket, #{<<"id">> => Id, <<"ok">> => true,
                         <<"dataset">> => Dataset, <<"data">> => Snapshot}).
@@ -1453,6 +1466,10 @@ set_gui_activity(Pid, true, false) ->
 
 valid_os_pid(Pid) when is_integer(Pid), Pid > 0 -> Pid;
 valid_os_pid(_Pid) -> undefined.
+
+valid_client_name(Client) when is_binary(Client), byte_size(Client) > 0,
+                               byte_size(Client) =< 64 -> Client;
+valid_client_name(_Client) -> <<"unknown">>.
 
 valid_client_mode(<<"standalone">>) -> <<"standalone">>;
 valid_client_mode(<<"launch">>) -> <<"launch">>;

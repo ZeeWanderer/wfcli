@@ -6,7 +6,7 @@
 -behaviour(gen_server).
 
 -export([start_link/0, request/1, submit/2, subscribe/2, unsubscribe/1,
-         protocol_version/0]).
+         handshake_version/0]).
 
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2,
          terminate/2, code_change/3]).
@@ -24,7 +24,7 @@
     notification_settings |
     {notification_settings, map()} |
     {companion_command, map()} |
-    {hello, non_neg_integer()} |
+    {hello, term()} |
     {set_idle_policy, persistent | idle | {idle, pos_integer()}} |
     {hot_update, [map()]} |
     {update_release, string()}.
@@ -37,8 +37,8 @@
     otp_release := string(),
     installation := homebrew | local,
     install_root := file:filename_all(),
-    protocols := #{erlang_distribution_rpc := pos_integer(),
-                   native_socket_api := pos_integer()},
+    protocols := #{erlang_distribution_rpc := map(),
+                   native_socket_api := map()},
     build := binary() | undefined
 }.
 -type reply() ::
@@ -80,9 +80,9 @@ subscribe(Client, Request) ->
 unsubscribe(Ref) ->
     gen_server:call(?SERVER, {unsubscribe, Ref}, ?CALL_TIMEOUT_MS).
 
--doc "Wire protocol version shared by daemon and escript client.".
--spec protocol_version() -> non_neg_integer().
-protocol_version() -> wfcli_protocol:version().
+-doc "Erlang distribution handshake-envelope version.".
+-spec handshake_version() -> pos_integer().
+handshake_version() -> wfcli_protocol:handshake_version().
 
 -doc "Initialize daemon state. Future watch registrations should live under this process tree.".
 -spec init([]) -> {ok, state()}.
@@ -96,10 +96,8 @@ init([]) ->
     {reply, term(), state()} | {noreply, state()}.
 handle_call(status, _From, State) ->
     {reply, status(State), State};
-handle_call({hello, ClientVersion}, _From, State) ->
-    Protocol = protocol_version(),
-    Reply0 = #{protocol => Protocol,
-               compatible => ClientVersion =:= Protocol,
+handle_call({hello, ClientContract}, _From, State) ->
+    Reply0 = (wfcli_protocol:negotiate(ClientContract))#{
                version => wfcli_build:version(),
                flavor => wfcli_build:flavor(),
                node => node()},
@@ -232,9 +230,8 @@ status(State = #{started_at := StartedAt}) ->
         uptime_ms => max(0, Now - StartedAt),
         version => wfcli_build:version(),
         otp_release => erlang:system_info(otp_release),
-        protocol => protocol_version(),
-        protocols => #{erlang_distribution_rpc => protocol_version(),
-                       native_socket_api => wfcli_local_protocol:protocol_version()},
+        protocols => #{erlang_distribution_rpc => wfcli_protocol:contract(),
+                       native_socket_api => wfcli_local_protocol:contract()},
         installation => wfcli_build:installation(),
         install_root => wfcli_build:install_root(),
         flavor => wfcli_build:flavor(),

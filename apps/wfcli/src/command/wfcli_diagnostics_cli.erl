@@ -5,7 +5,7 @@
 
 -export([run/1, help/0]).
 
--doc "Show current metadata-resolution failures.".
+-doc "Show current resolution failures.".
 -spec run([string()]) -> ok | no_return().
 run(Args0) ->
     Args = wfcli_cli_args:expand_aliases(Args0, #{"-h" => "--help"}),
@@ -26,7 +26,7 @@ help() ->
       "  wfcli diagnostics unresolved [--json]\n"
       "\n"
       "COMMANDS:\n"
-      "  unresolved  show current friendly-name and asset resolution failures\n").
+      "  unresolved  show current identity, metadata, and asset failures\n").
 
 show(Format) ->
     case wfcli_client:call(resolution_issues) of

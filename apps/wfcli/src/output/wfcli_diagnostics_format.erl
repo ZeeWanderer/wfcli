@@ -13,7 +13,7 @@ print(Issues, json) ->
 print([], table) ->
     io:format("No unresolved metadata.~n");
 print(Issues, table) ->
-    io:format("Unresolved metadata: ~p~n~n", [length(Issues)]),
+    io:format("Unresolved issues: ~p~n~n", [length(Issues)]),
     print_table(Issues).
 
 -doc "Render diagnostics returned through unified query.".
