@@ -123,9 +123,9 @@ void ArcaneCardWidget::paintArcane(QPainter &painter) const {
              resourcePixmap(":/resources/arcane-frames/" + rarity_ + ".png"));
 
   const AssetRef asset = controller_ ? controller_->assetRef(id_) : AssetRef{};
-  const QPixmap art = cachedThumbnail(painter, asset, QSize(160, 108),
+  const QPixmap art = cachedThumbnail(painter, asset, artBounds.size().toSize(),
                                       artBounds.toAlignedRect());
-  drawPixmap(painter, artBounds, art);
+  drawContained(painter, artBounds, art);
 
   QFont nameFont = font();
   nameFont.setPixelSize(std::max(10, qRound(14.0 * scale)));

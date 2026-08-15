@@ -458,6 +458,12 @@ if(BUILD_TESTING)
       resources/polarities/vazarin.png
       resources/polarities/zenurik.png
   )
+  qt_add_resources(wfgui_build_topology_tests "wfgui_build_topology_assets"
+    PREFIX "/assets"
+    BASE "${CMAKE_CURRENT_SOURCE_DIR}/../wfcompanion/assets"
+    FILES
+      ../wfcompanion/assets/forma.png
+  )
   target_link_libraries(wfgui_build_topology_tests PRIVATE Qt6::Test wfgui_core)
   add_test(NAME wfgui-build-topology COMMAND wfgui_build_topology_tests)
   set_tests_properties(wfgui-build-topology PROPERTIES

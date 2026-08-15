@@ -6,8 +6,11 @@
 #include <QJsonArray>
 #include <QJsonObject>
 #include <QLabel>
+#include <QPainter>
 #include <QtTest>
 
+#include "app_controller.h"
+#include "arcane_card_widget.h"
 #include "build_topology_widget.h"
 #include "mod_card_widget.h"
 
@@ -26,6 +29,7 @@ private slots:
   void expandsFilledModWithoutRelayout();
   void keepsExpandedModCenteredAtWindowEdge();
   void centersRankPipsWithoutStretchingAcrossTrack();
+  void preservesArcaneGlyphAspectAtFractionalScale();
 };
 
 void BuildTopologyWidgetTest::rendersConfigAndInstanceState() {
@@ -183,6 +187,42 @@ void BuildTopologyWidgetTest::rendersModsAndArcanesByCanonicalSlot() {
     widget.show();
     QTest::qWait(10);
     QVERIFY2(widget.grab().save(capture), qPrintable(capture));
+  }
+}
+
+void BuildTopologyWidgetTest::preservesArcaneGlyphAspectAtFractionalScale() {
+  AppController controller;
+  const QJsonObject slot{
+      {"id", "arcane-1"}, {"label", "Arcane 1"}, {"role", "arcane"}};
+  const QJsonObject upgrade{{"name", "Test Arcane"},
+                            {"rarity", "rare"},
+                            {"asset", QJsonObject{{"id", "builtin:forma"}}}};
+  wfgui::ArcaneCardWidget widget(&controller, slot, upgrade);
+
+  for (const qreal dpr : {1.0, 1.25, 2.0}) {
+    QImage image(qRound(widget.width() * dpr), qRound(widget.height() * dpr),
+                 QImage::Format_ARGB32_Premultiplied);
+    image.setDevicePixelRatio(dpr);
+    image.fill(Qt::transparent);
+    QPainter painter(&image);
+    widget.render(&painter);
+    painter.end();
+
+    QRect cyanBounds;
+    for (int y = 0; y < image.height(); ++y) {
+      for (int x = 0; x < image.width(); ++x) {
+        const QColor pixel = image.pixelColor(x, y);
+        if (pixel.alpha() > 64 && pixel.green() > pixel.red() + 20 &&
+            pixel.blue() > pixel.red() + 20) {
+          cyanBounds |= QRect(x, y, 1, 1);
+        }
+      }
+    }
+    QVERIFY(cyanBounds.isValid());
+    const qreal aspect = static_cast<qreal>(cyanBounds.width()) /
+                         static_cast<qreal>(cyanBounds.height());
+    QVERIFY2(aspect > 0.75 && aspect < 1.25,
+             qPrintable(QString("Arcane glyph distorted to %1:1").arg(aspect)));
   }
 }
 
@@ -558,7 +598,11 @@ void BuildTopologyWidgetTest::centersRowsAndUsesDedicatedEmptyShells() {
   QCOMPARE(widget.findChildren<QWidget *>("buildModCard").size(), 4);
   QCOMPARE(widget.findChildren<QWidget *>("buildArcaneCard").size(), 2);
   QVERIFY(QFile::exists(":/resources/mod-slots/empty.png"));
-  QVERIFY(QFile::exists(":/resources/arcane-frames/empty.png"));
+  for (const QString &rarity :
+       {"common", "uncommon", "rare", "legendary", "empty"}) {
+    QVERIFY2(QFile::exists(":/resources/arcane-frames/" + rarity + ".png"),
+             qPrintable(rarity));
+  }
   QVERIFY(QFile::exists(":/resources/polarities/universal.png"));
   const QImage universal(":/resources/polarities/universal.png");
   QVERIFY(!universal.isNull());
