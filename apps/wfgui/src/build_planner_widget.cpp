@@ -32,29 +32,16 @@ BuildPlannerWidget::BuildPlannerWidget(AppController *controller,
       discover_(new BuildDiscoverWidget(controller)) {
   setObjectName("page");
   auto *layout = new QVBoxLayout(this);
-  layout->setContentsMargins(20, 18, 20, 0);
+  layout->setContentsMargins(20, 10, 20, 0);
   layout->setSpacing(8);
 
-  auto *header = new QHBoxLayout;
-  auto *title = new QLabel("Build Planner");
-  title->setObjectName("pageTitle");
-  header->addWidget(title);
+  auto *modeRow = new QHBoxLayout;
   auto *construction = new QLabel;
   construction->setObjectName("constructionBadge");
   construction->setPixmap(
       style()->standardIcon(QStyle::SP_MessageBoxWarning).pixmap(18, 18));
   construction->setToolTip("Under construction");
-  header->addWidget(construction);
-  header->addStretch();
-  accountName_->setObjectName("secondaryText");
-  header->addWidget(accountName_);
-  signIn_->setObjectName("textAction");
-  signOut_->setObjectName("textAction");
-  header->addWidget(signIn_);
-  header->addWidget(signOut_);
-  layout->addLayout(header);
-
-  auto *modeRow = new QHBoxLayout;
+  modeRow->addWidget(construction);
   auto *modeGroup = new QButtonGroup(this);
   modeGroup->setExclusive(true);
   for (QPushButton *button : {groupsMode_, equipmentMode_, discoverMode_}) {
@@ -65,6 +52,12 @@ BuildPlannerWidget::BuildPlannerWidget(AppController *controller,
   }
   groupsMode_->setChecked(true);
   modeRow->addStretch();
+  accountName_->setObjectName("secondaryText");
+  modeRow->addWidget(accountName_);
+  signIn_->setObjectName("textAction");
+  signOut_->setObjectName("textAction");
+  modeRow->addWidget(signIn_);
+  modeRow->addWidget(signOut_);
   layout->addLayout(modeRow);
 
   progress_->setObjectName("priceProgress");

@@ -12,6 +12,7 @@ class QListView;
 class QListWidget;
 class QModelIndex;
 class QPushButton;
+class QStackedWidget;
 
 class BuildGroupsWidget final : public QWidget {
   Q_OBJECT
@@ -37,8 +38,14 @@ private:
   void calculate();
 
   AppController *controller_;
+  QStackedWidget *pages_;
+  QWidget *editor_;
+  QWidget *emptyPage_;
   QListView *groups_;
-  QLabel *empty_;
+  QLabel *emptyTitle_;
+  QLabel *emptyDescription_;
+  QPushButton *emptyEquipment_;
+  QPushButton *emptyDiscover_;
   QLineEdit *name_;
   QLabel *meta_;
   QCheckBox *preserveSlots_;

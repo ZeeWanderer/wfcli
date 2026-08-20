@@ -10,9 +10,11 @@
 #include <QListView>
 #include <QListWidget>
 #include <QMessageBox>
+#include <QPixmap>
 #include <QPushButton>
 #include <QScrollArea>
 #include <QSplitter>
+#include <QStackedWidget>
 #include <QStringList>
 #include <QVBoxLayout>
 
@@ -44,8 +46,12 @@ QString planLabel(const QJsonObject &result) {
 } // namespace
 
 BuildGroupsWidget::BuildGroupsWidget(AppController *controller, QWidget *parent)
-    : QWidget(parent), controller_(controller), groups_(new QListView),
-      empty_(new QLabel), name_(new QLineEdit), meta_(new QLabel),
+    : QWidget(parent), controller_(controller), pages_(new QStackedWidget),
+      editor_(new QWidget), emptyPage_(new QWidget), groups_(new QListView),
+      emptyTitle_(new QLabel), emptyDescription_(new QLabel),
+      emptyEquipment_(new QPushButton("Choose equipment")),
+      emptyDiscover_(new QPushButton("Discover builds")),
+      name_(new QLineEdit), meta_(new QLabel),
       preserveSlots_(new QCheckBox("Preserve source slot positions")),
       allowOmni_(new QCheckBox("Allow Omni Forma")),
       allowUmbral_(new QCheckBox("Allow Umbral Forma")),
@@ -58,10 +64,16 @@ BuildGroupsWidget::BuildGroupsWidget(AppController *controller, QWidget *parent)
       discover_(new QPushButton("Find builds")) {
   auto *layout = new QVBoxLayout(this);
   layout->setContentsMargins(0, 0, 0, 0);
+  layout->addWidget(pages_);
+
+  auto *editorLayout = new QVBoxLayout(editor_);
+  editorLayout->setContentsMargins(0, 0, 0, 0);
   auto *splitter = new QSplitter;
   splitter->setObjectName("buildGroupsSplit");
   splitter->setChildrenCollapsible(false);
-  layout->addWidget(splitter);
+  editorLayout->addWidget(splitter);
+  editor_->setObjectName("buildGroupEditor");
+  pages_->addWidget(editor_);
 
   auto *rail = new QFrame;
   rail->setObjectName("buildPane");
@@ -77,10 +89,6 @@ BuildGroupsWidget::BuildGroupsWidget(AppController *controller, QWidget *parent)
   groups_->setUniformItemSizes(true);
   groups_->setSpacing(4);
   railLayout->addWidget(groups_, 1);
-  empty_->setObjectName("emptyState");
-  empty_->setAlignment(Qt::AlignCenter);
-  empty_->setWordWrap(true);
-  railLayout->addWidget(empty_);
   splitter->addWidget(rail);
 
   auto *detail = new QFrame;
@@ -137,6 +145,41 @@ BuildGroupsWidget::BuildGroupsWidget(AppController *controller, QWidget *parent)
   splitter->setStretchFactor(1, 1);
   splitter->setSizes({260, 760});
 
+  emptyPage_->setObjectName("buildGroupEmpty");
+  auto *emptyLayout = new QVBoxLayout(emptyPage_);
+  emptyLayout->setContentsMargins(24, 24, 24, 24);
+  emptyLayout->setSpacing(8);
+  emptyLayout->addStretch();
+  auto *emptyIcon = new QLabel;
+  emptyIcon->setObjectName("emptyStateIcon");
+  emptyIcon->setAlignment(Qt::AlignCenter);
+  emptyIcon->setPixmap(QPixmap(":/resources/ui/nav_builds.png")
+                           .scaled(48, 48, Qt::KeepAspectRatio,
+                                   Qt::SmoothTransformation));
+  emptyLayout->addWidget(emptyIcon);
+  emptyTitle_->setObjectName("sectionTitle");
+  emptyTitle_->setProperty("testId", "buildGroupEmptyTitle");
+  emptyTitle_->setProperty("emptyState", true);
+  emptyTitle_->setAlignment(Qt::AlignCenter);
+  emptyLayout->addWidget(emptyTitle_);
+  emptyDescription_->setObjectName("secondaryText");
+  emptyDescription_->setAlignment(Qt::AlignCenter);
+  emptyDescription_->setWordWrap(true);
+  emptyLayout->addWidget(emptyDescription_);
+  auto *emptyActions = new QHBoxLayout;
+  emptyActions->addStretch();
+  emptyEquipment_->setObjectName("primaryAction");
+  emptyEquipment_->setProperty("testId", "buildGroupEmptyEquipment");
+  emptyEquipment_->setProperty("emptyStateAction", true);
+  emptyActions->addWidget(emptyEquipment_);
+  emptyDiscover_->setObjectName("textAction");
+  emptyDiscover_->setProperty("testId", "buildGroupEmptyDiscover");
+  emptyActions->addWidget(emptyDiscover_);
+  emptyActions->addStretch();
+  emptyLayout->addLayout(emptyActions);
+  emptyLayout->addStretch();
+  pages_->addWidget(emptyPage_);
+
   connect(groups_->selectionModel(), &QItemSelectionModel::currentChanged,
           this, [this](const QModelIndex &index) { selectGroupIndex(index); });
   connect(members_, &QListWidget::currentRowChanged, this,
@@ -155,6 +198,16 @@ BuildGroupsWidget::BuildGroupsWidget(AppController *controller, QWidget *parent)
   connect(discover_, &QPushButton::clicked, this, [this] {
     emit discoverRequested(group_.value("definition_id").toString());
   });
+  connect(emptyEquipment_, &QPushButton::clicked, this,
+          [this] {
+            if (!controller_->buildGroupsError().isEmpty()) {
+              controller_->refreshBuildGroups();
+            } else {
+              emit equipmentRequested(QString(), QString());
+            }
+          });
+  connect(emptyDiscover_, &QPushButton::clicked, this,
+          [this] { emit discoverRequested(QString()); });
   connect(controller_, &AppController::buildGroupsStateChanged, this,
           [this] {
             restoreSelection();
@@ -246,9 +299,22 @@ void BuildGroupsWidget::selectGroupIndex(const QModelIndex &index) {
 void BuildGroupsWidget::rebuild() {
   const bool hasGroup = !group_.isEmpty();
   const int count = controller_->buildGroups()->rowCount();
-  empty_->setVisible(controller_->buildGroupsLoaded() && count == 0);
-  empty_->setText(count == 0 ? "No saved build groups." : QString());
-  groups_->setVisible(count > 0);
+  const bool loaded = controller_->buildGroupsLoaded();
+  const QString loadError = controller_->buildGroupsError();
+  pages_->setCurrentWidget(count == 0 ? emptyPage_ : editor_);
+  emptyTitle_->setText(!loadError.isEmpty() ? "Could not load build groups"
+                       : loaded              ? "No build groups"
+                                             : "Loading build groups");
+  emptyDescription_->setText(
+      !loadError.isEmpty()
+          ? loadError
+          : loaded
+                ? "Choose owned equipment, then add builds to plan its polarities."
+                : QString());
+  emptyDescription_->setVisible(loaded || !loadError.isEmpty());
+  emptyEquipment_->setText(loadError.isEmpty() ? "Choose equipment" : "Retry");
+  emptyEquipment_->setVisible(loaded || !loadError.isEmpty());
+  emptyDiscover_->setVisible(loaded && loadError.isEmpty());
   name_->setEnabled(hasGroup);
   preserveSlots_->setEnabled(hasGroup);
   allowOmni_->setEnabled(hasGroup);

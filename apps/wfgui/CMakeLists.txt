@@ -404,6 +404,26 @@ if(BUILD_TESTING)
   set_tests_properties(wfgui-build-groups PROPERTIES
     ENVIRONMENT "QT_QPA_PLATFORM=offscreen"
   )
+  qt_add_executable(wfgui_build_groups_widget_tests
+    src/build_groups_widget.cpp
+    src/build_groups_widget.h
+    tests/build_groups_widget_test.cpp
+  )
+  qt_add_resources(wfgui_build_groups_widget_tests
+    "wfgui_build_groups_widget_resources"
+    PREFIX "/"
+    FILES
+      resources/ui/nav_builds.png
+  )
+  target_link_libraries(wfgui_build_groups_widget_tests PRIVATE
+    Qt6::Test
+    wfgui_core
+  )
+  add_test(NAME wfgui-build-groups-widget
+    COMMAND wfgui_build_groups_widget_tests)
+  set_tests_properties(wfgui-build-groups-widget PROPERTIES
+    ENVIRONMENT "QT_QPA_PLATFORM=offscreen"
+  )
   qt_add_executable(wfgui_build_topology_tests
     tests/build_topology_widget_test.cpp
   )
