@@ -374,6 +374,8 @@ companion_help() ->
         "  hud show|hide      show or hide the diagnostic info panel\n",
         "  probe              print detected Warframe process state\n",
         "  screenshot [FILE]   capture Warframe\n",
+        "  capture arm relic-reward [DIR] save the next reward UI evidence\n",
+        "  capture cancel     cancel the armed reward capture\n",
         "  relic-ocr [FILE]    OCR saved image or a Warframe capture\n",
         "  preview list        list registered overlay previews\n",
         "  preview image TYPE|all [PATH] render still previews\n",

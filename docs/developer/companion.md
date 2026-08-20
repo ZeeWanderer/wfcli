@@ -2,8 +2,9 @@
 
 Ownership:
 
-- `wfcompanion` observer owns process discovery, Proton integration, DBWIN,
-  capture, and OCR.
+- `game_observer` owns Warframe process/build identity, read-only memory access,
+  DBWIN classification, and typed evidence.
+- `wfcompanion` owns capture timing, OCR fallback, incidents, and daemon publication.
 - `wfcompanion` overlay owns scenes, interaction, focus gating, layout,
   rendering, and display caches.
 - `wfdaemon` owns canonical player snapshots, persistence, queries, Market
@@ -13,7 +14,9 @@ Overlay state stays native. Canonical player state stays in the daemon.
 
 ## Native Modules
 
-- `observer.rs`, `debug_output.rs`: process and Proton discovery and DBWIN helper.
+- `game_observer/`: process identity, scoped memory reads, explicit movie diagnostics,
+  and caller-driven UI transition tracking.
+- `observer.rs`, `debug_output.rs`: bridge lifecycle and observation policy.
 - `inventory.rs`: read-only account-buffer discovery, tolerant parsing, and
   typed indexes.
 - `daemon.rs`: local JSON-lines client, reconnect, replay, and request routing.
@@ -32,6 +35,10 @@ Overlay state stays native. Canonical player state stays in the daemon.
 
 Observer work runs off the UI thread. New collectors publish a separate source
 namespace instead of extending one untyped payload.
+
+`TransitionTracker` has no timer. A future bounded registry watch feeds it at a
+profiled cadence; production must not run exploratory heap scans or add periodic
+sampling without frametime measurements. DBWIN events remain the immediate path.
 
 ## Layout
 
@@ -90,19 +97,27 @@ position cannot fall into an uncapturable compositor gap.
 Reward flow:
 
 1. Deduplicate reward debug events.
-2. Capture after game UI stabilization.
-3. Detect one-to-four card geometry.
-4. OCR reward-name crops.
+2. Traverse the reward movie's typed Scaleform registry immediately.
+3. Use extracted names in returned order when the probe finishes before 650 ms.
+4. If extraction fails or times out, capture at the 650 ms stabilization deadline and OCR names.
 5. Resolve labels and one quote batch through the daemon.
 6. Resolve ducats, vault state, player state, set graph, and visible assets.
 7. Render complete cards.
 
+Memory order is provisional until verified across one-to-four-player reward screens. Incidents log
+raw memory order; the overlay displays that same order, making mismatches visible during testing.
+
+`wfcli companion capture arm relic-reward` persists a synchronized image, resolved reward-name
+matches, direct pointer references, a bounded Scaleform graph, and metadata for one event. The arm
+expires after 30 minutes, cancellation, or game exit.
+
 Selection flow:
 
 1. Detect selection open/close events.
-2. OCR only the era selector.
-3. Ask the daemon to rank owned relics.
-4. Render immediately from cached data and refresh prices asynchronously.
+2. Probe the bounded Scaleform registry and classify dynamic era labels.
+3. If validation fails, capture and OCR the era at the 500 ms stabilization deadline.
+4. Ask the daemon to rank owned relics.
+5. Render immediately from cached data and refresh prices asynchronously.
 
 `Forma Blueprint` is local because it is not tradable. Dynamic image behavior
 is documented in [`assets.md`](assets.md); inventory indexing is documented in
@@ -160,8 +175,12 @@ No idle render loop runs.
 
 ## Development
 
-Build and test commands live in [`workflows.md`](workflows.md). Preview commands
-live in the [user companion guide](../companion.md#previews). AlecaFrame
+Build and test commands live in [`workflows.md`](workflows.md). `wfinspect game ui` provides
+bounded `state` and `relic` probes plus explicit `movies`, `find`, and `capture` diagnostics.
+`find` searches exact UTF-8 and UTF-16LE text plus direct pointer references; `capture` can include
+the same terms in its bounded artifact. Only `movies`, `find`, and `capture` perform full scans.
+Preview commands live in the
+[user companion guide](../companion.md#previews). AlecaFrame
 reference setup is documented beside the
 [`aleca-layout` tool](../../tools/aleca-layout/README.md).
 

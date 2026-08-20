@@ -16,6 +16,7 @@ use tokio::net::UnixStream;
 use tokio::sync::mpsc;
 use tokio::time::{self, MissedTickBehavior};
 
+use crate::relic::{CaptureArm, Trigger as RelicTrigger};
 use crate::{UiEvent, incident};
 
 include!(concat!(env!("OUT_DIR"), "/local_protocol.rs"));
@@ -31,6 +32,12 @@ const STOP_CHECK_INTERVAL: Duration = Duration::from_secs(1);
 pub(crate) type OutboundSender = mpsc::UnboundedSender<Outbound>;
 type OutboundReceiver = mpsc::UnboundedReceiver<Outbound>;
 type ReplySender = std_mpsc::Sender<Result<Value, String>>;
+
+#[derive(Clone)]
+struct ServerEvents {
+    ui: std_mpsc::Sender<UiEvent>,
+    relic: std_mpsc::Sender<RelicTrigger>,
+}
 
 #[derive(Debug)]
 pub(crate) struct RequestReply {
@@ -218,17 +225,19 @@ fn request_once(
 
 pub(crate) fn spawn(
     ui: std_mpsc::Sender<UiEvent>,
+    relic: std_mpsc::Sender<RelicTrigger>,
     stopping: Arc<AtomicBool>,
     mode: &'static str,
 ) -> OutboundSender {
     let (outbound_tx, outbound_rx) = mpsc::unbounded_channel();
+    let events = ServerEvents { ui, relic };
     thread::spawn(move || {
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_io()
             .enable_time()
             .build();
         match runtime {
-            Ok(runtime) => runtime.block_on(connection_loop(outbound_rx, ui, stopping, mode)),
+            Ok(runtime) => runtime.block_on(connection_loop(outbound_rx, events, stopping, mode)),
             Err(error) => incident::error("daemon.runtime_failed", error.to_string()),
         }
     });
@@ -237,7 +246,7 @@ pub(crate) fn spawn(
 
 async fn connection_loop(
     mut outbound: OutboundReceiver,
-    ui: std_mpsc::Sender<UiEvent>,
+    events: ServerEvents,
     stopping: Arc<AtomicBool>,
     mode: &'static str,
 ) {
@@ -262,7 +271,7 @@ async fn connection_loop(
                     &mut outbound,
                     &mut latest,
                     &mut queued,
-                    &ui,
+                    &events,
                     &stopping,
                     mode,
                 )
@@ -270,7 +279,7 @@ async fn connection_loop(
                 {
                     let daemon_outdated = error.kind() == io::ErrorKind::Unsupported;
                     incident::warn("daemon.disconnected", error.to_string());
-                    let _ = ui.send(UiEvent::Disconnected(error.to_string()));
+                    let _ = events.ui.send(UiEvent::Disconnected(error.to_string()));
                     if daemon_outdated {
                         ensure_daemon();
                     }
@@ -281,7 +290,7 @@ async fn connection_loop(
                     "daemon.connect_failed",
                     format!("{}: {error}", path.display()),
                 );
-                let _ = ui.send(UiEvent::Disconnected(format!(
+                let _ = events.ui.send(UiEvent::Disconnected(format!(
                     "{}: {error}",
                     path.display()
                 )));
@@ -330,7 +339,7 @@ async fn connection_session(
     outbound: &mut OutboundReceiver,
     latest: &mut BTreeMap<&'static str, Value>,
     queued: &mut VecDeque<Outbound>,
-    ui: &std_mpsc::Sender<UiEvent>,
+    events: &ServerEvents,
     stopping: &AtomicBool,
     mode: &'static str,
 ) -> io::Result<()> {
@@ -362,7 +371,7 @@ async fn connection_session(
         "daemon.connected",
         format!("local_envelope={ENVELOPE_VERSION} mode={mode}"),
     );
-    let _ = ui.send(UiEvent::Connected(hello));
+    let _ = events.ui.send(UiEvent::Connected(hello));
 
     send_message(
         &mut writer,
@@ -410,7 +419,7 @@ async fn connection_session(
         reader: &mut reader,
         outbound,
         latest,
-        ui,
+        events,
         stopping,
         next_id,
         pending: &mut pending,
@@ -426,7 +435,7 @@ struct ActiveSession<'a, R, W> {
     reader: &'a mut Lines<BufReader<R>>,
     outbound: &'a mut OutboundReceiver,
     latest: &'a mut BTreeMap<&'static str, Value>,
-    ui: &'a std_mpsc::Sender<UiEvent>,
+    events: &'a ServerEvents,
     stopping: &'a AtomicBool,
     next_id: u64,
     pending: &'a mut BTreeMap<u64, RequestReply>,
@@ -443,7 +452,7 @@ where
         reader,
         outbound,
         latest,
-        ui,
+        events,
         stopping,
         mut next_id,
         pending,
@@ -469,7 +478,7 @@ where
                 None => return Ok(()),
             },
             line = reader.next_line() => match line? {
-                Some(line) => handle_server_message(&line, ui, pending),
+                Some(line) => handle_server_message(&line, events, pending),
                 None => {
                     return Err(io::Error::new(
                         io::ErrorKind::ConnectionReset,
@@ -787,7 +796,7 @@ where
 
 fn handle_server_message(
     line: &str,
-    ui: &std_mpsc::Sender<UiEvent>,
+    events: &ServerEvents,
     pending: &mut BTreeMap<u64, RequestReply>,
 ) {
     let Ok(message) = serde_json::from_str::<Value>(line) else {
@@ -798,29 +807,31 @@ fn handle_server_message(
         let command = data
             .and_then(|data| data.get("command"))
             .and_then(Value::as_str);
-        let visible = data
-            .and_then(|data| data.get("visible"))
-            .and_then(Value::as_bool);
-        match (command, visible) {
-            (Some("overlay"), Some(visible)) => {
-                let _ = ui.send(UiEvent::OverlayVisible(visible));
+        match command {
+            Some("overlay") => {
+                if let Some(visible) = command_bool(data, "visible") {
+                    let _ = events.ui.send(UiEvent::OverlayVisible(visible));
+                }
             }
-            (Some("hud"), Some(visible)) => {
-                let _ = ui.send(UiEvent::HudVisible(visible));
+            Some("hud") => {
+                if let Some(visible) = command_bool(data, "visible") {
+                    let _ = events.ui.send(UiEvent::HudVisible(visible));
+                }
             }
+            Some("capture") => route_capture_command(data, &events.relic),
             _ => {}
         }
         return;
     }
     if message.get("event").and_then(Value::as_str) == Some("dataset") {
-        send_snapshot(&message, ui);
+        send_snapshot(&message, &events.ui);
         return;
     }
     if message.get("event").and_then(Value::as_str) == Some("asset") {
         if let Some(data) = message.get("data")
             && let Ok(refresh) = serde_json::from_value::<crate::relic::AssetRefresh>(data.clone())
         {
-            let _ = ui.send(UiEvent::AssetRefreshed(refresh));
+            let _ = events.ui.send(UiEvent::AssetRefreshed(refresh));
         }
         return;
     }
@@ -841,7 +852,45 @@ fn handle_server_message(
         return;
     }
     if matches!(message.get("id").and_then(Value::as_u64), Some(2 | 3)) {
-        send_snapshot(&message, ui);
+        send_snapshot(&message, &events.ui);
+    }
+}
+
+fn command_bool(data: Option<&Value>, key: &str) -> Option<bool> {
+    data.and_then(|data| data.get(key)).and_then(Value::as_bool)
+}
+
+fn route_capture_command(data: Option<&Value>, relic: &std_mpsc::Sender<RelicTrigger>) {
+    let action = data
+        .and_then(|data| data.get("action"))
+        .and_then(Value::as_str);
+    let target = data
+        .and_then(|data| data.get("target"))
+        .and_then(Value::as_str);
+    match (action, target) {
+        (Some("arm"), Some("relic_reward")) => {
+            let Some(directory) = data
+                .and_then(|data| data.get("directory"))
+                .and_then(Value::as_str)
+                .filter(|directory| !directory.is_empty())
+            else {
+                incident::warn("relic.capture_command_rejected", "missing directory");
+                return;
+            };
+            let timeout_ms = data
+                .and_then(|data| data.get("timeout_ms"))
+                .and_then(Value::as_u64)
+                .unwrap_or(30 * 60 * 1000)
+                .clamp(1_000, 24 * 60 * 60 * 1000);
+            let _ = relic.send(RelicTrigger::ArmCapture(CaptureArm {
+                directory: PathBuf::from(directory),
+                timeout: Duration::from_millis(timeout_ms),
+            }));
+        }
+        (Some("cancel"), None | Some("relic_reward")) => {
+            let _ = relic.send(RelicTrigger::CancelCapture);
+        }
+        _ => incident::warn("relic.capture_command_rejected", "invalid capture command"),
     }
 }
 
@@ -934,6 +983,16 @@ pub(crate) fn daemon_socket_path() -> PathBuf {
 mod tests {
     use super::*;
 
+    fn server_events() -> (
+        ServerEvents,
+        std_mpsc::Receiver<UiEvent>,
+        std_mpsc::Receiver<RelicTrigger>,
+    ) {
+        let (ui, ui_events) = std_mpsc::channel();
+        let (relic, relic_events) = std_mpsc::channel();
+        (ServerEvents { ui, relic }, ui_events, relic_events)
+    }
+
     #[test]
     fn records_latest_value_for_reconnect_replay() {
         let (sender, mut receiver) = mpsc::unbounded_channel();
@@ -996,7 +1055,7 @@ mod tests {
             let mut reader = BufReader::new(reader).lines();
             let mut server = BufReader::new(server).lines();
             let (sender, mut outbound) = mpsc::unbounded_channel();
-            let (ui, _events) = std_mpsc::channel();
+            let (events, _ui_events, _relic_events) = server_events();
             let stopping = AtomicBool::new(false);
             let mut latest = BTreeMap::new();
             let mut pending = BTreeMap::new();
@@ -1005,7 +1064,7 @@ mod tests {
                 reader: &mut reader,
                 outbound: &mut outbound,
                 latest: &mut latest,
-                ui: &ui,
+                events: &events,
                 stopping: &stopping,
                 next_id: 10,
                 pending: &mut pending,
@@ -1157,12 +1216,12 @@ mod tests {
 
     #[test]
     fn routes_correlated_request_reply() {
-        let (ui, _events) = std_mpsc::channel();
+        let (events, _ui_events, _relic_events) = server_events();
         let (reply, result) = std_mpsc::channel();
         let mut pending = BTreeMap::from([(17, RequestReply::new(reply))]);
         handle_server_message(
             r#"{"id":17,"ok":true,"data":{"matches":[]}}"#,
-            &ui,
+            &events,
             &mut pending,
         );
         assert_eq!(result.recv().unwrap().unwrap()["id"], 17);
@@ -1171,44 +1230,65 @@ mod tests {
 
     #[test]
     fn routes_overlay_and_hud_visibility_independently() {
-        let (ui, events) = std_mpsc::channel();
+        let (events, ui_events, _relic_events) = server_events();
         let mut pending = BTreeMap::new();
 
         handle_server_message(
             r#"{"event":"command","data":{"command":"overlay","visible":false}}"#,
-            &ui,
+            &events,
             &mut pending,
         );
         assert!(matches!(
-            events.recv().unwrap(),
+            ui_events.recv().unwrap(),
             UiEvent::OverlayVisible(false)
         ));
 
         handle_server_message(
             r#"{"event":"command","data":{"command":"hud","visible":true}}"#,
-            &ui,
+            &events,
             &mut pending,
         );
-        assert!(matches!(events.recv().unwrap(), UiEvent::HudVisible(true)));
+        assert!(matches!(
+            ui_events.recv().unwrap(),
+            UiEvent::HudVisible(true)
+        ));
     }
 
     #[test]
     fn routes_asset_refresh_event() {
-        let (ui, events) = std_mpsc::channel();
+        let (events, ui_events, _relic_events) = server_events();
         let mut pending = BTreeMap::new();
 
         handle_server_message(
             r#"{"event":"asset","data":{"source":"market","image_name":"item.webp","path":"/cache/item.webp","digest":"new"}}"#,
-            &ui,
+            &events,
             &mut pending,
         );
 
-        let UiEvent::AssetRefreshed(refresh) = events.recv().unwrap() else {
+        let UiEvent::AssetRefreshed(refresh) = ui_events.recv().unwrap() else {
             panic!("expected asset refresh");
         };
         assert_eq!(refresh.source, "market");
         assert_eq!(refresh.image_name, "item.webp");
         assert_eq!(refresh.digest, "new");
+    }
+
+    #[test]
+    fn routes_armed_relic_capture() {
+        let (events, _ui_events, triggers) = server_events();
+        let mut pending = BTreeMap::new();
+
+        handle_server_message(
+            r#"{"event":"command","data":{"command":"capture","action":"arm","target":"relic_reward","directory":"/tmp/reward","timeout_ms":9000}}"#,
+            &events,
+            &mut pending,
+        );
+
+        let RelicTrigger::ArmCapture(request) = triggers.recv().unwrap() else {
+            panic!("expected armed capture");
+        };
+        assert_eq!(request.directory, PathBuf::from("/tmp/reward"));
+        assert_eq!(request.timeout, Duration::from_secs(9));
     }
 
     #[test]

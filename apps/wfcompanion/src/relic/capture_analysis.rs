@@ -10,13 +10,16 @@ use super::{Candidate, Geometry, TESSERACT_ARGUMENTS, Trigger, capture};
 
 pub(super) fn capture_trigger(trigger: &Trigger) -> Result<DynamicImage, String> {
     match trigger {
-        Trigger::Rewards => capture::relic_window(),
+        Trigger::Rewards { .. } => capture::relic_window(),
         Trigger::Screenshot(path) => {
             image::open(path).map_err(|error| format!("could not read {}: {error}", path.display()))
         }
-        Trigger::Suggestions | Trigger::CloseSuggestions | Trigger::DismissSuggestions => {
-            Err("trigger does not contain a reward capture".to_owned())
-        }
+        Trigger::Suggestions { .. }
+        | Trigger::CloseSuggestions
+        | Trigger::DismissSuggestions
+        | Trigger::ArmCapture(_)
+        | Trigger::CancelCapture
+        | Trigger::GameStopped => Err("trigger does not contain a reward capture".to_owned()),
     }
 }
 

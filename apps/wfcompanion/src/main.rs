@@ -153,7 +153,7 @@ fn run_command(command: Command) -> Result<(), String> {
         Command::Probe => {
             println!(
                 "{}",
-                serde_json::to_string(&observer::find_warframe()).unwrap()
+                serde_json::to_string(&wfcompanion::game_observer::find_warframe()).unwrap()
             );
             Ok(())
         }
@@ -219,8 +219,8 @@ fn run_overlay(
         "process.start",
         format!("mode={mode} version={}", env!("WFCLI_VERSION")),
     );
-    let outbound = daemon::spawn(ui_tx.clone(), Arc::clone(&stopping), mode);
     let (relic_tx, relic_rx) = mpsc::channel();
+    let outbound = daemon::spawn(ui_tx.clone(), relic_tx.clone(), Arc::clone(&stopping), mode);
     observer::spawn(outbound.clone(), relic_tx.clone(), Arc::clone(&stopping));
     relic::spawn(
         relic_rx,

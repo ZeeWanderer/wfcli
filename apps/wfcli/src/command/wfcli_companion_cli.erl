@@ -5,8 +5,12 @@
 
 -export([run/1, help/0, help/1, known_commands/0]).
 
+-define(COMPANION_RECONNECT_RETRIES, 30).
+-define(COMPANION_RECONNECT_DELAY_MS, 100).
+
 -ifdef(TEST).
--export([format_local/1, preview_directory/1]).
+-export([capture_directory/1, format_local/1, preview_directory/1,
+         retry_companion_command/3]).
 -endif.
 
 -doc "Manage companion lifecycle, setup, and diagnostics.".
@@ -26,6 +30,7 @@ run(Args) ->
         ["probe"] -> diagnostic(["probe"]);
         ["paths"] -> wfcli_path_cli:run(["wfcompanion"]);
         ["screenshot" | Rest] -> screenshot(Rest);
+        ["capture" | Rest] -> capture(Rest);
         ["relic-ocr" | Rest] -> diagnostic(["relic-ocr" | Rest]);
         ["preview" | Rest] -> preview(Rest);
         ["logs"] -> diagnostic(["logs"]);
@@ -53,6 +58,11 @@ help(["screenshot" | _]) ->
     io:put_chars(
       "USAGE:\n"
       "  wfcli companion screenshot [FILE]\n");
+help(["capture" | _]) ->
+    io:put_chars(
+      "USAGE:\n"
+      "  wfcli companion capture arm relic-reward [DIRECTORY]\n"
+      "  wfcli companion capture cancel\n");
 help(["relic-ocr" | _]) ->
     io:put_chars(
       "USAGE:\n"
@@ -71,7 +81,7 @@ help([Command | _]) ->
 -spec known_commands() -> [string()].
 known_commands() ->
     ["status", "start", "stop", "restart", "show", "hide", "hud", "probe",
-     "screenshot", "relic-ocr", "preview", "logs", "paths", "install", "uninstall",
+     "screenshot", "capture", "relic-ocr", "preview", "logs", "paths", "install", "uninstall",
      "help", "--help", "-h"].
 
 status() ->
@@ -142,7 +152,7 @@ stop_managed_or_refuse(Details) ->
 
 set_visibility(CommandName, Label, Visible) ->
     Command = #{<<"command">> => CommandName, <<"visible">> => Visible},
-    case wfcli_client:call({companion_command, Command}) of
+    case companion_command(Command) of
         {ok, {ok, 0}} -> fail("no wfcompanion is connected");
         {ok, {ok, Count}} ->
             State = case Visible of true -> "shown"; false -> "hidden" end,
@@ -220,6 +230,50 @@ screenshot(Args) ->
             diagnostic(["screenshot" | Args]);
         _ ->
             fail("screenshot accepts one output path")
+    end.
+
+capture(["arm", "relic-reward"]) ->
+    capture(["arm", "relic-reward", capture_directory(erlang:system_time(millisecond))]);
+capture(["arm", "relic-reward", Directory]) ->
+    Output = filename:absname(Directory),
+    send_capture_command(
+      #{<<"command">> => <<"capture">>,
+        <<"action">> => <<"arm">>,
+        <<"target">> => <<"relic_reward">>,
+        <<"directory">> => unicode:characters_to_binary(Output),
+        <<"timeout_ms">> => 30 * 60 * 1000},
+      io_lib:format("relic-reward evidence capture requested~n  output: ~s", [Output]));
+capture(["cancel"]) ->
+    send_capture_command(
+      #{<<"command">> => <<"capture">>,
+        <<"action">> => <<"cancel">>,
+        <<"target">> => <<"relic_reward">>},
+      "relic-reward evidence capture cancelled");
+capture(_Args) ->
+    fail("capture requires arm relic-reward [DIRECTORY] or cancel").
+
+capture_directory(Timestamp) ->
+    wfcli_paths:cache_file(
+      filename:join("captures", "relic-reward-" ++ integer_to_list(Timestamp))).
+
+send_capture_command(Command, Message) ->
+    case companion_command(Command) of
+        {ok, {ok, 0}} -> fail("no wfcompanion is connected");
+        {ok, {ok, Count}} -> io:format("~ts on ~p companion(s)~n", [Message, Count]);
+        {error, Reason} -> fail(wfcli_client:format_error(Reason))
+    end.
+
+companion_command(Command) ->
+    Call = fun() -> wfcli_client:call({companion_command, Command}) end,
+    retry_companion_command(
+      Call, ?COMPANION_RECONNECT_RETRIES, ?COMPANION_RECONNECT_DELAY_MS).
+
+retry_companion_command(Call, Attempts, Delay) ->
+    case Call() of
+        {ok, {ok, 0}} when Attempts > 0 ->
+            timer:sleep(Delay),
+            retry_companion_command(Call, Attempts - 1, Delay);
+        Result -> Result
     end.
 
 preview(["list"]) -> diagnostic(["preview", "list"]);

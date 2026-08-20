@@ -1,8 +1,9 @@
-use std::path::Path;
+use std::fs;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, mpsc};
 use std::thread;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use crate::UiEvent;
 use crate::assets;
@@ -10,6 +11,7 @@ use crate::capture;
 use crate::daemon::OutboundSender;
 use crate::incident;
 use image::DynamicImage;
+use wfcompanion::game_observer;
 
 mod capture_analysis;
 mod enrichment;
@@ -18,7 +20,7 @@ mod model;
 #[cfg(test)]
 use model::Suggestion;
 pub(crate) use model::{
-    Account, Asset, AssetRefresh, Reward, Rewards, Scene, SetPart, Suggestions, Trigger,
+    Account, Asset, AssetRefresh, CaptureArm, Reward, Rewards, Scene, SetPart, Suggestions, Trigger,
 };
 
 use capture_analysis::{capture_trigger, detect_player_count, read_candidate, suggestion_era};
@@ -26,14 +28,16 @@ use capture_analysis::{capture_trigger, detect_player_count, read_candidate, sug
 use capture_analysis::{clean_label, parse_suggestion_era, reward_regions};
 #[cfg(test)]
 use enrichment::{
-    AssetSpec, ContextReply, MarketMatch, accepted_match, candidate_score, embedded_asset, is_forma,
+    AssetSpec, ContextReply, MarketMatch, accepted_match, candidate_score, embedded_asset,
 };
-use enrichment::{contextual_rewards, resolve_assets, resolve_reward_candidates, reward_context};
+use enrichment::{
+    contextual_rewards, is_forma, resolve_assets, resolve_reward_candidates, reward_context,
+};
 
 const REWARD_CAPTURE_DELAY: Duration = Duration::from_millis(650);
 const REWARD_TRIGGER_DEDUPLICATION: Duration = Duration::from_secs(30);
 const RETRY_DELAY: Duration = Duration::from_millis(1500);
-const SUGGESTION_CAPTURE_DELAY: Duration = Duration::from_millis(750);
+const SUGGESTION_CAPTURE_DELAY: Duration = Duration::from_millis(500);
 const SUGGESTION_RETRY_DELAY: Duration = Duration::from_millis(1000);
 const SUGGESTION_TRIGGER_DEDUPLICATION: Duration = Duration::from_secs(2);
 const SUGGESTION_REWARD_FALLBACK: Duration = Duration::from_secs(23);
@@ -149,6 +153,146 @@ struct Candidate {
     labels: Vec<String>,
 }
 
+struct ArmedCapture {
+    directory: PathBuf,
+    armed_at: Instant,
+    armed_at_unix_ms: u128,
+    expires_at: Instant,
+    game: Option<game_observer::ProcessIdentity>,
+}
+
+struct PendingCapture {
+    armed: ArmedCapture,
+    game_pid: u32,
+    observed_at: Instant,
+    observed_at_unix_ms: u128,
+    image_captured_at_unix_ms: Option<u128>,
+    armed_to_capture_ms: Option<u128>,
+    trigger_to_capture_ms: Option<u128>,
+}
+
+impl ArmedCapture {
+    fn new(request: &CaptureArm) -> Self {
+        let game = match game_observer::current_process_identity() {
+            Ok(identity) => identity,
+            Err(error) => {
+                incident::warn("relic.capture_identity_failed", error);
+                None
+            }
+        };
+        let now = Instant::now();
+        Self {
+            directory: request.directory.clone(),
+            armed_at: now,
+            armed_at_unix_ms: unix_time_millis(),
+            expires_at: now + request.timeout,
+            game,
+        }
+    }
+
+    fn expired(&self) -> bool {
+        Instant::now() >= self.expires_at
+    }
+}
+
+fn begin_armed_capture(
+    armed: ArmedCapture,
+    game_pid: u32,
+    observed_at: Instant,
+    observed_at_unix_ms: u128,
+) -> PendingCapture {
+    PendingCapture {
+        armed,
+        game_pid,
+        observed_at,
+        observed_at_unix_ms,
+        image_captured_at_unix_ms: None,
+        armed_to_capture_ms: None,
+        trigger_to_capture_ms: None,
+    }
+}
+
+impl PendingCapture {
+    fn image_captured(&mut self) {
+        self.image_captured_at_unix_ms = Some(unix_time_millis());
+        self.armed_to_capture_ms = Some(self.armed.armed_at.elapsed().as_millis());
+        self.trigger_to_capture_ms = Some(self.observed_at.elapsed().as_millis());
+    }
+}
+
+fn finish_armed_capture(pending: PendingCapture, image: Option<DynamicImage>, terms: Vec<String>) {
+    thread::spawn(move || {
+        let ui =
+            game_observer::ui::capture_evidence(pending.game_pid, &pending.armed.directory, &terms);
+        match save_armed_capture(pending, image.as_ref(), ui) {
+            Ok(directory) => incident::info(
+                "relic.capture_saved",
+                format!("target=relic_reward output={}", directory.display()),
+            ),
+            Err(error) => incident::error("relic.capture_save_failed", error),
+        }
+    });
+}
+
+fn save_armed_capture(
+    pending: PendingCapture,
+    image: Option<&DynamicImage>,
+    ui: Result<game_observer::ui::EvidenceSummary, String>,
+) -> Result<PathBuf, String> {
+    let armed = pending.armed;
+    fs::create_dir_all(&armed.directory).map_err(|error| {
+        format!(
+            "could not create capture directory {}: {error}",
+            armed.directory.display()
+        )
+    })?;
+    let image_metadata = if let Some(image) = image {
+        let image_path = armed.directory.join("relic-reward.png");
+        image
+            .save(&image_path)
+            .map_err(|error| format!("could not save {}: {error}", image_path.display()))?;
+        Some(serde_json::json!({
+            "path": image_path,
+            "width": image.width(),
+            "height": image.height(),
+        }))
+    } else {
+        None
+    };
+    let metadata_path = armed.directory.join("metadata.json");
+    let ui_metadata = match ui {
+        Ok(summary) => serde_json::json!({"status": "captured", "summary": summary}),
+        Err(error) => serde_json::json!({"status": "failed", "error": error}),
+    };
+    let metadata = serde_json::json!({
+        "schema": 2,
+        "kind": "relic_reward",
+        "trigger": "debug_output",
+        "game_pid": pending.game_pid,
+        "armed_at_unix_ms": armed.armed_at_unix_ms,
+        "observed_at_unix_ms": pending.observed_at_unix_ms,
+        "image_captured_at_unix_ms": pending.image_captured_at_unix_ms,
+        "saved_at_unix_ms": unix_time_millis(),
+        "armed_to_capture_ms": pending.armed_to_capture_ms,
+        "trigger_to_capture_ms": pending.trigger_to_capture_ms,
+        "image": image_metadata,
+        "game": armed.game,
+        "ui_capture": ui_metadata,
+    });
+    let encoded = serde_json::to_vec_pretty(&metadata)
+        .map_err(|error| format!("could not encode capture metadata: {error}"))?;
+    fs::write(&metadata_path, encoded)
+        .map_err(|error| format!("could not write {}: {error}", metadata_path.display()))?;
+    Ok(armed.directory)
+}
+
+fn unix_time_millis() -> u128 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis()
+}
+
 pub(crate) fn spawn(
     triggers: mpsc::Receiver<Trigger>,
     daemon: OutboundSender,
@@ -162,22 +306,62 @@ pub(crate) fn spawn(
         let mut last_suggestion_opened: Option<Instant> = None;
         let mut suggestion_after_reward = false;
         let mut suggestion_dismissed = false;
+        let mut armed_capture: Option<ArmedCapture> = None;
         let suggestion_generation = Arc::new(AtomicU64::new(0));
         while !stopping.load(Ordering::Relaxed) {
             let trigger = match triggers.recv_timeout(Duration::from_millis(200)) {
                 Ok(trigger) => trigger,
-                Err(mpsc::RecvTimeoutError::Timeout) => continue,
+                Err(mpsc::RecvTimeoutError::Timeout) => {
+                    if armed_capture.as_ref().is_some_and(ArmedCapture::expired) {
+                        incident::info("relic.capture_arm_expired", "relic_reward");
+                        armed_capture = None;
+                    }
+                    continue;
+                }
                 Err(mpsc::RecvTimeoutError::Disconnected) => return,
             };
+            match &trigger {
+                Trigger::ArmCapture(request) => {
+                    armed_capture = Some(ArmedCapture::new(request));
+                    incident::info(
+                        "relic.capture_armed",
+                        format!(
+                            "target=relic_reward output={} timeout_ms={}",
+                            request.directory.display(),
+                            request.timeout.as_millis()
+                        ),
+                    );
+                    continue;
+                }
+                Trigger::CancelCapture => {
+                    if armed_capture.take().is_some() {
+                        incident::info("relic.capture_arm_cancelled", "relic_reward");
+                    }
+                    continue;
+                }
+                Trigger::GameStopped => {
+                    if armed_capture.take().is_some() {
+                        incident::info("relic.capture_arm_cancelled", "game_stopped");
+                    }
+                    continue;
+                }
+                _ => {}
+            }
             let trigger_name = match &trigger {
-                Trigger::Rewards => "rewards",
-                Trigger::Suggestions => "suggestions",
+                Trigger::Rewards { .. } => "rewards",
+                Trigger::Suggestions { .. } => "suggestions",
                 Trigger::CloseSuggestions => "close_suggestions",
                 Trigger::DismissSuggestions => "dismiss_suggestions",
                 Trigger::Screenshot(_) => "screenshot",
+                Trigger::ArmCapture(_) | Trigger::CancelCapture | Trigger::GameStopped => {
+                    unreachable!()
+                }
             };
-            match trigger {
-                Trigger::Suggestions => {
+            match &trigger {
+                Trigger::Suggestions {
+                    game_pid,
+                    observed_at,
+                } => {
                     if suggestion_dismissed {
                         incident::info("relic.suggestion_dismissed", "current_context");
                         continue;
@@ -198,6 +382,8 @@ pub(crate) fn spawn(
                     match show_suggestions(
                         &daemon,
                         &ui,
+                        *game_pid,
+                        *observed_at,
                         reward_recent
                             .then_some(last_suggestion_era.as_deref())
                             .flatten(),
@@ -257,22 +443,96 @@ pub(crate) fn spawn(
                     incident::info("relic.suggestion_dismiss", "current_context");
                     continue;
                 }
-                Trigger::Rewards => {
+                Trigger::Rewards { .. } => {
                     suggestion_dismissed = false;
                 }
                 Trigger::Screenshot(_) => {}
+                Trigger::ArmCapture(_) | Trigger::CancelCapture | Trigger::GameStopped => {
+                    unreachable!()
+                }
             }
             suggestion_generation.fetch_add(1, Ordering::AcqRel);
-            let live_capture = matches!(&trigger, Trigger::Rewards);
+            let live_capture = matches!(&trigger, Trigger::Rewards { .. });
             if live_capture && reject_duplicate_reward_trigger(&mut last_reward_trigger) {
-                incident::info("relic.trigger_duplicate", &trigger_name);
+                incident::info("relic.trigger_duplicate", trigger_name);
                 continue;
             }
-            incident::info("relic.trigger", &trigger_name);
-            if live_capture {
-                thread::sleep(REWARD_CAPTURE_DELAY);
+            incident::info("relic.trigger", trigger_name);
+            let mut pending_capture = if let Trigger::Rewards {
+                game_pid,
+                observed_at,
+                observed_at_unix_ms,
+            } = &trigger
+            {
+                armed_capture.take().map(|armed| {
+                    begin_armed_capture(armed, *game_pid, *observed_at, *observed_at_unix_ms)
+                })
+            } else {
+                None
+            };
+            let scene_deadline = live_capture.then(|| Instant::now() + REWARD_SCENE_LIFETIME);
+            let started = Instant::now();
+            if let Trigger::Rewards {
+                game_pid,
+                observed_at,
+                ..
+            } = &trigger
+            {
+                let receiver = start_reward_memory_probe(*game_pid);
+                let remaining = REWARD_CAPTURE_DELAY.saturating_sub(observed_at.elapsed());
+                let memory = receiver.recv_timeout(remaining);
+                let memory_ms = memory
+                    .as_ref()
+                    .map(|(_, elapsed)| *elapsed)
+                    .unwrap_or_else(|_| started.elapsed().as_millis());
+                match memory {
+                    Ok((Ok(extracted), _)) => {
+                        let raw_names = extracted.names.join(" | ");
+                        let capture_terms = extracted.names.clone();
+                        incident::info(
+                            "relic.reward_memory_ready",
+                            format!(
+                                "elapsed_ms={memory_ms} scan_ms={} registered={} containers={} children={} text={} bytes={} rewards={raw_names}",
+                                extracted.scan.total_ms,
+                                extracted.scan.registered_objects,
+                                extracted.scan.containers,
+                                extracted.scan.child_objects,
+                                extracted.scan.text_objects,
+                                extracted.scan.bytes_read,
+                            ),
+                        );
+                        match resolve_memory_rewards(&daemon, extracted.names) {
+                            Ok(candidates) => {
+                                if let Some(pending) = pending_capture.take() {
+                                    finish_memory_armed_capture(pending, capture_terms);
+                                }
+                                log_reward_names("memory", started, &candidates);
+                                present_rewards(&daemon, &ui, candidates, scene_deadline, started);
+                                continue;
+                            }
+                            Err(error) => {
+                                if let Some(pending) = pending_capture.take() {
+                                    finish_memory_armed_capture(pending, Vec::new());
+                                }
+                                incident::error("relic.context_failed", &error);
+                                send_scene(&ui, Scene::Error(error), scene_deadline);
+                                last_reward_trigger = None;
+                                continue;
+                            }
+                        }
+                    }
+                    Ok((Err(error), _)) => incident::warn(
+                        "relic.reward_memory_failed",
+                        format!("elapsed_ms={memory_ms} {error}"),
+                    ),
+                    Err(error) => incident::warn(
+                        "relic.reward_memory_failed",
+                        format!("elapsed_ms={memory_ms} {error}"),
+                    ),
+                }
+                wait_for_stabilization(*observed_at, REWARD_CAPTURE_DELAY);
             }
-            let image = match capture_trigger(&trigger) {
+            let mut image = match capture_trigger(&trigger) {
                 Ok(image) => image,
                 Err(first_error) if live_capture => {
                     incident::warn("relic.capture_retry", &first_error);
@@ -280,6 +540,9 @@ pub(crate) fn spawn(
                     match capture_trigger(&trigger) {
                         Ok(image) => image,
                         Err(error) => {
+                            if let Some(pending) = pending_capture.take() {
+                                finish_armed_capture(pending, None, Vec::new());
+                            }
                             incident::error("relic.capture_failed", &error);
                             eprintln!("wfcompanion: relic capture failed: {error}");
                             send_scene(&ui, Scene::Error(error), None);
@@ -289,6 +552,9 @@ pub(crate) fn spawn(
                     }
                 }
                 Err(error) => {
+                    if let Some(pending) = pending_capture.take() {
+                        finish_armed_capture(pending, None, Vec::new());
+                    }
                     incident::error("relic.capture_failed", &error);
                     eprintln!("wfcompanion: relic capture failed: {error}");
                     send_scene(&ui, Scene::Error(error), None);
@@ -296,7 +562,9 @@ pub(crate) fn spawn(
                     continue;
                 }
             };
-            let scene_deadline = live_capture.then(|| Instant::now() + REWARD_SCENE_LIFETIME);
+            if let Some(pending) = pending_capture.as_mut() {
+                pending.image_captured();
+            }
             if live_capture {
                 send_scene(&ui, Scene::Reading, scene_deadline);
             }
@@ -304,88 +572,43 @@ pub(crate) fn spawn(
                 "relic.capture_ready",
                 format!("{}x{} source={trigger_name}", image.width(), image.height()),
             );
-            let started = Instant::now();
             let scanned = match scan_rewards(&image, &daemon) {
                 Err(first_error) if live_capture => {
                     incident::warn("relic.ocr_retry", &first_error);
                     thread::sleep(RETRY_DELAY);
-                    capture_trigger(&trigger).and_then(|retry| {
-                        incident::info(
-                            "relic.capture_ready",
-                            format!("{}x{} source=retry", retry.width(), retry.height()),
-                        );
-                        scan_rewards(&retry, &daemon)
-                    })
+                    match capture_trigger(&trigger) {
+                        Ok(retry) => {
+                            image = retry;
+                            if let Some(pending) = pending_capture.as_mut() {
+                                pending.image_captured();
+                            }
+                            incident::info(
+                                "relic.capture_ready",
+                                format!("{}x{} source=retry", image.width(), image.height()),
+                            );
+                            scan_rewards(&image, &daemon)
+                        }
+                        Err(error) => Err(error),
+                    }
                 }
                 result => result,
             };
             match scanned {
                 Ok(candidates) => {
-                    let names = candidates
-                        .iter()
-                        .map(|reward| reward.name.as_str())
-                        .collect::<Vec<_>>()
-                        .join(" | ");
-                    incident::info(
-                        "relic.names_ready",
-                        format!(
-                            "elapsed_ms={} rewards={names}",
-                            started.elapsed().as_millis()
-                        ),
-                    );
-                    send_scene(
-                        &ui,
-                        Scene::Rewards(Rewards {
-                            items: candidates.clone(),
-                            account: Account::default(),
-                        }),
-                        scene_deadline,
-                    );
-                    match reward_context(&daemon, &candidates) {
-                        Ok(Some(context)) => {
-                            let contextual = contextual_rewards(
-                                candidates.clone(),
-                                &context,
-                                &std::collections::BTreeMap::new(),
-                            );
-                            incident::info(
-                                "relic.context_ready",
-                                format!("elapsed_ms={}", started.elapsed().as_millis()),
-                            );
-                            send_scene(&ui, Scene::Rewards(contextual.clone()), scene_deadline);
-
-                            let assets = resolve_assets(&daemon, &context);
-                            let complete = contextual_rewards(candidates, &context, &assets);
-                            if complete != contextual {
-                                incident::info(
-                                    "relic.assets_ready",
-                                    format!(
-                                        "elapsed_ms={} assets={}",
-                                        started.elapsed().as_millis(),
-                                        assets.len()
-                                    ),
-                                );
-                                send_scene(&ui, Scene::Rewards(complete), scene_deadline);
-                            }
-                            eprintln!(
-                                "wfcompanion: relic reward scene ready in {} ms",
-                                started.elapsed().as_millis()
-                            );
-                        }
-                        Ok(None) => incident::info(
-                            "relic.context_ready",
-                            format!(
-                                "elapsed_ms={} market=not_required",
-                                started.elapsed().as_millis()
-                            ),
-                        ),
-                        Err(error) => {
-                            incident::error("relic.context_failed", &error);
-                            eprintln!("wfcompanion: relic context lookup failed: {error}");
-                        }
+                    if let Some(pending) = pending_capture.take() {
+                        let terms = candidates
+                            .iter()
+                            .map(|reward| reward.name.clone())
+                            .collect();
+                        finish_armed_capture(pending, Some(image.clone()), terms);
                     }
+                    log_reward_names("ocr", started, &candidates);
+                    present_rewards(&daemon, &ui, candidates, scene_deadline, started);
                 }
                 Err(error) => {
+                    if let Some(pending) = pending_capture.take() {
+                        finish_armed_capture(pending, Some(image.clone()), Vec::new());
+                    }
                     incident::error("relic.ocr_failed", &error);
                     eprintln!("wfcompanion: relic OCR failed: {error}");
                     send_scene(&ui, Scene::Error(error), scene_deadline);
@@ -432,14 +655,62 @@ fn ignore_suggestion_close(after_reward: bool, elapsed: Duration) -> bool {
 fn show_suggestions(
     daemon: &OutboundSender,
     ui: &mpsc::Sender<UiEvent>,
+    game_pid: u32,
+    observed_at: Instant,
     fallback_era: Option<&str>,
 ) -> Result<String, String> {
     let started = Instant::now();
-    thread::sleep(SUGGESTION_CAPTURE_DELAY);
-    let (mut era, mut capture_ms, mut ocr_ms) = timed_suggestion_era();
+    let (memory_sender, memory_receiver) = mpsc::channel();
+    thread::spawn(move || {
+        let started = Instant::now();
+        let result = game_observer::ui::probe_relic_selection(game_pid);
+        let _ = memory_sender.send((result, started.elapsed().as_millis()));
+    });
+    let remaining = SUGGESTION_CAPTURE_DELAY.saturating_sub(observed_at.elapsed());
+    let memory = memory_receiver.recv_timeout(remaining);
+    let memory_ms = memory
+        .as_ref()
+        .map(|(_, elapsed)| *elapsed)
+        .unwrap_or_else(|_| started.elapsed().as_millis());
+    let mut source = "memory";
+    let (mut era, mut capture_ms, mut ocr_ms) = match memory {
+        Ok((Ok(selection), _)) => {
+            incident::info(
+                "relic.suggestion_memory_ready",
+                format!(
+                    "era={} elapsed_ms={memory_ms} registered={} containers={} children={} text={} bytes={}",
+                    selection.era.as_str(),
+                    selection.scan.registered_objects,
+                    selection.scan.containers,
+                    selection.scan.child_objects,
+                    selection.scan.text_objects,
+                    selection.scan.bytes_read
+                ),
+            );
+            (Ok(selection.era.as_str().to_owned()), 0, 0)
+        }
+        Ok((Err(error), _)) => {
+            source = "ocr";
+            incident::warn(
+                "relic.suggestion_memory_failed",
+                format!("elapsed_ms={memory_ms} {error}"),
+            );
+            wait_for_stabilization(observed_at, SUGGESTION_CAPTURE_DELAY);
+            timed_suggestion_era()
+        }
+        Err(error) => {
+            source = "ocr";
+            incident::warn(
+                "relic.suggestion_memory_failed",
+                format!("elapsed_ms={memory_ms} {error}"),
+            );
+            wait_for_stabilization(observed_at, SUGGESTION_CAPTURE_DELAY);
+            timed_suggestion_era()
+        }
+    };
     let mut retried = false;
     if let Err(first_error) = &era {
-        incident::warn("relic.suggestion_ocr_retry", &first_error);
+        incident::warn("relic.suggestion_ocr_retry", first_error);
         thread::sleep(SUGGESTION_RETRY_DELAY);
         retried = true;
         let (retry, retry_capture_ms, retry_ocr_ms) = timed_suggestion_era();
@@ -460,12 +731,168 @@ fn show_suggestions(
     incident::info(
         "relic.suggestion_ready",
         format!(
-            "era={era} relics={} priced={priced} total_ms={total_ms} capture_ms={capture_ms} ocr_ms={ocr_ms} daemon_ms={daemon_ms} retried={retried}",
+            "era={era} source={source} relics={} priced={priced} total_ms={total_ms} memory_ms={memory_ms} capture_ms={capture_ms} ocr_ms={ocr_ms} daemon_ms={daemon_ms} retried={retried}",
             suggestions.items.len(),
         ),
     );
     send_scene(ui, Scene::Suggestions(suggestions), None);
     Ok(era)
+}
+
+type RewardMemoryResult = (Result<game_observer::ui::RelicRewardText, String>, u128);
+
+fn start_reward_memory_probe(game_pid: u32) -> mpsc::Receiver<RewardMemoryResult> {
+    let (sender, receiver) = mpsc::channel();
+    thread::spawn(move || {
+        let started = Instant::now();
+        let result = game_observer::ui::probe_relic_rewards(game_pid);
+        let _ = sender.send((result, started.elapsed().as_millis()));
+    });
+    receiver
+}
+
+fn resolve_memory_rewards(
+    daemon: &OutboundSender,
+    names: Vec<String>,
+) -> Result<Vec<Reward>, String> {
+    let candidate = memory_candidate(names.clone());
+    let count = candidate.count;
+    let resolution = resolve_reward_candidates(daemon, vec![candidate]);
+    let rewards = match resolution {
+        Ok(mut resolution) => {
+            preserve_memory_labels(&mut resolution.rewards, &names);
+            resolution.rewards
+        }
+        Err(error) if error == REWARD_IDENTIFICATION_FAILED => names
+            .into_iter()
+            .map(|name| {
+                if is_forma(&name) {
+                    let mut reward = Reward::forma();
+                    reward.name = name;
+                    reward
+                } else {
+                    Reward::unresolved(name, None, None)
+                }
+            })
+            .collect(),
+        Err(error) => return Err(error),
+    };
+    incident::info("relic.layout", format!("players={count} source=memory"));
+    Ok(rewards)
+}
+
+fn preserve_memory_labels(rewards: &mut [Reward], names: &[String]) {
+    for (reward, name) in rewards.iter_mut().zip(names) {
+        if is_forma(name) {
+            reward.name.clone_from(name);
+        }
+    }
+}
+
+fn memory_candidate(names: Vec<String>) -> Candidate {
+    Candidate {
+        geometry: Geometry::Normal,
+        count: names.len(),
+        labels: names,
+    }
+}
+
+fn finish_memory_armed_capture(mut pending: PendingCapture, terms: Vec<String>) {
+    thread::spawn(move || {
+        wait_for_stabilization(pending.observed_at, REWARD_CAPTURE_DELAY);
+        let image = match capture::relic_window() {
+            Ok(image) => {
+                pending.image_captured();
+                Some(image)
+            }
+            Err(error) => {
+                incident::warn("relic.capture_failed", error);
+                None
+            }
+        };
+        finish_armed_capture(pending, image, terms);
+    });
+}
+
+fn log_reward_names(source: &str, started: Instant, candidates: &[Reward]) {
+    let names = candidates
+        .iter()
+        .map(|reward| reward.name.as_str())
+        .collect::<Vec<_>>()
+        .join(" | ");
+    incident::info(
+        "relic.names_ready",
+        format!(
+            "source={source} elapsed_ms={} rewards={names}",
+            started.elapsed().as_millis()
+        ),
+    );
+}
+
+fn present_rewards(
+    daemon: &OutboundSender,
+    ui: &mpsc::Sender<UiEvent>,
+    candidates: Vec<Reward>,
+    scene_deadline: Option<Instant>,
+    started: Instant,
+) {
+    send_scene(
+        ui,
+        Scene::Rewards(Rewards {
+            items: candidates.clone(),
+            account: Account::default(),
+        }),
+        scene_deadline,
+    );
+    match reward_context(daemon, &candidates) {
+        Ok(Some(context)) => {
+            let contextual = contextual_rewards(
+                candidates.clone(),
+                &context,
+                &std::collections::BTreeMap::new(),
+            );
+            incident::info(
+                "relic.context_ready",
+                format!("elapsed_ms={}", started.elapsed().as_millis()),
+            );
+            send_scene(ui, Scene::Rewards(contextual.clone()), scene_deadline);
+
+            let assets = resolve_assets(daemon, &context);
+            let complete = contextual_rewards(candidates, &context, &assets);
+            if complete != contextual {
+                incident::info(
+                    "relic.assets_ready",
+                    format!(
+                        "elapsed_ms={} assets={}",
+                        started.elapsed().as_millis(),
+                        assets.len()
+                    ),
+                );
+                send_scene(ui, Scene::Rewards(complete), scene_deadline);
+            }
+            eprintln!(
+                "wfcompanion: relic reward scene ready in {} ms",
+                started.elapsed().as_millis()
+            );
+        }
+        Ok(None) => incident::info(
+            "relic.context_ready",
+            format!(
+                "elapsed_ms={} market=not_required",
+                started.elapsed().as_millis()
+            ),
+        ),
+        Err(error) => {
+            incident::error("relic.context_failed", &error);
+            eprintln!("wfcompanion: relic context lookup failed: {error}");
+        }
+    }
+}
+
+fn wait_for_stabilization(observed_at: Instant, delay: Duration) {
+    if let Some(remaining) = delay.checked_sub(observed_at.elapsed()) {
+        thread::sleep(remaining);
+    }
 }
 
 fn timed_suggestion_era() -> (Result<String, String>, u128, u128) {
@@ -619,6 +1046,87 @@ fn scan_rewards(image: &DynamicImage, daemon: &OutboundSender) -> Result<Vec<Rew
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn memory_candidate_preserves_reward_order() {
+        let candidate = memory_candidate(vec![
+            "Forma Blueprint".to_owned(),
+            "2 X Forma Blueprint".to_owned(),
+            "Burston Prime Stock".to_owned(),
+        ]);
+        assert_eq!(candidate.count, 3);
+        assert_eq!(
+            candidate.labels,
+            [
+                "Forma Blueprint",
+                "2 X Forma Blueprint",
+                "Burston Prime Stock",
+            ]
+        );
+    }
+
+    #[test]
+    fn memory_forma_label_keeps_reward_quantity() {
+        let mut rewards = vec![Reward::forma(), Reward::forma()];
+        preserve_memory_labels(
+            &mut rewards,
+            &[
+                "Forma Blueprint".to_owned(),
+                "2 X Forma Blueprint".to_owned(),
+            ],
+        );
+        assert_eq!(rewards[0].name, "Forma Blueprint");
+        assert_eq!(rewards[1].name, "2 X Forma Blueprint");
+    }
+
+    #[test]
+    fn stabilization_gate_does_not_finish_early() {
+        let started = Instant::now();
+        wait_for_stabilization(started, Duration::from_millis(10));
+        assert!(started.elapsed() >= Duration::from_millis(10));
+    }
+
+    #[test]
+    fn armed_capture_saves_visual_and_memory_metadata() {
+        let directory = std::env::temp_dir().join(format!(
+            "wfcompanion-armed-capture-{}-{}",
+            std::process::id(),
+            unix_time_millis()
+        ));
+        let now = Instant::now();
+        let armed = ArmedCapture {
+            directory: directory.clone(),
+            armed_at: now,
+            armed_at_unix_ms: 100,
+            expires_at: now + Duration::from_secs(1),
+            game: None,
+        };
+        let image = DynamicImage::new_rgba8(8, 4);
+        let pending = PendingCapture {
+            armed,
+            game_pid: 10,
+            observed_at: now,
+            observed_at_unix_ms: 200,
+            image_captured_at_unix_ms: Some(300),
+            armed_to_capture_ms: Some(200),
+            trigger_to_capture_ms: Some(100),
+        };
+
+        save_armed_capture(pending, Some(&image), Err("unavailable".to_owned())).unwrap();
+        let metadata: serde_json::Value =
+            serde_json::from_slice(&fs::read(directory.join("metadata.json")).unwrap()).unwrap();
+        let image_exists = directory.join("relic-reward.png").is_file();
+        let _ = fs::remove_dir_all(&directory);
+
+        assert!(image_exists);
+        assert_eq!(metadata["schema"], 2);
+        assert_eq!(metadata["image"]["width"], 8);
+        assert_eq!(metadata["image"]["height"], 4);
+        assert_eq!(metadata["image_captured_at_unix_ms"], 300);
+        assert_eq!(metadata["trigger_to_capture_ms"], 100);
+        assert_eq!(metadata["ui_capture"]["status"], "failed");
+        assert_eq!(metadata["game_pid"], 10);
+    }
 
     #[test]
     fn suppresses_delayed_fallback_trigger_for_same_reward() {

@@ -13,11 +13,13 @@ case "$mode" in
     dev)
         cargo_profile=debug
         cargo_args=()
+        cargo_targets=(--bins)
         cpu_baseline="${WFCLI_CPU_BASELINE:-}"
         ;;
     prod)
         cargo_profile=release
         cargo_args=(--release)
+        cargo_targets=(--bins)
         # Warframe requires SSE4.2; v2 keeps release artifacts portable across supported CPUs.
         case "$(uname -m)" in
             x86_64) cpu_baseline="${WFCLI_CPU_BASELINE:-x86-64-v2}" ;;
@@ -42,6 +44,7 @@ WFCOMPANION_BUILD_DEBUG_BRIDGE="$debug_bridge" \
     WFCLI_CPU_BASELINE="$cpu_baseline" \
     RUSTFLAGS="$rustflags" \
     CARGO_TARGET_DIR="$target_dir" \
-    cargo build "${cargo_args[@]}" --locked --manifest-path "$manifest"
+    cargo build "${cargo_args[@]}" "${cargo_targets[@]}" --locked --manifest-path "$manifest"
 install -m 0755 "$target_dir/$cargo_profile/wfcompanion" "$stage/bin/wfcompanion"
+install -m 0755 "$target_dir/$cargo_profile/wfinspect" "$stage/bin/wfinspect"
 printf '%s\n' "$stage/bin/wfcompanion"

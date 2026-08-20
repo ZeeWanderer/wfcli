@@ -157,18 +157,16 @@ fn scan_native(
                     "native_http_buffer",
                     game_pid,
                     player_name.as_deref(),
-                ) {
-                    if events
-                        .send(Event::Inventory {
-                            game_pid,
-                            collector: "native_http_buffer",
-                            process_pid: game_pid,
-                            data,
-                        })
-                        .is_err()
-                    {
-                        return;
-                    }
+                ) && events
+                    .send(Event::Inventory {
+                        game_pid,
+                        collector: "native_http_buffer",
+                        process_pid: game_pid,
+                        data,
+                    })
+                    .is_err()
+                {
+                    return;
                 }
             }
         }

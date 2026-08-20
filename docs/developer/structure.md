@@ -47,7 +47,8 @@ and value helpers here.
 
 `apps/wfcompanion/` is a standalone Rust process:
 
-- `observer`: `/proc`, Proton prefix, and DBWIN helper.
+- `game_observer`: Warframe process/build identity, read-only memory, and typed evidence.
+- `observer`: collector lifecycle and observation policy.
 - `daemon`: owner-only Unix socket transport and reconnect replay.
 - `focus`: positive active-window identity for the observed Warframe process.
 - `relic`: trigger, capture, OCR, item resolution, and market requests.
@@ -57,6 +58,9 @@ and value helpers here.
 
 The companion owns native window and overlay state. It publishes normalized observations to the
 daemon and requests shared data from it.
+
+`wfinspect` is a separate diagnostic executable built from the companion crate. It invokes
+observer collectors explicitly without inheriting companion lifecycle or polling policy.
 
 ## `wfgui`
 

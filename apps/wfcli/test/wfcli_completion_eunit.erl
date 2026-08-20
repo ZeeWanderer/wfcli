@@ -25,6 +25,8 @@ nested_command_completion_test() ->
     ?assertEqual(["--apps"], wfcli_completion:candidates(["paths", "--a"])),
     ?assertEqual(["inventory"], wfcli_completion:candidates(["baro", "i"])),
     ?assertEqual(["video"], wfcli_completion:candidates(["companion", "preview", "v"])),
+    ?assertEqual(["relic-reward"],
+                 wfcli_completion:candidates(["companion", "capture", "arm", "r"])),
     ?assertEqual(["install"], wfcli_completion:candidates(["completion", "i"])),
     ?assertEqual(["install"], wfcli_completion:candidates(["gui", "i"])),
     ?assertEqual(["unresolved"],

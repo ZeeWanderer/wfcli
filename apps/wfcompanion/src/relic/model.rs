@@ -1,4 +1,5 @@
 use std::path::PathBuf;
+use std::time::{Duration, Instant};
 
 use serde::Deserialize;
 
@@ -6,11 +7,27 @@ use crate::assets;
 
 #[derive(Debug)]
 pub(crate) enum Trigger {
-    Rewards,
-    Suggestions,
+    Rewards {
+        game_pid: u32,
+        observed_at: Instant,
+        observed_at_unix_ms: u128,
+    },
+    Suggestions {
+        game_pid: u32,
+        observed_at: Instant,
+    },
     CloseSuggestions,
     DismissSuggestions,
     Screenshot(PathBuf),
+    ArmCapture(CaptureArm),
+    CancelCapture,
+    GameStopped,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct CaptureArm {
+    pub(crate) directory: PathBuf,
+    pub(crate) timeout: Duration,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]

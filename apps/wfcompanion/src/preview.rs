@@ -138,7 +138,8 @@ pub(crate) fn render(
 fn render_live(source: PreviewSource, dimensions: (u32, u32), path: &Path) -> Result<(), String> {
     let stopping = Arc::new(AtomicBool::new(false));
     let (ui, _events) = mpsc::channel();
-    let outbound = crate::daemon::spawn(ui, Arc::clone(&stopping), "preview");
+    let (relic, _triggers) = mpsc::channel();
+    let outbound = crate::daemon::spawn(ui, relic, Arc::clone(&stopping), "preview");
     let result = (|| {
         let scene = match source {
             PreviewSource::RewardScreenshot(path) => {

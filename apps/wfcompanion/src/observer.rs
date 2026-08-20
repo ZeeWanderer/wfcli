@@ -1,14 +1,10 @@
-use std::collections::BTreeMap;
-use std::fs::{self, File};
-use std::io::Read;
-use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, mpsc};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use serde::Serialize;
 use serde_json::json;
+use wfcompanion::game_observer::{self, DebugOutputEvent, GameState};
 
 use crate::daemon::{Outbound, OutboundSender};
 use crate::debug_output::{Bridge as DebugBridge, Event as DebugEvent, Runtime as DebugRuntime};
@@ -27,28 +23,6 @@ struct CollectorStatus {
     inventory_updates: u64,
     debug_output_active: bool,
     inventory_active: bool,
-}
-
-#[derive(Debug, Clone, Default, PartialEq, Serialize)]
-#[serde(rename_all = "snake_case")]
-enum GamePhase {
-    #[default]
-    Stopped,
-    Launcher,
-    Game,
-}
-
-#[derive(Debug, Clone, Default, PartialEq, Serialize)]
-pub(crate) struct GameState {
-    running: bool,
-    launcher_running: bool,
-    phase: GamePhase,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pid: Option<u32>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    compat_data: Option<PathBuf>,
-    #[serde(skip)]
-    runtime: Option<DebugRuntime>,
 }
 
 pub(crate) fn spawn(
@@ -72,8 +46,12 @@ pub(crate) fn spawn(
 
         while !stopping.load(Ordering::Relaxed) {
             if Instant::now() >= next_scan {
-                let current = find_warframe();
+                let current = game_observer::find_warframe();
                 if previous.as_ref() != Some(&current) {
+                    if previous.as_ref().is_some_and(GameState::is_running) && !current.is_running()
+                    {
+                        let _ = relic.send(RelicTrigger::GameStopped);
+                    }
                     let data = serde_json::to_value(&current).unwrap_or_else(|_| json!({}));
                     let _ = outbound.send(Outbound::Publish {
                         source: "game",
@@ -82,8 +60,18 @@ pub(crate) fn spawn(
                     previous = Some(current);
                 }
 
-                let runtime = previous.as_ref().and_then(|state| state.runtime.as_ref());
-                let bridge_is_current = match (&mut bridge, runtime) {
+                let runtime = previous
+                    .as_ref()
+                    .and_then(GameState::attach)
+                    .and_then(|attach| {
+                        DebugRuntime::discover(
+                            attach.pid(),
+                            attach.process_dir(),
+                            attach.environment(),
+                            attach.compat_data(),
+                        )
+                    });
+                let bridge_is_current = match (&mut bridge, runtime.as_ref()) {
                     (Some(open), Some(runtime)) => {
                         open.game_pid() == runtime.game_pid() && open.is_running()
                     }
@@ -95,7 +83,7 @@ pub(crate) fn spawn(
                     publish_collector(&outbound, &status);
                 }
                 if bridge.is_none()
-                    && let Some(runtime) = runtime
+                    && let Some(runtime) = runtime.as_ref()
                     && Instant::now() >= next_bridge_attempt
                 {
                     match DebugBridge::start(runtime, debug_tx.clone()) {
@@ -120,7 +108,7 @@ pub(crate) fn spawn(
                     }
                 }
 
-                let inventory_is_current = match (&mut inventory_bridge, runtime) {
+                let inventory_is_current = match (&mut inventory_bridge, runtime.as_ref()) {
                     (Some(open), Some(runtime)) => {
                         open.game_pid() == runtime.game_pid() && open.is_running()
                     }
@@ -132,7 +120,7 @@ pub(crate) fn spawn(
                     publish_collector(&outbound, &status);
                 }
                 if inventory_bridge.is_none()
-                    && let Some(runtime) = runtime
+                    && let Some(runtime) = runtime.as_ref()
                     && Instant::now() >= next_inventory_attempt
                 {
                     match InventoryBridge::start(runtime, inventory_tx.clone()) {
@@ -198,15 +186,16 @@ fn handle_debug_event(
             .is_some_and(|open| open.game_pid() == game_pid) =>
         {
             status.debug_lines += 1;
-            match relic_debug_event(&message) {
-                Some(RelicDebugEvent::Rewards) => {
+            let observation = game_observer::classify_debug_output(&message);
+            match observation {
+                Some(DebugOutputEvent::RelicRewards) => {
                     incident::info(
                         "observer.relic_debug_output",
                         format!("event=rewards game_pid={game_pid} windows_pid={sender_pid}"),
                     );
                     publish_collector(outbound, status);
                 }
-                Some(RelicDebugEvent::Suggestions) => {
+                Some(DebugOutputEvent::RelicSuggestions) => {
                     incident::info(
                         "observer.relic_debug_output",
                         format!("event=suggestions game_pid={game_pid} windows_pid={sender_pid}"),
@@ -214,7 +203,7 @@ fn handle_debug_event(
                 }
                 _ => {}
             }
-            handle_relic_debug_line(&message, relic, last_ui_console_open);
+            handle_relic_observation(observation, game_pid, relic, last_ui_console_open);
         }
         DebugEvent::Stopped { game_pid, reason }
             if bridge
@@ -275,49 +264,35 @@ fn publish_collector(outbound: &OutboundSender, status: &CollectorStatus) {
     });
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum RelicDebugEvent {
-    Rewards,
-    Suggestions,
-    CloseSuggestions,
-    UiConsoleOpen,
-}
-
-fn relic_debug_event(line: &str) -> Option<RelicDebugEvent> {
-    if line.contains("Got rewards") {
-        Some(RelicDebugEvent::Rewards)
-    } else if line.contains("ThemedProjectionManager.lua: LoadingCompleteEnd") {
-        Some(RelicDebugEvent::Suggestions)
-    } else if line.contains("InitMapping for all devices with bindings") {
-        Some(RelicDebugEvent::CloseSuggestions)
-    } else if line.contains("UIConsoleTrigger::Open()") {
-        Some(RelicDebugEvent::UiConsoleOpen)
-    } else {
-        None
-    }
-}
-
-fn handle_relic_debug_line(
-    line: &str,
+fn handle_relic_observation(
+    observation: Option<DebugOutputEvent>,
+    game_pid: u32,
     relic: &mpsc::Sender<RelicTrigger>,
     last_ui_console_open: &mut Option<Instant>,
 ) {
-    match relic_debug_event(line) {
-        Some(RelicDebugEvent::Rewards) => {
-            let _ = relic.send(RelicTrigger::Rewards);
+    match observation {
+        Some(DebugOutputEvent::RelicRewards) => {
+            let _ = relic.send(RelicTrigger::Rewards {
+                game_pid,
+                observed_at: Instant::now(),
+                observed_at_unix_ms: unix_time_millis(),
+            });
         }
-        Some(RelicDebugEvent::Suggestions) => {
+        Some(DebugOutputEvent::RelicSuggestions) => {
             let blocked = last_ui_console_open.is_some_and(|seen| {
                 Instant::now().saturating_duration_since(seen) < UI_CONSOLE_OPEN_GUARD
             });
             if !blocked {
-                let _ = relic.send(RelicTrigger::Suggestions);
+                let _ = relic.send(RelicTrigger::Suggestions {
+                    game_pid,
+                    observed_at: Instant::now(),
+                });
             }
         }
-        Some(RelicDebugEvent::CloseSuggestions) => {
+        Some(DebugOutputEvent::CloseRelicSuggestions) => {
             let _ = relic.send(RelicTrigger::CloseSuggestions);
         }
-        Some(RelicDebugEvent::UiConsoleOpen) => {
+        Some(DebugOutputEvent::UiConsoleOpen) => {
             *last_ui_console_open = Some(Instant::now());
         }
         None => {}
@@ -331,191 +306,42 @@ fn unix_time_millis() -> u128 {
         .as_millis()
 }
 
-pub(crate) fn find_warframe() -> GameState {
-    let Ok(entries) = fs::read_dir("/proc") else {
-        return GameState::default();
-    };
-    let mut game = None;
-    let mut launcher = None;
-
-    for entry in entries.flatten() {
-        let Some(pid) = entry
-            .file_name()
-            .to_str()
-            .and_then(|name| name.parse::<u32>().ok())
-        else {
-            continue;
-        };
-        let process_dir = entry.path();
-        let Ok(cmdline) = fs::read(process_dir.join("cmdline")) else {
-            continue;
-        };
-        if is_warframe_cmdline(&cmdline) {
-            game.get_or_insert_with(|| process_state(pid, &process_dir, GamePhase::Game));
-        } else if is_launcher_cmdline(&cmdline) {
-            launcher.get_or_insert_with(|| process_state(pid, &process_dir, GamePhase::Launcher));
-        }
-    }
-
-    match (game, launcher) {
-        (Some(mut game), Some(launcher)) => {
-            game.launcher_running = true;
-            if game.compat_data.is_none() {
-                game.compat_data = launcher.compat_data;
-            }
-            game
-        }
-        (Some(game), None) => game,
-        (None, Some(launcher)) => launcher,
-        (None, None) => GameState::default(),
-    }
-}
-
-fn process_state(pid: u32, process_dir: &Path, phase: GamePhase) -> GameState {
-    let environment = read_environment(&process_dir.join("environ"));
-    let compat_data = environment
-        .get("STEAM_COMPAT_DATA_PATH")
-        .or_else(|| environment.get("WINEPREFIX"))
-        .map(PathBuf::from)
-        .map(normalize_compat_data);
-    let runtime = (phase == GamePhase::Game)
-        .then(|| {
-            compat_data.as_deref().and_then(|compat_data| {
-                DebugRuntime::discover(pid, process_dir, &environment, compat_data)
-            })
-        })
-        .flatten();
-    GameState {
-        running: phase == GamePhase::Game,
-        launcher_running: phase == GamePhase::Launcher,
-        phase,
-        pid: Some(pid),
-        compat_data,
-        runtime,
-    }
-}
-
-fn is_warframe_cmdline(cmdline: &[u8]) -> bool {
-    matches!(
-        executable_name(cmdline).as_deref(),
-        Some("warframe.x64.exe" | "warframe.x64")
-    )
-}
-
-fn is_launcher_cmdline(cmdline: &[u8]) -> bool {
-    executable_path(cmdline).is_some_and(|path| path.contains("warframe"))
-        && executable_name(cmdline).as_deref() == Some("launcher.exe")
-        && !String::from_utf8_lossy(cmdline)
-            .to_ascii_lowercase()
-            .contains("--type=")
-}
-
-fn executable_name(cmdline: &[u8]) -> Option<String> {
-    executable_path(cmdline)?
-        .rsplit(['/', '\\'])
-        .next()
-        .map(str::to_owned)
-}
-
-fn executable_path(cmdline: &[u8]) -> Option<String> {
-    let executable = cmdline.split(|byte| *byte == 0).next()?;
-    Some(String::from_utf8_lossy(executable).to_ascii_lowercase())
-}
-
-fn read_environment(path: &Path) -> BTreeMap<String, String> {
-    let mut bytes = Vec::new();
-    if File::open(path)
-        .and_then(|mut file| file.read_to_end(&mut bytes))
-        .is_err()
-    {
-        return BTreeMap::new();
-    }
-    parse_environment(&bytes)
-}
-
-fn parse_environment(bytes: &[u8]) -> BTreeMap<String, String> {
-    bytes
-        .split(|byte| *byte == 0)
-        .filter_map(|entry| {
-            let entry = String::from_utf8_lossy(entry);
-            entry
-                .split_once('=')
-                .map(|(key, value)| (key.to_owned(), value.to_owned()))
-        })
-        .collect()
-}
-
-fn normalize_compat_data(path: PathBuf) -> PathBuf {
-    if path.file_name().is_some_and(|name| name == "pfx") {
-        path.parent().unwrap_or(&path).to_owned()
-    } else {
-        path
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn recognizes_proton_warframe_command() {
-        assert!(is_warframe_cmdline(
-            b"Z:\\games\\Warframe\\Warframe.x64.exe\0-x64\0"
-        ));
-        assert!(!is_warframe_cmdline(b"wine64-preloader\0explorer.exe\0"));
-    }
-
-    #[test]
-    fn recognizes_warframe_launcher_only() {
-        assert!(is_launcher_cmdline(
-            b"S:\\common\\Warframe\\Tools\\Launcher.exe\0-cluster:public\0"
-        ));
-        assert!(!is_launcher_cmdline(b"other-game\\Launcher.exe\0"));
-        assert!(!is_launcher_cmdline(
-            b"/steam/reaper\0--\0S:\\common\\Warframe\\Tools\\Launcher.exe\0"
-        ));
-        assert!(!is_launcher_cmdline(
-            b"S:\\common\\Warframe\\Tools\\Launcher.exe\0--type=renderer\0"
-        ));
-    }
-
-    #[test]
-    fn parses_nul_separated_environment() {
-        let env = parse_environment(b"A=one\0STEAM_COMPAT_DATA_PATH=/tmp/compat\0");
-        assert_eq!(env.get("A").map(String::as_str), Some("one"));
-        assert_eq!(
-            env.get("STEAM_COMPAT_DATA_PATH").map(String::as_str),
-            Some("/tmp/compat")
-        );
-    }
-
-    #[test]
-    fn detects_relic_overlay_debug_markers() {
-        assert_eq!(
-            relic_debug_event("123.4 Script [Info]: Got rewards, waiting for choice"),
-            Some(RelicDebugEvent::Rewards)
-        );
-        assert_eq!(
-            relic_debug_event("ThemedProjectionManager.lua: LoadingCompleteEnd"),
-            Some(RelicDebugEvent::Suggestions)
-        );
-        assert_eq!(
-            relic_debug_event("InitMapping for all devices with bindings"),
-            Some(RelicDebugEvent::CloseSuggestions)
-        );
-        assert_eq!(relic_debug_event("Mission rewards"), None);
-    }
-
-    #[test]
     fn ui_console_open_suppresses_immediate_suggestion_trigger() {
         let (sender, receiver) = mpsc::channel();
         let mut last = None;
-        handle_relic_debug_line("UIConsoleTrigger::Open()", &sender, &mut last);
-        handle_relic_debug_line(
-            "ThemedProjectionManager.lua: LoadingCompleteEnd",
+        handle_relic_observation(
+            Some(DebugOutputEvent::UiConsoleOpen),
+            10,
+            &sender,
+            &mut last,
+        );
+        handle_relic_observation(
+            Some(DebugOutputEvent::RelicSuggestions),
+            10,
             &sender,
             &mut last,
         );
         assert!(receiver.try_recv().is_err());
+    }
+
+    #[test]
+    fn suggestion_trigger_carries_game_process_and_time() {
+        let (sender, receiver) = mpsc::channel();
+        let mut last = None;
+        handle_relic_observation(
+            Some(DebugOutputEvent::RelicSuggestions),
+            42,
+            &sender,
+            &mut last,
+        );
+        assert!(matches!(
+            receiver.recv().unwrap(),
+            RelicTrigger::Suggestions { game_pid: 42, .. }
+        ));
     }
 }

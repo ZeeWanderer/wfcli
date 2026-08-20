@@ -160,6 +160,8 @@ contexts() ->
         {["daemon", "update"], ["--beam-dir", "--release" | help_flags()]},
         {["companion"], wfcli_companion_cli:known_commands()},
         {["companion", "hud"], ["show", "hide" | help_flags()]},
+        {["companion", "capture"], ["arm", "cancel" | help_flags()]},
+        {["companion", "capture", "arm"], ["relic-reward" | help_flags()]},
         {["companion", "preview"], ["list", "image", "video" | help_flags()]},
         {["companion", "preview", "list"], ["--animated" | help_flags()]},
         {["companion", "preview", "image"], ["all" | help_flags()]},

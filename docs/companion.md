@@ -72,9 +72,9 @@ click-through.
 
 ## Relic Data
 
-Warframe debug output triggers capture of the relevant game region. Reward recognition uses local
-Tesseract OCR; relic selection uses era recognition. The daemon resolves items, player state,
-assets, reward tables, and batched Market prices.
+Warframe debug output triggers each relic scene. Relic selection and reward names use bounded
+Scaleform state first. OCR captures after the stabilization deadline only when memory extraction
+fails. The daemon resolves items, player state, assets, reward tables, and batched Market prices.
 
 Reward cards show platinum, ducats, vault and ownership state, set components, and set value.
 Selection cards rank owned relics using reward tables and current Market data.
@@ -87,6 +87,8 @@ wfcli companion probe
 wfcli companion logs
 wfcli companion paths
 wfcli companion screenshot ./capture.png
+wfcli companion capture arm relic-reward
+wfcli companion capture cancel
 wfcli companion relic-ocr ./capture.png
 wfcli companion relic-ocr
 ```
@@ -96,6 +98,21 @@ saved-image reward pipeline with:
 
 ```bash
 dev/bin/wfcompanion --relic-screenshot ./capture.png
+```
+
+An armed relic-reward capture saves a synchronized screenshot, loaded Scaleform movies,
+resolved reward-name matches and direct references, a bounded memory graph, process maps, and
+trigger/build metadata under the user cache. Supply a directory after `relic-reward` to override it.
+
+The installation also provides explicit process diagnostics:
+
+```bash
+wfinspect game process
+wfinspect game ui state
+wfinspect game ui relic
+wfinspect game ui movies
+wfinspect game ui find 'RESOURCE DRONES'
+wfinspect game ui capture /tmp/warframe-ui 'RESOURCE DRONES'
 ```
 
 Incident logs use `$XDG_STATE_HOME/wfcli/wfcompanion.log`, normally
