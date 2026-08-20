@@ -53,14 +53,20 @@ inventory(Snapshot, Catalog) ->
     CatalogIndex = wfcli_item_catalog:index(Catalog),
     Mastery = mastery_index(maps:get(<<"mastery">>, Player, [])),
     Stacks = aggregate(maps:get(<<"stacks">>, Player, [])),
+    Upgrades = aggregate_upgrades(maps:get(<<"upgrades">>, Player, [])),
     StackItems = [inventory_item(Unique, Entry,
                                  maps:get(Unique, CatalogIndex, #{}), Mastery)
                   || {Unique, Entry} <- maps:to_list(Stacks),
                      maps:get(count, Entry, 0) > 0],
+    UpgradeItems = [inventory_item(Id, Entry,
+                                   maps:get(maps:get(item_type, Entry),
+                                            CatalogIndex, #{}), Mastery)
+                    || {Id, Entry} <- maps:to_list(Upgrades),
+                       maps:get(count, Entry, 0) > 0],
     SetItems = [Set || Item <- Catalog,
                        Set <- [inventory_set(Item, Stacks, Mastery)],
                        Set =/= undefined],
-    Items = StackItems ++ SetItems,
+    Items = StackItems ++ UpgradeItems ++ SetItems,
     Sorted = lists:sort(fun name_before/2, Items),
     {ok, (base_response(Snapshot, Player))#{
         <<"items">> => Sorted,
@@ -110,7 +116,9 @@ cached_view(View, Build, Catalog, Meta, ExtraVersion) ->
     Snapshot = wfcli_player_service:snapshot(),
     Key = {View, maps:get(revision, Snapshot, 0),
            maps:get(version, Meta, undefined), maps:get(fetched_at, Meta, undefined),
-           ExtraVersion, ?MODULE:module_info(md5)},
+           ExtraVersion, ?MODULE:module_info(md5),
+           wfcli_item_catalog:module_info(md5),
+           maps:get(recipe_version, Meta, undefined)},
     case cache_lookup(Key) of
         {ok, Result} -> Result;
         error ->
@@ -190,6 +198,51 @@ aggregate_entry(Entry, Acc) when is_map(Entry) ->
     end;
 aggregate_entry(_Entry, Acc) -> Acc.
 
+aggregate_upgrades(Entries) when is_list(Entries) ->
+    lists:foldl(fun aggregate_upgrade/2, #{}, Entries);
+aggregate_upgrades(_Entries) -> #{}.
+
+aggregate_upgrade(Entry, Acc) when is_map(Entry) ->
+    case maps:get(<<"item_type">>, Entry, undefined) of
+        ItemType when is_binary(ItemType), byte_size(ItemType) > 0 ->
+            Id = upgrade_variant_id(ItemType, Entry),
+            Current = maps:get(
+                        Id, Acc,
+                        #{id => Id, item_type => ItemType, count => 0, xp => 0,
+                          name => undefined, collections => [], equipped => false,
+                          equipped_in => [], kind => maps:get(<<"kind">>, Entry,
+                                                              <<"upgrade">>)}),
+            Count = max(0, number(maps:get(<<"count">>, Entry, 0))),
+            Collection = maps:get(<<"collection">>, Entry, <<>>),
+            Collections = lists:usort([Collection | maps:get(collections, Current)]),
+            EquippedIn = lists:usort(maps:get(equipped_in, Current) ++
+                                      list_value(maps:get(<<"equipped_in">>, Entry, []))),
+            Updated0 = Current#{count => maps:get(count, Current) + Count,
+                                collections => Collections,
+                                equipped => maps:get(equipped, Current) orelse
+                                            maps:get(<<"equipped">>, Entry, false),
+                                equipped_in => EquippedIn},
+            Updated = case maps:get(<<"rank">>, Entry, undefined) of
+                Rank when is_integer(Rank), Rank >= 0 -> Updated0#{rank => Rank};
+                _ -> Updated0
+            end,
+            Acc#{Id => Updated};
+        _ -> Acc
+    end;
+aggregate_upgrade(_Entry, Acc) -> Acc.
+
+upgrade_variant_id(ItemType, Entry) ->
+    case maps:get(<<"rank">>, Entry, undefined) of
+        Rank when is_integer(Rank), Rank >= 0 ->
+            <<ItemType/binary, "#rank:", (integer_to_binary(Rank))/binary>>;
+        _ ->
+            case maps:get(<<"instance_id">>, Entry, undefined) of
+                Id when is_binary(Id), byte_size(Id) > 0 ->
+                    <<ItemType/binary, "#instance:", Id/binary>>;
+                _ -> maps:get(<<"id">>, Entry, ItemType)
+            end
+    end.
+
 mastery_index(Entries) when is_list(Entries) ->
     maps:from_list([{maps:get(<<"item_type">>, Entry),
                      number(maps:get(<<"xp">>, Entry, 0))}
@@ -227,17 +280,19 @@ subsumed_index(Raw) when is_map(Raw) ->
 subsumed_index(_Raw) -> #{}.
 
 inventory_item(Unique, Entry, Catalog, Mastery) ->
-    {Name, NameSource} = item_name(Unique, Entry, Catalog),
+    ItemType = maps:get(item_type, Entry, Unique),
+    {Name, NameSource} = item_name(ItemType, Entry, Catalog),
     Category = maps:get(<<"category">>, Catalog,
                         maps:get(<<"parentCategory">>, Catalog, <<>>)),
     Collections = maps:get(collections, Entry, []),
-    Group = inventory_group(Unique, Catalog, Category, Collections),
+    Group = inventory_group(ItemType, Catalog, Category, Collections),
     Tradable = maps:get(<<"tradable">>, Catalog, false) =:= true,
     MasteryKey = case maps:get(<<"component">>, Catalog, false) of
-                     true -> maps:get(<<"parentUniqueName">>, Catalog, Unique);
-                     false -> Unique
+                     true -> maps:get(<<"parentUniqueName">>, Catalog, ItemType);
+                     false -> ItemType
                  end,
-    #{<<"id">> => Unique,
+    Base = #{<<"id">> => maps:get(id, Entry, Unique),
+      <<"item_type">> => ItemType,
       <<"name">> => Name,
       <<"name_source">> => NameSource,
       <<"market_name">> => inventory_market_name(Name, Group, Catalog, Tradable),
@@ -255,13 +310,28 @@ inventory_item(Unique, Entry, Catalog, Mastery) ->
                                              undefined)),
       <<"tradable">> => Tradable,
       <<"ducats">> => number(maps:get(<<"primeSellingPrice">>, Catalog, 0)),
-      <<"asset">> => asset(Unique, maps:get(<<"imageName">>, Catalog, undefined))}.
+      <<"asset">> => asset(ItemType,
+                            maps:get(<<"imageName">>, Catalog, undefined))},
+    inventory_variant_fields(Base, Entry, Catalog).
+
+inventory_variant_fields(Item, Entry, Catalog) ->
+    case maps:is_key(equipped, Entry) of
+        false -> Item;
+        true ->
+            Variant = Item#{<<"equipped">> => maps:get(equipped, Entry, false),
+                            <<"equipped_in">> => maps:get(equipped_in, Entry, [])},
+            case maps:get(rank, Entry, undefined) of
+                Rank when is_integer(Rank), Rank >= 0 ->
+                    Variant#{<<"rank">> => Rank,
+                             <<"max_rank">> => number(maps:get(<<"fusionLimit">>,
+                                                                Catalog, 0))};
+                _ -> Variant
+            end
+    end.
 
 inventory_group(Unique, Catalog, Category, Collections) ->
     Component = maps:get(<<"component">>, Catalog, false) =:= true,
-    Tradable = maps:get(<<"tradable">>, Catalog, false) =:= true,
-    EquipmentPart = Component andalso Tradable andalso
-                    equipment_category(Category),
+    EquipmentPart = Component andalso equipment_category(Category),
     Projection = binary:match(Unique, <<"/Projections/">>) =/= nomatch,
     Arcane = binary:match(Unique, <<"/Arcane">>) =/= nomatch,
     Upgrade = lists:member(<<"RawUpgrades">>, Collections) orelse
@@ -445,6 +515,7 @@ mastery_components(Item, Owned) ->
 
 mastery_component(Item, Component, Required, OwnedCount, Owned) ->
     Unique = maps:get(<<"uniqueName">>, Component),
+    RecipeIds = component_recipe_ids(Component),
     {Name, NameSource} = catalog_item_name(Unique, Component),
     ExternalName = component_external_name(Item, Component),
     MarketName = component_market_name(Component, ExternalName),
@@ -457,12 +528,22 @@ mastery_component(Item, Component, Required, OwnedCount, Owned) ->
           not zero_price_component(ExternalName),
       <<"required">> => Required,
       <<"owned">> => OwnedCount,
+      <<"blueprint_owned">> => component_blueprint_count(RecipeIds, Owned),
+      <<"recipe_ids">> => RecipeIds,
       <<"tradable">> => maps:get(<<"tradable">>, Component, false) =:= true,
       <<"relic_drop">> => maps:get(<<"drops">>, Component, []) =/= [],
       <<"owned_relic">> => has_owned_relic(maps:get(<<"drops">>, Component, []), Owned),
       <<"relic_probability">> =>
           component_relic_probability(maps:get(<<"drops">>, Component, []), Owned),
       <<"asset">> => asset(Unique, maps:get(<<"imageName">>, Component, undefined))}.
+
+component_recipe_ids(Component) ->
+    [Identity || Identity <- maps:get(<<"recipeAliases">>, Component, []),
+                 is_binary(Identity), byte_size(Identity) > 0].
+
+component_blueprint_count(RecipeIds, Owned) ->
+    lists:sum([maps:get(count, maps:get(Identity, Owned, #{}), 0)
+               || Identity <- RecipeIds]).
 
 buyable_candidate([]) -> false;
 buyable_candidate(Components) ->
@@ -917,6 +998,9 @@ present(_) -> true.
 number(Value) when is_integer(Value) -> Value;
 number(Value) when is_float(Value) -> trunc(Value);
 number(_) -> 0.
+
+list_value(Value) when is_list(Value) -> Value;
+list_value(_) -> [].
 
 percent(_Current, 0) -> 0;
 percent(Current, Total) -> round(Current * 100 / Total).

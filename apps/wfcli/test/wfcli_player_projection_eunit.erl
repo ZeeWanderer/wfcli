@@ -32,7 +32,8 @@ projects_items_upgrades_and_configs_test() ->
 
     [Stack] = [Upgrade || Upgrade <- maps:get(<<"upgrades">>, Projection),
                           maps:get(<<"kind">>, Upgrade) =:= <<"stack">>],
-    ?assertEqual(4, maps:get(<<"count">>, Stack)).
+    ?assertEqual(4, maps:get(<<"count">>, Stack)),
+    ?assertEqual(0, maps:get(<<"rank">>, Stack)).
 
 projects_definition_path_upgrades_without_fake_instances_test() ->
     Raw0 = fixture_raw(),
@@ -41,7 +42,9 @@ projects_definition_path_upgrades_without_fake_instances_test() ->
     [First | Rest] = maps:get(<<"Upgrades">>, Config0),
     Direct = <<"/Lotus/Upgrades/Mods/Melee/WeaponSlashDamageMod">>,
     Config = Config0#{<<"Upgrades">> => [Direct, First | Rest]},
-    Raw = Raw0#{<<"Suits">> => [Suit0#{<<"Configs">> => [Config]}]},
+    Raw = Raw0#{<<"Suits">> => [Suit0#{<<"Configs">> => [Config]}],
+                <<"RawUpgrades">> => [#{<<"ItemType">> => Direct,
+                                         <<"ItemCount">> => 31}]},
     Projection = wfcli_player_projection:from_observation(observation(Raw)),
     [Projected] = [Value || Value <- maps:get(<<"configs">>, Projection),
                               maps:get(<<"equipment_id">>, Value) =:= <<"suit-1">>],
@@ -50,7 +53,13 @@ projects_definition_path_upgrades_without_fake_instances_test() ->
     ?assertEqual(Direct, maps:get(<<"item_type">>, Slot)),
     ?assertEqual(null, maps:get(<<"instance_id">>, Slot)),
     ?assertEqual(0, maps:get(<<"rank">>, Slot)),
-    ?assertEqual(<<"definition">>, maps:get(<<"kind">>, Slot)).
+    ?assertEqual(<<"definition">>, maps:get(<<"kind">>, Slot)),
+    [Stack] = [Upgrade || Upgrade <- maps:get(<<"upgrades">>, Projection),
+                          maps:get(<<"item_type">>, Upgrade) =:= Direct],
+    ?assertEqual(31, maps:get(<<"count">>, Stack)),
+    ?assertEqual(0, maps:get(<<"rank">>, Stack)),
+    ?assertEqual(true, maps:get(<<"equipped">>, Stack)),
+    ?assertEqual(1, length(maps:get(<<"equipped_in">>, Stack))).
 
 projects_loadout_links_and_progression_test() ->
     Projection = projection(),

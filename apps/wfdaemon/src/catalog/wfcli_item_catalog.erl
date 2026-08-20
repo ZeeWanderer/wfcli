@@ -5,7 +5,8 @@
 
 -include_lib("kernel/include/file.hrl").
 
--export([load/0, source/0, update/0, index/1, lookup/2]).
+-export([load/0, source/0, recipe_source/0, update/0, invalidate/0,
+         index/1, lookup/2]).
 -ifdef(TEST).
 -export([compact/1]).
 -endif.
@@ -19,15 +20,22 @@
 -spec load() -> {ok, [map()], map()} | {error, term()}.
 load() ->
     Path = source(),
-    case file:read_file_info(Path, [{time, posix}]) of
-        {ok, #file_info{mtime = Modified, size = Size}} ->
-            Signature = {Path, Modified, Size},
+    RecipePath = recipe_source(),
+    case {file:read_file_info(Path, [{time, posix}]),
+          file:read_file_info(RecipePath, [{time, posix}])} of
+        {{ok, #file_info{mtime = Modified, size = Size}},
+         {ok, #file_info{mtime = RecipeModified, size = RecipeSize}}} ->
+            Signature = {{Path, Modified, Size},
+                         {RecipePath, RecipeModified, RecipeSize}},
             case persistent_term:get(?CACHE_KEY, undefined) of
                 #{signature := Signature, entries := Entries, meta := Meta} ->
                     {ok, Entries, Meta};
-                _ -> load_file(Path, Signature)
+                _ -> load_file(Path, RecipePath, Signature,
+                               {RecipeModified, RecipeSize})
             end;
-        {error, Reason} -> {error, {item_catalog_missing, Path, Reason}}
+        {{error, Reason}, _} -> {error, {item_catalog_missing, Path, Reason}};
+        {_, {error, Reason}} ->
+            {error, {item_catalog_recipe_missing, RecipePath, Reason}}
     end.
 
 -doc "Return preferred managed item-catalog path.".
@@ -36,6 +44,17 @@ source() ->
     case application:get_env(wfdaemon, item_catalog_file) of
         {ok, Path} when is_list(Path); is_binary(Path) -> Path;
         _ -> default_source()
+    end.
+
+-doc "Return managed official recipe-export path used for catalog aliases.".
+-spec recipe_source() -> file:filename_all().
+recipe_source() ->
+    case application:get_env(wfdaemon, item_recipe_file) of
+        {ok, Path} when is_list(Path); is_binary(Path) -> Path;
+        _ ->
+            [{_, Path}] = wfcli_exports:item_sources(
+                            undefined, ["ExportRecipes_en.json"]),
+            Path
     end.
 
 default_source() ->
@@ -63,6 +82,12 @@ update() ->
         {error, Reason} -> {error, {item_catalog_http_failed, Reason}}
     end.
 
+-doc "Discard cached catalog data after either upstream source changes.".
+-spec invalidate() -> ok.
+invalidate() ->
+    persistent_term:erase(?CACHE_KEY),
+    ok.
+
 -doc "Index canonical items and nested components by game identity.".
 -spec index([map()]) -> map().
 index(Items) when is_list(Items) ->
@@ -82,22 +107,63 @@ lookup(Identity, Index) when is_binary(Identity), is_map(Index) ->
     maps:get(Identity, Index, undefined);
 lookup(_Identity, _Index) -> undefined.
 
-load_file(Path, Signature) ->
+load_file(Path, RecipePath, Signature, RecipeVersion) ->
     case file:read_file(Path) of
         {ok, Body} ->
             try jsone:decode(Body, [{object_format, map}]) of
-                #{<<"entries">> := Entries} = Wrapper when is_list(Entries) ->
-                    Meta = #{source => maps:get(<<"source">>, Wrapper, <<"WFCD">>),
-                             version => maps:get(<<"version">>, Wrapper, <<"unknown">>),
-                             fetched_at => maps:get(<<"fetchedAt">>, Wrapper, 0)},
-                    persistent_term:put(
-                      ?CACHE_KEY,
-                      #{signature => Signature, entries => Entries, meta => Meta}),
-                    {ok, Entries, Meta};
+                #{<<"entries">> := Entries0} = Wrapper when is_list(Entries0) ->
+                    case recipe_aliases(RecipePath) of
+                        {ok, Aliases} ->
+                            Entries = attach_recipe_aliases(Entries0, Aliases),
+                            Meta = #{source => maps:get(<<"source">>, Wrapper,
+                                                       <<"WFCD">>),
+                                     version => maps:get(<<"version">>, Wrapper,
+                                                        <<"unknown">>),
+                                     fetched_at => maps:get(<<"fetchedAt">>, Wrapper, 0),
+                                     recipe_version => RecipeVersion},
+                            persistent_term:put(
+                              ?CACHE_KEY,
+                              #{signature => Signature, entries => Entries,
+                                meta => Meta}),
+                            {ok, Entries, Meta};
+                        {error, _Reason} = Error -> Error
+                    end;
                 _ -> {error, {bad_item_catalog, Path}}
             catch error:Reason -> {error, {bad_item_catalog_json, Path, Reason}}
             end;
         {error, Reason} -> {error, {item_catalog_read_failed, Path, Reason}}
+    end.
+
+recipe_aliases(Path) ->
+    case wfcli_exports:load_items(filename:dirname(Path),
+                                  [filename:basename(Path)]) of
+        {ok, Recipes} ->
+            {ok, lists:foldl(fun add_recipe_alias/2, #{}, Recipes)};
+        {error, Reason} -> {error, {item_catalog_recipe_failed, Path, Reason}}
+    end.
+
+add_recipe_alias(Recipe, Acc) ->
+    Alias = wfcli_text:to_binary(maps:get(uniqueName, Recipe, <<>>)),
+    Result = wfcli_text:to_binary(maps:get(resultType, Recipe, <<>>)),
+    case present(Alias) andalso present(Result) of
+        true -> maps:update_with(Result, fun(Values) -> [Alias | Values] end,
+                                 [Alias], Acc);
+        false -> Acc
+    end.
+
+attach_recipe_aliases(Items, Aliases) ->
+    [attach_item_aliases(Item, Aliases) || Item <- Items].
+
+attach_item_aliases(Item, Aliases) ->
+    with_recipe_aliases(
+      Item#{<<"components">> => [with_recipe_aliases(Component, Aliases)
+                                  || Component <- maps:get(<<"components">>, Item, [])]},
+      Aliases).
+
+with_recipe_aliases(Item, Aliases) ->
+    case maps:get(maps:get(<<"uniqueName">>, Item, undefined), Aliases, []) of
+        [] -> Item;
+        Values -> Item#{<<"recipeAliases">> => lists:usort(Values)}
     end.
 
 persist(Body) ->
@@ -110,7 +176,7 @@ persist(Body) ->
                         <<"fetchedAt">> => erlang:system_time(second),
                         <<"entries">> => Entries},
             case wfcli_worldstate:write_metadata_file(?ITEM_FILE, jsone:encode(Wrapper)) of
-                ok -> persistent_term:erase(?CACHE_KEY), ok;
+                ok -> invalidate();
                 Error -> Error
             end;
         _ -> {error, bad_item_catalog_payload}
@@ -169,20 +235,43 @@ put_index_entry(Item, Parent, IsComponent, Acc) when is_map(Item) ->
                 <<"parentVaulted">> => maps:get(<<"vaulted">>, Parent, undefined),
                 <<"component">> => IsComponent
             },
-            maps:update_with(
+            Acc1 = maps:update_with(
               Identity, fun(Existing) -> prefer_index_entry(Existing, Candidate) end,
-              Candidate, Acc);
+              Candidate, Acc),
+            lists:foldl(
+              fun(Alias, Inner) when is_binary(Alias), byte_size(Alias) > 0 ->
+                      AliasCandidate = Candidate#{<<"uniqueName">> => Alias,
+                                                  <<"recipeResultType">> => Identity,
+                                                  <<"recipeAliases">> => []},
+                      maps:update_with(
+                        Alias,
+                        fun(Existing) ->
+                            prefer_index_entry(Existing, AliasCandidate)
+                        end,
+                        AliasCandidate, Inner);
+                 (_Alias, Inner) -> Inner
+              end,
+              Acc1,
+              maps:get(<<"recipeAliases">>, Item, []));
         _ -> Acc
     end;
 put_index_entry(_Item, _Parent, _IsComponent, Acc) -> Acc.
 
-prefer_index_entry(#{<<"component">> := true} = Component,
-                   #{<<"component">> := false} = Item) ->
-    maps:merge(Component, Item);
-prefer_index_entry(#{<<"component">> := false} = Item,
-                   #{<<"component">> := true} = Component) ->
-    maps:merge(Component, Item);
 prefer_index_entry(Existing, Candidate) ->
+    case {maps:is_key(<<"recipeResultType">>, Existing),
+          maps:is_key(<<"recipeResultType">>, Candidate)} of
+        {true, false} -> maps:merge(Existing, Candidate);
+        {false, true} -> maps:merge(Candidate, Existing);
+        _ -> prefer_catalog_entry(Existing, Candidate)
+    end.
+
+prefer_catalog_entry(#{<<"component">> := true} = Component,
+                     #{<<"component">> := false} = Item) ->
+    maps:merge(Component, Item);
+prefer_catalog_entry(#{<<"component">> := false} = Item,
+                     #{<<"component">> := true} = Component) ->
+    maps:merge(Component, Item);
+prefer_catalog_entry(Existing, Candidate) ->
     case {present(maps:get(<<"imageName">>, Existing, undefined)),
           present(maps:get(<<"imageName">>, Candidate, undefined))} of
         {false, true} -> maps:merge(Existing, Candidate);

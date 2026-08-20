@@ -69,6 +69,7 @@ upgrade_stack(Index, Raw) ->
                 <<"item_type">> => ItemType,
                 <<"instance_id">> => null,
                 <<"count">> => Count,
+                <<"rank">> => 0,
                 <<"kind">> => <<"stack">>},
     Fields = optional(<<"last_added">>, maps:get(<<"LastAdded">>, Raw, undefined),
                       Fields0),
@@ -278,8 +279,9 @@ upgrade_usage(Configs) ->
       fun(Config, Acc0) ->
           lists:foldl(
             fun(Slot, Acc) ->
-                case maps:get(<<"instance_id">>, Slot, undefined) of
-                    Id when is_binary(Id), byte_size(Id) > 0 ->
+                case usage_key(Slot) of
+                    undefined -> Acc;
+                    Key ->
                         Usage =
                             #{<<"equipment_id">> =>
                                   maps:get(<<"equipment_id">>, Config),
@@ -287,9 +289,8 @@ upgrade_usage(Configs) ->
                               <<"config_index">> =>
                                   maps:get(<<"config_index">>, Config),
                               <<"slot">> => maps:get(<<"slot">>, Slot)},
-                        maps:update_with(Id, fun(Values) -> [Usage | Values] end,
-                                         [Usage], Acc);
-                    _ -> Acc
+                        maps:update_with(Key, fun(Values) -> [Usage | Values] end,
+                                         [Usage], Acc)
                 end
             end,
             Acc0,
@@ -299,10 +300,20 @@ upgrade_usage(Configs) ->
       Configs).
 
 attach_usage(Upgrade, Usage) ->
-    InstanceId = maps:get(<<"instance_id">>, Upgrade, undefined),
-    EquippedIn = lists:reverse(maps:get(InstanceId, Usage, [])),
+    EquippedIn = lists:reverse(maps:get(usage_key(Upgrade), Usage, [])),
     Upgrade#{<<"equipped">> => EquippedIn =/= [],
              <<"equipped_in">> => EquippedIn}.
+
+usage_key(Value) ->
+    case maps:get(<<"instance_id">>, Value, undefined) of
+        Id when is_binary(Id), byte_size(Id) > 0 -> {instance, Id};
+        _ ->
+            case maps:get(<<"item_type">>, Value, undefined) of
+                ItemType when is_binary(ItemType), byte_size(ItemType) > 0 ->
+                    {definition, ItemType};
+                _ -> undefined
+            end
+    end.
 
 loadout_records(Raw, Items) ->
     ItemIndex = maps:from_list(

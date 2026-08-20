@@ -155,6 +155,56 @@ inventory_preserves_unknown_vault_state_test() ->
     ?assertEqual(true, maps:get(<<"is_prime">>, Item)),
     ?assertEqual(null, maps:get(<<"vaulted">>, Item)).
 
+inventory_includes_mod_variants_and_recipe_aliases_test() ->
+    Hush = <<"/Lotus/Upgrades/Mods/Rifle/WeaponNoiseReductionMod">>,
+    Chroma = <<"/Lotus/Powersuits/Dragon/Dragon">>,
+    ChromaBlueprint = <<"/Lotus/Types/Recipes/WarframeRecipes/ChromaBlueprint">>,
+    Chassis = <<"/Lotus/Types/Recipes/WarframeRecipes/ChromaChassisComponent">>,
+    ChassisBlueprint =
+        <<"/Lotus/Types/Recipes/WarframeRecipes/ChromaChassisBlueprint">>,
+    Snapshot = #{data => #{<<"inventory">> => #{
+        <<"raw">> => #{
+            <<"LongGuns">> => [#{<<"ItemId">> => <<"rifle-1">>,
+                                  <<"ItemType">> => <<"/Lotus/Weapons/TestRifle">>,
+                                  <<"Configs">> => [#{<<"Upgrades">> => [Hush]}]}],
+            <<"RawUpgrades">> => [#{<<"ItemType">> => Hush,
+                                      <<"ItemCount">> => 31}]},
+        <<"index">> => #{
+            <<"stacks">> => [entry(ChromaBlueprint, 1, 0),
+                               entry(ChassisBlueprint, 2, 0)],
+            <<"mastery">> => []}}}},
+    Catalog = [
+        #{<<"uniqueName">> => Hush, <<"name">> => <<"Hush">>,
+          <<"category">> => <<"Mods">>, <<"tradable">> => true,
+          <<"fusionLimit">> => 5, <<"imageName">> => <<"Hush.png">>,
+          <<"components">> => []},
+        #{<<"uniqueName">> => Chroma, <<"name">> => <<"Chroma">>,
+          <<"category">> => <<"Warframes">>, <<"components">> => [
+              #{<<"uniqueName">> => ChromaBlueprint, <<"name">> => <<"Blueprint">>,
+                <<"tradable">> => false, <<"imageName">> => <<"Chroma.png">>},
+              #{<<"uniqueName">> => Chassis, <<"name">> => <<"Chassis">>,
+                <<"tradable">> => false, <<"imageName">> => <<"Chassis.png">>,
+                <<"recipeAliases">> => [ChassisBlueprint]}
+          ]}
+    ],
+    {ok, Inventory} = wfcli_player_views:inventory(Snapshot, Catalog),
+    Items = maps:from_list([{maps:get(<<"name">>, Item), Item}
+                            || Item <- maps:get(<<"items">>, Inventory)]),
+    HushItem = maps:get(<<"Hush">>, Items),
+    ?assertEqual(<<"mods">>, maps:get(<<"group">>, HushItem)),
+    ?assertEqual(31, maps:get(<<"quantity">>, HushItem)),
+    ?assertEqual(0, maps:get(<<"rank">>, HushItem)),
+    ?assertEqual(5, maps:get(<<"max_rank">>, HushItem)),
+    ?assertEqual(true, maps:get(<<"equipped">>, HushItem)),
+    ?assertEqual(1, length(maps:get(<<"equipped_in">>, HushItem))),
+    NormalBlueprint = maps:get(<<"Chroma Blueprint">>, Items),
+    ?assertEqual(<<"parts">>, maps:get(<<"group">>, NormalBlueprint)),
+    ChassisItem = maps:get(<<"Chroma Chassis">>, Items),
+    ?assertEqual(<<"parts">>, maps:get(<<"group">>, ChassisItem)),
+    ?assertEqual(2, maps:get(<<"quantity">>, ChassisItem)),
+    ?assertEqual(<<"Chassis.png">>,
+                 maps:get(<<"image_name">>, maps:get(<<"asset">>, ChassisItem))).
+
 star_chart_compaction_test() ->
     Regions = #{
         <<"SolNode1">> => #{<<"masteryExp">> => 51},
@@ -218,6 +268,29 @@ duplicate_recipe_slots_share_owned_count_test() ->
     ?assertEqual(1, maps:get(<<"components_owned">>, Item)),
     ?assertEqual(2, maps:get(<<"components_required">>, Item)),
     ?assertEqual(1, maps:get(<<"missing_parts">>, Item)),
+    ?assertEqual(false, maps:get(<<"ready_to_build">>, Item)).
+
+foundry_distinguishes_part_blueprints_from_built_parts_test() ->
+    Frame = <<"/Lotus/Powersuits/Test/RecipeFrame">>,
+    Chassis = <<"/Lotus/Types/Recipes/Test/RecipeFrameChassis">>,
+    ChassisBlueprint =
+        <<"/Lotus/Types/Recipes/Test/RecipeFrameChassisBlueprint">>,
+    Snapshot = #{data => #{<<"inventory">> => #{<<"index">> => #{
+        <<"stacks">> => [entry(ChassisBlueprint, 2, 0)]}}}},
+    Catalog = [#{<<"uniqueName">> => Frame, <<"name">> => <<"Recipe Frame">>,
+                 <<"category">> => <<"Warframes">>, <<"masterable">> => true,
+                 <<"components">> => [
+                     #{<<"uniqueName">> => Chassis, <<"name">> => <<"Chassis">>,
+                       <<"itemCount">> => 1,
+                       <<"recipeAliases">> => [ChassisBlueprint]}]}],
+
+    {ok, Foundry} = wfcli_player_views:foundry(Snapshot, Catalog),
+    [Item] = maps:get(<<"items">>, Foundry),
+    [Component] = maps:get(<<"components">>, Item),
+    ?assertEqual(0, maps:get(<<"owned">>, Component)),
+    ?assertEqual(2, maps:get(<<"blueprint_owned">>, Component)),
+    ?assertEqual([ChassisBlueprint], maps:get(<<"recipe_ids">>, Component)),
+    ?assertEqual(0, maps:get(<<"components_owned">>, Item)),
     ?assertEqual(false, maps:get(<<"ready_to_build">>, Item)).
 
 refined_relic_probability_uses_variant_inventory_test() ->

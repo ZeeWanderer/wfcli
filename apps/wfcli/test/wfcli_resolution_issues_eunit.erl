@@ -29,26 +29,33 @@ setup() ->
     Player = filename:join(Root, "player.term"),
     Issues = filename:join(Root, "resolution-issues.json"),
     Catalog = filename:join(Root, "WFCDItems.json"),
+    Recipes = filename:join(Root, "ExportRecipes_en.json"),
     ok = filelib:ensure_dir(filename:join(Root, "placeholder")),
     ok = file:write_file(
            Catalog,
            jsone:encode(#{<<"version">> => <<"test">>, <<"fetchedAt">> => 1,
                           <<"entries">> => []})),
+    ok = file:write_file(Recipes, jsone:encode(#{<<"ExportRecipes">> => []})),
     application:set_env(wfdaemon, player_cache, Player),
     application:set_env(wfdaemon, item_catalog_file, Catalog),
+    application:set_env(wfdaemon, item_recipe_file, Recipes),
     application:set_env(wfdaemon, resolution_issues_file, Issues),
     {ok, _PlayerPid} = wfcli_player_service:start_link(),
     {ok, _IssuesPid} = wfcli_resolution_issues:start_link(),
-    #{root => Root, player => Player, issues => Issues, catalog => Catalog}.
+    #{root => Root, player => Player, issues => Issues, catalog => Catalog,
+      recipes => Recipes}.
 
-cleanup(#{root := Root, player := Player, issues := Issues, catalog := Catalog}) ->
+cleanup(#{root := Root, player := Player, issues := Issues, catalog := Catalog,
+          recipes := Recipes}) ->
     stop(wfcli_resolution_issues),
     stop(wfcli_player_service),
     application:unset_env(wfdaemon, player_cache),
     application:unset_env(wfdaemon, item_catalog_file),
+    application:unset_env(wfdaemon, item_recipe_file),
     application:unset_env(wfdaemon, resolution_issues_file),
     lists:foreach(fun file:delete/1,
-                  [Player ++ ".tmp", Player, Issues ++ ".tmp", Issues, Catalog]),
+                  [Player ++ ".tmp", Player, Issues ++ ".tmp", Issues, Catalog,
+                   Recipes]),
     _ = file:del_dir(Root),
     ok.
 

@@ -258,6 +258,10 @@ clear_export_cache(Name) ->
         true -> persistent_term:erase({wfcli, item_map});
         false -> ok
     end,
+    case lists:prefix("ExportRecipes", Name) of
+        true -> wfcli_item_catalog:invalidate();
+        false -> ok
+    end,
     case lists:prefix("ExportUpgrades", Name) of
         true ->
             wfcli_resolve_registry:invalidate_mod_cache(),

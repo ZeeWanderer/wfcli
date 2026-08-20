@@ -62,7 +62,9 @@ requirements(Command, Query) when Command =:= "enemies"; Command =:= "drops" ->
        path => wfcli_knowledge:wfcd_source(Dir), managed => Dir =:= undefined}];
 requirements("player_views", _Query) ->
     [#{kind => wfcd, id => "WFCDItems.json",
-       path => wfcli_item_catalog:source(), managed => true}];
+       path => wfcli_item_catalog:source(), managed => true},
+     export_requirement("ExportRecipes_en.json",
+                        wfcli_item_catalog:recipe_source(), undefined)];
 requirements("mastery_star_chart", _Query) ->
     [#{kind => star_chart, id => "StarChart.json",
        path => wfcli_star_chart:source(), managed => true}];
