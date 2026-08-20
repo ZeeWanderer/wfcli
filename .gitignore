@@ -36,6 +36,7 @@ rebar3.crashdump
 .cache/
 .backup/
 /temp.txt
+/.context/
 /tools/aleca-layout/node_modules/
 .elixir_ls/
 
