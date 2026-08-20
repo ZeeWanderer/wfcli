@@ -18,6 +18,21 @@ companion_help_explains_global_overlay_visibility_test() ->
     ?assertNotEqual(nomatch, binary:match(Help, <<"hud show|hide">>)),
     ?assertNotEqual(nomatch, binary:match(Help, <<"suppresses automatic contextual overlays">>)).
 
+companion_status_formats_negotiated_socket_contract_test() ->
+    Status = iolist_to_binary(
+               wfcli_companion_cli:format_local(
+                 #{socket => "/tmp/wfdaemon.sock",
+                   contract => #{<<"envelope">> => 1,
+                                 <<"interfaces">> =>
+                                     #{<<"assets">> => 2, <<"player">> => 3}},
+                   connections => 2,
+                   companions => 1})),
+    ?assertNotEqual(nomatch,
+                    binary:match(Status, <<"handshake envelope: 1">>)),
+    ?assertNotEqual(nomatch,
+                    binary:match(Status, <<"interfaces: assets=2, player=3">>)),
+    ?assertEqual(nomatch, binary:match(Status, <<"companion protocol">>)).
+
 preview_directory_tracks_repository_or_portable_root_test() ->
     ?assertEqual("/repo/previews",
                  wfcli_companion_cli:preview_directory("/repo/dev/bin/wfcompanion")),

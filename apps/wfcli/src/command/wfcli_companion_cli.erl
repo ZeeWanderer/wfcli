@@ -6,7 +6,7 @@
 -export([run/1, help/0, help/1, known_commands/0]).
 
 -ifdef(TEST).
--export([preview_directory/1]).
+-export([format_local/1, preview_directory/1]).
 -endif.
 
 -doc "Manage companion lifecycle, setup, and diagnostics.".
@@ -152,12 +152,25 @@ set_visibility(CommandName, Label, Visible) ->
 
 print_local(unavailable) -> io:format("wfcompanion API unavailable~n");
 print_local(Local) ->
-    io:format("wfcompanion API~n"),
-    io:format("  socket: ~s~n", [maps:get(socket, Local)]),
-    io:format("  companion protocol: ~p~n", [maps:get(protocol, Local)]),
-    io:format("  connections: ~p~n", [maps:get(connections, Local)]),
-    io:format("  companions: ~p~n", [maps:get(companions, Local)]),
+    io:put_chars(format_local(Local)),
     print_companions(maps:get(companion_details, Local, [])).
+
+format_local(Local) ->
+    Contract = maps:get(contract, Local),
+    Envelope = maps:get(<<"envelope">>, Contract),
+    Interfaces = maps:get(<<"interfaces">>, Contract),
+    ["wfcompanion API\n",
+     io_lib:format("  socket: ~s~n", [maps:get(socket, Local)]),
+     io_lib:format("  handshake envelope: ~p~n", [Envelope]),
+     io_lib:format("  interfaces: ~s~n", [format_interfaces(Interfaces)]),
+     io_lib:format("  connections: ~p~n", [maps:get(connections, Local)]),
+     io_lib:format("  companions: ~p~n", [maps:get(companions, Local)])].
+
+format_interfaces(Interfaces) ->
+    string:join(
+      [binary_to_list(Name) ++ "=" ++ integer_to_list(Version)
+       || {Name, Version} <- lists:sort(maps:to_list(Interfaces))],
+      ", ").
 
 print_companions([]) -> ok;
 print_companions(Details) ->
