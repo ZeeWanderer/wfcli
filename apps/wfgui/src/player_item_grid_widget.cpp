@@ -620,6 +620,10 @@ public:
                       .arg(component.value("owned").toInt())
                       .arg(required);
         }
+        const int blueprints = component.value("blueprint_owned").toInt();
+        if (blueprints > 0) {
+          text += QString("\nBlueprints: %1").arg(blueprints);
+        }
         wfgui::showTooltip(view->viewport(), event->pos(), text,
                            rects.at(componentIndex));
         return true;
@@ -1150,11 +1154,14 @@ private:
          ++componentIndex) {
       const QVariantMap component = components.at(componentIndex).toMap();
       const QRect &circle = rects.at(componentIndex);
-      painter.setBrush(QColor(255, 255, 255, 0x12));
-      const bool enough = component.value("owned").toInt() >=
-                          component.value("required").toInt();
-      painter.setPen(QPen(enough ? QColor("#46d234") : QColor("#566078"),
-                          wfgui::scaled(enough ? 2 : 1, scale)));
+      const bool builtEnough = component.value("owned").toInt() >=
+                               component.value("required").toInt();
+      const bool hasBlueprint = component.value("blueprint_owned").toInt() > 0;
+      const bool available = builtEnough || hasBlueprint;
+      painter.setBrush(available ? QColor(0x6e, 0x9b, 0x68, 0x78)
+                                 : QColor(255, 255, 255, 0x12));
+      painter.setPen(QPen(available ? QColor("#46d234") : QColor("#566078"),
+                          wfgui::scaled(available ? 2 : 1, scale)));
       painter.drawEllipse(circle);
       painter.save();
       QPainterPath clip;
@@ -1167,6 +1174,22 @@ private:
               painter, component.value("assetRef").value<wfgui::AssetRef>(),
               imageRect.size(), dirtyRegion));
       painter.restore();
+      if (component.value("search_match").toBool()) {
+        QPen searchPen(QColor("#f0c95a"));
+        QRect searchCircle = circle;
+        if (kind == PlayerItemGridWidget::Kind::Foundry) {
+          searchPen.setWidthF(std::max<qreal>(1.0, scale));
+          searchPen.setStyle(Qt::DotLine);
+          searchPen.setCapStyle(Qt::RoundCap);
+        } else {
+          searchPen.setWidth(wfgui::scaled(3, scale));
+          const int inset = wfgui::scaled(1, scale);
+          searchCircle.adjust(inset, inset, -inset, -inset);
+        }
+        painter.setPen(searchPen);
+        painter.setBrush(Qt::NoBrush);
+        painter.drawEllipse(searchCircle);
+      }
       if (kind == PlayerItemGridWidget::Kind::Foundry ||
           kind == PlayerItemGridWidget::Kind::Inventory) {
         const int owned = component.value("owned").toInt();
@@ -1205,12 +1228,6 @@ private:
               wfgui::cachedThumbnail(painter, ":/resources/ui/fissure.png",
                                      imageRect.size()));
         }
-      }
-      if (component.value("search_match").toBool()) {
-        const int inset = wfgui::scaled(1, scale);
-        painter.setPen(QPen(QColor("#f0c95a"), wfgui::scaled(3, scale)));
-        painter.setBrush(Qt::NoBrush);
-        painter.drawEllipse(circle.adjusted(inset, inset, -inset, -inset));
       }
     }
   }

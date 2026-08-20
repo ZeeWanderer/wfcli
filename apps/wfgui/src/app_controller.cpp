@@ -543,25 +543,15 @@ bool AppController::marketQuoteFetchBusy() const {
   return daemon_.marketQuoteFetchBusy();
 }
 
-int AppController::ownedMarketQuantity(const QString &name) const {
+int AppController::ownedMarketQuantity(const QString &name,
+                                       const QJsonObject &filters) const {
   if (!inventoryState_.loaded) {
     return -1;
   }
-  const QString key = marketKey(name);
-  int quantity = 0;
-  bool found = false;
-  for (int row = 0; row < inventoryItems_.rowCount(); ++row) {
-    const QModelIndex index = inventoryItems_.index(row, 0);
-    const QString marketName =
-        marketKey(index.data(PlayerItemModel::MarketNameRole).toString());
-    const QString displayName =
-        marketKey(index.data(PlayerItemModel::NameRole).toString());
-    if (marketName == key || displayName == key) {
-      quantity += index.data(PlayerItemModel::QuantityRole).toInt();
-      found = true;
-    }
-  }
-  return found ? quantity : 0;
+  const std::optional<int> rank = filters.value("rank").isDouble()
+                                      ? std::optional(filters.value("rank").toInt())
+                                      : std::nullopt;
+  return inventoryItems_.ownedQuantity(name, rank);
 }
 
 QJsonObject AppController::overframeAccount() const {

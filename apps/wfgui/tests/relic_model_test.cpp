@@ -71,6 +71,7 @@ private slots:
   void preservesUnknownInventoryVaultState();
   void preservesFavoriteOverrides();
   void appliesInventoryMarketQuotes();
+  void countsOwnedMarketVariants();
   void sortsInventoryLocally();
   void appliesMasteryAcquisitionQuotes();
   void sortsMasteryRecommendations();
@@ -84,6 +85,7 @@ private slots:
   void gridLayoutUsesStableBreakpoints();
   void playerGridUsesAvailableColumns();
   void foundryGridUsesCompactCards();
+  void foundryBlueprintAvailabilityUsesBackgroundState();
   void standardTooltipsUseLocalCoordinates();
   void foundryStatusBadgesHaveTooltips();
   void masteryComponentTooltipsUseLocalCoordinates();
@@ -629,6 +631,32 @@ void RelicModelTest::appliesInventoryMarketQuotes() {
   QVERIFY(!model.data(model.index(0), PlayerItemModel::SellableRole).toBool());
 }
 
+void RelicModelTest::countsOwnedMarketVariants() {
+  PlayerItemModel model;
+  QVERIFY(model.replace({
+      {"items",
+       QJsonArray{
+           QJsonObject{{"id", "hush-0"},
+                       {"name", "Hush"},
+                       {"market_name", "Hush"},
+                       {"group", "mods"},
+                       {"rank", 0},
+                       {"quantity", 31}},
+           QJsonObject{{"id", "hush-1"},
+                       {"name", "Hush"},
+                       {"market_name", "Hush"},
+                       {"group", "mods"},
+                       {"rank", 1},
+                       {"quantity", 2}},
+       }},
+  }));
+
+  QCOMPARE(model.ownedQuantity("hush"), 33);
+  QCOMPARE(model.ownedQuantity("Hush", 0), 31);
+  QCOMPARE(model.ownedQuantity("Hush", 1), 2);
+  QCOMPARE(model.ownedQuantity("Hush", 5), 0);
+}
+
 void RelicModelTest::sortsInventoryLocally() {
   PlayerItemModel model;
   QVERIFY(model.replace({
@@ -1117,6 +1145,58 @@ void RelicModelTest::foundryGridUsesCompactCards() {
   const QPixmap card = wfgui::grabCaptureTarget("foundry.grid.item", 0, &error);
   QVERIFY2(!card.isNull(), qPrintable(error));
   QCOMPARE(card.deviceIndependentSize().height(), 150.0);
+}
+
+void RelicModelTest::foundryBlueprintAvailabilityUsesBackgroundState() {
+  PlayerItemModel model;
+  QVERIFY(model.replace({
+      {"items",
+       QJsonArray{QJsonObject{
+           {"id", "test-frame"},
+           {"name", "Test Frame"},
+           {"group", "warframe"},
+           {"components",
+            QJsonArray{QJsonObject{{"name", "Chassis"},
+                                   {"required", 1},
+                                   {"owned", 0},
+                                   {"blueprint_owned", 2}}}},
+       }}},
+  }));
+
+  PlayerItemGridWidget grid(PlayerItemGridWidget::Kind::Foundry);
+  grid.setModel(&model);
+  grid.resize(320, 400);
+  grid.show();
+  QCoreApplication::processEvents();
+
+  const QRect item = grid.visualRect(model.index(0));
+  const QRect card = item.adjusted(4, 4, -4, -4);
+  const QRect content = card.adjusted(8, 8, -8, -8);
+  constexpr int componentSize = 39;
+  constexpr int componentGap = 8;
+  constexpr int componentLayoutWidth =
+      3 * componentSize + 2 * componentGap;
+  const int componentLeft = content.right() - componentLayoutWidth + 1 +
+                            (componentLayoutWidth - componentSize) / 2;
+  const QRect body(content.left(), content.top() + 33, content.width(), 86);
+  const QRect component(componentLeft,
+                        body.center().y() - componentSize / 2, componentSize,
+                        componentSize);
+  const QColor fill = grid.viewport()->grab().toImage().pixelColor(
+      component.center());
+  QVERIFY(fill.green() > fill.red());
+  QVERIFY(fill.green() > fill.blue());
+
+  wfgui::hideTooltip();
+  QHelpEvent event(QEvent::ToolTip, component.center(),
+                   grid.viewport()->mapToGlobal(component.center()));
+  QApplication::sendEvent(grid.viewport(), &event);
+  QCoreApplication::processEvents();
+  QLabel *tip =
+      grid.findChild<QLabel *>("wfguiTooltip", Qt::FindDirectChildrenOnly);
+  QVERIFY(tip);
+  QCOMPARE(tip->text(), QString("Chassis\nOwned: 0/1\nBlueprints: 2"));
+  wfgui::hideTooltip();
 }
 
 void RelicModelTest::standardTooltipsUseLocalCoordinates() {

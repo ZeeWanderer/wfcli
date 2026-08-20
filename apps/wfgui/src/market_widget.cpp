@@ -598,10 +598,10 @@ void MarketWidget::rebuildOrders() {
     item.insert("asset_path", controller_->assetPath(assetId));
     const QString name = item.value("name").toString(
         item.isEmpty() ? "Loading item..." : "Unknown item");
-    const int owned =
-        item.isEmpty() ? -1 : controller_->ownedMarketQuantity(name);
-    const QString itemId = order.value("itemId").toString();
     const QJsonObject filters = orderFilters(order);
+    const int owned =
+        item.isEmpty() ? -1 : controller_->ownedMarketQuantity(name, filters);
+    const QString itemId = order.value("itemId").toString();
     QJsonObject quote = filters.isEmpty()
                             ? controller_->marketQuote(itemId)
                             : controller_->marketVariantQuote(itemId, filters);
@@ -742,7 +742,7 @@ void MarketWidget::reconcileSellOrders() {
       continue;
     }
     const QString name = item.value("name").toString();
-    const int owned = controller_->ownedMarketQuantity(name);
+    const int owned = controller_->ownedMarketQuantity(name, orderFilters(order));
     if (owned < 0) {
       inventoryPending = true;
       continue;
@@ -776,7 +776,8 @@ void MarketWidget::reconcileSellOrders() {
     return;
   }
   for (const QJsonObject &order : std::as_const(changes)) {
-    const int owned = controller_->ownedMarketQuantity(orderName(order));
+    const int owned =
+        controller_->ownedMarketQuantity(orderName(order), orderFilters(order));
     const int perTrade = firstInt(order, {"perTrade", "per_trade"}, 1);
     const int target = owned / perTrade * perTrade;
     const QString id = order.value("id").toString();
@@ -831,6 +832,7 @@ bool MarketWidget::orderMissing(const QJsonObject &order) const {
   if (controller_->marketItem(order.value("itemId").toString()).isEmpty()) {
     return false;
   }
-  const int owned = controller_->ownedMarketQuantity(orderName(order));
+  const int owned =
+      controller_->ownedMarketQuantity(orderName(order), orderFilters(order));
   return owned >= 0 && owned < order.value("quantity").toInt();
 }

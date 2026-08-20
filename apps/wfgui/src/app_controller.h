@@ -79,7 +79,8 @@ public:
   bool marketLoaded() const;
   bool marketBusy() const;
   bool marketQuoteFetchBusy() const;
-  int ownedMarketQuantity(const QString &name) const;
+  int ownedMarketQuantity(const QString &name,
+                          const QJsonObject &filters = {}) const;
   QJsonObject overframeAccount() const;
   QString overframeAccountError() const;
   bool overframeAccountBusy() const;

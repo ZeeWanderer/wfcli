@@ -98,6 +98,24 @@ int PlayerItemModel::rowCount(const QModelIndex &parent) const {
   return parent.isValid() ? 0 : items_.size();
 }
 
+int PlayerItemModel::ownedQuantity(const QString &name,
+                                   std::optional<int> rank) const {
+  const QString key = name.trimmed().toCaseFolded();
+  int quantity = 0;
+  for (const QJsonObject &item : items_) {
+    const bool matches = marketName(item).trimmed().toCaseFolded() == key ||
+                         item.value("name").toString().trimmed().toCaseFolded() ==
+                             key;
+    if (!matches ||
+        (rank && (!item.contains("rank") ||
+                  item.value("rank").toInt() != *rank))) {
+      continue;
+    }
+    quantity += item.value("quantity").toInt();
+  }
+  return quantity;
+}
+
 QVariant PlayerItemModel::data(const QModelIndex &index, int role) const {
   if (!index.isValid() || index.row() < 0 || index.row() >= items_.size()) {
     return {};

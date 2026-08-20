@@ -199,7 +199,9 @@ public:
          ++rewardIndex) {
       const QVariantMap reward = rewards.at(rewardIndex).toMap();
       const QRect &rewardRect = layout.rewardCells.at(rewardIndex);
-      painter->setBrush(QColor(255, 255, 255, 0x12));
+      const bool owned = reward.value("owned").toInt() > 0;
+      painter->setBrush(owned ? QColor(0x6e, 0x9b, 0x68, 0x78)
+                              : QColor(255, 255, 255, 0x12));
       painter->setPen(Qt::NoPen);
       painter->drawEllipse(rewardRect);
       const int imageInset = wfgui::scaled(2, scale);
@@ -222,9 +224,9 @@ public:
         wfgui::drawContained(*painter, rewardImageRect, rewardImage);
         painter->restore();
       }
-      if (reward.value("owned").toInt() > 0) {
+      if (owned) {
         painter->setPen(QPen(QColor("#46d234"), wfgui::scaled(2, scale)));
-        painter->setBrush(QColor(0x6e, 0x9b, 0x68, 0x78));
+        painter->setBrush(Qt::NoBrush);
         const int ownedInset = wfgui::scaled(2, scale);
         painter->drawEllipse(rewardRect.adjusted(ownedInset, ownedInset,
                                                  -ownedInset, -ownedInset));

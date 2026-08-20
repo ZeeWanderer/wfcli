@@ -11,6 +11,8 @@
 #include <QStringList>
 #include <QVariantList>
 
+#include <optional>
+
 #include "asset_ref.h"
 
 class PlayerItemModel final : public QAbstractListModel {
@@ -60,6 +62,8 @@ public:
 
   int rowCount(const QModelIndex &parent = {}) const override;
   QVariant data(const QModelIndex &index, int role) const override;
+  int ownedQuantity(const QString &name,
+                    std::optional<int> rank = std::nullopt) const;
   bool setData(const QModelIndex &index, const QVariant &value,
                int role) override;
   QHash<int, QByteArray> roleNames() const override;
