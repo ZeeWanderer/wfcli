@@ -140,6 +140,23 @@ inventory_and_mastery_join_test() ->
     ?assertEqual(1, maps:get(<<"total">>, maps:get(<<"junctions">>, StarChart))),
     ?assertEqual(100, maps:get(<<"percent">>, StarChart)).
 
+mastery_uses_newer_equipment_xp_test() ->
+    Weapon = <<"/Lotus/Weapons/Test/LiveXpWeapon">>,
+    Snapshot = #{data => #{<<"inventory">> => #{<<"index">> => #{
+        <<"equipment">> => [entry(Weapon, 1, 32000)],
+        <<"mastery">> => [entry(Weapon, 1, 4500)]
+    }}}},
+    Catalog = [#{<<"uniqueName">> => Weapon,
+                 <<"name">> => <<"Live XP Weapon">>,
+                 <<"category">> => <<"Primary">>,
+                 <<"masterable">> => true,
+                 <<"components">> => []}],
+
+    {ok, View} = wfcli_player_views:mastery(Snapshot, Catalog),
+    [Item] = maps:get(<<"items">>, View),
+    ?assertEqual(8, maps:get(<<"rank">>, Item)),
+    ?assertEqual(800, maps:get(<<"earned_xp">>, Item)).
+
 inventory_preserves_unknown_vault_state_test() ->
     Parent = <<"/Lotus/Weapons/Test/TestPrime">>,
     Part = <<"/Lotus/Weapons/Test/TestPrimeBarrel">>,
