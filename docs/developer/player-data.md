@@ -40,9 +40,11 @@ hashes, and the untouched provider package are retained under `research/overwolf
 
 `apps/wfcompanion/src/inventory.rs` reproduces only the inventory path from the Linux host. It
 opens `/proc/<game-pid>/mem` read-only, finds the HTTP manager through the same masked executable
-signature, and follows the bounded retained-response ring even after its active count reaches
-zero. It reads only valid Warframe string descriptors, rejects payloads without
-`LastInventorySync`, and caps payloads at `0x4e2000` bytes.
+signature, and semantically decodes the response handler to derive version-dependent field
+offsets. Every 7 ms it compares the cached payload length plus its terminator. A detected change
+reads the provider's `0x9e1fff`-byte response capacity in 256 KiB chunks until the string terminator;
+indirect and alternate responses are then checked in provider order. Published payloads must contain
+a complete inventory object with `LastInventorySync`.
 
 Launch mode makes `wfcompanion` the game process's ancestor, satisfying normal Linux ptrace
 restrictions without debugger attachment or elevated privileges. The collector does not inject,

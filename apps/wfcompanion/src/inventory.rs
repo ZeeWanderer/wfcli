@@ -2,8 +2,7 @@ use std::collections::HashSet;
 use std::collections::hash_map::DefaultHasher;
 use std::fs::{self, File};
 use std::hash::{Hash, Hasher};
-use std::io::{self, BufRead, BufReader};
-use std::os::unix::fs::FileExt;
+use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, mpsc};
@@ -15,17 +14,9 @@ use serde_json::{Map, Value};
 
 use crate::debug_output::Runtime;
 
-const MAX_PAYLOAD_SIZE: usize = 0x4e2000;
-const SCAN_CHUNK_SIZE: usize = 1024 * 1024;
-const SCAN_INTERVAL: Duration = Duration::from_secs(1);
-const HTTP_QUEUE_PATTERN: &[u8] = &[
-    0x48, 0x00, 0x00, 0x48, 0x8b, 0x0d, 0x00, 0x00, 0x00, 0x00, 0x48, 0x85, 0x00, 0x74, 0x00, 0x48,
-    0x8b, 0xd3, 0xe8,
-];
-const HTTP_QUEUE_MASK: &[u8] = &[
-    0xff, 0x00, 0x00, 0xff, 0xff, 0xff, 0x00, 0x00, 0x00, 0x00, 0xff, 0xff, 0x00, 0xff, 0x00, 0xff,
-    0xff, 0xff, 0xff,
-];
+mod gep;
+
+const POINTER_POLL_INTERVAL: Duration = Duration::from_millis(7);
 const INVENTORY_MARKER: &[u8] = b"LastInventorySync";
 const SCHEMA_VERSION: u32 = 2;
 
@@ -101,12 +92,6 @@ struct Profile {
     last_region_played: Option<String>,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
-struct ExecutableRegion {
-    start: u64,
-    end: u64,
-}
-
 fn start_native(
     game_pid: u32,
     prefix: PathBuf,
@@ -114,232 +99,130 @@ fn start_native(
 ) -> Result<(Arc<AtomicBool>, JoinHandle<()>), String> {
     let mem = File::open(format!("/proc/{game_pid}/mem"))
         .map_err(|error| format!("could not open Warframe memory: {error}"))?;
-    let queue_global = resolve_http_queue(&mem, game_pid)?;
+    let sources = gep::Sources::discover(&mem, game_pid)?;
     let stopping = Arc::new(AtomicBool::new(false));
     let worker_stopping = Arc::clone(&stopping);
-    let worker = thread::spawn(move || {
-        scan_native(game_pid, mem, queue_global, prefix, worker_stopping, events)
-    });
+    let worker =
+        thread::spawn(move || scan_native(game_pid, mem, sources, prefix, worker_stopping, events));
     Ok((stopping, worker))
 }
 
 fn scan_native(
     game_pid: u32,
     mem: File,
-    queue_global: u64,
+    sources: gep::Sources,
     prefix: PathBuf,
     stopping: Arc<AtomicBool>,
     events: mpsc::Sender<Event>,
 ) {
     let mut player_name = player_name_from_log(&prefix);
     let mut seen_payloads = HashSet::new();
+    let mut poll_state = gep::PollState::default();
+    let (queue, item_base, body, alternate) = sources.response_offsets();
     crate::incident::info(
-        "inventory.native_queue_ready",
-        format!("game_pid={game_pid} global=0x{queue_global:x}"),
+        "inventory.native_gep_ready",
+        format!(
+            "game_pid={game_pid} global=0x{:x} queue=0x{queue:x} item=0x{item_base:x} body=0x{body:x} alternate=0x{alternate:x}",
+            sources.manager_global()
+        ),
     );
     while !stopping.load(Ordering::Relaxed) {
-        if let Ok(payloads) = retained_responses(&mem, queue_global) {
-            for payload in payloads {
-                if !payload
-                    .windows(INVENTORY_MARKER.len())
-                    .any(|window| window == INVENTORY_MARKER)
-                {
-                    continue;
-                }
-                if !is_new_payload(&payload, &mut seen_payloads) {
-                    continue;
-                }
-                if player_name.is_none() {
-                    player_name = player_name_from_log(&prefix);
-                }
-                if let Ok(data) = parse_observation(
-                    &payload,
-                    "native_http_buffer",
-                    game_pid,
-                    player_name.as_deref(),
-                ) && events
-                    .send(Event::Inventory {
-                        game_pid,
-                        collector: "native_http_buffer",
-                        process_pid: game_pid,
-                        data,
-                    })
-                    .is_err()
-                {
-                    return;
-                }
+        for (source, payload) in sources.persistent_payloads(&mem, &mut poll_state) {
+            if publish_payload(
+                &payload,
+                source,
+                game_pid,
+                &prefix,
+                &mut player_name,
+                &mut seen_payloads,
+                &events,
+            )
+            .is_err()
+            {
+                return;
             }
         }
-        wait_for_scan(&stopping);
+        thread::sleep(POINTER_POLL_INTERVAL);
     }
 }
 
-fn is_new_payload(payload: &[u8], seen: &mut HashSet<u64>) -> bool {
-    let mut hasher = DefaultHasher::new();
-    payload.hash(&mut hasher);
-    seen.insert(hasher.finish())
-}
-
-fn resolve_http_queue(mem: &File, game_pid: u32) -> Result<u64, String> {
-    let region = executable_region(game_pid)?;
-    let mut offset = region.start;
-    let mut tail = Vec::new();
-    let mut chunk = vec![0_u8; SCAN_CHUNK_SIZE];
-    while offset < region.end {
-        let wanted = usize::try_from((region.end - offset).min(SCAN_CHUNK_SIZE as u64)).unwrap();
-        let read = mem
-            .read_at(&mut chunk[..wanted], offset)
-            .map_err(|error| format!("could not scan Warframe executable: {error}"))?;
-        if read == 0 {
-            break;
-        }
-        let mut searchable = Vec::with_capacity(tail.len() + read);
-        searchable.extend_from_slice(&tail);
-        searchable.extend_from_slice(&chunk[..read]);
-        if let Some(index) = find_masked(&searchable, HTTP_QUEUE_PATTERN, HTTP_QUEUE_MASK) {
-            let anchor = offset.saturating_sub(tail.len() as u64) + index as u64;
-            let displacement = i32::from_le_bytes(
-                searchable[index + 6..index + 10]
-                    .try_into()
-                    .expect("pattern includes displacement"),
-            );
-            return Ok((anchor + 10).wrapping_add_signed(i64::from(displacement)));
-        }
-        let overlap = HTTP_QUEUE_PATTERN.len() - 1;
-        tail.clear();
-        tail.extend_from_slice(&chunk[read.saturating_sub(overlap)..read]);
-        offset += read as u64;
-    }
-    Err("Warframe HTTP queue signature not found".to_owned())
-}
-
-fn retained_responses(mem: &File, queue_global: u64) -> io::Result<Vec<Vec<u8>>> {
-    let manager = read_u64(mem, queue_global)?;
-    if manager == 0 {
-        return Ok(Vec::new());
-    }
-    let table = read_u64(mem, manager + 0x98)?;
-    let capacity = read_u64(mem, manager + 0xa0)?;
-    if table == 0 || capacity == 0 || !capacity.is_power_of_two() || capacity > 65_536 {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "invalid Warframe HTTP queue",
-        ));
-    }
-
-    let mut payloads = Vec::new();
-    let mut seen_items = HashSet::new();
-    for bucket_index in 0..capacity {
-        let bucket = read_u64(mem, table + bucket_index * 8)?;
-        if bucket == 0 {
-            continue;
-        }
-        for slot in 0..2 {
-            let item = read_u64(mem, bucket + slot * 8)?;
-            if item == 0 || !seen_items.insert(item) {
-                continue;
+fn publish_payload(
+    payload: &[u8],
+    source: &'static str,
+    game_pid: u32,
+    prefix: &Path,
+    player_name: &mut Option<String>,
+    seen_payloads: &mut HashSet<u64>,
+    events: &mpsc::Sender<Event>,
+) -> Result<bool, ()> {
+    let (data, snapshot) =
+        match decode_new_payload(payload, game_pid, prefix, player_name, seen_payloads) {
+            Ok(Some(parsed)) => parsed,
+            Ok(None) => return Ok(false),
+            Err(error) => {
+                crate::incident::warn(
+                    "inventory.native_payload_rejected",
+                    format!("source={source} bytes={} error={error}", payload.len()),
+                );
+                return Ok(false);
             }
-            if let Ok(payload) = read_game_string(mem, item + 0x50) {
-                payloads.push(payload);
-            }
-        }
-    }
-    Ok(payloads)
-}
-
-fn executable_region(game_pid: u32) -> Result<ExecutableRegion, String> {
-    let maps = fs::read_to_string(format!("/proc/{game_pid}/maps"))
-        .map_err(|error| format!("could not read Warframe memory map: {error}"))?;
-    let mut image_start = None;
-    for line in maps.lines() {
-        let mut fields = line.split_whitespace();
-        let range = fields.next().unwrap_or_default();
-        let permissions = fields.next().unwrap_or_default();
-        let path = fields.nth(3).unwrap_or_default();
-        let Some((start, end)) = parse_range(range) else {
-            continue;
         };
-        if path.ends_with("/Warframe.x64.exe") {
-            image_start = Some(start);
-        }
-        if permissions.contains('x')
-            && image_start.is_some_and(|image| start >= image && start - image < 0x4000_0000)
-        {
-            return Ok(ExecutableRegion { start, end });
-        }
+    crate::incident::info(
+        "inventory.native_payload_accepted",
+        format!(
+            "source={source} bytes={} snapshot={snapshot:016x}",
+            payload.len()
+        ),
+    );
+    events
+        .send(Event::Inventory {
+            game_pid,
+            collector: "native_http_buffer",
+            process_pid: game_pid,
+            data,
+        })
+        .map_err(|_| ())?;
+    Ok(true)
+}
+
+fn decode_new_payload(
+    payload: &[u8],
+    game_pid: u32,
+    prefix: &Path,
+    player_name: &mut Option<String>,
+    seen_payloads: &mut HashSet<u64>,
+) -> Result<Option<(Value, u64)>, String> {
+    if !payload
+        .windows(INVENTORY_MARKER.len())
+        .any(|window| window == INVENTORY_MARKER)
+    {
+        return Ok(None);
     }
-    Err("Warframe executable mapping not found".to_owned())
-}
-
-fn parse_range(range: &str) -> Option<(u64, u64)> {
-    let (start, end) = range.split_once('-')?;
-    Some((
-        u64::from_str_radix(start, 16).ok()?,
-        u64::from_str_radix(end, 16).ok()?,
-    ))
-}
-
-fn read_game_string(mem: &File, address: u64) -> io::Result<Vec<u8>> {
-    let mut descriptor = [0_u8; 16];
-    read_exact_at(mem, address, &mut descriptor)?;
-    let tag = descriptor[15];
-    let (data, length) = if tag == 0xff {
-        (
-            u64::from_le_bytes(descriptor[..8].try_into().unwrap()),
-            (u32::from_le_bytes(descriptor[8..12].try_into().unwrap()) & 0x0fff_ffff) as usize,
-        )
-    } else {
-        (address, 15_usize.saturating_sub(tag as usize))
-    };
-    if length == 0 || length > MAX_PAYLOAD_SIZE {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "invalid Warframe string length",
-        ));
+    let fingerprint = hash_bytes(payload);
+    if seen_payloads.contains(&fingerprint) {
+        return Ok(None);
     }
-    let mut bytes = vec![0_u8; length];
-    read_exact_at(mem, data, &mut bytes)?;
-    Ok(bytes)
-}
-
-fn read_exact_at(mem: &File, address: u64, buffer: &mut [u8]) -> io::Result<()> {
-    let mut read = 0;
-    while read < buffer.len() {
-        let count = mem.read_at(&mut buffer[read..], address + read as u64)?;
-        if count == 0 {
-            return Err(io::Error::new(
-                io::ErrorKind::UnexpectedEof,
-                "short process-memory read",
-            ));
-        }
-        read += count;
+    if player_name.is_none() {
+        *player_name = player_name_from_log(prefix);
     }
-    Ok(())
+    let data = parse_observation(
+        payload,
+        "native_http_buffer",
+        game_pid,
+        player_name.as_deref(),
+    )?;
+    let snapshot = hash_bytes(
+        &serde_json::to_vec(data.get("raw").unwrap_or(&data))
+            .map_err(|error| format!("could not fingerprint inventory: {error}"))?,
+    );
+    seen_payloads.insert(fingerprint);
+    Ok(Some((data, snapshot)))
 }
 
-fn read_u64(mem: &File, address: u64) -> io::Result<u64> {
-    let mut bytes = [0_u8; 8];
-    read_exact_at(mem, address, &mut bytes)?;
-    Ok(u64::from_le_bytes(bytes))
-}
-
-fn find_masked(haystack: &[u8], pattern: &[u8], mask: &[u8]) -> Option<usize> {
-    haystack.windows(pattern.len()).position(|window| {
-        window
-            .iter()
-            .zip(pattern)
-            .zip(mask)
-            .all(|((&byte, &expected), &significant)| byte & significant == expected & significant)
-    })
-}
-
-fn wait_for_scan(stopping: &AtomicBool) {
-    for _ in 0..20 {
-        if stopping.load(Ordering::Relaxed) {
-            return;
-        }
-        thread::sleep(SCAN_INTERVAL / 20);
-    }
+fn hash_bytes(bytes: &[u8]) -> u64 {
+    let mut hasher = DefaultHasher::new();
+    bytes.hash(&mut hasher);
+    hasher.finish()
 }
 
 fn player_name_from_log(prefix: &Path) -> Option<String> {
@@ -372,7 +255,10 @@ fn parse_observation(
 ) -> Result<Value, String> {
     let value: Value = serde_json::from_slice(payload)
         .map_err(|error| format!("inventory payload is not valid JSON: {error}"))?;
-    let raw = unwrap_inventory(value)?;
+    let shape = root_shape(&value);
+    let raw = extract_inventory(value).ok_or_else(|| {
+        format!("inventory payload contains no complete inventory object; {shape}")
+    })?;
     let object = raw
         .as_object()
         .ok_or_else(|| "inventory payload root is not an object".to_owned())?;
@@ -398,16 +284,59 @@ fn parse_observation(
     Ok(data)
 }
 
-fn unwrap_inventory(value: Value) -> Result<Value, String> {
-    let Some(encoded) = value
-        .as_object()
-        .and_then(|object| object.get("InventoryJSON"))
-        .and_then(Value::as_str)
-    else {
-        return Ok(value);
-    };
-    serde_json::from_str(encoded)
-        .map_err(|error| format!("InventoryJSON is not valid JSON: {error}"))
+fn extract_inventory(value: Value) -> Option<Value> {
+    match value {
+        Value::Object(mut object) => {
+            if is_inventory_object(&object) {
+                return Some(Value::Object(object));
+            }
+            if let Some(inventory) = object.remove("InventoryJSON")
+                && let Some(found) = extract_inventory(inventory)
+            {
+                return Some(found);
+            }
+            object.into_values().find_map(extract_inventory)
+        }
+        Value::Array(values) => values.into_iter().find_map(extract_inventory),
+        Value::String(encoded) if encoded.contains("LastInventorySync") => {
+            serde_json::from_str(&encoded)
+                .ok()
+                .and_then(extract_inventory)
+        }
+        _ => None,
+    }
+}
+
+fn is_inventory_object(object: &Map<String, Value>) -> bool {
+    object.contains_key("LastInventorySync")
+        && [
+            "Suits",
+            "LongGuns",
+            "Pistols",
+            "Melee",
+            "SpaceSuits",
+            "MiscItems",
+            "XPInfo",
+            "Recipes",
+        ]
+        .iter()
+        .any(|key| object.contains_key(*key))
+}
+
+fn root_shape(value: &Value) -> String {
+    match value {
+        Value::Object(object) => {
+            let mut keys: Vec<_> = object.keys().map(String::as_str).collect();
+            keys.sort_unstable();
+            keys.truncate(16);
+            format!("root=object keys={}", keys.join(","))
+        }
+        Value::Array(values) => format!("root=array length={}", values.len()),
+        Value::String(_) => "root=string".to_owned(),
+        Value::Null => "root=null".to_owned(),
+        Value::Bool(_) => "root=boolean".to_owned(),
+        Value::Number(_) => "root=number".to_owned(),
+    }
 }
 
 fn profile(object: &Map<String, Value>, player_name: Option<&str>) -> Profile {
@@ -499,16 +428,111 @@ mod tests {
     }
 
     #[test]
+    fn extracts_nested_inventory_object() {
+        let inventory: Value = serde_json::from_str(SAMPLE).unwrap();
+        let wrapped = serde_json::json!({"response": {"data": inventory}}).to_string();
+        let value = parse_observation(wrapped.as_bytes(), "native_http_buffer", 7, None).unwrap();
+        assert_eq!(value["sync"]["$oid"], "abcdef");
+        assert_eq!(value["raw"]["Suits"][0]["XP"], 9000);
+    }
+
+    #[test]
+    fn extracts_nested_encoded_inventory() {
+        let wrapped = serde_json::json!({"response": {"body": SAMPLE}}).to_string();
+        let value = parse_observation(wrapped.as_bytes(), "native_http_buffer", 7, None).unwrap();
+        assert_eq!(value["sync"]["$oid"], "abcdef");
+        assert_eq!(value["raw"]["XPInfo"][0]["XP"], 450000);
+    }
+
+    #[test]
+    fn rejects_marker_without_inventory_collections() {
+        let error = parse_observation(
+            br#"{"metadata":{"LastInventorySync":"not-an-inventory"}}"#,
+            "native_http_buffer",
+            7,
+            None,
+        )
+        .unwrap_err();
+        assert!(error.contains("no complete inventory object"));
+    }
+
+    #[test]
     fn deduplicates_payloads_not_inventory_sync_markers() {
         let changed = SAMPLE.replace("\"ItemCount\":3", "\"ItemCount\":4");
         let mut seen = HashSet::new();
-        assert!(is_new_payload(SAMPLE.as_bytes(), &mut seen));
-        assert!(!is_new_payload(SAMPLE.as_bytes(), &mut seen));
-        assert!(is_new_payload(changed.as_bytes(), &mut seen));
+        let mut player_name = None;
+        let prefix = Path::new("/nonexistent");
+        let (sender, receiver) = mpsc::channel();
+        assert_eq!(
+            publish_payload(
+                SAMPLE.as_bytes(),
+                "test",
+                42,
+                prefix,
+                &mut player_name,
+                &mut seen,
+                &sender,
+            ),
+            Ok(true)
+        );
+        assert_eq!(
+            publish_payload(
+                SAMPLE.as_bytes(),
+                "test",
+                42,
+                prefix,
+                &mut player_name,
+                &mut seen,
+                &sender,
+            ),
+            Ok(false)
+        );
+        assert_eq!(
+            publish_payload(
+                changed.as_bytes(),
+                "test",
+                42,
+                prefix,
+                &mut player_name,
+                &mut seen,
+                &sender,
+            ),
+            Ok(true)
+        );
 
-        let value = parse_observation(changed.as_bytes(), "native_http_queue", 42, None).unwrap();
-        assert_eq!(value["sync"]["$oid"], "abcdef");
-        assert_eq!(value["raw"]["MiscItems"][0]["ItemCount"], 4);
+        let Event::Inventory { data: first, .. } = receiver.recv().unwrap();
+        let Event::Inventory { data: second, .. } = receiver.recv().unwrap();
+        assert_eq!(first["raw"]["MiscItems"][0]["ItemCount"], 3);
+        assert_eq!(second["raw"]["MiscItems"][0]["ItemCount"], 4);
+        assert!(receiver.try_recv().is_err());
+    }
+
+    #[test]
+    fn fingerprints_inventory_independent_of_response_envelope() {
+        let nested = serde_json::json!({"response": {"body": SAMPLE}}).to_string();
+        let mut direct_seen = HashSet::new();
+        let mut nested_seen = HashSet::new();
+        let mut player_name = None;
+        let prefix = Path::new("/nonexistent");
+        let (_, direct_fingerprint) = decode_new_payload(
+            SAMPLE.as_bytes(),
+            42,
+            prefix,
+            &mut player_name,
+            &mut direct_seen,
+        )
+        .unwrap()
+        .unwrap();
+        let (_, nested_fingerprint) = decode_new_payload(
+            nested.as_bytes(),
+            42,
+            prefix,
+            &mut player_name,
+            &mut nested_seen,
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(direct_fingerprint, nested_fingerprint);
     }
 
     #[test]
@@ -516,7 +540,7 @@ mod tests {
         assert!(
             parse_observation(br#"{"MiscItems":[]}"#, "native_http_queue", 1, None)
                 .unwrap_err()
-                .contains("LastInventorySync")
+                .contains("no complete inventory object")
         );
     }
 
@@ -532,27 +556,5 @@ mod tests {
         fs::write(&log, "0.0 Sys [Info]: Logged in TestTenno (abcdef)\n").unwrap();
         assert_eq!(player_name_from_log(&prefix).as_deref(), Some("TestTenno"));
         fs::remove_dir_all(prefix).unwrap();
-    }
-
-    #[test]
-    fn finds_masked_http_queue_signature() {
-        let mut bytes = vec![0x90; 32];
-        bytes[5..5 + HTTP_QUEUE_PATTERN.len()].copy_from_slice(HTTP_QUEUE_PATTERN);
-        bytes[6] = 0xaa;
-        bytes[7] = 0xbb;
-        bytes[17] = 0x7f;
-        assert_eq!(
-            find_masked(&bytes, HTTP_QUEUE_PATTERN, HTTP_QUEUE_MASK),
-            Some(5)
-        );
-    }
-
-    #[test]
-    fn parses_proc_map_range() {
-        assert_eq!(
-            parse_range("140001000-142027000"),
-            Some((0x140001000, 0x142027000))
-        );
-        assert_eq!(parse_range("broken"), None);
     }
 }
