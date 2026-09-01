@@ -175,11 +175,24 @@ No idle render loop runs.
 
 ## Development
 
-Build and test commands live in [`workflows.md`](workflows.md). `wfinspect game ui` provides
-bounded `state` and `relic` probes plus explicit `movies`, `find`, and `capture` diagnostics.
-`find` searches exact UTF-8 and UTF-16LE text plus direct pointer references; `capture` can include
-the same terms in its bounded artifact. Only `movies`, `find`, and `capture` perform full scans.
-Preview commands live in the
+Build and test commands live in [`workflows.md`](workflows.md). `wfinspect` provides explicit
+runtime diagnostics:
+
+```bash
+wfinspect game metadata --output game-metadata.json
+wfinspect game cache paths CACHE_DIR PACKAGE [SUBSTRING]
+wfinspect game cache extract CACHE_DIR PACKAGE INTERNAL_PATH OUTPUT_PREFIX
+wfinspect game cache find CACHE_DIR PACKAGE TEXT
+wfinspect game ui state
+wfinspect game ui relic
+```
+
+Oodle-compressed cache extraction requires a licensed Linux runtime supplied through
+`WFINSPECT_OODLE_LIBRARY`; none is bundled. Cache path listing does not decompress resources.
+
+UI `state` and `relic` probes are bounded. `find` searches exact UTF-8 and UTF-16LE text plus
+direct pointer references; `capture` can include the same terms in its bounded artifact. Only UI
+`movies`, `find`, and `capture` perform full process scans. Preview commands live in the
 [user companion guide](../companion.md#previews). AlecaFrame
 reference setup is documented beside the
 [`aleca-layout` tool](../../tools/aleca-layout/README.md).

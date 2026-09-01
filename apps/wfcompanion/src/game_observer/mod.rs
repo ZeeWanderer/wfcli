@@ -1,4 +1,5 @@
 mod memory;
+pub mod metadata;
 pub mod ui;
 
 use std::collections::BTreeMap;

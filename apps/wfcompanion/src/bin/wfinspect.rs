@@ -17,11 +17,29 @@ Run `wfinspect <area> help` for area commands.
 
 const GAME_HELP: &str = r#"Usage:
   wfinspect game process
+  wfinspect game metadata [--output FILE]
+  wfinspect game cache <command>
   wfinspect game ui <command>
 
 Commands:
-  process  print detected process and executable identity
-  ui       inspect loaded Scaleform UI state
+  process   print detected process and executable identity
+  metadata  capture executable-keyed game metadata used by wfdaemon
+  cache     inspect installed Evolution Engine cache packages
+  ui        inspect loaded Scaleform UI state
+"#;
+
+const CACHE_HELP: &str = r#"Usage:
+  wfinspect game cache paths CACHE_DIR PACKAGE [SUBSTRING]
+  wfinspect game cache extract CACHE_DIR PACKAGE INTERNAL_PATH OUTPUT_PREFIX
+  wfinspect game cache find CACHE_DIR PACKAGE TEXT
+
+Commands:
+  paths    list package paths without decompressing resources
+  extract  extract matching H/B/F resources to OUTPUT_PREFIX.<split>.raw
+  find     search decompressed package resources for exact bytes
+
+Environment:
+  WFINSPECT_OODLE_LIBRARY  licensed liboo2corelinux64.so path used when needed
 "#;
 
 const UI_HELP: &str = r#"Usage:
@@ -47,6 +65,10 @@ Commands:
 enum Command {
     Help(&'static str),
     GameProcess,
+    GameMetadata(Option<PathBuf>),
+    GameCachePaths(PathBuf, String, Option<String>),
+    GameCacheExtract(PathBuf, String, String, PathBuf),
+    GameCacheFind(PathBuf, String, String),
     GameUiState,
     GameUiRelic,
     GameUiMovies,
@@ -75,6 +97,40 @@ fn parse(args: &[String]) -> Result<Command, String> {
         ["game"] | ["game", "help" | "--help" | "-h"] => Ok(Command::Help(GAME_HELP)),
         ["game", "process"] => Ok(Command::GameProcess),
         ["game", "process", "help" | "--help" | "-h"] => Ok(Command::Help(GAME_HELP)),
+        ["game", "metadata"] => Ok(Command::GameMetadata(None)),
+        ["game", "metadata", "--output", output] => {
+            Ok(Command::GameMetadata(Some(PathBuf::from(output))))
+        }
+        ["game", "metadata", "help" | "--help" | "-h"] => Ok(Command::Help(GAME_HELP)),
+        ["game", "cache"] | ["game", "cache", "help" | "--help" | "-h"] => {
+            Ok(Command::Help(CACHE_HELP))
+        }
+        ["game", "cache", "paths", "help" | "--help" | "-h"] => Ok(Command::Help(CACHE_HELP)),
+        ["game", "cache", "paths", cache, package] => Ok(Command::GameCachePaths(
+            PathBuf::from(cache),
+            (*package).to_owned(),
+            None,
+        )),
+        ["game", "cache", "paths", cache, package, substring] => Ok(Command::GameCachePaths(
+            PathBuf::from(cache),
+            (*package).to_owned(),
+            Some((*substring).to_owned()),
+        )),
+        ["game", "cache", "extract", "help" | "--help" | "-h"] => Ok(Command::Help(CACHE_HELP)),
+        ["game", "cache", "extract", cache, package, resource, output] => {
+            Ok(Command::GameCacheExtract(
+                PathBuf::from(cache),
+                (*package).to_owned(),
+                (*resource).to_owned(),
+                PathBuf::from(output),
+            ))
+        }
+        ["game", "cache", "find", "help" | "--help" | "-h"] => Ok(Command::Help(CACHE_HELP)),
+        ["game", "cache", "find", cache, package, text] => Ok(Command::GameCacheFind(
+            PathBuf::from(cache),
+            (*package).to_owned(),
+            (*text).to_owned(),
+        )),
         ["game", "ui"] | ["game", "ui", "help" | "--help" | "-h"] => Ok(Command::Help(UI_HELP)),
         ["game", "ui", "state"] => Ok(Command::GameUiState),
         ["game", "ui", "state", "help" | "--help" | "-h"] => Ok(Command::Help(UI_HELP)),
@@ -128,6 +184,14 @@ fn run(command: Command) -> Result<(), String> {
             Ok(())
         }
         Command::GameProcess => process(),
+        Command::GameMetadata(output) => metadata(output),
+        Command::GameCachePaths(cache, package, substring) => {
+            cache_paths(cache, package, substring)
+        }
+        Command::GameCacheExtract(cache, package, resource, output) => {
+            cache_extract(cache, package, resource, output)
+        }
+        Command::GameCacheFind(cache, package, text) => cache_find(cache, package, text),
         Command::GameUiState => state(),
         Command::GameUiRelic => relic(),
         Command::GameUiMovies => movies(),
@@ -174,6 +238,65 @@ fn process() -> Result<(), String> {
     let state = game_observer::find_warframe();
     let identity = game_observer::current_process_identity()?;
     print_json(&json!({"game": state, "identity": identity}))
+}
+
+fn metadata(output: Option<PathBuf>) -> Result<(), String> {
+    let captured = game_observer::metadata::capture(game_pid()?)?;
+    let rendered = serde_json::to_string_pretty(&captured)
+        .map_err(|error| format!("could not encode report: {error}"))?;
+    if let Some(path) = output {
+        if let Some(parent) = path
+            .parent()
+            .filter(|parent| !parent.as_os_str().is_empty())
+        {
+            std::fs::create_dir_all(parent)
+                .map_err(|error| format!("could not create {}: {error}", parent.display()))?;
+        }
+        std::fs::write(&path, format!("{rendered}\n"))
+            .map_err(|error| format!("could not write {}: {error}", path.display()))?;
+    } else {
+        println!("{rendered}");
+    }
+    Ok(())
+}
+
+fn cache_paths(
+    cache_dir: PathBuf,
+    package: String,
+    substring: Option<String>,
+) -> Result<(), String> {
+    let mut paths = wfcompanion::inspect::cache::paths(&cache_dir, &package)?;
+    if let Some(substring) = substring {
+        paths.retain(|entry| entry.path.contains(&substring));
+    }
+    print_json(&json!({
+        "cache_dir": cache_dir,
+        "package": package,
+        "paths": paths,
+    }))
+}
+
+fn cache_extract(
+    cache_dir: PathBuf,
+    package: String,
+    resource: String,
+    output: PathBuf,
+) -> Result<(), String> {
+    let extracted = wfcompanion::inspect::cache::extract(&cache_dir, &package, &resource, &output)?;
+    print_json(&json!({
+        "cache_dir": cache_dir,
+        "package": package,
+        "resources": extracted,
+    }))
+}
+
+fn cache_find(cache_dir: PathBuf, package: String, text: String) -> Result<(), String> {
+    let matches = wfcompanion::inspect::cache::find(&cache_dir, &package, text.as_bytes())?;
+    print_json(&json!({
+        "cache_dir": cache_dir,
+        "package": package,
+        "matches": matches,
+    }))
 }
 
 fn movies() -> Result<(), String> {
@@ -244,6 +367,53 @@ mod tests {
     #[test]
     fn parses_namespaced_commands() {
         assert_eq!(parse(&args(&["game", "process"])), Ok(Command::GameProcess));
+        assert_eq!(
+            parse(&args(&["game", "metadata"])),
+            Ok(Command::GameMetadata(None))
+        );
+        assert_eq!(
+            parse(&args(&[
+                "game",
+                "metadata",
+                "--output",
+                "/tmp/metadata.json"
+            ])),
+            Ok(Command::GameMetadata(Some(PathBuf::from(
+                "/tmp/metadata.json"
+            ))))
+        );
+        assert_eq!(
+            parse(&args(&[
+                "game",
+                "cache",
+                "paths",
+                "/game/Cache.Windows",
+                "Font",
+                "Conquest"
+            ])),
+            Ok(Command::GameCachePaths(
+                PathBuf::from("/game/Cache.Windows"),
+                "Font".to_owned(),
+                Some("Conquest".to_owned()),
+            ))
+        );
+        assert_eq!(
+            parse(&args(&[
+                "game",
+                "cache",
+                "extract",
+                "/game/Cache.Windows",
+                "Font",
+                "/Lotus/Scripts/Test.lua",
+                "/tmp/test"
+            ])),
+            Ok(Command::GameCacheExtract(
+                PathBuf::from("/game/Cache.Windows"),
+                "Font".to_owned(),
+                "/Lotus/Scripts/Test.lua".to_owned(),
+                PathBuf::from("/tmp/test"),
+            ))
+        );
         assert_eq!(
             parse(&args(&["game", "ui", "movies"])),
             Ok(Command::GameUiMovies)
@@ -318,6 +488,10 @@ mod tests {
         assert_eq!(
             parse(&args(&["game", "ui", "--help"])),
             Ok(Command::Help(UI_HELP))
+        );
+        assert_eq!(
+            parse(&args(&["game", "cache", "--help"])),
+            Ok(Command::Help(CACHE_HELP))
         );
     }
 }
