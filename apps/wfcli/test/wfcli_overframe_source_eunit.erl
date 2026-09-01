@@ -62,7 +62,30 @@ revision_fingerprint_ignores_metadata_test() ->
     ?assertEqual(<<"matched">>, maps:get(<<"polarity_state">>, Slot)),
     ?assertEqual(<<"galvanized">>, maps:get(<<"mod_variant">>, Slot)),
     ?assertEqual(<<"rare">>, maps:get(<<"rarity">>, Slot)),
-    ?assertEqual(12, maps:get(<<"cost">>, Slot)).
+    ?assertEqual(12, maps:get(<<"cost">>, Slot)),
+    Presentation = maps:get(<<"presentation">>, First),
+    ?assertEqual(<<"primary">>,
+                 maps:get(<<"layout_class">>,
+                          maps:get(<<"topology">>, Presentation))),
+    [Upgrade] = maps:get(<<"upgrades">>, Presentation),
+    ?assertEqual(<<"mod-8">>, maps:get(<<"topology_slot">>, Upgrade)),
+    ?assertEqual(#{<<"id">> => <<"/Lotus/Mods/Test">>,
+                   <<"source">> => <<"wfcd">>,
+                   <<"image_name">> => <<"Test.png">>},
+                 maps:get(<<"asset">>, Upgrade)),
+    ?assertEqual(<<"Test notes">>,
+                 maps:get(<<"description">>, maps:get(<<"metadata">>, First))),
+    ChangedMod = (maps:get(200, maps:get(mods_by_id, Catalog)))#{
+                   <<"texture">> => <<"/Lotus/Mods/Test-v2.png">>},
+    ChangedCatalog = Catalog#{mods_by_id => #{200 => ChangedMod}},
+    PresentedAgain = wfcli_overframe_source:normalize_detail(Raw, ChangedCatalog),
+    ?assertEqual(maps:get(<<"fingerprint">>, First),
+                 maps:get(<<"fingerprint">>, PresentedAgain)),
+    [ChangedUpgrade] = maps:get(
+                         <<"upgrades">>,
+                         maps:get(<<"presentation">>, PresentedAgain)),
+    ?assertEqual(<<"Test-v2.png">>,
+                 maps:get(<<"image_name">>, maps:get(<<"asset">>, ChangedUpgrade))).
 
 catalog_http_fun() ->
     Items = #{<<"/Lotus/Weapons/TestRifle">> =>
@@ -128,13 +151,15 @@ test_catalog() ->
     Item = #{<<"source">> => <<"overframe">>, <<"external_id">> => 100,
              <<"canonical_id">> => <<"/Lotus/Weapons/TestRifle">>,
              <<"name">> => <<"Test Rifle">>, <<"class">> => <<"primary">>,
-             <<"categories">> => [<<"primary">>]},
+             <<"categories">> => [<<"primary">>],
+             <<"texture">> => <<"/Lotus/Weapons/TestRifle.png">>},
     Mod = #{<<"external_id">> => 200,
             <<"canonical_id">> => <<"/Lotus/Mods/Test">>,
             <<"name">> => <<"Test Mod">>, <<"categories">> => [<<"mod">>],
             <<"polarity">> => <<"madurai">>, <<"base_drain">> => 4,
             <<"rarity">> => <<"rare">>, <<"mod_variant">> => <<"galvanized">>,
-            <<"max_rank">> => 10},
+            <<"max_rank">> => 10,
+            <<"texture">> => <<"/Lotus/Mods/Test.png">>},
     #{schema => wfcli_overframe_source:catalog_schema(),
       items_by_id => #{100 => Item}, items_by_path => #{},
       mods_by_id => #{200 => Mod}, rivens_by_id => #{}}.
@@ -143,6 +168,7 @@ raw_build() ->
     #{<<"id">> => 300, <<"item">> => 100, <<"title">> => <<"Test Build">>,
       <<"score">> => 10, <<"formas">> => 2, <<"item_rank">> => 30,
       <<"buildstring">> => <<"encoded">>, <<"updated">> => <<"now">>,
+      <<"description">> => <<"Test notes">>,
       <<"slots">> => [#{<<"slot_id">> => 1, <<"mod">> => 200,
                            <<"rank">> => 8, <<"polarity">> => 1,
                            <<"drain">> => 7}]}.

@@ -27,6 +27,24 @@ group_conversion_keeps_config_and_instance_state_separate_test() ->
     ?assertEqual([<<"/ability/roar">>],
                  maps:get(<<"ability_override">>, PlayerResult)).
 
+source_only_plan_still_uses_owned_instance_polarities_test() ->
+    Group = (group())#{<<"members">> => [source_member()]},
+    {ok, Request} = wfcli_build_plan:request(Group),
+    [Raw] = maps:get(config_data, Request),
+    ?assertEqual([<<"madurai">>, <<"none">>],
+                 maps:get(<<"slots">>, maps:get(item, Raw))),
+    [Source] = maps:get(builds, Raw),
+    ?assertEqual(<<"source:1">>, maps:get(<<"member_id">>, Source)).
+
+source_plan_requires_daemon_presentation_test() ->
+    Source = source_member(),
+    Snapshot = maps:remove(<<"presentation">>, maps:get(<<"snapshot">>, Source)),
+    Group = (group())#{<<"members">> => [Source#{<<"snapshot">> => Snapshot}]},
+    ?assertEqual(
+       {error, {invalid_build_group_member, <<"source:1">>,
+                build_source_presentation_required}},
+       wfcli_build_plan:request(Group)).
+
 planning_requires_concrete_instance_and_members_test() ->
     ?assertEqual({error, build_group_instance_required},
                  wfcli_build_plan:request((group())#{<<"baseline">> => null})),
@@ -86,12 +104,13 @@ player_member() ->
                          <<"role">> => <<"arcane">>, <<"rank">> => 5}]}}}.
 
 source_member() ->
+    Slot = #{<<"source_slot">> => 2, <<"topology_slot">> => <<"mod-2">>,
+             <<"name">> => <<"Redirection">>, <<"kind">> => <<"mod">>,
+             <<"mod_polarity">> => <<"vazarin">>,
+             <<"cost">> => 8, <<"rank">> => 5},
     #{<<"id">> => <<"source:1">>, <<"kind">> => <<"source_revision">>,
       <<"name">> => <<"Source build">>,
       <<"snapshot">> =>
           #{<<"content">> =>
-                #{<<"slots">> =>
-                      [#{<<"source_slot">> => 2, <<"name">> => <<"Redirection">>,
-                         <<"kind">> => <<"mod">>,
-                         <<"mod_polarity">> => <<"vazarin">>,
-                         <<"cost">> => 8, <<"rank">> => 5}]}}}.
+                #{<<"slots">> => [maps:remove(<<"topology_slot">>, Slot)]},
+            <<"presentation">> => #{<<"upgrades">> => [Slot]}}}.

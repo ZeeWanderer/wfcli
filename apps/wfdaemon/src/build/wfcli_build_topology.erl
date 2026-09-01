@@ -119,11 +119,9 @@ regular_region(Count) ->
            regular_slots(Count)).
 
 regular_slots(Count) ->
-    [build_slot(
-       slot(<<"mod-", (integer_to_binary(N + 1))/binary>>,
-            Count - N - 1, <<"mod">>,
-            <<"Mod ", (integer_to_binary(N + 1))/binary>>, true),
-       N + 1)
+    [slot(<<"mod-", (integer_to_binary(N + 1))/binary>>,
+          Count - N - 1, <<"mod">>,
+          <<"Mod ", (integer_to_binary(N + 1))/binary>>, true)
      || N <- lists:seq(0, Count - 1)].
 
 indexed_slots(IdPrefix, LabelPrefix, Start, Count, Planner) ->
@@ -147,8 +145,6 @@ slot(Id, PlayerIndex, Role, Label, Planner) ->
     #{<<"id">> => Id, <<"player_index">> => PlayerIndex,
       <<"build_slot">> => PlayerIndex + 1,
       <<"role">> => Role, <<"label">> => Label, <<"planner">> => Planner}.
-
-build_slot(Slot, Position) -> Slot#{<<"build_slot">> => Position}.
 
 unlock(Slot, Unlocked) -> Slot#{<<"unlocked">> => Unlocked}.
 

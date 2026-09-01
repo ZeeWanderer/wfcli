@@ -453,7 +453,7 @@ retain_reply(Request = #{action := detail}, {ok, Revision}, State) ->
     Latest = maps:get(latest, Store0),
     Store = Store0#{revisions => Revisions#{RevisionKey => Revision},
                     latest => Latest#{IdentityKey => Fingerprint}},
-    Public = public_revision(Revision),
+    Public = public_revision(Revision, Store),
     State1 = cache_reply(Request, Public, mark_dirty(State#{store => Store})),
     {{ok, Public}, State1};
 retain_reply(Request, {ok, Data}, State) ->
@@ -462,7 +462,14 @@ retain_reply(_Request, {error, _Reason} = Error, State) -> {Error, State};
 retain_reply(_Request, Other, State) ->
     {{error, {invalid_build_source_reply, Other}}, State}.
 
-public_revision(Revision) -> maps:remove(<<"raw">>, Revision).
+public_revision(Revision, Store) ->
+    Presented = case maps:get(<<"identity">>, Revision, #{}) of
+        #{<<"source">> := <<"overframe">>} ->
+            Catalog = maps:get(overframe, maps:get(catalogs, Store, #{}), #{}),
+            wfcli_overframe_source:present_revision(Revision, Catalog);
+        _ -> Revision
+    end,
+    maps:remove(<<"raw">>, Presented).
 
 cached_reply(Request, State) ->
     case maps:get(refresh, Request, false) of
@@ -606,10 +613,9 @@ find_revision(Source, ExternalId, latest, Store) ->
         Fingerprint -> find_revision(Source, ExternalId, Fingerprint, Store)
     end;
 find_revision(Source, ExternalId, Fingerprint, Store) when is_binary(Fingerprint) ->
-    case maps:get({Source, ExternalId, Fingerprint}, maps:get(revisions, Store),
-                  undefined) of
+    case stored_revision(Source, ExternalId, Fingerprint, Store) of
         undefined -> {error, build_revision_not_found};
-        Revision -> {ok, public_revision(Revision)}
+        Revision -> {ok, public_revision(Revision, Store)}
     end;
 find_revision(_Source, _ExternalId, _Fingerprint, _Store) ->
     {error, invalid_build_revision}.
@@ -682,11 +688,31 @@ group_summary(Group, Store) ->
     Public#{<<"members">> => Members}.
 
 public_group(Group, Store) ->
-    Public = wfcli_build_group:public(Group),
+    Public = wfcli_build_group:public(hydrate_group(Group, Store)),
     case current_result(Group, Store) of
         undefined -> Public#{<<"plan_result">> => null};
         Result -> Public#{<<"plan_result">> => Result}
     end.
+
+public_member(Member = #{<<"kind">> := <<"source_revision">>,
+                         <<"source">> := Source,
+                         <<"external_id">> := ExternalId,
+                         <<"fingerprint">> := Fingerprint}, Store) ->
+    Revision = case stored_revision(Source, ExternalId, Fingerprint, Store) of
+        undefined -> maps:get(<<"snapshot">>, Member, #{});
+        StoredRevision -> StoredRevision
+    end,
+    Member#{<<"snapshot">> => public_revision(Revision, Store)};
+public_member(Member, _Store) -> Member.
+
+hydrate_group(Group, Store) ->
+    Members = [public_member(Member, Store)
+               || Member <- maps:get(<<"members">>, Group, [])],
+    Group#{<<"members">> => Members}.
+
+stored_revision(Source, ExternalId, Fingerprint, Store) ->
+    maps:get({Source, ExternalId, Fingerprint}, maps:get(revisions, Store, #{}),
+             undefined).
 
 current_result(Group, Store) ->
     Id = maps:get(<<"id">>, Group),
@@ -699,7 +725,8 @@ current_result(Group, Store) ->
 queue_group_plan(Client, Id, Revision, State) ->
     case checked_group(Id, Revision, State) of
         {ok, Group} ->
-            case wfcli_build_plan:request(Group) of
+            PlanningGroup = hydrate_group(Group, maps:get(store, State)),
+            case wfcli_build_plan:request(PlanningGroup) of
                 {ok, Request} ->
                     RequestRef = make_ref(),
                     Key = {Id, Revision},
@@ -716,7 +743,7 @@ queue_group_plan(Client, Id, Revision, State) ->
                                                                                         Client}}}},
                                     {reply, {ok, RequestRef}, State1};
                                 undefined -> submit_group_plan(
-                                               Client, RequestRef, Key, Group,
+                                               Client, RequestRef, Key, PlanningGroup,
                                                Request, State#{plan_keys =>
                                                                   maps:remove(
                                                                     Key,
@@ -724,7 +751,7 @@ queue_group_plan(Client, Id, Revision, State) ->
                                                                              State))})
                             end;
                         undefined ->
-                            submit_group_plan(Client, RequestRef, Key, Group,
+                            submit_group_plan(Client, RequestRef, Key, PlanningGroup,
                                               Request, State)
                     end;
                 {error, _Reason} = Error -> {reply, Error, State}

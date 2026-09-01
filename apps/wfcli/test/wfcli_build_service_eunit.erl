@@ -84,6 +84,8 @@ exercise(#{calls := Calls}) ->
     {ok, Stored} = wfcli_build_service:revision(<<"overframe">>, 300),
     ?assertEqual(<<"fingerprint">>, maps:get(<<"fingerprint">>, Stored)),
     ?assertEqual(false, maps:is_key(<<"raw">>, Stored)),
+    ?assertEqual(<<"Stored notes">>,
+                 maps:get(<<"description">>, maps:get(<<"metadata">>, Stored))),
     ?assertEqual(1, maps:get(revisions, wfcli_build_service:status())).
 
 group_exercise() ->
@@ -102,6 +104,11 @@ group_exercise() ->
     {ok, Group1} = wfcli_build_service:add_source_member(
                      GroupId, 1, <<"overframe">>, 300, latest),
     ?assertEqual(2, maps:get(<<"revision">>, Group1)),
+    [SourceMember] = maps:get(<<"members">>, Group1),
+    ?assertEqual(<<"Stored notes">>,
+                 maps:get(<<"description">>,
+                          maps:get(<<"metadata">>,
+                                   maps:get(<<"snapshot">>, SourceMember)))),
     {ok, Group2} = wfcli_build_service:add_config_member(
                      GroupId, 2, <<"copy-1">>, 0, equipment()),
     ?assertEqual(2, maps:get(<<"member_count">>, Group2)),
@@ -131,7 +138,9 @@ source_reply(#{action := detail, id := Id}) ->
                                 <<"external_id">> => Id},
            <<"fingerprint">> => <<"fingerprint">>,
            <<"content">> => #{<<"item">> => <<"/item">>, <<"slots">> => []},
-           <<"metadata">> => #{}, <<"raw">> => #{<<"id">> => Id},
+           <<"metadata">> => #{},
+           <<"raw">> => #{<<"id">> => Id,
+                            <<"description">> => <<"Stored notes">>},
            <<"fetched_at">> => 1}}.
 
 equipment() ->

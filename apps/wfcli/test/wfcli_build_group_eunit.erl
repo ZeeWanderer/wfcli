@@ -25,6 +25,21 @@ captures_config_without_copying_instance_state_into_config_test() ->
     ?assertNot(maps:is_key(<<"shard_slots">>, Config)),
     ?assertEqual(2, maps:get(<<"revision">>, Group1)).
 
+removing_current_config_keeps_owned_instance_baseline_test() ->
+    {ok, Group0} = wfcli_build_group:create(
+                     #{<<"definition_id">> => <<"/item">>,
+                       <<"instance_id">> => <<"copy-1">>},
+                     equipment(), 100, <<"group-1">>),
+    Baseline = maps:get(<<"baseline">>, Group0),
+    {ok, Group1} = wfcli_build_group:add_config(
+                     Group0, <<"copy-1">>, 0, equipment(), 200),
+    [Member] = maps:get(<<"members">>, Group1),
+    {ok, Group2} = wfcli_build_group:remove_member(
+                     Group1, maps:get(<<"id">>, Member), 300),
+    ?assertEqual([], maps:get(<<"members">>, Group2)),
+    ?assertEqual(<<"copy-1">>, maps:get(<<"instance_id">>, Group2)),
+    ?assertEqual(Baseline, maps:get(<<"baseline">>, Group2)).
+
 accepts_multiple_compatible_members_and_rejects_other_items_test() ->
     {ok, Group0} = wfcli_build_group:create(
                      #{<<"definition_id">> => <<"/item">>},

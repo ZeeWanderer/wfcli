@@ -81,31 +81,22 @@ planner_slots(#{<<"regions">> := Regions}) when is_list(Regions) ->
                  [{maps:get(<<"player_index">>, Slot), Slot}
                   || Slot <- TopologySlots,
                      is_integer(maps:get(<<"player_index">>, Slot, undefined))]),
-    ByBuild = maps:from_list(
-                   [{build_slot(Slot), Slot}
-                    || Slot <- TopologySlots,
-                       is_integer(build_slot(Slot))]),
+    ById = maps:from_list(
+             [{maps:get(<<"id">>, Slot), Slot}
+              || Slot <- TopologySlots,
+                 is_binary(maps:get(<<"id">>, Slot, undefined))]),
     NormalPosition = maps:from_list(
                        [{maps:get(<<"id">>, Slot), Position}
                         || {Position, Slot} <- lists:enumerate(1, Normal)]),
     #{all => All, normal => Normal, by_player => ByPlayer,
-      by_build => ByBuild,
+      by_id => ById,
       normal_position => NormalPosition,
       aura => find_role([<<"aura">>, <<"stance">>], All),
       exilus => find_role([<<"exilus">>], All)};
 planner_slots(_Topology) ->
-    #{all => [], normal => [], by_player => #{}, by_build => #{},
+    #{all => [], normal => [], by_player => #{}, by_id => #{},
       normal_position => #{},
       aura => undefined, exilus => undefined}.
-
-build_slot(Slot) ->
-    case maps:get(<<"build_slot">>, Slot, undefined) of
-        Value when is_integer(Value) -> Value;
-        _ -> case maps:get(<<"player_index">>, Slot, undefined) of
-            Index when is_integer(Index) -> Index + 1;
-            _ -> undefined
-        end
-    end.
 
 find_role(Roles, Slots) ->
     case [Slot || Slot <- Slots,
@@ -132,9 +123,13 @@ member_build(#{<<"kind">> := <<"player_config">>,
 member_build(#{<<"kind">> := <<"source_revision">>,
                <<"snapshot">> := Revision} = Member, Slots, Options) ->
     Content = maps:get(<<"content">>, Revision, #{}),
-    build_from_slots(Member, maps:get(<<"slots">>, Content, []),
-                     maps:get(<<"ability_override">>, Content, []),
-                     Slots, Options, source);
+    case maps:get(<<"presentation">>, Revision, #{}) of
+        #{<<"upgrades">> := Upgrades} when is_list(Upgrades) ->
+            build_from_slots(Member, Upgrades,
+                             maps:get(<<"ability_override">>, Content, []),
+                             Slots, Options, source);
+        _ -> {error, build_source_presentation_required}
+    end;
 member_build(_Member, _Slots, _Options) -> {error, unsupported_member_kind}.
 
 build_from_slots(Member, Upgrades, AbilityOverride, Slots, Options, Origin)
@@ -191,10 +186,10 @@ classify_upgrade(_Role, _Kind, Upgrade, Slot, Slots, Options, Origin) ->
 upgrade_slot(Upgrade, Slots, player) ->
     maps:get(upgrade_binding(Upgrade, player), maps:get(by_player, Slots), undefined);
 upgrade_slot(Upgrade, Slots, source) ->
-    maps:get(upgrade_binding(Upgrade, source), maps:get(by_build, Slots), undefined).
+    maps:get(upgrade_binding(Upgrade, source), maps:get(by_id, Slots), undefined).
 
 upgrade_binding(Upgrade, player) -> maps:get(<<"slot">>, Upgrade, undefined);
-upgrade_binding(Upgrade, source) -> maps:get(<<"source_slot">>, Upgrade, undefined).
+upgrade_binding(Upgrade, source) -> maps:get(<<"topology_slot">>, Upgrade, undefined).
 
 arcane(Upgrade) ->
     case upgrade_name(Upgrade) of

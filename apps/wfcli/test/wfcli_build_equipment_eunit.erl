@@ -85,9 +85,9 @@ projects_secondary_exalted_slots_in_game_order_test() ->
     Mod1 = topology_slot(<<"mod-1">>, Topology),
     Mod8 = topology_slot(<<"mod-8">>, Topology),
     ?assertEqual(7, maps:get(<<"player_index">>, Mod1)),
-    ?assertEqual(1, maps:get(<<"build_slot">>, Mod1)),
+    ?assertEqual(8, maps:get(<<"build_slot">>, Mod1)),
     ?assertEqual(0, maps:get(<<"player_index">>, Mod8)),
-    ?assertEqual(8, maps:get(<<"build_slot">>, Mod8)),
+    ?assertEqual(1, maps:get(<<"build_slot">>, Mod8)),
     Arcane = maps:get(<<"arcane-1">>, ByTopology),
     ?assertEqual(<<"Secondary Outburst">>, maps:get(<<"name">>, Arcane)),
     ?assertEqual(<<"arcane">>, maps:get(<<"role">>, Arcane)),
@@ -349,5 +349,5 @@ assert_mod_region(Class, Count) ->
     ?assertEqual(Count, length(Slots)),
     ?assertEqual(lists:seq(Count - 1, 0, -1),
                  [maps:get(<<"player_index">>, Slot) || Slot <- Slots]),
-    ?assertEqual(lists:seq(1, Count),
+    ?assertEqual(lists:seq(Count, 1, -1),
                  [maps:get(<<"build_slot">>, Slot) || Slot <- Slots]).

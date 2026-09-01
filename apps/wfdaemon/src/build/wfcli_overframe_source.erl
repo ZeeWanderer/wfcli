@@ -4,7 +4,7 @@
 -module(wfcli_overframe_source).
 
 -export([catalog_schema/0, refresh_catalog/0, search/4, list/2, detail/2,
-         decode_database/1, normalize_detail/2]).
+         decode_database/1, normalize_detail/2, present_revision/2]).
 
 -define(PROBE_URL, "https://overframe.gg/_next/static/chunks/webpack.js").
 -define(API_ROOT, "https://overframe.gg/api/v1").
@@ -114,14 +114,34 @@ normalize_detail(Raw, Catalog) ->
                     crypto:hash(sha256,
                                 term_to_binary(Content, [deterministic])),
                     lowercase),
-    #{<<"schema">> => 1,
-      <<"identity">> => #{<<"source">> => <<"overframe">>,
-                           <<"external_id">> => ExternalId},
-      <<"fingerprint">> => Fingerprint,
-      <<"content">> => Content,
-      <<"metadata">> => normalize_metadata(Raw, Item),
-      <<"raw">> => Raw,
-      <<"fetched_at">> => erlang:system_time(millisecond)}.
+    present_revision(
+      #{<<"schema">> => 1,
+        <<"identity">> => #{<<"source">> => <<"overframe">>,
+                             <<"external_id">> => ExternalId},
+        <<"fingerprint">> => Fingerprint,
+        <<"content">> => Content,
+        <<"metadata">> => normalize_metadata(Raw, Item),
+        <<"raw">> => Raw,
+        <<"fetched_at">> => erlang:system_time(millisecond)},
+      Catalog).
+
+-doc "Add current display metadata without changing revision identity.".
+-spec present_revision(map(), map()) -> map().
+present_revision(Revision, Catalog) when is_map(Revision), is_map(Catalog) ->
+    Content = maps:get(<<"content">>, Revision, #{}),
+    Metadata0 = maps:get(<<"metadata">>, Revision, #{}),
+    Item = revision_item(Content, Metadata0, Catalog),
+    Definition = wfcli_build_topology:definition(
+                   maps:get(<<"class">>, Item, <<"other">>), Item),
+    Topology = maps:get(<<"topology">>, Definition),
+    Bindings = source_slot_bindings(Topology),
+    Upgrades = [present_slot(Slot, Catalog, Bindings)
+                 || Slot <- maps:get(<<"slots">>, Content, []), is_map(Slot)],
+    Presentation = #{<<"topology">> => Topology,
+                      <<"upgrades">> => Upgrades,
+                      <<"item_asset">> => item_asset(Item)},
+    Revision#{<<"metadata">> => present_metadata(Metadata0, Revision),
+              <<"presentation">> => Presentation}.
 
 fetch_runtime(RuntimeUrl) ->
     case wfcli_overframe_http:get(RuntimeUrl, []) of
@@ -325,6 +345,55 @@ normalize_metadata(Raw, Item) ->
       <<"created_at">> => nullable(maps:get(<<"created">>, Raw, undefined)),
       <<"updated_at">> => nullable(maps:get(<<"updated">>, Raw, undefined)),
       <<"url">> => nullable(maps:get(<<"url">>, Raw, undefined))}.
+
+present_metadata(Metadata, Revision) ->
+    Raw = maps:get(<<"raw">>, Revision, #{}),
+    case maps:get(<<"description">>, Raw,
+                  maps:get(<<"description">>, Metadata, undefined)) of
+        Description when is_binary(Description), byte_size(Description) > 0 ->
+            Metadata#{<<"description">> => Description};
+        _ -> Metadata
+    end.
+
+revision_item(Content, Metadata, Catalog) ->
+    case maps:get(<<"item">>, Metadata, undefined) of
+        Item when is_map(Item) -> Item;
+        _ -> item_by_external_id(
+               Catalog, maps:get(<<"item_external_id">>, Content, undefined))
+    end.
+
+present_slot(Slot, Catalog) ->
+    Mod = maps:get(maps:get(<<"external_mod_id">>, Slot, undefined),
+                   maps:get(mods_by_id, Catalog, #{}), #{}),
+    CanonicalId = maps:get(<<"canonical_id">>, Slot,
+                           maps:get(<<"canonical_id">>, Mod, null)),
+    Texture = maps:get(<<"texture">>, Mod, null),
+    Slot#{<<"item_type">> => CanonicalId,
+          <<"asset">> => asset(CanonicalId, Texture)}.
+
+present_slot(Slot, Catalog, Bindings) ->
+    Presented = present_slot(Slot, Catalog),
+    case maps:find(maps:get(<<"source_slot">>, Slot, undefined), Bindings) of
+        {ok, TopologySlot} -> Presented#{<<"topology_slot">> => TopologySlot};
+        error -> Presented
+    end.
+
+source_slot_bindings(Topology) ->
+    maps:from_list(
+      [{maps:get(<<"build_slot">>, Slot), maps:get(<<"id">>, Slot)}
+       || Region <- maps:get(<<"regions">>, Topology, []),
+          Slot <- maps:get(<<"slots">>, Region, []),
+          is_integer(maps:get(<<"build_slot">>, Slot, undefined))]).
+
+item_asset(Item) ->
+    asset(maps:get(<<"canonical_id">>, Item, null),
+          maps:get(<<"texture">>, Item, null)).
+
+asset(Id, Image) when is_binary(Id), byte_size(Id) > 0,
+                      is_binary(Image), byte_size(Image) > 0 ->
+    #{<<"id">> => Id, <<"source">> => <<"wfcd">>,
+      <<"image_name">> => filename:basename(Image)};
+asset(_Id, _Image) -> null.
 
 normalize_author(Author) when is_map(Author) ->
     maps:with([<<"id">>, <<"username">>, <<"url">>], Author);
