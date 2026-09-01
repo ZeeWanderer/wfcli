@@ -396,6 +396,20 @@ if(BUILD_TESTING)
   set_tests_properties(wfgui-build-source PROPERTIES
     ENVIRONMENT "QT_QPA_PLATFORM=offscreen"
   )
+  qt_add_executable(wfgui_build_discover_widget_tests
+    src/build_discover_widget.cpp
+    src/build_discover_widget.h
+    tests/build_discover_widget_test.cpp
+  )
+  target_link_libraries(wfgui_build_discover_widget_tests PRIVATE
+    Qt6::Test
+    wfgui_core
+  )
+  add_test(NAME wfgui-build-discover-widget
+    COMMAND wfgui_build_discover_widget_tests)
+  set_tests_properties(wfgui-build-discover-widget PROPERTIES
+    ENVIRONMENT "QT_QPA_PLATFORM=offscreen"
+  )
   qt_add_executable(wfgui_build_group_tests
     tests/build_group_model_test.cpp
   )

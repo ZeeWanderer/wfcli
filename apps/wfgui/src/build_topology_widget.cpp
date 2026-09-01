@@ -194,37 +194,8 @@ QWidget *slotCard(AppController *controller, const QJsonObject &slot,
   return card;
 }
 
-QHash<int, QString> buildSlotIds(const QJsonObject &topology) {
-  QHash<int, QString> result;
-  for (const QJsonValue &regionValue : topology.value("regions").toArray()) {
-    for (const QJsonValue &slotValue :
-         regionValue.toObject().value("slots").toArray()) {
-      const QJsonObject slot = slotValue.toObject();
-      const int buildSlot = slot.value("build_slot").toInt(-1);
-      const QString id = slot.value("id").toString();
-      if (buildSlot > 0 && !id.isEmpty()) {
-        result.insert(buildSlot, id);
-      }
-    }
-  }
-  return result;
-}
-
-QJsonArray sourceUpgrades(const QJsonObject &topology,
-                          const QJsonObject &revision) {
-  QJsonArray result;
-  const QHash<int, QString> slotIds = buildSlotIds(topology);
-  for (const QJsonValue &value :
-       revision.value("content").toObject().value("slots").toArray()) {
-    QJsonObject slot = value.toObject();
-    const int sourceSlot = slot.value("source_slot").toInt();
-    const QString topologySlot = slotIds.value(sourceSlot);
-    if (!topologySlot.isEmpty()) {
-      slot.insert("topology_slot", topologySlot);
-      result.append(slot);
-    }
-  }
-  return result;
+QJsonArray sourceUpgrades(const QJsonObject &revision) {
+  return revision.value("presentation").toObject().value("upgrades").toArray();
 }
 } // namespace
 
@@ -260,9 +231,13 @@ void BuildTopologyWidget::setPlayerSnapshot(const QJsonObject &snapshot) {
 
 void BuildTopologyWidget::setSourceRevision(const QJsonObject &revision,
                                             const QJsonObject &baseline) {
-  const QJsonObject topology = baseline.value("topology").toObject();
+  QJsonObject topology = baseline.value("topology").toObject();
+  if (topology.isEmpty()) {
+    topology =
+        revision.value("presentation").toObject().value("topology").toObject();
+  }
   render(
-      topology, sourceUpgrades(topology, revision),
+      topology, sourceUpgrades(revision),
       baseline.value("effective_polarities").toArray(),
       baseline.value("shard_slots").toArray(),
       revision.value("content").toObject().value("ability_override").toArray());

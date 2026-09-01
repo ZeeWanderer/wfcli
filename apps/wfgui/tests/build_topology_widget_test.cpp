@@ -19,7 +19,8 @@ class BuildTopologyWidgetTest final : public QObject {
 
 private slots:
   void rendersConfigAndInstanceState();
-  void mapsSourceSlotsFromOneBasedPositions();
+  void rendersCanonicalSourcePresentation();
+  void usesSourcePresentationWithoutPlayerBaseline();
   void rendersModsAndArcanesByCanonicalSlot();
   void rendersVariableSlotCount();
   void rendersFrameVariantsOnOneContentAnchor();
@@ -103,7 +104,7 @@ void BuildTopologyWidgetTest::rendersModsAndArcanesByCanonicalSlot() {
                                 {"label", QString("Mod %1").arg(visual + 1)},
                                 {"role", "mod"},
                                 {"player_index", 7 - visual},
-                                {"build_slot", visual + 1}});
+                                {"build_slot", 8 - visual}});
   }
   const QJsonObject topology{
       {"regions",
@@ -226,30 +227,78 @@ void BuildTopologyWidgetTest::preservesArcaneGlyphAspectAtFractionalScale() {
   }
 }
 
-void BuildTopologyWidgetTest::mapsSourceSlotsFromOneBasedPositions() {
-  const QJsonObject baseline{
-      {"topology",
-       QJsonObject{
-           {"regions",
-            QJsonArray{QJsonObject{
-                {"id", "mods"},
-                {"label", "Mods"},
-                {"columns", 1},
-                {"slots", QJsonArray{QJsonObject{{"id", "mod-1"},
-                                                 {"label", "Mod 1"},
-                                                 {"player_index", 0},
-                                                 {"build_slot", 1}}}}}}}}}};
+void BuildTopologyWidgetTest::rendersCanonicalSourcePresentation() {
+  QJsonArray topologySlots;
+  for (int visual = 0; visual < 8; ++visual) {
+    topologySlots.append(
+        QJsonObject{{"id", QString("mod-%1").arg(visual + 1)},
+                    {"label", QString("Mod %1").arg(visual + 1)},
+                    {"role", "mod"},
+                    {"player_index", 7 - visual},
+                    {"build_slot", 8 - visual}});
+  }
+  const QJsonObject topology{
+      {"regions", QJsonArray{QJsonObject{{"id", "mods"},
+                                         {"label", "Mods"},
+                                         {"columns", 4},
+                                         {"slots", topologySlots}}}}};
+  const QJsonObject baseline{{"topology", topology}};
   const QJsonObject revision{
-      {"content",
-       QJsonObject{{"slots", QJsonArray{QJsonObject{{"slot_id", "opaque-id"},
-                                                    {"source_slot", 1},
-                                                    {"name", "Serration"}}}}}}};
+      {"content", QJsonObject{{"slots", QJsonArray{QJsonObject{
+                                            {"source_slot", 1},
+                                            {"name", "Wrong raw slot"}}}}}},
+      {"presentation",
+       QJsonObject{
+           {"upgrades", QJsonArray{QJsonObject{{"source_slot", 1},
+                                               {"topology_slot", "mod-8"},
+                                               {"name", "System Reroute"}},
+                                   QJsonObject{{"source_slot", 8},
+                                               {"topology_slot", "mod-1"},
+                                               {"name", "Cold Snap"}}}}}}};
 
   BuildTopologyWidget widget;
   widget.setSourceRevision(revision, baseline);
+  const QList<QWidget *> mods = widget.findChildren<QWidget *>("buildModCard");
+  QCOMPARE(mods.size(), 8);
+  QCOMPARE(mods.at(0)->property("slotId").toString(), QString("mod-1"));
+  QCOMPARE(mods.at(0)->property("upgradeName").toString(),
+           QString("Cold Snap"));
+  QCOMPARE(mods.at(7)->property("slotId").toString(), QString("mod-8"));
+  QCOMPARE(mods.at(7)->property("upgradeName").toString(),
+           QString("System Reroute"));
+}
+
+void BuildTopologyWidgetTest::usesSourcePresentationWithoutPlayerBaseline() {
+  const QJsonObject topology{
+      {"regions", QJsonArray{QJsonObject{
+                      {"id", "mods"},
+                      {"label", "Mods"},
+                      {"columns", 1},
+                      {"slots", QJsonArray{QJsonObject{{"id", "mod-1"},
+                                                       {"label", "Mod 1"},
+                                                       {"role", "mod"},
+                                                       {"build_slot", 1}}}}}}}};
+  const QJsonObject revision{
+      {"content", QJsonObject{{"slots", QJsonArray{}}}},
+      {"presentation",
+       QJsonObject{
+           {"topology", topology},
+           {"upgrades",
+            QJsonArray{QJsonObject{
+                {"source_slot", 1},
+                {"topology_slot", "mod-1"},
+                {"name", "Galvanized Chamber"},
+                {"asset", QJsonObject{{"id", "/Lotus/Mods/Test"},
+                                      {"source", "wfcd"},
+                                      {"image_name", "test.png"}}}}}}}}};
+
+  BuildTopologyWidget widget;
+  widget.setSourceRevision(revision, {});
   const QWidget *mod = widget.findChild<QWidget *>("buildModCard");
   QVERIFY(mod);
-  QCOMPARE(mod->property("upgradeName").toString(), QString("Serration"));
+  QCOMPARE(mod->property("upgradeName").toString(),
+           QString("Galvanized Chamber"));
+  QVERIFY(!mod->property("empty").toBool());
 }
 
 void BuildTopologyWidgetTest::rendersVariableSlotCount() {
@@ -259,7 +308,7 @@ void BuildTopologyWidgetTest::rendersVariableSlotCount() {
                                {"label", QString("Mod %1").arg(visual + 1)},
                                {"role", "mod"},
                                {"player_index", 11 - visual},
-                               {"build_slot", visual + 1}});
+                               {"build_slot", 12 - visual}});
   }
   const QJsonObject instance{
       {"topology",

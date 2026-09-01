@@ -11,9 +11,9 @@
 #include <QLabel>
 #include <QLineEdit>
 #include <QListView>
-#include <QListWidget>
 #include <QMenu>
 #include <QPushButton>
+#include <QScrollArea>
 #include <QSplitter>
 #include <QStandardItemModel>
 #include <QTimer>
@@ -22,6 +22,7 @@
 #include "app_controller.h"
 #include "build_group_model.h"
 #include "build_source_model.h"
+#include "build_topology_widget.h"
 
 namespace {
 QString buildDate(const QString &value) {
@@ -38,9 +39,10 @@ BuildDiscoverWidget::BuildDiscoverWidget(AppController *controller,
       itemTitle_(new QLabel("Select equipment")), buildSearch_(new QLineEdit),
       scope_(new QComboBox), sort_(new QComboBox), builds_(new QListView),
       empty_(new QLabel), buildTitle_(new QLabel), buildMeta_(new QLabel),
-      slots_(new QListWidget), state_(new QLabel),
-      add_(new QPushButton("Add to group")),
-      itemSearchTimer_(new QTimer(this)), buildSearchTimer_(new QTimer(this)) {
+      topology_(new BuildTopologyWidget(controller)), noteTitle_(new QLabel),
+      note_(new QLabel), state_(new QLabel),
+      add_(new QPushButton("Add to group")), itemSearchTimer_(new QTimer(this)),
+      buildSearchTimer_(new QTimer(this)) {
   auto *layout = new QVBoxLayout(this);
   layout->setContentsMargins(0, 0, 0, 0);
   layout->setSpacing(8);
@@ -115,14 +117,35 @@ BuildDiscoverWidget::BuildDiscoverWidget(AppController *controller,
   buildTitle_->setObjectName("sectionTitle");
   buildMeta_->setObjectName("secondaryText");
   buildMeta_->setWordWrap(true);
-  slots_->setObjectName("buildSlotList");
-  slots_->setSelectionMode(QAbstractItemView::NoSelection);
+  auto *revisionScroll = new QScrollArea;
+  revisionScroll->setObjectName("buildRevisionScroll");
+  revisionScroll->setWidgetResizable(true);
+  revisionScroll->setFrameShape(QFrame::NoFrame);
+  auto *revisionBody = new QWidget;
+  revisionBody->setObjectName("buildRevisionBody");
+  auto *revisionLayout = new QVBoxLayout(revisionBody);
+  revisionLayout->setContentsMargins(0, 0, 0, 0);
+  revisionLayout->setSpacing(8);
+  revisionLayout->addWidget(topology_);
+  noteTitle_->setObjectName("sectionTitle");
+  noteTitle_->setText("Build notes");
+  note_->setObjectName("buildNote");
+  note_->setTextFormat(Qt::MarkdownText);
+  note_->setWordWrap(true);
+  note_->setTextInteractionFlags(Qt::TextBrowserInteraction);
+  note_->setOpenExternalLinks(true);
+  noteTitle_->hide();
+  note_->hide();
+  revisionLayout->addWidget(noteTitle_);
+  revisionLayout->addWidget(note_);
+  revisionLayout->addStretch();
+  revisionScroll->setWidget(revisionBody);
   state_->setObjectName("buildWorkspaceState");
   state_->setWordWrap(true);
   add_->setObjectName("primaryAction");
   detailLayout->addWidget(buildTitle_);
   detailLayout->addWidget(buildMeta_);
-  detailLayout->addWidget(slots_, 1);
+  detailLayout->addWidget(revisionScroll, 1);
   detailLayout->addWidget(state_);
   detailLayout->addWidget(add_, 0, Qt::AlignRight);
   splitter->addWidget(detail);
@@ -160,11 +183,10 @@ BuildDiscoverWidget::BuildDiscoverWidget(AppController *controller,
             restoreItemSelection();
             updateState();
           });
-  connect(controller_, &AppController::sourceBuildsStateChanged, this,
-          [this] {
-            restoreBuildSelection();
-            updateState();
-          });
+  connect(controller_, &AppController::sourceBuildsStateChanged, this, [this] {
+    restoreBuildSelection();
+    updateState();
+  });
   connect(controller_, &AppController::buildRevisionChanged, this,
           [this](qint64 id) {
             if (id == selectedBuildId_) {
@@ -225,6 +247,7 @@ void BuildDiscoverWidget::requestBuilds(bool refresh) {
   if (selectedItemId_.isEmpty()) {
     return;
   }
+  buildListItemId_ = selectedItemId_;
   controller_->requestSourceBuilds(
       selectedItemId_, buildSearch_->text(), scope_->currentData().toString(),
       sort_->currentData().toString(), 50, 0, refresh);
@@ -242,7 +265,8 @@ void BuildDiscoverWidget::restoreItemSelection() {
       break;
     }
   }
-  if (!selected.isValid() && model->rowCount() > 0) {
+  if (!selected.isValid() && selectedItemId_.isEmpty() &&
+      model->rowCount() > 0) {
     selected = model->index(0, 0);
   }
   if (selected.isValid()) {
@@ -272,7 +296,10 @@ void BuildDiscoverWidget::restoreBuildSelection() {
     selectedBuildId_ = 0;
     buildTitle_->clear();
     buildMeta_->clear();
-    slots_->clear();
+    topology_->clear();
+    note_->clear();
+    note_->hide();
+    noteTitle_->hide();
   }
 }
 
@@ -287,6 +314,8 @@ void BuildDiscoverWidget::selectItemIndex(const QModelIndex &index) {
   itemTitle_->setText(selectedItemName_);
   if (changed) {
     selectedBuildId_ = 0;
+  }
+  if (changed || buildListItemId_ != id) {
     requestBuilds();
   }
 }
@@ -295,16 +324,17 @@ void BuildDiscoverWidget::selectBuild(const QModelIndex &index) {
   if (!index.isValid()) {
     return;
   }
-  selectedBuildId_ =
-      index.data(BuildSummaryModel::ExternalIdRole).toLongLong();
+  selectedBuildId_ = index.data(BuildSummaryModel::ExternalIdRole).toLongLong();
   buildTitle_->setText(index.data(BuildSummaryModel::TitleRole).toString());
   QStringList meta;
   const QString author = index.data(BuildSummaryModel::AuthorRole).toString();
   if (!author.isEmpty()) {
     meta.append(author);
   }
-  meta.append(QString("score %1").arg(index.data(BuildSummaryModel::ScoreRole).toInt()));
-  meta.append(QString("%1 Forma").arg(index.data(BuildSummaryModel::FormasRole).toInt()));
+  meta.append(QString("score %1")
+                  .arg(index.data(BuildSummaryModel::ScoreRole).toInt()));
+  meta.append(QString("%1 Forma")
+                  .arg(index.data(BuildSummaryModel::FormasRole).toInt()));
   const QString updated =
       buildDate(index.data(BuildSummaryModel::UpdatedAtRole).toString());
   if (!updated.isEmpty()) {
@@ -312,7 +342,10 @@ void BuildDiscoverWidget::selectBuild(const QModelIndex &index) {
   }
   buildMeta_->setText(meta.join("  ·  "));
   state_->setText("Loading build details...");
-  slots_->clear();
+  topology_->clear();
+  note_->clear();
+  note_->hide();
+  noteTitle_->hide();
   controller_->requestBuildRevision(selectedBuildId_);
   showRevision(selectedBuildId_);
 }
@@ -321,7 +354,10 @@ void BuildDiscoverWidget::showRevision(qint64 id) {
   const QString error = controller_->buildRevisionError(id);
   if (!error.isEmpty()) {
     state_->setText(error);
-    slots_->clear();
+    topology_->clear();
+    note_->clear();
+    note_->hide();
+    noteTitle_->hide();
     return;
   }
   const QJsonObject revision = controller_->buildRevision(id);
@@ -329,20 +365,15 @@ void BuildDiscoverWidget::showRevision(qint64 id) {
     return;
   }
   const QJsonObject metadata = revision.value("metadata").toObject();
-  const QJsonObject content = revision.value("content").toObject();
   buildTitle_->setText(metadata.value("title").toString(buildTitle_->text()));
-  slots_->clear();
-  for (const QJsonValue &value : content.value("slots").toArray()) {
-    const QJsonObject slot = value.toObject();
-    QString name = slot.value("name").toString("Unknown mod");
-    QStringList details;
-    details.append(QString("rank %1").arg(slot.value("rank").toInt()));
-    if (slot.value("drain").isDouble()) {
-      details.append(QString("drain %1").arg(slot.value("drain").toInt()));
-    }
-    slots_->addItem(name + "\n" + details.join("  ·  "));
-  }
-  state_->setText("Revision " + revision.value("fingerprint").toString().left(12));
+  topology_->setSourceRevision(revision, {});
+  const QString description =
+      metadata.value("description").toString().trimmed();
+  note_->setText(description);
+  note_->setVisible(!description.isEmpty());
+  noteTitle_->setVisible(!description.isEmpty());
+  state_->setText("Revision " +
+                  revision.value("fingerprint").toString().left(12));
 }
 
 void BuildDiscoverWidget::updateState() {
@@ -366,7 +397,8 @@ void BuildDiscoverWidget::updateState() {
   empty_->setVisible(noBuilds);
   empty_->setText(noBuilds ? "No builds found." : QString());
   const bool hasRevision =
-      selectedBuildId_ > 0 && !controller_->buildRevision(selectedBuildId_).isEmpty();
+      selectedBuildId_ > 0 &&
+      !controller_->buildRevision(selectedBuildId_).isEmpty();
   add_->setEnabled(hasRevision && !controller_->buildGroupsLoading());
 }
 
@@ -403,15 +435,15 @@ void BuildDiscoverWidget::showGroupMenu() {
 
 void BuildDiscoverWidget::createGroupAndAdd() {
   bool accepted = false;
-  const QString name = QInputDialog::getText(
-      this, "New build group", "Name", QLineEdit::Normal,
-      selectedItemName_ + " builds", &accepted);
+  const QString name =
+      QInputDialog::getText(this, "New build group", "Name", QLineEdit::Normal,
+                            selectedItemName_ + " builds", &accepted);
   if (!accepted || name.trimmed().isEmpty()) {
     return;
   }
   pendingCreate_ = true;
-  controller_->createBuildGroup({{"name", name.trimmed()},
-                                 {"definition_id", selectedItemId_}});
+  controller_->createBuildGroup(
+      {{"name", name.trimmed()}, {"definition_id", selectedItemId_}});
 }
 
 void BuildDiscoverWidget::addToGroup(const QJsonObject &group) {
@@ -422,7 +454,7 @@ void BuildDiscoverWidget::addToGroup(const QJsonObject &group) {
     return;
   }
   pendingGroupId_ = id;
-  controller_->addBuildSourceToGroup(
-      id, group.value("revision").toInteger(), selectedBuildId_,
-      revision.value("fingerprint").toString());
+  controller_->addBuildSourceToGroup(id, group.value("revision").toInteger(),
+                                     selectedBuildId_,
+                                     revision.value("fingerprint").toString());
 }

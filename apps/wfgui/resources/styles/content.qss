@@ -136,9 +136,7 @@ QListView#buildGroupList QWidget#qt_scrollarea_viewport,
 QListWidget#buildCopyList,
 QListWidget#buildCopyList QWidget#qt_scrollarea_viewport,
 QListWidget#buildGroupMembers,
-QListWidget#buildGroupMembers QWidget#qt_scrollarea_viewport,
-QListWidget#buildSlotList,
-QListWidget#buildSlotList QWidget#qt_scrollarea_viewport {
+QListWidget#buildGroupMembers QWidget#qt_scrollarea_viewport {
   background: transparent;
   border: none;
   outline: none;
@@ -149,8 +147,7 @@ QListView#buildSourceItemList::item,
 QListView#buildSourceList::item,
 QListView#buildGroupList::item,
 QListWidget#buildCopyList::item,
-QListWidget#buildGroupMembers::item,
-QListWidget#buildSlotList::item {
+QListWidget#buildGroupMembers::item {
   background: #20283e;
   border: 1px solid transparent;
   border-radius: 6px;
@@ -185,10 +182,18 @@ QLabel#buildWorkspaceState {
 
 QScrollArea#buildTopologyScroll,
 QScrollArea#buildTopologyScroll QWidget#qt_scrollarea_viewport,
+QScrollArea#buildRevisionScroll,
+QScrollArea#buildRevisionScroll QWidget#qt_scrollarea_viewport,
+QWidget#buildRevisionBody,
 QWidget#buildTopology,
 QWidget#buildTopologyBody {
   background: transparent;
   border: none;
+}
+
+QLabel#buildNote {
+  color: #c4cada;
+  padding: 0 4px 8px 4px;
 }
 
 QLabel#buildRegionTitle {

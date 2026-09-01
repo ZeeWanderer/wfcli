@@ -7,10 +7,10 @@ class QLabel;
 class QComboBox;
 class QLineEdit;
 class QListView;
-class QListWidget;
 class QModelIndex;
 class QPushButton;
 class QTimer;
+class BuildTopologyWidget;
 
 class BuildDiscoverWidget final : public QWidget {
   Q_OBJECT
@@ -49,13 +49,16 @@ private:
   QLabel *empty_;
   QLabel *buildTitle_;
   QLabel *buildMeta_;
-  QListWidget *slots_;
+  BuildTopologyWidget *topology_;
+  QLabel *noteTitle_;
+  QLabel *note_;
   QLabel *state_;
   QPushButton *add_;
   QTimer *itemSearchTimer_;
   QTimer *buildSearchTimer_;
   QString selectedItemId_;
   QString selectedItemName_;
+  QString buildListItemId_;
   qint64 selectedBuildId_ = 0;
   QString pendingGroupId_;
   bool pendingCreate_ = false;
