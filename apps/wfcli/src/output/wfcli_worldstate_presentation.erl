@@ -80,7 +80,8 @@ block_spec(Type) ->
                          {"Loadouts", loadouts}],
               skip_fields => [window_start, window_end, id, name, type, summary,
                               archimedea, missions, deviations, risks, elite_risks,
-                              personal_modifiers, randomseed, details]};
+                              personal_modifiers, randomseed, loadout_status, loadout_seed,
+                              suits, primaries, secondaries, melees, details]};
         construction_project ->
             #{title => "Construction project",
               fields => [{"Node", node}, {"Window", window}, {"Progress", progress}]};

@@ -65,6 +65,11 @@ requirements("player_views", _Query) ->
        path => wfcli_item_catalog:source(), managed => true},
      export_requirement("ExportRecipes_en.json",
                         wfcli_item_catalog:recipe_source(), undefined)];
+requirements("archimedea", _Query) ->
+    [export_requirement(File, Path, undefined)
+     || {File, Path} <- wfcli_exports:item_sources(
+                          undefined,
+                          ["ExportWarframes_en.json", "ExportWeapons_en.json"])];
 requirements("mastery_star_chart", _Query) ->
     [#{kind => star_chart, id => "StarChart.json",
        path => wfcli_star_chart:source(), managed => true}];

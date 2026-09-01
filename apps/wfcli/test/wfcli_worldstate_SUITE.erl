@@ -410,7 +410,7 @@ archimedea_command_output(_Config) ->
     ?assert(string:find(Output, "Deep Archimedea") =/= nomatch),
     ?assert(string:find(Output, "Sealed Armor") =/= nomatch),
     ?assert(string:find(Output, "Commanding Culverins") =/= nomatch),
-    ?assert(string:find(Output, "Account-specific; not published") =/= nomatch),
+    ?assert(string:find(Output, "Unavailable:") =/= nomatch),
     ?assertEqual(nomatch, string:find(Output, "Temporal Archimedea")).
 
 extra_subcommands_table_output(_Config) ->

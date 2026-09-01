@@ -23,6 +23,18 @@ const ALTERNATE_RESPONSE_PATTERN: &[u8] = &[
 const ALTERNATE_RESPONSE_MASK: &[u8] = &[
     0xff, 0xff, 0xff, 0x00, 0x00, 0x00, 0x00, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
 ];
+const PROFILE_MANAGER_PATTERN: &[u8] = &[
+    0x41, 0xb8, 0x6d, 0x29, 0x2a, 0xd8, 0x48, 0x8d, 0x15, 0x00, 0x00, 0x00, 0x00,
+];
+const PROFILE_MANAGER_MASK: &[u8] = &[
+    0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x00, 0x00, 0x00, 0x00,
+];
+const PROFILE_VECTOR_OFFSET: u64 = 0x230;
+const PROFILE_VECTOR_SIZE_OFFSET: u64 = 0x238;
+const PROFILE_PRIMARY_ID_OFFSET: u64 = 0x118;
+const PROFILE_PLATFORM_ID_OFFSET: u64 = 0x138;
+const MAX_PROFILES: usize = 32;
+const MAX_PROFILE_ID_SIZE: usize = 256;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct ExecutableRegion {
@@ -41,6 +53,7 @@ struct ResponsePath {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) struct Sources {
     manager_global: u64,
+    profile_manager_global: Option<u64>,
     response: ResponsePath,
 }
 
@@ -98,9 +111,22 @@ impl Sources {
             read_i32(mem, alternate_anchor + 3)
                 .map_err(|error| format!("could not read alternate response offset: {error}"))?,
         );
+        let profile_manager_global = scan_masked(
+            mem,
+            executable,
+            PROFILE_MANAGER_PATTERN,
+            PROFILE_MANAGER_MASK,
+        )
+        .ok()
+        .and_then(|anchor| {
+            read_i32(mem, anchor + 9)
+                .ok()
+                .map(|displacement| (anchor + 13).wrapping_add_signed(i64::from(displacement)))
+        });
 
         Ok(Self {
             manager_global,
+            profile_manager_global,
             response: ResponsePath {
                 queue_table,
                 item_base,
@@ -112,6 +138,44 @@ impl Sources {
 
     pub(super) fn manager_global(&self) -> u64 {
         self.manager_global
+    }
+
+    pub(super) fn profile_manager_global(&self) -> Option<u64> {
+        self.profile_manager_global
+    }
+
+    pub(super) fn account_seed(&self, mem: &File) -> io::Result<u32> {
+        let global = self
+            .profile_manager_global
+            .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "profile manager signature"))?;
+        let holder = non_null(read_u64(mem, global)?)?;
+        let manager = non_null(read_u64(mem, holder)?)?;
+        let vector = non_null(read_u64(mem, manager + PROFILE_VECTOR_OFFSET)?)?;
+        let vector_bytes = read_u32(mem, manager + PROFILE_VECTOR_SIZE_OFFSET)? as usize;
+        let count = (vector_bytes / 8).min(MAX_PROFILES);
+        for index in 0..count {
+            let holder = read_u64(mem, vector + (index * 8) as u64)?;
+            if holder == 0 {
+                continue;
+            }
+            let profile = read_u64(mem, holder)?;
+            if profile == 0 {
+                continue;
+            }
+            let primary = read_engine_string(mem, profile + PROFILE_PRIMARY_ID_OFFSET)?;
+            let platform = read_engine_string(mem, profile + PROFILE_PLATFORM_ID_OFFSET)?;
+            if let Some(seed) = profile_seed(if platform.is_empty() {
+                &primary
+            } else {
+                &platform
+            }) {
+                return Ok(seed);
+            }
+        }
+        Err(io::Error::new(
+            io::ErrorKind::NotFound,
+            "no initialized player profile",
+        ))
     }
 
     pub(super) fn response_offsets(&self) -> (u64, u64, u64, i64) {
@@ -535,6 +599,12 @@ fn read_u16(mem: &File, address: u64) -> io::Result<u16> {
     Ok(u16::from_le_bytes(bytes))
 }
 
+fn read_u32(mem: &File, address: u64) -> io::Result<u32> {
+    let mut bytes = [0_u8; 4];
+    read_exact_at(mem, address, &mut bytes)?;
+    Ok(u32::from_le_bytes(bytes))
+}
+
 fn read_i32(mem: &File, address: u64) -> io::Result<i32> {
     let mut bytes = [0_u8; 4];
     read_exact_at(mem, address, &mut bytes)?;
@@ -545,6 +615,43 @@ fn read_u64(mem: &File, address: u64) -> io::Result<u64> {
     let mut bytes = [0_u8; 8];
     read_exact_at(mem, address, &mut bytes)?;
     Ok(u64::from_le_bytes(bytes))
+}
+
+fn read_engine_string(mem: &File, address: u64) -> io::Result<Vec<u8>> {
+    let mut storage = [0_u8; 16];
+    read_exact_at(mem, address, &mut storage)?;
+    let tag = storage[15];
+    if tag == 0xff {
+        let data = u64::from_le_bytes(storage[..8].try_into().unwrap());
+        let length =
+            (u32::from_le_bytes(storage[8..12].try_into().unwrap()) & 0x0fff_ffff) as usize;
+        if length > MAX_PROFILE_ID_SIZE {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "invalid player profile identifier length",
+            ));
+        }
+        let mut value = vec![0_u8; length];
+        read_exact_at(mem, non_null(data)?, &mut value)?;
+        Ok(value)
+    } else if tag <= 15 {
+        Ok(storage[..usize::from(15 - tag)].to_vec())
+    } else {
+        Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "invalid player profile identifier tag",
+        ))
+    }
+}
+
+fn profile_seed(identifier: &[u8]) -> Option<u32> {
+    let token = identifier.get(2..8)?;
+    let token = std::str::from_utf8(token).ok()?;
+    token
+        .chars()
+        .all(|character| character.is_ascii_hexdigit())
+        .then(|| u32::from_str_radix(token, 16).ok())
+        .flatten()
 }
 
 #[cfg(test)]
@@ -588,6 +695,7 @@ mod tests {
         let mem = File::open(&path).unwrap();
         let sources = Sources {
             manager_global: 0x20,
+            profile_manager_global: None,
             response: ResponsePath {
                 queue_table: 0x98,
                 item_base: 0x18,
@@ -630,6 +738,33 @@ mod tests {
         mem.write_all_at(b"b", 128).unwrap();
         let changed = changed_c_string(&mem, 0, &mut state, &mut scratch).unwrap();
         assert_eq!(changed[128], b'b');
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn reads_account_seed_without_exposing_profile_identifier() {
+        let mut bytes = vec![0_u8; 0x900];
+        put_u64(&mut bytes, 0x20, 0x80);
+        put_u64(&mut bytes, 0x80, 0x100);
+        put_u64(&mut bytes, 0x330, 0x400);
+        put_u32(&mut bytes, 0x338, 8);
+        put_u64(&mut bytes, 0x400, 0x500);
+        put_u64(&mut bytes, 0x500, 0x600);
+        put_engine_string(&mut bytes, 0x718, b"AA000001ZZ");
+        put_engine_string(&mut bytes, 0x738, b"AB123456CD");
+        let path = temp_file(&bytes);
+        let mem = File::open(&path).unwrap();
+        let sources = Sources {
+            manager_global: 0,
+            profile_manager_global: Some(0x20),
+            response: ResponsePath {
+                queue_table: 0,
+                item_base: 0,
+                body: 0,
+                alternate: 0,
+            },
+        };
+        assert_eq!(sources.account_seed(&mem).unwrap(), 0x123456);
         fs::remove_file(path).unwrap();
     }
 
@@ -724,5 +859,15 @@ mod tests {
 
     fn put_u64(bytes: &mut [u8], offset: usize, value: u64) {
         bytes[offset..offset + 8].copy_from_slice(&value.to_le_bytes());
+    }
+
+    fn put_u32(bytes: &mut [u8], offset: usize, value: u32) {
+        bytes[offset..offset + 4].copy_from_slice(&value.to_le_bytes());
+    }
+
+    fn put_engine_string(bytes: &mut [u8], offset: usize, value: &[u8]) {
+        assert!(value.len() <= 15);
+        bytes[offset..offset + value.len()].copy_from_slice(value);
+        bytes[offset + 15] = 15 - value.len() as u8;
     }
 }

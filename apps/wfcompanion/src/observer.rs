@@ -8,6 +8,7 @@ use wfcompanion::game_observer::{self, DebugOutputEvent, GameState};
 
 use crate::daemon::{Outbound, OutboundSender};
 use crate::debug_output::{Bridge as DebugBridge, Event as DebugEvent, Runtime as DebugRuntime};
+use crate::game_metadata::{Bridge as MetadataBridge, Event as MetadataEvent};
 use crate::incident;
 use crate::inventory::{Bridge as InventoryBridge, Event as InventoryEvent};
 use crate::relic::Trigger as RelicTrigger;
@@ -21,8 +22,11 @@ const UI_CONSOLE_OPEN_GUARD: Duration = Duration::from_secs(1);
 struct CollectorStatus {
     debug_lines: u64,
     inventory_updates: u64,
+    account_updates: u64,
+    metadata_updates: u64,
     debug_output_active: bool,
     inventory_active: bool,
+    metadata_active: bool,
 }
 
 pub(crate) fn spawn(
@@ -33,9 +37,11 @@ pub(crate) fn spawn(
     thread::spawn(move || {
         let (debug_tx, debug_rx) = mpsc::channel();
         let (inventory_tx, inventory_rx) = mpsc::channel();
+        let (metadata_tx, metadata_rx) = mpsc::channel();
         let mut previous: Option<GameState> = None;
         let mut bridge: Option<DebugBridge> = None;
         let mut inventory_bridge: Option<InventoryBridge> = None;
+        let mut metadata_bridge: Option<MetadataBridge> = None;
         let mut bridge_error: Option<String> = None;
         let mut inventory_error: Option<String> = None;
         let mut status = CollectorStatus::default();
@@ -54,6 +60,7 @@ pub(crate) fn spawn(
                     }
                     let data = serde_json::to_value(&current).unwrap_or_else(|_| json!({}));
                     let _ = outbound.send(Outbound::Publish {
+                        dataset: "player",
                         source: "game",
                         data,
                     });
@@ -144,11 +151,49 @@ pub(crate) fn spawn(
                         }
                     }
                 }
+
+                let metadata_is_current = match (&metadata_bridge, runtime.as_ref()) {
+                    (Some(open), Some(runtime)) => {
+                        open.game_pid() == runtime.game_pid() && open.is_running()
+                    }
+                    (None, None) => true,
+                    _ => false,
+                };
+                if !metadata_is_current && metadata_bridge.take().is_some() {
+                    status.metadata_active = false;
+                    publish_collector(&outbound, &status);
+                }
+                if metadata_bridge.is_none()
+                    && let Some(runtime) = runtime.as_ref()
+                {
+                    match MetadataBridge::start(
+                        runtime.game_pid(),
+                        outbound.clone(),
+                        metadata_tx.clone(),
+                    ) {
+                        Ok(open) => {
+                            incident::info(
+                                "observer.game_metadata_started",
+                                format!("game_pid={}", runtime.game_pid()),
+                            );
+                            metadata_bridge = Some(open);
+                            status.metadata_active = true;
+                            publish_collector(&outbound, &status);
+                        }
+                        Err(error) => {
+                            incident::warn("observer.game_metadata_failed", &error);
+                            eprintln!("wfcompanion: {error}");
+                        }
+                    }
+                }
                 next_scan = Instant::now() + SCAN_INTERVAL;
             }
 
             while let Ok(event) = inventory_rx.try_recv() {
                 handle_inventory_event(event, &mut inventory_bridge, &outbound, &mut status);
+            }
+            while let Ok(event) = metadata_rx.try_recv() {
+                handle_metadata_event(event, &metadata_bridge, &outbound, &mut status);
             }
 
             let wait = EVENT_INTERVAL.min(next_scan.saturating_duration_since(Instant::now()));
@@ -165,6 +210,67 @@ pub(crate) fn spawn(
             }
         }
     });
+}
+
+fn handle_metadata_event(
+    event: MetadataEvent,
+    bridge: &Option<MetadataBridge>,
+    outbound: &OutboundSender,
+    status: &mut CollectorStatus,
+) {
+    match event {
+        MetadataEvent::Captured {
+            game_pid,
+            data,
+            cached,
+        } if bridge
+            .as_ref()
+            .is_some_and(|open| open.game_pid() == game_pid) =>
+        {
+            status.metadata_updates += 1;
+            incident::info(
+                "observer.game_metadata_received",
+                format!(
+                    "game_pid={game_pid} source={}",
+                    if cached { "cache" } else { "memory" }
+                ),
+            );
+            let _ = outbound.send(Outbound::Publish {
+                dataset: "game_metadata",
+                source: "warframe",
+                data,
+            });
+            publish_collector(outbound, status);
+        }
+        MetadataEvent::Unavailable { game_pid, reason }
+            if bridge
+                .as_ref()
+                .is_some_and(|open| open.game_pid() == game_pid) =>
+        {
+            incident::warn("observer.game_metadata_unavailable", &reason);
+            if let Some(data) = unsupported_game_metadata(&reason) {
+                status.metadata_updates += 1;
+                let _ = outbound.send(Outbound::Publish {
+                    dataset: "game_metadata",
+                    source: "warframe",
+                    data,
+                });
+                publish_collector(outbound, status);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn unsupported_game_metadata(reason: &str) -> Option<serde_json::Value> {
+    let sha256 = reason.strip_prefix("unsupported Warframe executable ")?;
+    (sha256.len() == 64 && sha256.bytes().all(|byte| byte.is_ascii_hexdigit())).then(|| {
+        json!({
+            "schema": 2,
+            "executable": {"sha256": sha256},
+            "unavailable": {"reason": "unsupported_executable"},
+        })
+    })
 }
 
 fn handle_debug_event(
@@ -242,8 +348,30 @@ fn handle_inventory_event(
                 format!("game_pid={game_pid} collector={collector} process_pid={process_pid}"),
             );
             let _ = outbound.send(Outbound::Publish {
+                dataset: "player",
                 source: "inventory",
                 data,
+            });
+            publish_collector(outbound, status);
+        }
+        InventoryEvent::Account { game_pid, seed }
+            if bridge
+                .as_ref()
+                .is_some_and(|open| open.game_pid() == game_pid) =>
+        {
+            status.account_updates += 1;
+            incident::info(
+                "observer.account_seed_received",
+                format!("game_pid={game_pid}"),
+            );
+            let _ = outbound.send(Outbound::Publish {
+                dataset: "player",
+                source: "account",
+                data: json!({
+                    "schema": 1,
+                    "archimedea_seed": seed,
+                    "collected_at": unix_time_millis(),
+                }),
             });
             publish_collector(outbound, status);
         }
@@ -253,12 +381,16 @@ fn handle_inventory_event(
 
 fn publish_collector(outbound: &OutboundSender, status: &CollectorStatus) {
     let _ = outbound.send(Outbound::Publish {
+        dataset: "player",
         source: "collector",
         data: json!({
             "debug_output_lines_observed": status.debug_lines,
             "inventory_updates_observed": status.inventory_updates,
+            "account_updates_observed": status.account_updates,
+            "game_metadata_updates_observed": status.metadata_updates,
             "debug_output_active": status.debug_output_active,
             "inventory_active": status.inventory_active,
+            "game_metadata_active": status.metadata_active,
             "last_observed_at": unix_time_millis(),
         }),
     });
@@ -343,5 +475,16 @@ mod tests {
             receiver.recv().unwrap(),
             RelicTrigger::Suggestions { game_pid: 42, .. }
         ));
+    }
+
+    #[test]
+    fn unsupported_executable_invalidates_cached_metadata() {
+        let hash = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+        let data =
+            unsupported_game_metadata(&format!("unsupported Warframe executable {hash}")).unwrap();
+        assert_eq!(data["schema"], 2);
+        assert_eq!(data["executable"]["sha256"], hash);
+        assert_eq!(data["unavailable"]["reason"], "unsupported_executable");
+        assert!(unsupported_game_metadata("VariantManifest is not loaded").is_none());
     }
 }

@@ -13,6 +13,11 @@ default_selection_includes_wfcd_test() ->
        [nodes, languages, exports, wfcd, star_chart],
        wfcli_source_manager:expand_selections([all])).
 
+archimedea_requires_ordered_equipment_exports_test() ->
+    Requirements = wfcli_source_manager:requirements("archimedea", #{}),
+    ?assertEqual(["ExportWarframes_en.json", "ExportWeapons_en.json"],
+                 [maps:get(id, Requirement) || Requirement <- Requirements]).
+
 file_age_controls_staleness_test() ->
     Path = temp_path("metadata.json"),
     ok = file:write_file(Path, <<"{}">>),

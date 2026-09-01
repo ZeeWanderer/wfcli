@@ -166,7 +166,8 @@ archimedea_help_documents_scope_test() ->
     ?assert(string:find(Text, "default: block") =/= nomatch),
     ?assert(string:find(Text, "--deep") =/= nomatch),
     ?assert(string:find(Text, "additional Elite risks") =/= nomatch),
-    ?assert(string:find(Text, "account-specific") =/= nomatch).
+    ?assert(string:find(Text, "cached player data") =/= nomatch),
+    ?assert(string:find(Text, "Archimedea screen observed") =/= nomatch).
 
 generic_data_help_hides_inventory_option_test() ->
     Text = lists:flatten(

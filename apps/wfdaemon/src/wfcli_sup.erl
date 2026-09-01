@@ -93,6 +93,13 @@ daemon_children() ->
                 type => worker,
                 modules => [wfcli_player_service]
             }, #{
+                id => wfcli_game_metadata_service,
+                start => {wfcli_game_metadata_service, start_link, []},
+                restart => permanent,
+                shutdown => 5000,
+                type => worker,
+                modules => [wfcli_game_metadata_service]
+            }, #{
                 id => wfcli_resolution_issues,
                 start => {wfcli_resolution_issues, start_link, []},
                 restart => permanent,

@@ -5,6 +5,7 @@ mod debug_output;
 mod desktop;
 mod external;
 mod focus;
+mod game_metadata;
 mod incident;
 mod inventory;
 mod observer;

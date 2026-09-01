@@ -443,17 +443,29 @@ fetch_source(trader, Opts) -> wfcli_worldstate:load_trader_inventory(Opts);
 fetch_source(teshin, Opts) -> wfcli_teshin:load(Opts).
 
 ensure_variant(Opts, Dataset) ->
-    Key = variant_key(Opts),
+    StaticKey = variant_key(Opts),
+    Context = wfcli_archimedea_loadout:context(),
+    Key = {StaticKey, maps:get(key, Context, unavailable)},
     Variants = maps:get(variants, Dataset, #{}),
     case maps:get(Key, Variants, undefined) of
         undefined ->
             Base = maps:get(snapshot, Dataset),
-            VariantOpts = variant_opts(Opts),
+            VariantOpts = (variant_opts(Opts))#{archimedea_loadout => Context},
             Ws = wfcli_worldstate:reindex(Base, VariantOpts),
-            {Ws, Dataset#{variants => Variants#{Key => Ws}}};
+            Current = maps:filter(
+                        fun(StoredKey, _Ws) ->
+                            not same_variant_family(StoredKey, StaticKey)
+                        end,
+                        Variants),
+            {Ws, Dataset#{variants => Current#{Key => Ws}}};
         Ws ->
             {Ws, Dataset}
     end.
+
+same_variant_family({StoredStatic, _Context}, Static)
+  when is_tuple(StoredStatic), tuple_size(StoredStatic) =:= 4 ->
+    StoredStatic =:= Static;
+same_variant_family(StoredStatic, Static) -> StoredStatic =:= Static.
 
 variant_key(Opts) ->
     {maps:get(resolve_items, Opts, true),

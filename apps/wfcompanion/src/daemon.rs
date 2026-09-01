@@ -32,6 +32,7 @@ const STOP_CHECK_INTERVAL: Duration = Duration::from_secs(1);
 pub(crate) type OutboundSender = mpsc::UnboundedSender<Outbound>;
 type OutboundReceiver = mpsc::UnboundedReceiver<Outbound>;
 type ReplySender = std_mpsc::Sender<Result<Value, String>>;
+type PublicationKey = (&'static str, &'static str);
 
 #[derive(Clone)]
 struct ServerEvents {
@@ -116,7 +117,12 @@ enum ClientMessage<'a> {
 
 #[derive(Debug)]
 pub(crate) enum Outbound {
+    DatasetGet {
+        dataset: &'static str,
+        reply: RequestReply,
+    },
     Publish {
+        dataset: &'static str,
         source: &'static str,
         data: Value,
     },
@@ -142,6 +148,13 @@ pub(crate) enum Outbound {
     DiagnosticsReport {
         issues: Vec<Value>,
     },
+}
+
+pub(crate) fn dataset_get(
+    outbound: &OutboundSender,
+    dataset: &'static str,
+) -> Result<Value, String> {
+    request(outbound, |reply| Outbound::DatasetGet { dataset, reply })
 }
 
 pub(crate) fn report_diagnostics(outbound: &OutboundSender, issues: Vec<Value>) {
@@ -310,7 +323,7 @@ async fn connection_loop(
 
 async fn wait_for_reconnect(
     outbound: &mut OutboundReceiver,
-    latest: &mut BTreeMap<&'static str, Value>,
+    latest: &mut BTreeMap<PublicationKey, Value>,
     queued: &mut VecDeque<Outbound>,
     stopping: &AtomicBool,
 ) -> bool {
@@ -337,7 +350,7 @@ async fn wait_for_reconnect(
 async fn connection_session(
     mut stream: UnixStream,
     outbound: &mut OutboundReceiver,
-    latest: &mut BTreeMap<&'static str, Value>,
+    latest: &mut BTreeMap<PublicationKey, Value>,
     queued: &mut VecDeque<Outbound>,
     events: &ServerEvents,
     stopping: &AtomicBool,
@@ -391,8 +404,8 @@ async fn connection_session(
     .await?;
 
     let mut next_id = 10;
-    for (&source, data) in latest.iter() {
-        send_publish(&mut writer, next_id, source, data).await?;
+    for (&(dataset, source), data) in latest.iter() {
+        send_publish(&mut writer, next_id, dataset, source, data).await?;
         next_id += 1;
     }
 
@@ -434,7 +447,7 @@ struct ActiveSession<'a, R, W> {
     writer: &'a mut W,
     reader: &'a mut Lines<BufReader<R>>,
     outbound: &'a mut OutboundReceiver,
-    latest: &'a mut BTreeMap<&'static str, Value>,
+    latest: &'a mut BTreeMap<PublicationKey, Value>,
     events: &'a ServerEvents,
     stopping: &'a AtomicBool,
     next_id: u64,
@@ -498,7 +511,7 @@ where
 
 fn drain_outbound(
     outbound: &mut OutboundReceiver,
-    latest: &mut BTreeMap<&'static str, Value>,
+    latest: &mut BTreeMap<PublicationKey, Value>,
     queued: &mut VecDeque<Outbound>,
 ) {
     while let Ok(message) = outbound.try_recv() {
@@ -508,12 +521,16 @@ fn drain_outbound(
 
 fn retain_outbound(
     message: Outbound,
-    latest: &mut BTreeMap<&'static str, Value>,
+    latest: &mut BTreeMap<PublicationKey, Value>,
     queued: &mut VecDeque<Outbound>,
 ) {
     match message {
-        Outbound::Publish { source, data } => {
-            latest.insert(source, data);
+        Outbound::Publish {
+            dataset,
+            source,
+            data,
+        } => {
+            latest.insert((dataset, source), data);
         }
         report @ Outbound::DiagnosticsReport { .. } => {
             queued.retain(|item| !matches!(item, Outbound::DiagnosticsReport { .. }));
@@ -527,7 +544,7 @@ async fn send_outbound<W>(
     writer: &mut W,
     id: u64,
     message: Outbound,
-    latest: &mut BTreeMap<&'static str, Value>,
+    latest: &mut BTreeMap<PublicationKey, Value>,
     pending: &mut BTreeMap<u64, RequestReply>,
     diagnostics_report: bool,
 ) -> io::Result<()>
@@ -535,9 +552,19 @@ where
     W: AsyncWrite + Unpin,
 {
     match message {
-        Outbound::Publish { source, data } => {
-            latest.insert(source, data);
-            send_publish(writer, id, source, &latest[source]).await
+        Outbound::DatasetGet { dataset, reply } => {
+            if !register_pending(pending, id, reply) {
+                return Ok(());
+            }
+            send_message(writer, &ClientMessage::Get { id, dataset }).await
+        }
+        Outbound::Publish {
+            dataset,
+            source,
+            data,
+        } => {
+            latest.insert((dataset, source), data);
+            send_publish(writer, id, dataset, source, &latest[&(dataset, source)]).await
         }
         Outbound::MarketResolve {
             labels,
@@ -708,6 +735,7 @@ fn companion_interfaces() -> BTreeMap<&'static str, u32> {
     BTreeMap::from([
         ("datasets", INTERFACE_DATASETS),
         ("player", INTERFACE_PLAYER),
+        ("game_metadata", INTERFACE_GAME_METADATA),
         ("market", INTERFACE_MARKET),
         ("relics", INTERFACE_RELICS),
         ("assets", INTERFACE_ASSETS),
@@ -765,6 +793,7 @@ where
 async fn send_publish<W>(
     writer: &mut W,
     id: u64,
+    dataset: &'static str,
     source: &'static str,
     data: &Value,
 ) -> io::Result<()>
@@ -775,7 +804,7 @@ where
         writer,
         &ClientMessage::Publish {
             id,
-            dataset: "player",
+            dataset,
             source,
             data,
         },
@@ -998,12 +1027,14 @@ mod tests {
         let (sender, mut receiver) = mpsc::unbounded_channel();
         sender
             .send(Outbound::Publish {
+                dataset: "player",
                 source: "game",
                 data: serde_json::json!({"running": false}),
             })
             .unwrap();
         sender
             .send(Outbound::Publish {
+                dataset: "player",
                 source: "game",
                 data: serde_json::json!({"running": true}),
             })
@@ -1012,8 +1043,35 @@ mod tests {
         let mut latest = BTreeMap::new();
         let mut queued = VecDeque::new();
         drain_outbound(&mut receiver, &mut latest, &mut queued);
-        assert_eq!(latest["game"]["running"], true);
+        assert_eq!(latest[&("player", "game")]["running"], true);
         assert!(queued.is_empty());
+    }
+
+    #[test]
+    fn reconnect_replay_keeps_publications_from_distinct_datasets() {
+        let mut latest = BTreeMap::new();
+        let mut queued = VecDeque::new();
+        retain_outbound(
+            Outbound::Publish {
+                dataset: "player",
+                source: "warframe",
+                data: serde_json::json!({"inventory": true}),
+            },
+            &mut latest,
+            &mut queued,
+        );
+        retain_outbound(
+            Outbound::Publish {
+                dataset: "game_metadata",
+                source: "warframe",
+                data: serde_json::json!({"schema": 2}),
+            },
+            &mut latest,
+            &mut queued,
+        );
+        assert_eq!(latest.len(), 2);
+        assert_eq!(latest[&("player", "warframe")]["inventory"], true);
+        assert_eq!(latest[&("game_metadata", "warframe")]["schema"], 2);
     }
 
     #[test]
@@ -1076,6 +1134,7 @@ mod tests {
                 time::sleep(Duration::from_millis(10)).await;
                 sender
                     .send(Outbound::Publish {
+                        dataset: "player",
                         source: "game",
                         data: serde_json::json!({"running": true}),
                     })
@@ -1099,6 +1158,54 @@ mod tests {
                     .unwrap()
                     .is_err()
             );
+        });
+    }
+
+    #[test]
+    fn sends_dataset_get_and_routes_its_reply() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_io()
+            .enable_time()
+            .build()
+            .unwrap();
+        runtime.block_on(async {
+            let (mut client, server) = UnixStream::pair().unwrap();
+            let mut server = BufReader::new(server).lines();
+            let (reply, result) = std_mpsc::channel();
+            let mut latest = BTreeMap::new();
+            let mut pending = BTreeMap::new();
+            send_outbound(
+                &mut client,
+                10,
+                Outbound::DatasetGet {
+                    dataset: "game_metadata",
+                    reply: RequestReply::new(reply),
+                },
+                &mut latest,
+                &mut pending,
+                false,
+            )
+            .await
+            .unwrap();
+
+            let request: Value = serde_json::from_str(
+                &time::timeout(Duration::from_secs(1), server.next_line())
+                    .await
+                    .unwrap()
+                    .unwrap()
+                    .unwrap(),
+            )
+            .unwrap();
+            assert_eq!(request["op"], "get");
+            assert_eq!(request["dataset"], "game_metadata");
+
+            let (events, _ui_events, _relic_events) = server_events();
+            handle_server_message(
+                r#"{"id":10,"ok":true,"data":{"data":{"schema":2}}}"#,
+                &events,
+                &mut pending,
+            );
+            assert_eq!(result.recv().unwrap().unwrap()["data"]["data"]["schema"], 2);
         });
     }
 
@@ -1203,6 +1310,7 @@ mod tests {
             "interfaces": {
                 "datasets": INTERFACE_DATASETS,
                 "player": INTERFACE_PLAYER,
+                "game_metadata": INTERFACE_GAME_METADATA,
                 "market": INTERFACE_MARKET,
                 "relics": INTERFACE_RELICS,
                 "assets": INTERFACE_ASSETS,

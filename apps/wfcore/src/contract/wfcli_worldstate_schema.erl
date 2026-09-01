@@ -186,6 +186,18 @@ columns_spec() ->
           aliases => ["modifier-detail"]},
         #{key => seed, label => "Seed", role => stat, kind => number, default_op => eq},
         #{key => loadouts, label => "Loadouts", role => details, optional => true},
+        #{key => loadout_status, label => "Loadout status", role => stat,
+          aliases => ["loadout-status"], default_op => eq, optional => true},
+        #{key => loadout_seed, label => "Loadout seed", role => stat,
+          aliases => ["loadout-seed"], kind => number, default_op => eq, optional => true},
+        #{key => suits, label => "Warframes", role => details,
+          aliases => ["warframe", "warframes"], optional => true},
+        #{key => primaries, label => "Primary", role => details,
+          aliases => ["primary"], optional => true},
+        #{key => secondaries, label => "Secondary", role => details,
+          aliases => ["secondary"], optional => true},
+        #{key => melees, label => "Melee", role => details,
+          aliases => ["melee"], optional => true},
         #{key => meta_key, label => "Key", role => name},
         #{key => meta_value, label => "Value", role => details}
     ].

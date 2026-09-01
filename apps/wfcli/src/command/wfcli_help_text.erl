@@ -231,7 +231,7 @@ command_notes(Type) when Type =:= baro; Type =:= prime_vault ->
 command_notes(archimedea) ->
     ["\nNOTES:\n",
      "  Mission output includes normal risks and additional Elite risks.\n",
-     "  Loadout choices are account-specific and absent from public worldstate.\n"];
+     "  Loadouts require cached player data and one Archimedea screen observed by wfcompanion.\n"];
 command_notes(_Type) ->
     ["\nNOTES:\n",
      "  Run 'wfcli help watch' for multi-command watches.\n"].

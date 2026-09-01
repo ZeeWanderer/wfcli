@@ -50,14 +50,45 @@ archimedea_projection_and_semantic_query_test() ->
         <<"Variables">> => [<<"Knifestep">>]
     },
     Entry = wfcli_entity_worldstate:build(
-              archimedea, "deep", "Deep Archimedea", Data, #{resolve_items => true}),
+              archimedea, "deep", "Deep Archimedea", Data,
+              #{resolve_items => true, archimedea_loadout => loadout_context()}),
     Row = maps:get(row_map, Entry),
     ?assertEqual("Deep", maps:get(archimedea, Row)),
     ?assertEqual(157125, maps:get(seed, Row)),
     ?assert(string:find(maps:get(deviations, Row), "Sealed Armor") =/= nomatch),
     ?assert(string:find(maps:get(elite_risks, Row), "Commanding Culverins") =/= nomatch),
     ?assert(string:find(maps:get(modifier_details, Row), "Lose 2 Health") =/= nomatch),
+    ?assertEqual("ready", maps:get(loadout_status, Row)),
+    ?assert(string:find(maps:get(loadouts, Row), "Owned Frame [owned]") =/= nomatch),
     Parsed = wfcli_worldstate_query:parse(
-               "archimedea=deep deviation~sealed elite-risk~culverin seed=157125"),
+               "archimedea=deep deviation~sealed elite-risk~culverin seed=157125 "
+               "warframe~owned loadout-status=ready"),
     ?assertEqual([], maps:get(errors, Parsed)),
     ?assert(wfcli_worldstate_query:match(Entry, Parsed)).
+
+archimedea_owned_marker_uses_ownership_flag_test() ->
+    Owned = <<"catalog-owned">>,
+    OtherA = <<"forced-a">>,
+    OtherB = <<"forced-b">>,
+    Pool = #{owned => [Owned], catalog => [<<"a">>, <<"b">>, <<"c">>]},
+    Context = #{status => ready, account_seed => 7,
+                names => #{Owned => "Catalog Owned", OtherA => "Forced A",
+                           OtherB => "Forced B", <<"a">> => "A",
+                           <<"b">> => "B", <<"c">> => "C"},
+                pools => #{suits => Pool, primaries => Pool,
+                           secondaries => Pool, melees => Pool}},
+    Data = #{<<"Type">> => <<"CT_LAB">>, <<"RandomSeed">> => 157125,
+             <<"ForcedLoadouts">> =>
+                 #{<<"suits">> => [Owned, OtherA, OtherB]}},
+    Projection = wfcli_archimedea:project(
+                   Data, #{resolve_items => true, archimedea_loadout => Context}),
+    ?assertEqual("Catalog Owned [owned], Forced A, Forced B",
+                 maps:get(suits, Projection)).
+
+loadout_context() ->
+    Pool = #{owned => [<<"owned">>], catalog => [<<"a">>, <<"b">>, <<"c">>]},
+    #{status => ready, account_seed => 7,
+      names => #{<<"owned">> => "Owned Frame", <<"a">> => "A",
+                 <<"b">> => "B", <<"c">> => "C"},
+      pools => #{suits => Pool, primaries => Pool,
+                 secondaries => Pool, melees => Pool}}.

@@ -31,7 +31,9 @@ project(Data, Opts) ->
     {PersonalModifierNames, PersonalModifierDetails} = personal_modifier_text(Variables, Opts),
     Seed = maps:get(<<"RandomSeed">>, Data, undefined),
     ModifierDetails = join(PersonalModifierDetails, "\n    "),
-    #{type => "Archimedea",
+    Loadout = wfcli_archimedea_loadout:resolve(
+                Data, maps:get(archimedea_loadout, Opts, #{})),
+    maps:merge(#{type => "Archimedea",
       summary => Name,
       name => Name,
       archimedea => Kind,
@@ -44,8 +46,8 @@ project(Data, Opts) ->
       modifier_details => ModifierDetails,
       seed => Seed,
       randomseed => Seed,
-      loadouts => "Account-specific; not published in worldstate",
-      details => wfcli_text:join_parts([MissionDetails, ModifierDetails], "\n  ")}.
+      details => wfcli_text:join_parts([MissionDetails, ModifierDetails], "\n  ")},
+      loadout_fields(Loadout)).
 
 identity(#{<<"Type">> := <<"CT_LAB">>}) -> {"Deep", "Deep Archimedea"};
 identity(#{<<"Type">> := <<"CT_HEX">>}) -> {"Temporal", "Temporal Archimedea"};
@@ -146,3 +148,56 @@ unique(Values) ->
 
 join(Values, Separator) ->
     wfcli_text:join_list(Values, Separator).
+
+loadout_fields(#{status := ready} = Loadout) ->
+    Suits = category_text(maps:get(suits, Loadout)),
+    Primaries = category_text(maps:get(primaries, Loadout)),
+    Secondaries = category_text(maps:get(secondaries, Loadout)),
+    Melees = category_text(maps:get(melees, Loadout)),
+    Lines = ["Warframes: " ++ Suits,
+             "Primary: " ++ Primaries,
+             "Secondary: " ++ Secondaries,
+             "Melee: " ++ Melees],
+    #{loadout_status => "ready",
+      loadout_seed => maps:get(effective_seed, Loadout),
+      suits => Suits,
+      primaries => Primaries,
+      secondaries => Secondaries,
+      melees => Melees,
+      loadouts => join(Lines, "\n  ")};
+loadout_fields(#{reason := Reason}) ->
+    #{loadout_status => atom_to_list(Reason),
+      loadout_seed => undefined,
+      suits => "", primaries => "", secondaries => "", melees => "",
+      loadouts => unavailable_text(Reason)}.
+
+category_text(Items) ->
+    join([item_text(Item) || Item <- Items], ", ").
+
+item_text(#{name := Name, owned := true}) -> Name ++ " [owned]";
+item_text(#{name := Name}) -> Name.
+
+unavailable_text(missing_account_seed) ->
+    "Unavailable: launch Warframe through wfcompanion once to cache the account seed";
+unavailable_text(missing_player_inventory) ->
+    "Unavailable: cached player inventory is missing";
+unavailable_text(missing_game_metadata) ->
+    "Unavailable: open an Archimedea screen while wfcompanion is running once";
+unavailable_text(invalid_game_metadata) ->
+    "Unavailable: cached game metadata is invalid";
+unavailable_text(stale_game_metadata) ->
+    "Unavailable: cached game metadata belongs to an older Warframe build";
+unavailable_text(unsupported_game_build) ->
+    "Unavailable: this Warframe build is not supported yet";
+unavailable_text(game_metadata_unavailable) ->
+    "Unavailable: game metadata could not be captured";
+unavailable_text(missing_equipment_exports) ->
+    "Unavailable: equipment exports are missing";
+unavailable_text(missing_worldstate_seed) ->
+    "Unavailable: worldstate rotation has no random seed";
+unavailable_text(player_store_unavailable) ->
+    "Unavailable: player store is not running";
+unavailable_text(game_metadata_store_unavailable) ->
+    "Unavailable: game metadata store is not running";
+unavailable_text(Reason) ->
+    "Unavailable: " ++ atom_to_list(Reason).

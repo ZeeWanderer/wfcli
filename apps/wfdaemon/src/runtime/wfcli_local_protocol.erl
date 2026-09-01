@@ -9,6 +9,7 @@
 -define(ENVELOPE_VERSION, 1).
 -define(INTERFACE_DATASETS, 1).
 -define(INTERFACE_PLAYER, 1).
+-define(INTERFACE_GAME_METADATA, 2).
 -define(INTERFACE_WORLDSTATE, 1).
 -define(INTERFACE_NOTIFICATIONS, 1).
 -define(INTERFACE_MARKET, 1).
@@ -27,6 +28,7 @@ envelope_version() -> ?ENVELOPE_VERSION.
 interfaces() ->
     #{<<"datasets">> => ?INTERFACE_DATASETS,
       <<"player">> => ?INTERFACE_PLAYER,
+      <<"game_metadata">> => ?INTERFACE_GAME_METADATA,
       <<"worldstate">> => ?INTERFACE_WORLDSTATE,
       <<"notifications">> => ?INTERFACE_NOTIFICATIONS,
       <<"market">> => ?INTERFACE_MARKET,

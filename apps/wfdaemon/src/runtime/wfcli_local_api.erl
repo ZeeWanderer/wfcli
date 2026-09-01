@@ -665,6 +665,16 @@ handle_request(#{<<"op">> := <<"publish">>, <<"dataset">> := <<"player">>,
         {error, Reason} -> send_error(maps:get(socket, State), request_id(Request), Reason)
     end,
     {ok, State};
+handle_request(#{<<"op">> := <<"publish">>, <<"dataset">> := <<"game_metadata">>,
+                 <<"data">> := Data} = Request, State) when is_map(Data) ->
+    case wfcli_game_metadata_service:publish(Data) of
+        {ok, Snapshot} ->
+            send_json(maps:get(socket, State),
+                      #{<<"id">> => request_id(Request), <<"ok">> => true,
+                        <<"revision">> => maps:get(revision, Snapshot)});
+        {error, Reason} -> send_error(maps:get(socket, State), request_id(Request), Reason)
+    end,
+    {ok, State};
 handle_request(#{<<"op">> := <<"market_resolve">>} = Request, State) ->
     Id = request_id(Request),
     Labels = maps:get(<<"labels">>, Request, undefined),
@@ -1349,6 +1359,8 @@ local_worker_limit() ->
 
 dataset_snapshot(<<"player">>) ->
     {ok, json_snapshot(wfcli_player_service:snapshot())};
+dataset_snapshot(<<"game_metadata">>) ->
+    {ok, json_snapshot(wfcli_game_metadata_service:snapshot())};
 dataset_snapshot(<<"daemon">>) ->
     {ok, daemon_identity()};
 dataset_snapshot(Dataset) ->

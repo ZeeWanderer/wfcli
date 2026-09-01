@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, mpsc};
 use std::thread::{self, JoinHandle};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use serde::Serialize;
 use serde_json::{Map, Value};
@@ -17,6 +17,7 @@ use crate::debug_output::Runtime;
 mod gep;
 
 const POINTER_POLL_INTERVAL: Duration = Duration::from_millis(7);
+const ACCOUNT_POLL_INTERVAL: Duration = Duration::from_secs(1);
 const INVENTORY_MARKER: &[u8] = b"LastInventorySync";
 const SCHEMA_VERSION: u32 = 2;
 
@@ -27,6 +28,10 @@ pub(crate) enum Event {
         collector: &'static str,
         process_pid: u32,
         data: Value,
+    },
+    Account {
+        game_pid: u32,
+        seed: u32,
     },
 }
 
@@ -118,15 +123,32 @@ fn scan_native(
     let mut player_name = player_name_from_log(&prefix);
     let mut seen_payloads = HashSet::new();
     let mut poll_state = gep::PollState::default();
+    let mut account_seed = None;
+    let mut next_account_poll = Instant::now();
     let (queue, item_base, body, alternate) = sources.response_offsets();
     crate::incident::info(
         "inventory.native_gep_ready",
         format!(
-            "game_pid={game_pid} global=0x{:x} queue=0x{queue:x} item=0x{item_base:x} body=0x{body:x} alternate=0x{alternate:x}",
-            sources.manager_global()
+            "game_pid={game_pid} global=0x{:x} profile_global={} queue=0x{queue:x} item=0x{item_base:x} body=0x{body:x} alternate=0x{alternate:x}",
+            sources.manager_global(),
+            sources
+                .profile_manager_global()
+                .map(|address| format!("0x{address:x}"))
+                .unwrap_or_else(|| "unavailable".to_owned())
         ),
     );
     while !stopping.load(Ordering::Relaxed) {
+        if Instant::now() >= next_account_poll {
+            if let Ok(seed) = sources.account_seed(&mem)
+                && account_seed != Some(seed)
+            {
+                if events.send(Event::Account { game_pid, seed }).is_err() {
+                    return;
+                }
+                account_seed = Some(seed);
+            }
+            next_account_poll = Instant::now() + ACCOUNT_POLL_INTERVAL;
+        }
         for (source, payload) in sources.persistent_payloads(&mem, &mut poll_state) {
             if publish_payload(
                 &payload,
@@ -500,8 +522,12 @@ mod tests {
             Ok(true)
         );
 
-        let Event::Inventory { data: first, .. } = receiver.recv().unwrap();
-        let Event::Inventory { data: second, .. } = receiver.recv().unwrap();
+        let Event::Inventory { data: first, .. } = receiver.recv().unwrap() else {
+            panic!("expected first inventory event");
+        };
+        let Event::Inventory { data: second, .. } = receiver.recv().unwrap() else {
+            panic!("expected second inventory event");
+        };
         assert_eq!(first["raw"]["MiscItems"][0]["ItemCount"], 3);
         assert_eq!(second["raw"]["MiscItems"][0]["ItemCount"], 4);
         assert!(receiver.try_recv().is_err());

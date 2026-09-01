@@ -72,6 +72,33 @@ memory_reuse_reports_delivery_and_origin_test() ->
         cleanup_service(Started)
     end.
 
+archimedea_context_change_reindexes_cached_snapshot_test() ->
+    ensure_service_stopped(),
+    application:set_env(wfdaemon, daemon_idle_shutdown, false),
+    application:set_env(
+      wfdaemon, archimedea_context_fun,
+      fun() -> persistent_term:get({?MODULE, archimedea_context}) end),
+    persistent_term:put({?MODULE, archimedea_context}, loadout_context(one, "Owned One")),
+    {ok, _Pid} = wfcli_worldstate_service:start_link(),
+    try
+        Request = (base_request())#{
+                    opts := #{cache => fixture("worldstate_sample.json"),
+                              ttl => 999999999, resolve_items => false,
+                              raw => false, search_raw => false},
+                    type_filter => archimedea, query => undefined},
+        First = archimedea_loadouts(submit_result(Request), "Deep"),
+        ?assert(string:find(First, "Owned One") =/= nomatch),
+        persistent_term:put({?MODULE, archimedea_context},
+                            loadout_context(two, "Owned Two")),
+        Second = archimedea_loadouts(submit_result(Request), "Deep"),
+        ?assert(string:find(Second, "Owned Two") =/= nomatch),
+        ?assertEqual(nomatch, string:find(Second, "Owned One"))
+    after
+        gen_server:stop(wfcli_worldstate_service),
+        application:unset_env(wfdaemon, archimedea_context_fun),
+        persistent_term:erase({?MODULE, archimedea_context})
+    end.
+
 one_cycle_watch_subscription_test() ->
     Started = setup_service(),
     try
@@ -329,6 +356,19 @@ submit_result(Request) ->
     after 5000 ->
         ?assert(false)
     end.
+
+loadout_context(Key, Name) ->
+    Pool = #{owned => [<<"owned">>], catalog => [<<"a">>, <<"b">>, <<"c">>]},
+    #{status => ready, key => Key, account_seed => 7,
+      names => #{<<"owned">> => Name, <<"a">> => "A",
+                 <<"b">> => "B", <<"c">> => "C"},
+      pools => #{suits => Pool, primaries => Pool,
+                 secondaries => Pool, melees => Pool}}.
+
+archimedea_loadouts(Result, Kind) ->
+    [Entry] = [Candidate || Candidate <- maps:get(entries, Result),
+                           maps:get(archimedea, maps:get(row_map, Candidate)) =:= Kind],
+    maps:get(loadouts, maps:get(row_map, Entry)).
 
 await_external_activity(Expected, Attempts) ->
     case maps:get(external_activity, wfcli_worldstate_service:status()) of
