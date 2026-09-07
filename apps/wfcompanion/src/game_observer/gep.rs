@@ -51,13 +51,13 @@ struct ResponsePath {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(super) struct Sources {
+pub struct Sources {
     manager_global: u64,
     profile_manager_global: Option<u64>,
     response: ResponsePath,
 }
 
-pub(super) struct PollState {
+pub struct PollState {
     direct: ChangeState,
     indirect: ChangeState,
     alternate: ChangeState,
@@ -82,7 +82,7 @@ struct ChangeState {
 }
 
 impl Sources {
-    pub(super) fn discover(mem: &File, game_pid: u32) -> Result<Self, String> {
+    pub fn discover(mem: &File, game_pid: u32) -> Result<Self, String> {
         let executable = executable_region(game_pid)?;
         let anchor = scan_masked(mem, executable, HTTP_MANAGER_PATTERN, HTTP_MANAGER_MASK)?;
         let manager_displacement = read_i32(mem, anchor + 6)
@@ -136,15 +136,15 @@ impl Sources {
         })
     }
 
-    pub(super) fn manager_global(&self) -> u64 {
+    pub fn manager_global(&self) -> u64 {
         self.manager_global
     }
 
-    pub(super) fn profile_manager_global(&self) -> Option<u64> {
+    pub fn profile_manager_global(&self) -> Option<u64> {
         self.profile_manager_global
     }
 
-    pub(super) fn account_seed(&self, mem: &File) -> io::Result<u32> {
+    pub fn account_seed(&self, mem: &File) -> io::Result<u32> {
         let global = self
             .profile_manager_global
             .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "profile manager signature"))?;
@@ -178,7 +178,7 @@ impl Sources {
         ))
     }
 
-    pub(super) fn response_offsets(&self) -> (u64, u64, u64, i64) {
+    pub fn response_offsets(&self) -> (u64, u64, u64, i64) {
         (
             self.response.queue_table,
             self.response.item_base,
@@ -187,7 +187,7 @@ impl Sources {
         )
     }
 
-    pub(super) fn persistent_payloads(
+    pub fn persistent_payloads(
         &self,
         mem: &File,
         state: &mut PollState,

@@ -1,4 +1,7 @@
-mod memory;
+pub mod adapter;
+pub mod debug_output;
+pub mod gep;
+pub(crate) mod memory;
 pub mod metadata;
 pub mod ui;
 
@@ -73,7 +76,8 @@ impl GameState {
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
 pub enum DebugOutputEvent {
     RelicRewards,
     RelicSuggestions,

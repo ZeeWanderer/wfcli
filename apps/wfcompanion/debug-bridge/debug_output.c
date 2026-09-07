@@ -27,10 +27,24 @@ int main(void)
     HANDLE buffer_ready;
     HANDLE data_ready;
     HANDLE output;
+    HANDLE owner;
     unsigned char *buffer;
 
     if (has_argument(GetCommandLineA(), "--emit-test"))
         return emit_test_message();
+
+    owner = CreateMutexA(NULL, FALSE, "wfcompanion_DBWIN_owner");
+    if (!owner)
+        return 8;
+    DWORD ownership = WaitForSingleObject(owner, 0);
+    if (ownership != WAIT_OBJECT_0 && ownership != WAIT_ABANDONED)
+        return 8;
+
+    mapping = OpenFileMappingA(FILE_MAP_READ, FALSE, "DBWIN_BUFFER");
+    if (mapping) {
+        CloseHandle(mapping);
+        return 8;
+    }
 
     mapping = CreateFileMappingA(INVALID_HANDLE_VALUE, NULL, PAGE_READWRITE, 0,
                                  DBWIN_BUFFER_SIZE, "DBWIN_BUFFER");

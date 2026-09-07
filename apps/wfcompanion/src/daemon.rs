@@ -18,8 +18,13 @@ use tokio::time::{self, MissedTickBehavior};
 
 use crate::relic::{CaptureArm, Trigger as RelicTrigger};
 use crate::{UiEvent, incident};
+use wfcompanion::local_protocol::{ENVELOPE_VERSION, INTERFACE_DIAGNOSTICS, companion_interfaces};
+#[cfg(test)]
+use wfcompanion::local_protocol::{
+    INTERFACE_ASSETS, INTERFACE_DATASETS, INTERFACE_GAME_METADATA, INTERFACE_MARKET,
+    INTERFACE_PLAYER, INTERFACE_RELICS,
+};
 
-include!(concat!(env!("OUT_DIR"), "/local_protocol.rs"));
 const CLIENT_VERSION: &str = env!("WFCLI_VERSION");
 const RECONNECT_INTERVAL: Duration = Duration::from_secs(2);
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(2);
@@ -731,18 +736,6 @@ fn validate_hello(message: &Value) -> io::Result<NegotiatedFeatures> {
     Ok(NegotiatedFeatures { diagnostics_report })
 }
 
-fn companion_interfaces() -> BTreeMap<&'static str, u32> {
-    BTreeMap::from([
-        ("datasets", INTERFACE_DATASETS),
-        ("player", INTERFACE_PLAYER),
-        ("game_metadata", INTERFACE_GAME_METADATA),
-        ("market", INTERFACE_MARKET),
-        ("relics", INTERFACE_RELICS),
-        ("assets", INTERFACE_ASSETS),
-        ("diagnostics", INTERFACE_DIAGNOSTICS),
-    ])
-}
-
 fn daemon_contract_outdated(message: &Value) -> bool {
     if message.get("envelope").is_none()
         && message.get("protocol").and_then(Value::as_u64).is_some()
@@ -995,17 +988,7 @@ fn wfcli_command() -> PathBuf {
 }
 
 pub(crate) fn daemon_socket_path() -> PathBuf {
-    if let Some(path) = std::env::var_os("WFCLI_DAEMON_SOCKET") {
-        return PathBuf::from(path);
-    }
-    if let Some(runtime) = std::env::var_os("XDG_RUNTIME_DIR") {
-        return PathBuf::from(runtime).join("wfcli/wfdaemon.sock");
-    }
-    let cache = std::env::var_os("XDG_CACHE_HOME")
-        .map(PathBuf::from)
-        .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".cache")))
-        .unwrap_or_else(|| PathBuf::from("."));
-    cache.join("wfcli/wfdaemon.sock")
+    wfcompanion::local_protocol::socket_path()
 }
 
 #[cfg(test)]

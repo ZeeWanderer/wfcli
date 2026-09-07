@@ -3,9 +3,12 @@
 use std::collections::HashMap;
 use std::env;
 use std::ffi::{OsString, c_void};
-use std::fs::{self, File};
-use std::io::{Read, Seek, SeekFrom};
+use std::fs::{self, File, OpenOptions};
+use std::io::{Read, Seek, SeekFrom, Write};
+use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
+use std::process::Command;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use libloading::Library;
 use memchr::memmem;
@@ -14,6 +17,7 @@ use serde::Serialize;
 const TOC_HEADER_SIZE: usize = 8;
 const TOC_ENTRY_SIZE: usize = 96;
 const MAX_BLOCK_SIZE: usize = 0x40000;
+static TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 type OodleCallback = Option<
     unsafe extern "C" fn(*mut c_void, *const u8, isize, *const u8, isize, isize, isize) -> u32,
@@ -52,6 +56,24 @@ pub struct ExtractedResource {
 }
 
 #[derive(Clone, Debug)]
+pub struct LoadedResource {
+    pub split: char,
+    pub path: String,
+    pub data: Vec<u8>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct OodleDecoderStatus {
+    pub available: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub backend: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source: Option<PathBuf>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+#[derive(Clone, Debug)]
 struct Entry {
     split: char,
     path: String,
@@ -79,6 +101,34 @@ pub fn extract(
     resource: &str,
     output_prefix: &Path,
 ) -> Result<Vec<ExtractedResource>, String> {
+    let selected = read_resource(cache_dir, package, resource)?;
+    let mut result = Vec::new();
+    for resource in selected {
+        let output = split_output_path(output_prefix, resource.split);
+        if let Some(parent) = output
+            .parent()
+            .filter(|parent| !parent.as_os_str().is_empty())
+        {
+            fs::create_dir_all(parent)
+                .map_err(|error| format!("could not create {}: {error}", parent.display()))?;
+        }
+        fs::write(&output, &resource.data)
+            .map_err(|error| format!("could not write {}: {error}", output.display()))?;
+        result.push(ExtractedResource {
+            split: resource.split,
+            path: resource.path,
+            output,
+            size: resource.data.len(),
+        });
+    }
+    Ok(result)
+}
+
+pub fn read_resource(
+    cache_dir: &Path,
+    package: &str,
+    resource: &str,
+) -> Result<Vec<LoadedResource>, String> {
     let resource = normalize_resource_path(resource);
     let selected = entries(cache_dir, package)?
         .into_iter()
@@ -92,44 +142,190 @@ pub fn extract(
     let mut result = Vec::new();
     for entry in selected {
         let data = decoder.read(&entry)?;
-        let output = split_output_path(output_prefix, entry.split);
-        if let Some(parent) = output
-            .parent()
-            .filter(|parent| !parent.as_os_str().is_empty())
-        {
-            fs::create_dir_all(parent)
-                .map_err(|error| format!("could not create {}: {error}", parent.display()))?;
-        }
-        fs::write(&output, &data)
-            .map_err(|error| format!("could not write {}: {error}", output.display()))?;
-        result.push(ExtractedResource {
+        result.push(LoadedResource {
             split: entry.split,
             path: entry.path,
-            output,
-            size: data.len(),
+            data,
         });
     }
     Ok(result)
 }
 
-pub fn find(cache_dir: &Path, package: &str, needle: &[u8]) -> Result<Vec<CachePath>, String> {
-    if needle.is_empty() {
-        return Err("search text must not be empty".to_owned());
+pub fn read_resource_split(
+    cache_dir: &Path,
+    package: &str,
+    resource: &str,
+    split: char,
+) -> Result<LoadedResource, String> {
+    if !matches!(split, 'H' | 'B' | 'F') {
+        return Err(format!("invalid cache split: {split}"));
     }
-    let mut decoder = Decoder::default();
-    let mut matches = Vec::new();
-    for entry in entries(cache_dir, package)? {
-        let data = decoder.read(&entry)?;
-        if memmem::find(&data, needle).is_some() {
-            matches.push(CachePath {
-                split: entry.split,
-                path: entry.path,
-                compressed_size: entry.compressed_size,
-                size: entry.size,
-            });
+    let resource = normalize_resource_path(resource);
+    let entry = entries(cache_dir, package)?
+        .into_iter()
+        .find(|entry| entry.split == split && entry.path == resource)
+        .ok_or_else(|| format!("resource not found in {split}.{package}: {resource}"))?;
+    let data = Decoder::default().read(&entry)?;
+    Ok(LoadedResource {
+        split: entry.split,
+        path: entry.path,
+        data,
+    })
+}
+
+#[derive(Debug, Serialize)]
+pub struct SearchOptions {
+    pub split: Option<char>,
+    pub path: Option<String>,
+    pub continue_on_error: bool,
+    pub max_matches: usize,
+    pub max_resource_bytes: usize,
+}
+
+impl Default for SearchOptions {
+    fn default() -> Self {
+        Self {
+            split: None,
+            path: None,
+            continue_on_error: false,
+            max_matches: 10000,
+            max_resource_bytes: 64 * 1024 * 1024,
         }
     }
-    Ok(matches)
+}
+
+#[derive(Debug, Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum SearchRecord {
+    Match {
+        resource: CachePath,
+        offset: usize,
+    },
+    Error {
+        split: char,
+        path: String,
+        error: String,
+    },
+}
+
+#[derive(Default, Debug, Serialize)]
+pub struct SearchSummary {
+    pub resources: usize,
+    pub searched_bytes: usize,
+    pub matches: usize,
+    pub errors: usize,
+    pub truncated: bool,
+}
+
+pub fn search(
+    cache_dir: &Path,
+    package: &str,
+    needle: &[u8],
+    options: &SearchOptions,
+    mut emit: impl FnMut(&SearchRecord) -> Result<(), String>,
+) -> Result<SearchSummary, String> {
+    if needle.is_empty() || options.max_matches == 0 || options.max_resource_bytes == 0 {
+        return Err("search requires nonempty bytes and nonzero limits".into());
+    }
+    let mut decoder = Decoder::default();
+    let mut summary = SearchSummary::default();
+    for entry in entries(cache_dir, package)?.into_iter().filter(|entry| {
+        options.split.is_none_or(|split| split == entry.split)
+            && options
+                .path
+                .as_ref()
+                .is_none_or(|path| entry.path.contains(path))
+    }) {
+        let data = if entry.size.max(entry.compressed_size) > options.max_resource_bytes {
+            Err("resource exceeds --max-resource-bytes".into())
+        } else {
+            decoder.read(&entry)
+        };
+        summary.resources += 1;
+        let data = match data {
+            Ok(data) => data,
+            Err(error) => {
+                emit(&SearchRecord::Error {
+                    split: entry.split,
+                    path: entry.path,
+                    error,
+                })?;
+                summary.errors += 1;
+                summary.truncated = true;
+                if options.continue_on_error {
+                    continue;
+                } else {
+                    break;
+                }
+            }
+        };
+        for offset in memmem::find_iter(&data, needle) {
+            emit(&SearchRecord::Match {
+                resource: CachePath {
+                    split: entry.split,
+                    path: entry.path.clone(),
+                    compressed_size: entry.compressed_size,
+                    size: entry.size,
+                },
+                offset,
+            })?;
+            summary.matches += 1;
+            if summary.matches == options.max_matches {
+                summary.searched_bytes += offset + needle.len();
+                summary.truncated = true;
+                return Ok(summary);
+            }
+        }
+        summary.searched_bytes += data.len();
+    }
+    Ok(summary)
+}
+
+pub fn packages(directory: &Path) -> Result<Vec<String>, String> {
+    let mut packages = std::collections::BTreeSet::new();
+    for entry in fs::read_dir(directory).map_err(|e| e.to_string())? {
+        let name = entry.map_err(|e| e.to_string())?.file_name();
+        let Some(name) = name.to_str() else {
+            continue;
+        };
+        if let Some((split, rest)) = name.split_once('.')
+            && matches!(split, "H" | "B" | "F")
+            && let Some(package) = rest.strip_suffix(".toc")
+        {
+            packages.insert(package.to_owned());
+        }
+    }
+    Ok(packages.into_iter().collect())
+}
+
+pub fn locate() -> Result<PathBuf, String> {
+    if let Some(directory) = env::var_os("WFINSPECT_CACHE_DIR") {
+        return fs::canonicalize(directory).map_err(|e| e.to_string());
+    }
+    let steam = steamlocate::locate().map_err(|e| e.to_string())?;
+    let (app, library) = steam
+        .find_app(230410)
+        .map_err(|e| e.to_string())?
+        .ok_or("Warframe installation not found in Steam libraries")?;
+    fs::canonicalize(library.resolve_app_dir(&app).join("Cache.Windows"))
+        .map_err(|e| format!("Warframe cache directory unavailable: {e}"))
+}
+
+pub fn oodle_decoder_status() -> OodleDecoderStatus {
+    match Oodle::load() {
+        Ok(decoder) => OodleDecoderStatus {
+            available: true,
+            backend: Some(decoder.backend().to_owned()),
+            source: Some(decoder.source().to_path_buf()),
+            error: None,
+        },
+        Err(error) => OodleDecoderStatus {
+            available: false,
+            backend: None,
+            source: None,
+            error: Some(error),
+        },
+    }
 }
 
 fn entries(cache_dir: &Path, package: &str) -> Result<Vec<Entry>, String> {
@@ -410,7 +606,13 @@ fn lzf_decompress(input: &[u8], output: &mut [u8]) -> Result<(), String> {
     Ok(())
 }
 
-struct Oodle {
+enum Oodle {
+    Library(OodleLibrary),
+    Command(OodleCommand),
+}
+
+struct OodleLibrary {
+    path: PathBuf,
     _library: Library,
     decompress: OodleDecompress,
 }
@@ -418,26 +620,68 @@ struct Oodle {
 impl Oodle {
     fn load() -> Result<Self, String> {
         if let Some(path) = env::var_os("WFINSPECT_OODLE_LIBRARY") {
-            return Self::load_path(Path::new(&path)).map_err(|error| {
-                format!(
-                    "could not load WFINSPECT_OODLE_LIBRARY={}: {error}",
-                    Path::new(&path).display()
-                )
-            });
+            return OodleLibrary::load_path(Path::new(&path))
+                .map(Self::Library)
+                .map_err(|error| {
+                    format!(
+                        "could not load WFINSPECT_OODLE_LIBRARY={}: {error}",
+                        Path::new(&path).display()
+                    )
+                });
+        }
+        if let Some(path) = env::var_os("WFINSPECT_OODLE_COMMAND") {
+            return OodleCommand::load_path(PathBuf::from(path))
+                .map(Self::Command)
+                .map_err(|error| format!("could not use WFINSPECT_OODLE_COMMAND: {error}"));
         }
         let mut errors = Vec::new();
+        if let Ok(executable) = env::current_exe()
+            && let Some(prefix) = executable.parent().and_then(Path::parent)
+        {
+            let bundled = prefix.join("libexec/unoodle");
+            if bundled.exists() {
+                return OodleCommand::load_path(bundled).map(Self::Command);
+            }
+        }
         for name in ["liboo2corelinux64.so.9", "liboo2corelinux64.so"] {
-            match Self::load_path(Path::new(name)) {
-                Ok(oodle) => return Ok(oodle),
+            match OodleLibrary::load_path(Path::new(name)) {
+                Ok(oodle) => return Ok(Self::Library(oodle)),
                 Err(error) => errors.push(format!("{name}: {error}")),
             }
         }
+        match OodleCommand::from_path() {
+            Ok(oodle) => return Ok(Self::Command(oodle)),
+            Err(error) => errors.push(error),
+        }
         Err(format!(
-            "Oodle decoder unavailable; set WFINSPECT_OODLE_LIBRARY to a licensed Linux library ({})",
+            "Oodle decoder unavailable; set WFINSPECT_OODLE_LIBRARY to a licensed Linux library or WFINSPECT_OODLE_COMMAND to unoodle ({})",
             errors.join("; ")
         ))
     }
 
+    fn backend(&self) -> &'static str {
+        match self {
+            Self::Library(_) => "official-library",
+            Self::Command(_) => "external-unoodle",
+        }
+    }
+
+    fn source(&self) -> &Path {
+        match self {
+            Self::Library(decoder) => &decoder.path,
+            Self::Command(decoder) => &decoder.path,
+        }
+    }
+
+    fn decompress(&self, input: &[u8], output: &mut [u8]) -> Result<(), String> {
+        match self {
+            Self::Library(decoder) => decoder.decompress(input, output),
+            Self::Command(decoder) => decoder.decompress(input, output),
+        }
+    }
+}
+
+impl OodleLibrary {
     fn load_path(path: &Path) -> Result<Self, String> {
         // SAFETY: Library remains owned by Oodle while copied function pointer is used.
         let library = unsafe { Library::new(path) }.map_err(|error| error.to_string())?;
@@ -448,6 +692,7 @@ impl Oodle {
                 .map_err(|error| error.to_string())?
         };
         Ok(Self {
+            path: path.to_path_buf(),
             _library: library,
             decompress,
         })
@@ -480,6 +725,113 @@ impl Oodle {
             ));
         }
         Ok(())
+    }
+}
+
+struct OodleCommand {
+    path: PathBuf,
+}
+
+impl OodleCommand {
+    fn load_path(path: PathBuf) -> Result<Self, String> {
+        let metadata = fs::metadata(&path)
+            .map_err(|error| format!("could not inspect {}: {error}", path.display()))?;
+        if !metadata.is_file() || metadata.permissions().mode() & 0o111 == 0 {
+            return Err(format!("{} is not executable", path.display()));
+        }
+        Ok(Self { path })
+    }
+
+    fn from_path() -> Result<Self, String> {
+        let path =
+            executable_in_path("unoodle").ok_or_else(|| "unoodle: not found in PATH".to_owned())?;
+        Self::load_path(path)
+    }
+
+    fn decompress(&self, input: &[u8], output: &mut [u8]) -> Result<(), String> {
+        let files = TempFiles::create(input)?;
+        let result = Command::new(&self.path)
+            .arg(&files.input)
+            .arg("--length")
+            .arg(output.len().to_string())
+            .arg("--header")
+            .arg("0")
+            .arg("--output")
+            .arg(&files.output)
+            .output()
+            .map_err(|error| format!("could not run {}: {error}", self.path.display()))?;
+        if !result.status.success() {
+            return Err(format!(
+                "{} failed: {}",
+                self.path.display(),
+                String::from_utf8_lossy(&result.stderr).trim()
+            ));
+        }
+        let decoded = fs::read(&files.output)
+            .map_err(|error| format!("could not read {}: {error}", files.output.display()))?;
+        if decoded.len() != output.len() {
+            return Err(format!(
+                "unoodle decoded {} bytes, expected {}",
+                decoded.len(),
+                output.len()
+            ));
+        }
+        output.copy_from_slice(&decoded);
+        Ok(())
+    }
+}
+
+fn executable_in_path(name: &str) -> Option<PathBuf> {
+    env::var_os("PATH").and_then(|path| {
+        env::split_paths(&path)
+            .map(|directory| directory.join(name))
+            .find(|candidate| candidate.is_file())
+    })
+}
+
+struct TempFiles {
+    input: PathBuf,
+    output: PathBuf,
+}
+
+impl TempFiles {
+    fn create(input: &[u8]) -> Result<Self, String> {
+        for _ in 0..32 {
+            let id = TEMP_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+            let stem = format!("wfinspect-oodle-{}-{id}", std::process::id());
+            let input_path = env::temp_dir().join(format!("{stem}.input"));
+            let output = env::temp_dir().join(format!("{stem}.output"));
+            match OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&input_path)
+            {
+                Ok(mut file) => {
+                    file.write_all(input).map_err(|error| {
+                        format!("could not write {}: {error}", input_path.display())
+                    })?;
+                    return Ok(Self {
+                        input: input_path,
+                        output,
+                    });
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+                Err(error) => {
+                    return Err(format!(
+                        "could not create {}: {error}",
+                        input_path.display()
+                    ));
+                }
+            }
+        }
+        Err("could not allocate temporary Oodle input".to_owned())
+    }
+}
+
+impl Drop for TempFiles {
+    fn drop(&mut self) {
+        let _ = fs::remove_file(&self.input);
+        let _ = fs::remove_file(&self.output);
     }
 }
 
@@ -521,6 +873,40 @@ mod tests {
         assert!(validate_package("Font").is_ok());
         assert!(validate_package("../Font").is_err());
         assert!(validate_package("Font/Other").is_err());
+    }
+
+    #[test]
+    fn reads_only_requested_cache_split() {
+        let id = TEMP_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+        let directory =
+            env::temp_dir().join(format!("wfinspect-cache-test-{}-{id}", std::process::id()));
+        fs::create_dir_all(&directory).unwrap();
+        let mut toc = vec![0; TOC_HEADER_SIZE];
+        toc.extend(entry(0, 0, 4, 4, 0, "Probe.lua"));
+        fs::write(directory.join("B.Font.toc"), toc).unwrap();
+        fs::write(directory.join("B.Font.cache"), b"test").unwrap();
+
+        let resource = read_resource_split(&directory, "Font", "/Probe.lua", 'B').unwrap();
+        assert_eq!(resource.split, 'B');
+        assert_eq!(resource.data, b"test");
+        assert!(read_resource_split(&directory, "Font", "/Probe.lua", 'X').is_err());
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn external_oodle_command_reads_exact_output() {
+        let id = TEMP_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+        let helper =
+            env::temp_dir().join(format!("wfinspect-oodle-test-{}-{id}", std::process::id()));
+        fs::write(&helper, "#!/bin/sh\ncp \"$1\" \"$7\"\n").unwrap();
+        fs::set_permissions(&helper, fs::Permissions::from_mode(0o700)).unwrap();
+
+        let decoder = OodleCommand::load_path(helper.clone()).unwrap();
+        let mut output = [0; 4];
+        decoder.decompress(b"test", &mut output).unwrap();
+
+        assert_eq!(&output, b"test");
+        fs::remove_file(helper).unwrap();
     }
 
     fn entry(

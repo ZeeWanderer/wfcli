@@ -4,3 +4,6 @@
 [submodule "apps/wfcompanion/vendor/asmjit"]
 	path = apps/wfcompanion/vendor/asmjit
 	url = https://github.com/asmjit/asmjit.git
+[submodule "tools/wf-luau-decompiler"]
+	path = tools/wf-luau-decompiler
+	url = https://github.com/ZeeWanderer/wf-luau-decompiler.git

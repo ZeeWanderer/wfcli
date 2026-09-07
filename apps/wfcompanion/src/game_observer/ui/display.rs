@@ -1,8 +1,10 @@
+use serde::Serialize;
 use std::collections::{BTreeSet, HashSet};
 use std::time::Instant;
 
 use super::DisplayScanMetrics;
 use super::text;
+use crate::game_observer::adapter::ScaleformLayout;
 use crate::game_observer::memory::ProcessMemory;
 
 const FLASH_ROOT_OFFSET: usize = 0x88;
@@ -12,13 +14,6 @@ const CHILD_VECTOR_OFFSET: usize = 0x130;
 const TEXT_OBJECT_NAME_OFFSET: usize = 0xc8;
 const TEXT_OBJECT_INNER_OFFSET: usize = 0xe0;
 const TEXT_OBJECT_BYTES: usize = TEXT_OBJECT_INNER_OFFSET + 0xb8;
-
-const ROOT_VTABLE_RVA: u64 = 0x0222_44b8;
-const ROOT_SECONDARY_VTABLE_RVA: u64 = 0x0222_4580;
-const CONTAINER_VTABLE_RVA: u64 = 0x0222_5588;
-const CONTAINER_SECONDARY_VTABLE_RVA: u64 = 0x0222_5878;
-const TEXT_VTABLE_RVA: u64 = 0x0222_77d8;
-const TEXT_SECONDARY_VTABLE_RVA: u64 = 0x0222_7ac0;
 
 const MAX_REGISTERED_OBJECTS: usize = 65_536;
 const MAX_CHILDREN_PER_CONTAINER: usize = 16_384;
@@ -32,13 +27,14 @@ struct Vector {
 
 pub(super) fn scan_labels(
     memory: &ProcessMemory,
+    layout: ScaleformLayout,
     image: u64,
     flash_object: u64,
     labels: &[&[u8]],
 ) -> Result<(BTreeSet<usize>, DisplayScanMetrics), String> {
     let mut matches = BTreeSet::new();
     let max_label = labels.iter().map(|label| label.len()).max().unwrap_or(0);
-    let metrics = scan_text_objects(memory, image, flash_object, |_, pointer| {
+    let metrics = scan_text_objects(memory, layout, image, flash_object, |_, _, pointer| {
         let Some(value) = read_prefix(memory, pointer, max_label.saturating_add(1)) else {
             return 0;
         };
@@ -55,6 +51,7 @@ pub(super) fn scan_labels(
 
 pub(super) fn scan_named_text(
     memory: &ProcessMemory,
+    layout: ScaleformLayout,
     image: u64,
     flash_object: u64,
     instance_name: &[u8],
@@ -65,7 +62,7 @@ pub(super) fn scan_named_text(
     }
 
     let mut values = Vec::new();
-    let metrics = scan_text_objects(memory, image, flash_object, |object, pointer| {
+    let metrics = scan_text_objects(memory, layout, image, flash_object, |_, object, pointer| {
         if !has_instance_name(object, instance_name) {
             return 0;
         }
@@ -85,11 +82,84 @@ pub(super) fn scan_named_text(
     Ok((values, metrics))
 }
 
+#[derive(Debug, Serialize)]
+pub struct TextObject {
+    pub address: u64,
+    pub name: String,
+    pub text_address: u64,
+    pub text: Option<String>,
+    pub terminated: bool,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ObjectReport {
+    pub objects: Vec<TextObject>,
+    pub metrics: DisplayScanMetrics,
+    pub truncated: bool,
+}
+
+pub(crate) fn enumerate(
+    memory: &ProcessMemory,
+    layout: ScaleformLayout,
+    flash_object: u64,
+    max_text_bytes: usize,
+    limit: usize,
+) -> Result<ObjectReport, String> {
+    if !(1..=4096).contains(&max_text_bytes) {
+        return Err("text limit must be 1..4096 bytes".into());
+    }
+    if !(1..=10000).contains(&limit) {
+        return Err("object limit must be 1..10000".into());
+    }
+    let image = memory.image_base().ok_or("Warframe image mapping absent")?;
+    let mut objects = Vec::new();
+    let mut truncated = false;
+    let metrics = scan_text_objects(
+        memory,
+        layout,
+        image,
+        flash_object,
+        |address, object, pointer| {
+            if objects.len() == limit {
+                truncated = true;
+                return 0;
+            }
+            let name = &object[TEXT_OBJECT_NAME_OFFSET..TEXT_OBJECT_INNER_OFFSET];
+            let name = &name[..name
+                .iter()
+                .position(|byte| *byte == 0)
+                .unwrap_or(name.len())];
+            let bytes = read_prefix(memory, pointer, max_text_bytes);
+            let end = bytes
+                .as_ref()
+                .and_then(|bytes| bytes.iter().position(|byte| *byte == 0));
+            let text = bytes.as_ref().map(|bytes| {
+                String::from_utf8_lossy(&bytes[..end.unwrap_or(bytes.len())]).into_owned()
+            });
+            let read = bytes.as_ref().map_or(0, Vec::len);
+            objects.push(TextObject {
+                address,
+                name: String::from_utf8_lossy(name).into_owned(),
+                text_address: pointer,
+                text,
+                terminated: end.is_some(),
+            });
+            read
+        },
+    )?;
+    Ok(ObjectReport {
+        objects,
+        metrics,
+        truncated,
+    })
+}
+
 fn scan_text_objects(
     memory: &ProcessMemory,
+    layout: ScaleformLayout,
     image: u64,
     flash_object: u64,
-    mut visit: impl FnMut(&[u8], u64) -> usize,
+    mut visit: impl FnMut(u64, &[u8], u64) -> usize,
 ) -> Result<DisplayScanMetrics, String> {
     let started = Instant::now();
     let root_address = flash_object
@@ -99,8 +169,8 @@ fn scan_text_objects(
     let root_header = read(memory, root, ROOT_OWNER_OFFSET + 8, "movie root")?;
     require_vtables(
         &root_header,
-        image + ROOT_VTABLE_RVA,
-        image + ROOT_SECONDARY_VTABLE_RVA,
+        image + layout.root_vtable_rva,
+        image + layout.root_secondary_vtable_rva,
         "movie root",
     )?;
     if u64_at(&root_header, ROOT_OWNER_OFFSET) != Some(flash_object) {
@@ -139,8 +209,8 @@ fn scan_text_objects(
         bytes_read += header.len();
         if !has_vtables(
             &header,
-            image + CONTAINER_VTABLE_RVA,
-            image + CONTAINER_SECONDARY_VTABLE_RVA,
+            image + layout.container_vtable_rva,
+            image + layout.container_secondary_vtable_rva,
         ) {
             continue;
         }
@@ -167,8 +237,8 @@ fn scan_text_objects(
             bytes_read += header.len();
             if !has_vtables(
                 &header,
-                image + TEXT_VTABLE_RVA,
-                image + TEXT_SECONDARY_VTABLE_RVA,
+                image + layout.text_vtable_rva,
+                image + layout.text_secondary_vtable_rva,
             ) || !memory.supports_ui_range(child, TEXT_OBJECT_BYTES)
             {
                 continue;
@@ -180,7 +250,7 @@ fn scan_text_objects(
                 continue;
             };
             text_objects += 1;
-            bytes_read += visit(&object, pointer);
+            bytes_read += visit(child, &object, pointer);
         }
     }
 
@@ -331,6 +401,7 @@ mod tests {
 
     #[test]
     fn walks_named_text_in_display_order() {
+        let layout = crate::game_observer::adapter::test_scaleform();
         let image = 0x1_4000_0000;
         let flash = 0x1000;
         let root = 0x2000;
@@ -345,8 +416,8 @@ mod tests {
         write_vtables(
             &mut bytes,
             root,
-            image + ROOT_VTABLE_RVA,
-            image + ROOT_SECONDARY_VTABLE_RVA,
+            image + layout.root_vtable_rva,
+            image + layout.root_secondary_vtable_rva,
         );
         write_u64(&mut bytes, root + ROOT_OBJECT_VECTOR_OFFSET, registry);
         write_u32(&mut bytes, root + ROOT_OBJECT_VECTOR_OFFSET + 8, 16);
@@ -359,8 +430,8 @@ mod tests {
             write_vtables(
                 &mut bytes,
                 container,
-                image + CONTAINER_VTABLE_RVA,
-                image + CONTAINER_SECONDARY_VTABLE_RVA,
+                image + layout.container_vtable_rva,
+                image + layout.container_secondary_vtable_rva,
             );
             write_u64(&mut bytes, container + CHILD_VECTOR_OFFSET, children);
             write_u32(&mut bytes, container + CHILD_VECTOR_OFFSET + 8, 16);
@@ -374,6 +445,7 @@ mod tests {
         write_text_object(
             &mut bytes,
             image,
+            layout,
             text_objects[0],
             b"ItemName",
             strings[0],
@@ -382,6 +454,7 @@ mod tests {
         write_text_object(
             &mut bytes,
             image,
+            layout,
             text_objects[1],
             b"ItemName",
             strings[1],
@@ -390,6 +463,7 @@ mod tests {
         write_text_object(
             &mut bytes,
             image,
+            layout,
             text_objects[2],
             b"Label",
             strings[2],
@@ -398,25 +472,40 @@ mod tests {
 
         let memory = ProcessMemory::from_test_bytes(
             &bytes,
-            vec![Region {
-                start: flash as u64,
-                end: bytes.len() as u64,
-                permissions: "rw-p".to_owned(),
-                path: String::new(),
-            }],
+            vec![
+                Region {
+                    start: flash as u64,
+                    end: bytes.len() as u64,
+                    permissions: "rw-p".to_owned(),
+                    path: String::new(),
+                },
+                Region {
+                    start: image,
+                    end: image + 0x1000,
+                    permissions: "r--p".to_owned(),
+                    path: "/game/Warframe.x64.exe".to_owned(),
+                },
+            ],
         );
         let (values, metrics) =
-            scan_named_text(&memory, image, flash as u64, b"ItemName", 160).unwrap();
+            scan_named_text(&memory, layout, image, flash as u64, b"ItemName", 160).unwrap();
         assert_eq!(values, ["First Reward", "Second Reward"]);
         assert_eq!(metrics.registered_objects, 2);
         assert_eq!(metrics.containers, 2);
         assert_eq!(metrics.child_objects, 3);
         assert_eq!(metrics.text_objects, 3);
+        let report = enumerate(&memory, layout, flash as u64, 160, 2).unwrap();
+        assert_eq!(report.objects[0].name, "Label");
+        assert_eq!(report.objects[0].text.as_deref(), Some("Not A Reward"));
+        assert_eq!(report.objects[1].address, text_objects[0] as u64);
+        assert!(report.objects[1].terminated);
+        assert!(report.truncated);
     }
 
     fn write_text_object(
         bytes: &mut [u8],
         image: u64,
+        layout: ScaleformLayout,
         object: usize,
         name: &[u8],
         text: usize,
@@ -425,8 +514,8 @@ mod tests {
         write_vtables(
             bytes,
             object,
-            image + TEXT_VTABLE_RVA,
-            image + TEXT_SECONDARY_VTABLE_RVA,
+            image + layout.text_vtable_rva,
+            image + layout.text_secondary_vtable_rva,
         );
         bytes[object + TEXT_OBJECT_NAME_OFFSET..object + TEXT_OBJECT_NAME_OFFSET + name.len()]
             .copy_from_slice(name);

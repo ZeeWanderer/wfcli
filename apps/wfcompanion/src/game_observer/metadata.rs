@@ -3,16 +3,10 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use memchr::memmem;
 use serde::Serialize;
 
+use super::ProcessIdentity;
+use super::adapter::{self, MetadataLayout};
 use super::memory::{ExecutableIdentity, ProcessMemory, Region, identify_process};
 
-const SUPPORTED_SHA256: &str = "d01b5cb5cff51afc5ffb7d3af051674aafa84000bee764780ff71d9d073cad93";
-const GLOBAL_REGISTRY_RVA: u64 = 0x2734d20;
-const STRING_BLOCKS_RVA: u64 = 0x28a39a0;
-const VARIANT_MANIFEST_DESCRIPTOR_RVA: u64 = 0x29f3d50;
-const WEAPON_DESCRIPTOR_RVA: u64 = 0x297c620;
-const GAME_TIME_RVA: u64 = 0x28e13e8;
-const GAME_RULES_HASH: u32 = 0x27816687;
-const STORE_MANIFEST_OFFSETS: [u64; 3] = [0x4e0, 0xbd0, 0xf78];
 const STORE_ENTRY_SIZE: u64 = 16;
 const VARIANT_ENTRY_SIZE: u64 = 0x68;
 const MAX_STORE_ENTRIES: usize = 100_000;
@@ -69,19 +63,21 @@ struct DescriptorNode {
 
 pub fn capture(pid: u32) -> Result<GameMetadata, String> {
     let identity = identify_process(pid)?;
-    if identity.executable.sha256 != SUPPORTED_SHA256 {
-        return Err(format!(
-            "unsupported Warframe executable {}",
-            identity.executable.sha256
-        ));
+    capture_for_identity(pid, identity)
+}
+
+pub fn capture_for_identity(pid: u32, identity: ProcessIdentity) -> Result<GameMetadata, String> {
+    if identity.pid != pid {
+        return Err("Warframe process identity PID mismatch".to_owned());
     }
+    let layout = adapter::require(&identity)?.metadata;
     let memory = ProcessMemory::open(pid)?;
     let base = memory
         .image_base()
         .ok_or_else(|| "Warframe executable mapping not found".to_owned())?;
-    let store = read_store_entries(&memory, base)?;
-    let variants = read_variant_manifest(&memory, base)?;
-    let archimedea = build_archimedea(&memory, base, &store, &variants)?;
+    let store = read_store_entries(&memory, base, layout)?;
+    let variants = read_variant_manifest(&memory, base, layout)?;
+    let archimedea = build_archimedea(&memory, base, layout, &store, &variants)?;
     Ok(GameMetadata {
         schema: 2,
         executable: identity.executable,
@@ -92,6 +88,7 @@ pub fn capture(pid: u32) -> Result<GameMetadata, String> {
 fn build_archimedea(
     memory: &ProcessMemory,
     base: u64,
+    layout: MetadataLayout,
     store: &[StoreEntry],
     variants: &HashMap<u64, u64>,
 ) -> Result<ArchimedeaMetadata, String> {
@@ -108,7 +105,8 @@ fn build_archimedea(
             continue;
         }
         if is_owned_weapon(entry)
-            && let Some(canonical) = normalized_weapon(memory, base, entry.descriptor, variants)?
+            && let Some(canonical) =
+                normalized_weapon(memory, base, layout, entry.descriptor, variants)?
         {
             owned_weapon_items.push(entry.path.clone());
             if canonical != entry.path {
@@ -132,7 +130,7 @@ fn build_archimedea(
         catalog,
         owned_suit_items,
         owned_weapon_items,
-        suit_aliases: suit_aliases(memory, base, store)?,
+        suit_aliases: suit_aliases(memory, base, layout, store)?,
         weapon_aliases,
     })
 }
@@ -163,15 +161,19 @@ fn is_catalog_weapon(path: &str) -> bool {
     is_owned_base_weapon(path) && !path.contains("Prime") && !path.contains("Bayonet/TnBayonet")
 }
 
-fn read_store_entries(memory: &ProcessMemory, base: u64) -> Result<Vec<StoreEntry>, String> {
-    let game_time = read_f64(memory, base + GAME_TIME_RVA)?;
+fn read_store_entries(
+    memory: &ProcessMemory,
+    base: u64,
+    layout: MetadataLayout,
+) -> Result<Vec<StoreEntry>, String> {
+    let game_time = read_f64(memory, base + layout.game_time_rva)?;
     if !game_time.is_finite() {
         return Err("invalid Warframe game time".to_owned());
     }
-    let holder = global_object(memory, base, GAME_RULES_HASH)?;
+    let holder = global_object(memory, base, layout, layout.game_rules_hash)?;
     let game_rules = non_null(read_u64(memory, holder)?, "gGameRules")?;
     let mut candidates = BTreeMap::new();
-    for offset in STORE_MANIFEST_OFFSETS {
+    for &offset in layout.store_manifest_offsets {
         let mut candidate = read_u64(memory, game_rules + offset)?;
         for _depth in 0..=2 {
             if candidate == 0 {
@@ -211,7 +213,7 @@ fn read_store_entries(memory: &ProcessMemory, base: u64) -> Result<Vec<StoreEntr
         let flags = read_u32(memory, item + 0x15c)?;
         result.push(StoreEntry {
             category,
-            path: resource_name(memory, base, resource)?,
+            path: resource_name(memory, base, layout, resource)?,
             descriptor: resource,
             icon: read_u32(memory, item + 0xfc)?,
             excluded: flags & 0x100 != 0,
@@ -229,6 +231,7 @@ fn read_store_entries(memory: &ProcessMemory, base: u64) -> Result<Vec<StoreEntr
 fn suit_aliases(
     memory: &ProcessMemory,
     base: u64,
+    layout: MetadataLayout,
     entries: &[StoreEntry],
 ) -> Result<Vec<Alias>, String> {
     let mut groups = Vec::new();
@@ -240,7 +243,7 @@ fn suit_aliases(
             if parent == 0 {
                 break;
             }
-            if resource_name(memory, base, parent)? == PLAYER_POWER_SUIT {
+            if resource_name(memory, base, layout, parent)? == PLAYER_POWER_SUIT {
                 groups.push((entry.path.clone(), descriptor));
                 break;
             }
@@ -265,14 +268,18 @@ fn suit_aliases_from_groups(groups: &[(String, u64)]) -> Vec<Alias> {
     result
 }
 
-fn read_variant_manifest(memory: &ProcessMemory, base: u64) -> Result<HashMap<u64, u64>, String> {
-    let descriptor = base + VARIANT_MANIFEST_DESCRIPTOR_RVA;
+fn read_variant_manifest(
+    memory: &ProcessMemory,
+    base: u64,
+    layout: MetadataLayout,
+) -> Result<HashMap<u64, u64>, String> {
+    let descriptor = base + layout.variant_manifest_descriptor_rva;
     let mut candidates = Vec::new();
     for manifest in instances_with_descriptor(memory, descriptor)? {
         if let Some((vector, count)) =
             manifest_shape(memory, manifest, VARIANT_ENTRY_SIZE, MAX_VARIANT_ENTRIES)
         {
-            let score = variant_score(memory, base, vector, count).unwrap_or(0);
+            let score = variant_score(memory, base, layout, vector, count).unwrap_or(0);
             if score >= 24 {
                 candidates.push((score, manifest, vector, count));
             }
@@ -310,20 +317,23 @@ fn read_variant_manifest(memory: &ProcessMemory, base: u64) -> Result<HashMap<u6
 fn normalized_weapon(
     memory: &ProcessMemory,
     base: u64,
+    layout: MetadataLayout,
     descriptor: u64,
     variants: &HashMap<u64, u64>,
 ) -> Result<Option<String>, String> {
-    let chain = descriptor_chain(memory, base, descriptor)?;
-    let Some(target) = variant_target_from_chain(&chain, base + WEAPON_DESCRIPTOR_RVA, variants)
+    let chain = descriptor_chain(memory, base, layout, descriptor)?;
+    let Some(target) =
+        variant_target_from_chain(&chain, base + layout.weapon_descriptor_rva, variants)
     else {
         return Ok(None);
     };
-    resource_name(memory, base, target).map(Some)
+    resource_name(memory, base, layout, target).map(Some)
 }
 
 fn descriptor_chain(
     memory: &ProcessMemory,
     base: u64,
+    layout: MetadataLayout,
     descriptor: u64,
 ) -> Result<Vec<DescriptorNode>, String> {
     let mut chain = Vec::new();
@@ -333,7 +343,7 @@ fn descriptor_chain(
         let parent = read_u64(memory, current + 0x18)?;
         chain.push(DescriptorNode {
             address: current,
-            name: resource_name(memory, base, current)?,
+            name: resource_name(memory, base, layout, current)?,
             parent,
         });
         if parent == 0 || parent == current {
@@ -376,6 +386,7 @@ fn store_item_eligible(start: i64, end: i64, flags: u32, game_time: f64) -> bool
 fn variant_score(
     memory: &ProcessMemory,
     base: u64,
+    layout: MetadataLayout,
     vector: u64,
     count: usize,
 ) -> Result<usize, String> {
@@ -389,13 +400,13 @@ fn variant_score(
             return Ok(0);
         }
         previous = key;
-        if resource_name(memory, base, key)?.starts_with("/Lotus/") {
+        if resource_name(memory, base, layout, key)?.starts_with("/Lotus/") {
             decoded += 1;
         }
         if read_u32(memory, entry + 0x10)? != 0 {
             let holder = non_null(read_u64(memory, entry + 0x08)?, "variant holder")?;
             let target = non_null(read_u64(memory, holder)?, "variant target")?;
-            if resource_name(memory, base, target)?.starts_with("/Lotus/") {
+            if resource_name(memory, base, layout, target)?.starts_with("/Lotus/") {
                 mapped += 1;
             }
         }
@@ -441,11 +452,16 @@ fn instances_with_descriptor(memory: &ProcessMemory, descriptor: u64) -> Result<
     Ok(instances)
 }
 
-fn global_object(memory: &ProcessMemory, base: u64, key: u32) -> Result<u64, String> {
-    let registry = base + GLOBAL_REGISTRY_RVA;
+fn global_object(
+    memory: &ProcessMemory,
+    base: u64,
+    layout: MetadataLayout,
+    key: u32,
+) -> Result<u64, String> {
+    let registry = base + layout.global_registry_rva;
     let entries = read_u64(memory, registry + 0x138)?;
     let byte_length = read_u32(memory, registry + 0x140)? as u64;
-    if byte_length > 0x10000 || byte_length % 16 != 0 {
+    if byte_length > 0x10000 || !byte_length.is_multiple_of(16) {
         return Err("invalid Warframe global registry".to_owned());
     }
     for offset in (0..byte_length).step_by(16) {
@@ -464,15 +480,20 @@ fn manifest_shape(
 ) -> Option<(u64, usize)> {
     let entries = read_u64(memory, manifest + 0x38).ok()?;
     let byte_length = read_u32(memory, manifest + 0x40).ok()? as u64;
-    if entries == 0 || byte_length == 0 || byte_length % entry_size != 0 {
+    if entries == 0 || byte_length == 0 || !byte_length.is_multiple_of(entry_size) {
         return None;
     }
     let count = (byte_length / entry_size) as usize;
     (count <= maximum && readable_range(memory, entries, byte_length)).then_some((entries, count))
 }
 
-fn resource_name(memory: &ProcessMemory, base: u64, resource: u64) -> Result<String, String> {
-    let blocks = read_u64(memory, base + STRING_BLOCKS_RVA)?;
+fn resource_name(
+    memory: &ProcessMemory,
+    base: u64,
+    layout: MetadataLayout,
+    resource: u64,
+) -> Result<String, String> {
+    let blocks = read_u64(memory, base + layout.string_blocks_rva)?;
     let first_pointer = read_u64(memory, resource + 0x10)?;
     let first = if first_pointer == 0 {
         0

@@ -4,20 +4,23 @@ use std::path::Path;
 use std::time::Instant;
 
 use memchr::memmem;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
-use super::memory::{ProcessMemory, scan_regions};
+use super::adapter;
+use super::memory::ProcessMemory;
+use super::{ProcessIdentity, identify_process};
 
 mod display;
+pub(crate) use display::enumerate as enumerate_text_objects;
+pub use display::{ObjectReport, TextObject};
 mod evidence;
-mod graph;
 mod refs;
 mod registry;
 mod relic;
 mod text;
 
-pub use evidence::EvidenceSummary;
-pub use graph::{PointerHop, PointerPath};
+pub use evidence::{EvidenceReplay, EvidenceSummary, ReplayMemorySummary, replay_evidence};
+pub(crate) use evidence::{LoadedEvidence, load_evidence};
 pub use refs::{PointerReference, PointerReferences};
 pub use registry::{BoundedProbe, BoundedScanMetrics, BoundedScanResult};
 pub use relic::{RelicEra, RelicRewardText, RelicSelection};
@@ -26,7 +29,7 @@ const CHUNK: usize = 4 * 1024 * 1024;
 const MOVIE_PREFIX: &[u8] = b"/Lotus/Interface/";
 const MAX_MOVIE_PATH: usize = 512;
 
-#[derive(Clone, Debug, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 pub struct Movie {
     pub path: String,
     pub record_address: u64,
@@ -37,7 +40,7 @@ pub struct Movie {
     pub scale_y: f32,
 }
 
-#[derive(Clone, Debug, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 pub struct Snapshot {
     pub pid: u32,
     pub movies: Vec<Movie>,
@@ -125,15 +128,65 @@ impl TransitionTracker {
 }
 
 pub fn bounded_probe(pid: u32) -> BoundedProbe {
-    registry::probe(pid)
+    let identity = match identify_process(pid) {
+        Ok(identity) => identity,
+        Err(reason) => {
+            return BoundedProbe::Unavailable {
+                stage: "executable_identity",
+                reason,
+            };
+        }
+    };
+    bounded_probe_for_identity(pid, &identity)
+}
+
+pub fn bounded_probe_for_identity(pid: u32, identity: &ProcessIdentity) -> BoundedProbe {
+    if identity.pid != pid {
+        return BoundedProbe::Unavailable {
+            stage: "executable_identity",
+            reason: "Warframe process identity PID mismatch".to_owned(),
+        };
+    }
+    let layout = match adapter::require(identity) {
+        Ok(adapter) => adapter.scaleform,
+        Err(reason) => {
+            return BoundedProbe::Unavailable {
+                stage: "adapter",
+                reason,
+            };
+        }
+    };
+    registry::probe(pid, layout)
 }
 
 pub fn probe_relic_selection(pid: u32) -> Result<RelicSelection, String> {
-    relic::selection(pid)
+    let identity = identify_process(pid)?;
+    probe_relic_selection_for_identity(pid, &identity)
+}
+
+pub fn probe_relic_selection_for_identity(
+    pid: u32,
+    identity: &ProcessIdentity,
+) -> Result<RelicSelection, String> {
+    if identity.pid != pid {
+        return Err("Warframe process identity PID mismatch".to_owned());
+    }
+    relic::selection(pid, adapter::require(identity)?.scaleform)
 }
 
 pub fn probe_relic_rewards(pid: u32) -> Result<RelicRewardText, String> {
-    relic::rewards(pid)
+    let identity = identify_process(pid)?;
+    probe_relic_rewards_for_identity(pid, &identity)
+}
+
+pub fn probe_relic_rewards_for_identity(
+    pid: u32,
+    identity: &ProcessIdentity,
+) -> Result<RelicRewardText, String> {
+    if identity.pid != pid {
+        return Err("Warframe process identity PID mismatch".to_owned());
+    }
+    relic::rewards(pid, adapter::require(identity)?.scaleform)
 }
 
 pub fn explicit_scan(pid: u32) -> Result<ScanResult, String> {
@@ -155,14 +208,46 @@ pub fn explicit_pointer_scan(
     refs::scan(&memory, target_start, target_end)
 }
 
-pub fn explicit_pointer_path(
-    pid: u32,
-    root: u64,
+pub(crate) fn scan_memory(memory: &ProcessMemory) -> Result<ScanResult, String> {
+    scan_snapshot(memory)
+}
+
+pub(crate) fn scan_text_memory(
+    memory: &ProcessMemory,
+    terms: &[String],
+) -> Result<TextScan, String> {
+    text::scan(memory, terms)
+}
+
+pub(crate) fn scan_pointers_memory(
+    memory: &ProcessMemory,
     target_start: u64,
     target_end: u64,
-) -> Result<PointerPath, String> {
-    let memory = ProcessMemory::open(pid)?;
-    graph::trace(&memory, root, target_start, target_end)
+) -> Result<PointerReferences, String> {
+    refs::scan(memory, target_start, target_end)
+}
+
+pub(crate) fn scan_registry_memory(
+    memory: &ProcessMemory,
+    layout: adapter::ScaleformLayout,
+) -> Result<BoundedScanResult, (&'static str, String)> {
+    registry::scan(memory, layout)
+}
+
+pub(crate) fn relic_selection_memory(
+    memory: &ProcessMemory,
+    layout: adapter::ScaleformLayout,
+    snapshot: &Snapshot,
+) -> Result<RelicSelection, String> {
+    relic::selection_from_snapshot(memory, layout, snapshot)
+}
+
+pub(crate) fn relic_rewards_memory(
+    memory: &ProcessMemory,
+    layout: adapter::ScaleformLayout,
+    snapshot: &Snapshot,
+) -> Result<RelicRewardText, String> {
+    relic::rewards_from_snapshot(memory, layout, snapshot)
 }
 
 pub fn capture_evidence(
@@ -173,9 +258,9 @@ pub fn capture_evidence(
     evidence::capture(pid, directory, terms)
 }
 
-fn scan_snapshot(memory: &ProcessMemory) -> Result<ScanResult, String> {
+pub(crate) fn scan_snapshot(memory: &ProcessMemory) -> Result<ScanResult, String> {
     let started = Instant::now();
-    let regions = scan_regions(memory.regions()).collect::<Vec<_>>();
+    let regions = memory.scan_ranges();
     let mapped_bytes_per_pass = regions
         .iter()
         .map(|region| region.end.saturating_sub(region.start))
@@ -226,7 +311,7 @@ fn scan_movie_paths(memory: &ProcessMemory) -> io::Result<HashMap<u64, String>> 
     let mut buffer = vec![0_u8; CHUNK];
     let mut tail = Vec::new();
 
-    for region in scan_regions(memory.regions()) {
+    for region in memory.scan_ranges() {
         let mut offset = region.start;
         tail.clear();
         while offset < region.end {
@@ -267,7 +352,7 @@ fn scan_movie_records(
     let mut movies = BTreeMap::new();
     let mut buffer = vec![0_u8; CHUNK];
 
-    for region in scan_regions(memory.regions()) {
+    for region in memory.scan_ranges() {
         let mut offset = region.start;
         while offset < region.end {
             let wanted = usize::try_from((region.end - offset).min(CHUNK as u64)).unwrap();

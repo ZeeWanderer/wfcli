@@ -28,25 +28,19 @@ fn main() {
 
     let protocol_file = manifest_dir.join("../wfdaemon/src/runtime/wfcli_local_protocol.erl");
     let protocol_source = fs::read_to_string(&protocol_file).expect("read wfdaemon local protocol");
-    let protocol_defines = [
-        ("ENVELOPE_VERSION", "ENVELOPE_VERSION"),
-        ("INTERFACE_DATASETS", "INTERFACE_DATASETS"),
-        ("INTERFACE_PLAYER", "INTERFACE_PLAYER"),
-        ("INTERFACE_GAME_METADATA", "INTERFACE_GAME_METADATA"),
-        ("INTERFACE_MARKET", "INTERFACE_MARKET"),
-        ("INTERFACE_RELICS", "INTERFACE_RELICS"),
-        ("INTERFACE_ASSETS", "INTERFACE_ASSETS"),
-        ("INTERFACE_DIAGNOSTICS", "INTERFACE_DIAGNOSTICS"),
-    ];
-    let generated_protocol = protocol_defines
-        .iter()
-        .map(|(define, constant)| {
-            format!(
-                "const {constant}: u32 = {};\n",
-                protocol_define(&protocol_source, define)
-            )
-        })
-        .collect::<String>();
+    let interfaces = protocol_interfaces(&protocol_source);
+    let mut generated_protocol = format!(
+        "pub const ENVELOPE_VERSION: u32 = {};\n",
+        protocol_define(&protocol_source, "ENVELOPE_VERSION")
+    );
+    for (constant, _, version) in &interfaces {
+        generated_protocol.push_str(&format!("pub const {constant}: u32 = {version};\n"));
+    }
+    generated_protocol.push_str("pub const INTERFACES: &[(&str, u32)] = &[\n");
+    for (_, name, version) in &interfaces {
+        generated_protocol.push_str(&format!("    (\"{name}\", {version}),\n"));
+    }
+    generated_protocol.push_str("];\n");
     println!("cargo:rerun-if-changed={}", protocol_file.display());
     let out_dir = PathBuf::from(env::var_os("OUT_DIR").unwrap());
     fs::write(out_dir.join("local_protocol.rs"), generated_protocol)
@@ -107,6 +101,20 @@ fn protocol_define(source: &str, name: &str) -> u32 {
                 .and_then(|value| value.trim().parse().ok())
         })
         .unwrap_or_else(|| panic!("parse wfdaemon protocol define {name}"))
+}
+
+fn protocol_interfaces(source: &str) -> Vec<(String, String, u32)> {
+    source
+        .lines()
+        .filter_map(|line| {
+            let value = line.strip_prefix("-define(INTERFACE_")?;
+            let (name, version) = value.strip_suffix(").")?.split_once(',')?;
+            let constant = format!("INTERFACE_{}", name.trim());
+            let wire_name = name.trim().to_ascii_lowercase();
+            let version = version.trim().parse().ok()?;
+            Some((constant, wire_name, version))
+        })
+        .collect()
 }
 
 fn require_submodule(path: &Path, name: &str) {

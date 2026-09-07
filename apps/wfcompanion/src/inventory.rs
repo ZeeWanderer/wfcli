@@ -11,10 +11,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use serde::Serialize;
 use serde_json::{Map, Value};
-
-use crate::debug_output::Runtime;
-
-mod gep;
+use wfcompanion::game_observer::{debug_output::Runtime, gep};
 
 const POINTER_POLL_INTERVAL: Duration = Duration::from_millis(7);
 const ACCOUNT_POLL_INTERVAL: Duration = Duration::from_secs(1);

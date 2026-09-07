@@ -121,11 +121,13 @@ links:
 	ln -sfn dev/bin/wfdaemon wfdaemond
 	ln -sfn dev/bin/wfcompanion wfcompaniond
 	ln -sfn dev/bin/wfinspect wfinspectd
+	ln -sfn dev/bin/wf-luau-decompiler wf-luau-decompilerd
 	ln -sfn dev/bin/wfgui wfguid
 	ln -sfn prod/bin/wfcli wfcli
 	ln -sfn prod/bin/wfdaemon wfdaemon
 	ln -sfn prod/bin/wfcompanion wfcompanion
 	ln -sfn prod/bin/wfinspect wfinspect
+	ln -sfn prod/bin/wf-luau-decompiler wf-luau-decompiler
 	ln -sfn prod/bin/wfgui wfgui
 
 debug-bridge: sccache-setup

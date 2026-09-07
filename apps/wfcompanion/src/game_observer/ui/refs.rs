@@ -3,7 +3,7 @@ use std::time::Instant;
 use serde::Serialize;
 
 use super::CHUNK;
-use crate::game_observer::memory::{ProcessMemory, scan_regions};
+use crate::game_observer::memory::ProcessMemory;
 
 const MAX_REFERENCES: usize = 4096;
 
@@ -40,7 +40,7 @@ pub(super) fn scan(
     let mut truncated = false;
     let mut mapped_bytes = 0_u64;
 
-    'regions: for region in scan_regions(memory.regions()) {
+    'regions: for region in memory.scan_ranges() {
         mapped_bytes = mapped_bytes.saturating_add(region.end.saturating_sub(region.start));
         let mut offset = region.start;
         while offset < region.end {

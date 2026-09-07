@@ -5,7 +5,7 @@ use std::os::unix::fs::FileExt;
 use std::path::PathBuf;
 use std::time::UNIX_EPOCH;
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 #[derive(Clone, Debug)]
@@ -16,12 +16,39 @@ pub(crate) struct Region {
     pub(crate) path: String,
 }
 
+#[derive(Clone, Debug)]
+pub(crate) struct ScanRange {
+    pub(crate) start: u64,
+    pub(crate) end: u64,
+    pub(crate) permissions: String,
+    pub(crate) path: String,
+}
+
 #[derive(Debug)]
 pub(crate) struct ProcessMemory {
     pid: u32,
-    file: File,
+    backing: MemoryBacking,
     maps: String,
     regions: Vec<Region>,
+}
+
+#[derive(Debug)]
+enum MemoryBacking {
+    Live(File),
+    Capture(CaptureMemory),
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct CaptureBlock {
+    pub(crate) address: u64,
+    pub(crate) length: usize,
+    pub(crate) file_offset: usize,
+}
+
+#[derive(Debug)]
+struct CaptureMemory {
+    bytes: Vec<u8>,
+    blocks: Vec<CaptureBlock>,
 }
 
 impl ProcessMemory {
@@ -32,9 +59,24 @@ impl ProcessMemory {
             .map_err(|error| format!("could not open Warframe memory: {error}"))?;
         Ok(Self {
             pid,
-            file,
+            backing: MemoryBacking::Live(file),
             maps: maps.clone(),
             regions: parse_regions(&maps),
+        })
+    }
+
+    pub(crate) fn from_capture(
+        pid: u32,
+        maps: String,
+        blocks: Vec<CaptureBlock>,
+        bytes: Vec<u8>,
+    ) -> Result<Self, String> {
+        let backing = CaptureMemory::new(blocks, bytes)?;
+        Ok(Self {
+            pid,
+            regions: parse_regions(&maps),
+            maps,
+            backing: MemoryBacking::Capture(backing),
         })
     }
 
@@ -50,6 +92,58 @@ impl ProcessMemory {
         &self.maps
     }
 
+    pub(crate) fn scan_ranges(&self) -> Vec<ScanRange> {
+        self.selected_ranges(Region::supports_research_scan)
+    }
+
+    pub(crate) fn selected_ranges(&self, accepts: impl Fn(&Region) -> bool) -> Vec<ScanRange> {
+        match &self.backing {
+            MemoryBacking::Live(_) => self
+                .regions
+                .iter()
+                .filter(|region| accepts(region))
+                .map(|region| ScanRange {
+                    start: region.start,
+                    end: region.end,
+                    permissions: region.permissions.clone(),
+                    path: region.path.clone(),
+                })
+                .collect(),
+            MemoryBacking::Capture(capture) => {
+                let mut ranges = Vec::<ScanRange>::new();
+                for block in &capture.blocks {
+                    let block_end = block.address + block.length as u64;
+                    let first = self
+                        .regions
+                        .partition_point(|region| region.end <= block.address);
+                    for region in self.regions[first..]
+                        .iter()
+                        .take_while(|region| region.start < block_end)
+                        .filter(|region| accepts(region))
+                    {
+                        let start = block.address.max(region.start);
+                        let end = block_end.min(region.end);
+                        if let Some(previous) = ranges.last_mut()
+                            && previous.end == start
+                            && previous.permissions == region.permissions
+                            && previous.path == region.path
+                        {
+                            previous.end = end;
+                        } else {
+                            ranges.push(ScanRange {
+                                start,
+                                end,
+                                permissions: region.permissions.clone(),
+                                path: region.path.clone(),
+                            });
+                        }
+                    }
+                }
+                ranges
+            }
+        }
+    }
+
     pub(crate) fn image_base(&self) -> Option<u64> {
         self.regions
             .iter()
@@ -63,20 +157,46 @@ impl ProcessMemory {
     }
 
     pub(crate) fn read_at(&self, buffer: &mut [u8], offset: u64) -> io::Result<usize> {
-        self.file.read_at(buffer, offset)
+        match &self.backing {
+            MemoryBacking::Live(file) => file.read_at(buffer, offset),
+            MemoryBacking::Capture(capture) => capture.read_at(buffer, offset),
+        }
     }
 
     pub(crate) fn read_exact_at(&self, buffer: &mut [u8], offset: u64) -> io::Result<()> {
-        self.file.read_exact_at(buffer, offset)
+        match &self.backing {
+            MemoryBacking::Live(file) => file.read_exact_at(buffer, offset),
+            MemoryBacking::Capture(capture) => capture.read_exact_at(buffer, offset),
+        }
     }
 
     pub(crate) fn supports_ui_range(&self, address: u64, length: usize) -> bool {
         let Some(end) = address.checked_add(length as u64) else {
             return false;
         };
-        self.regions
+        let mapped = self
+            .regions
             .iter()
-            .any(|region| region.supports_ui_graph() && region.contains_range(address, end))
+            .any(|region| region.supports_ui_graph() && region.contains_range(address, end));
+        mapped
+            && match &self.backing {
+                MemoryBacking::Live(_) => true,
+                MemoryBacking::Capture(capture) => capture.contains_range(address, length),
+            }
+    }
+
+    pub(crate) fn supports_read_range(&self, address: u64, length: usize) -> bool {
+        let Some(end) = address.checked_add(length as u64) else {
+            return false;
+        };
+        let mapped = self.regions.iter().any(|region| {
+            region.permissions.starts_with('r') && region.contains_range(address, end)
+        });
+        mapped
+            && match &self.backing {
+                MemoryBacking::Live(_) => true,
+                MemoryBacking::Capture(capture) => capture.contains_range(address, length),
+            }
     }
 
     #[cfg(test)]
@@ -100,10 +220,100 @@ impl ProcessMemory {
         fs::remove_file(path).expect("unlink test memory");
         Self {
             pid: 0,
-            file,
+            backing: MemoryBacking::Live(file),
             maps: String::new(),
             regions,
         }
+    }
+}
+
+impl CaptureMemory {
+    fn new(mut blocks: Vec<CaptureBlock>, bytes: Vec<u8>) -> Result<Self, String> {
+        blocks.sort_by_key(|block| block.address);
+        let mut previous_end = None;
+        for block in &blocks {
+            if block.length == 0 {
+                return Err("capture contains an empty memory block".to_owned());
+            }
+            let virtual_end = block
+                .address
+                .checked_add(block.length as u64)
+                .ok_or_else(|| "capture memory block overflows address space".to_owned())?;
+            block
+                .file_offset
+                .checked_add(block.length)
+                .filter(|end| *end <= bytes.len())
+                .ok_or_else(|| "capture memory block exceeds data file".to_owned())?;
+            if previous_end.is_some_and(|end| block.address < end) {
+                return Err("capture contains overlapping memory blocks".to_owned());
+            }
+            previous_end = Some(virtual_end);
+        }
+        Ok(Self { bytes, blocks })
+    }
+
+    fn read_at(&self, buffer: &mut [u8], offset: u64) -> io::Result<usize> {
+        let mut address = offset;
+        let mut written = 0;
+        while written < buffer.len() {
+            let index = self
+                .blocks
+                .partition_point(|block| block.address <= address);
+            let Some(block) = index
+                .checked_sub(1)
+                .and_then(|index| self.blocks.get(index))
+            else {
+                break;
+            };
+            let block_end = block.address + block.length as u64;
+            if address >= block_end {
+                break;
+            }
+            let within = usize::try_from(address - block.address).unwrap();
+            let length = (block.length - within).min(buffer.len() - written);
+            let source = block.file_offset + within;
+            buffer[written..written + length].copy_from_slice(&self.bytes[source..source + length]);
+            written += length;
+            address += length as u64;
+        }
+        Ok(written)
+    }
+
+    fn read_exact_at(&self, buffer: &mut [u8], offset: u64) -> io::Result<()> {
+        let read = self.read_at(buffer, offset)?;
+        if read == buffer.len() {
+            Ok(())
+        } else {
+            Err(io::Error::new(
+                io::ErrorKind::UnexpectedEof,
+                "range is absent from capture",
+            ))
+        }
+    }
+
+    fn contains_range(&self, start: u64, length: usize) -> bool {
+        if length == 0 {
+            return true;
+        }
+        let Some(end) = start.checked_add(length as u64) else {
+            return false;
+        };
+        let index = self.blocks.partition_point(|block| block.address <= start);
+        let Some(mut index) = index.checked_sub(1) else {
+            return false;
+        };
+        let mut covered = start;
+        while covered < end {
+            let Some(block) = self.blocks.get(index) else {
+                return false;
+            };
+            if block.address > covered || block.address + block.length as u64 <= covered {
+                return false;
+            }
+            covered = block.address + block.length as u64;
+            index += 1;
+        }
+        true
     }
 }
 
@@ -118,12 +328,24 @@ impl Region {
             && (self.path.is_empty() || self.path.starts_with('['))
     }
 
+    pub(crate) fn supports_research_scan(&self) -> bool {
+        let private_writable = self.permissions.starts_with("rw")
+            && self.permissions.ends_with('p')
+            && (self.path.is_empty() || self.path.starts_with('['));
+        let game_image = self.permissions.starts_with('r')
+            && self
+                .path
+                .to_ascii_lowercase()
+                .ends_with("/warframe.x64.exe");
+        private_writable || game_image
+    }
+
     fn contains_range(&self, start: u64, end: u64) -> bool {
         self.start <= start && start <= end && end <= self.end
     }
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct ExecutableIdentity {
     pub path: PathBuf,
     pub size: u64,
@@ -132,7 +354,7 @@ pub struct ExecutableIdentity {
     pub sha256: String,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct ProcessIdentity {
     pub pid: u32,
     pub executable: ExecutableIdentity,
@@ -223,18 +445,11 @@ fn decode_maps_path(path: &str) -> String {
         .replace("\\134", "\\")
 }
 
-pub(crate) fn scan_regions(regions: &[Region]) -> impl Iterator<Item = &Region> {
-    regions.iter().filter(|region| {
-        let private_writable = region.permissions.starts_with("rw")
-            && region.permissions.ends_with('p')
-            && (region.path.is_empty() || region.path.starts_with('['));
-        let game_image = region.permissions.starts_with('r')
-            && region
-                .path
-                .to_ascii_lowercase()
-                .ends_with("/warframe.x64.exe");
-        private_writable || game_image
-    })
+#[cfg(test)]
+fn scan_regions(regions: &[Region]) -> impl Iterator<Item = &Region> {
+    regions
+        .iter()
+        .filter(|region| region.supports_research_scan())
 }
 
 #[cfg(test)]
@@ -272,5 +487,30 @@ mod tests {
         assert!(region.contains_range(0x1800, 0x1800));
         assert!(!region.contains_range(0x0fff, 0x1800));
         assert!(!region.contains_range(0x1800, 0x2001));
+    }
+
+    #[test]
+    fn captured_memory_reads_across_adjacent_blocks() {
+        let capture = CaptureMemory::new(
+            vec![
+                CaptureBlock {
+                    address: 0x1000,
+                    length: 4,
+                    file_offset: 0,
+                },
+                CaptureBlock {
+                    address: 0x1004,
+                    length: 4,
+                    file_offset: 4,
+                },
+            ],
+            b"abcdefgh".to_vec(),
+        )
+        .unwrap();
+        let mut bytes = [0_u8; 6];
+        capture.read_exact_at(&mut bytes, 0x1001).unwrap();
+        assert_eq!(&bytes, b"bcdefg");
+        assert!(capture.contains_range(0x1001, 6));
+        assert!(!capture.contains_range(0x0fff, 2));
     }
 }

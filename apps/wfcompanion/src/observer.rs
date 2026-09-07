@@ -4,10 +4,12 @@ use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use serde_json::json;
+use wfcompanion::game_observer::debug_output::{
+    Bridge as DebugBridge, Event as DebugEvent, Runtime as DebugRuntime,
+};
 use wfcompanion::game_observer::{self, DebugOutputEvent, GameState};
 
 use crate::daemon::{Outbound, OutboundSender};
-use crate::debug_output::{Bridge as DebugBridge, Event as DebugEvent, Runtime as DebugRuntime};
 use crate::game_metadata::{Bridge as MetadataBridge, Event as MetadataEvent};
 use crate::incident;
 use crate::inventory::{Bridge as InventoryBridge, Event as InventoryEvent};

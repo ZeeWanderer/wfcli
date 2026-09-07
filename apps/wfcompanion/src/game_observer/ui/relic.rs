@@ -2,9 +2,10 @@ use std::collections::BTreeSet;
 
 use serde::Serialize;
 
-use super::DisplayScanMetrics;
 use super::display;
 use super::registry;
+use super::{DisplayScanMetrics, Snapshot};
+use crate::game_observer::adapter::ScaleformLayout;
 use crate::game_observer::memory::ProcessMemory;
 
 const SELECTION_MOVIE: &str = "/Lotus/Interface/ThemedProjectionManager.swf";
@@ -51,11 +52,19 @@ pub struct RelicRewardText {
     pub scan: DisplayScanMetrics,
 }
 
-pub(super) fn selection(pid: u32) -> Result<RelicSelection, String> {
+pub(super) fn selection(pid: u32, layout: ScaleformLayout) -> Result<RelicSelection, String> {
     let memory = ProcessMemory::open(pid)?;
-    let scan = registry::scan(&memory).map_err(|(stage, reason)| format!("{stage}: {reason}"))?;
-    let movies = scan
-        .snapshot
+    let scan =
+        registry::scan(&memory, layout).map_err(|(stage, reason)| format!("{stage}: {reason}"))?;
+    selection_from_snapshot(&memory, layout, &scan.snapshot)
+}
+
+pub(super) fn selection_from_snapshot(
+    memory: &ProcessMemory,
+    layout: ScaleformLayout,
+    snapshot: &Snapshot,
+) -> Result<RelicSelection, String> {
+    let movies = snapshot
         .movies
         .iter()
         .filter(|movie| movie.path == SELECTION_MOVIE)
@@ -80,7 +89,7 @@ pub(super) fn selection(pid: u32) -> Result<RelicSelection, String> {
             failures.push("invalid movie record".to_owned());
             continue;
         };
-        match display::scan_labels(&memory, image, flash_object, &labels).and_then(
+        match display::scan_labels(memory, layout, image, flash_object, &labels).and_then(
             |(matches, metrics)| classify_selection_labels(&matches).map(|era| (era, metrics)),
         ) {
             Ok((era, metrics)) => {
@@ -96,11 +105,19 @@ pub(super) fn selection(pid: u32) -> Result<RelicSelection, String> {
     Err(format!("selection_state: {}", failures.join("; ")))
 }
 
-pub(super) fn rewards(pid: u32) -> Result<RelicRewardText, String> {
+pub(super) fn rewards(pid: u32, layout: ScaleformLayout) -> Result<RelicRewardText, String> {
     let memory = ProcessMemory::open(pid)?;
-    let scan = registry::scan(&memory).map_err(|(stage, reason)| format!("{stage}: {reason}"))?;
-    let movies = scan
-        .snapshot
+    let scan =
+        registry::scan(&memory, layout).map_err(|(stage, reason)| format!("{stage}: {reason}"))?;
+    rewards_from_snapshot(&memory, layout, &scan.snapshot)
+}
+
+pub(super) fn rewards_from_snapshot(
+    memory: &ProcessMemory,
+    layout: ScaleformLayout,
+    snapshot: &Snapshot,
+) -> Result<RelicRewardText, String> {
+    let movies = snapshot
         .movies
         .iter()
         .filter(|movie| movie.path == REWARD_MOVIE)
@@ -118,7 +135,8 @@ pub(super) fn rewards(pid: u32) -> Result<RelicRewardText, String> {
             continue;
         };
         match display::scan_named_text(
-            &memory,
+            memory,
+            layout,
             image,
             flash_object,
             REWARD_INSTANCE_NAME,

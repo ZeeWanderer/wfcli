@@ -3,11 +3,9 @@ use std::time::Instant;
 use serde::Serialize;
 
 use super::{Movie, Snapshot, movie_path_at, parse_movie_record};
+use crate::game_observer::adapter::ScaleformLayout;
 use crate::game_observer::memory::ProcessMemory;
 
-const REGISTRY_VECTOR_RVA: u64 = 0x028a_5410;
-const FLASH_INSTANCE_TYPE_RVA: u64 = 0x0294_e130;
-const FLASH_INSTANCE_VTABLE_RVA: u64 = 0x0222_00f8;
 const REGISTRY_ENTRY_SIZE: usize = 16;
 const MAX_REGISTRY_BYTES: usize = 32 * 1024 * 1024;
 const FLASH_RECORD_OFFSET: u64 = 0xc0;
@@ -34,7 +32,7 @@ pub enum BoundedProbe {
     Unavailable { stage: &'static str, reason: String },
 }
 
-pub(super) fn probe(pid: u32) -> BoundedProbe {
+pub(super) fn probe(pid: u32, layout: ScaleformLayout) -> BoundedProbe {
     let memory = match ProcessMemory::open(pid) {
         Ok(memory) => memory,
         Err(reason) => {
@@ -44,13 +42,16 @@ pub(super) fn probe(pid: u32) -> BoundedProbe {
             };
         }
     };
-    match scan(&memory) {
+    match scan(&memory, layout) {
         Ok(scan) => BoundedProbe::Available { scan },
         Err((stage, reason)) => BoundedProbe::Unavailable { stage, reason },
     }
 }
 
-pub(super) fn scan(memory: &ProcessMemory) -> Result<BoundedScanResult, (&'static str, String)> {
+pub(super) fn scan(
+    memory: &ProcessMemory,
+    layout: ScaleformLayout,
+) -> Result<BoundedScanResult, (&'static str, String)> {
     let started = Instant::now();
     let image = memory.image_base().ok_or_else(|| {
         (
@@ -58,7 +59,7 @@ pub(super) fn scan(memory: &ProcessMemory) -> Result<BoundedScanResult, (&'stati
             "Warframe executable mapping not found".to_owned(),
         )
     })?;
-    let registry = image + REGISTRY_VECTOR_RVA;
+    let registry = image + layout.registry_vector_rva;
     let mut descriptor = [0_u8; 16];
     memory
         .read_exact_at(&mut descriptor, registry)
@@ -82,8 +83,8 @@ pub(super) fn scan(memory: &ProcessMemory) -> Result<BoundedScanResult, (&'stati
     memory
         .read_exact_at(&mut bytes, entries)
         .map_err(|error| ("registry_entries", error.to_string()))?;
-    let expected_type = image + FLASH_INSTANCE_TYPE_RVA;
-    let expected_vtable = image + FLASH_INSTANCE_VTABLE_RVA;
+    let expected_type = image + layout.flash_instance_type_rva;
+    let expected_vtable = image + layout.flash_instance_vtable_rva;
     let mut flash_candidates = 0;
     let mut movies = Vec::new();
 

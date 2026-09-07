@@ -8,7 +8,7 @@ use super::{
     CHUNK, TextMatch, TextReference, TextScan, TextScanMetrics, TextTerm, address_low_bits,
     address_may_match,
 };
-use crate::game_observer::memory::{ProcessMemory, Region, scan_regions};
+use crate::game_observer::memory::{ProcessMemory, ScanRange};
 
 const MAX_TERMS: usize = 16;
 const MAX_TERM_BYTES: usize = 512;
@@ -27,7 +27,7 @@ pub(super) fn scan(memory: &ProcessMemory, requested: &[String]) -> Result<TextS
     let started = Instant::now();
     let terms = validated_terms(requested)?;
     let patterns = patterns(&terms);
-    let regions = scan_regions(memory.regions()).collect::<Vec<_>>();
+    let regions = memory.scan_ranges();
     let mapped_bytes_per_pass = regions
         .iter()
         .map(|region| region.end.saturating_sub(region.start))
@@ -79,7 +79,7 @@ pub(super) fn display_text_pointer(bytes: &[u8]) -> Option<u64> {
 
 fn scan_matches(
     memory: &ProcessMemory,
-    regions: &[&Region],
+    regions: &[ScanRange],
     patterns: &[Pattern],
     results: &mut [TextTerm],
 ) -> Result<(), String> {
@@ -199,7 +199,7 @@ fn patterns(terms: &[String]) -> Vec<Pattern> {
 
 fn scan_references(
     memory: &ProcessMemory,
-    regions: &[&Region],
+    regions: &[ScanRange],
     terms: &mut [TextTerm],
 ) -> io::Result<()> {
     let mut targets = HashMap::<u64, Vec<(usize, usize)>>::new();
@@ -264,7 +264,7 @@ fn scan_references(
     Ok(())
 }
 
-fn region_label(region: &Region) -> String {
+fn region_label(region: &ScanRange) -> String {
     if region.path.is_empty() {
         format!("{} anonymous", region.permissions)
     } else {

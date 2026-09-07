@@ -2,10 +2,18 @@ use std::collections::BTreeMap;
 use std::ffi::OsString;
 use std::fs;
 use std::io::{self, Read};
+use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::mpsc;
+use std::sync::{
+    Arc,
+    atomic::{AtomicBool, Ordering},
+};
 use std::thread;
+
+mod subscribers;
+use subscribers::{Acquisition, Hub};
 
 const RECORD_HEADER_SIZE: usize = 8;
 const MAX_MESSAGE_SIZE: usize = 4092;
@@ -21,7 +29,7 @@ const RUNTIME_ENVIRONMENT: &[&str] = &[
 ];
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) struct Runtime {
+pub struct Runtime {
     game_pid: u32,
     prefix: PathBuf,
     wine: PathBuf,
@@ -29,7 +37,7 @@ pub(crate) struct Runtime {
 }
 
 impl Runtime {
-    pub(crate) fn discover(
+    pub fn discover(
         game_pid: u32,
         process_dir: &Path,
         environment: &BTreeMap<String, String>,
@@ -51,15 +59,15 @@ impl Runtime {
         })
     }
 
-    pub(crate) fn game_pid(&self) -> u32 {
+    pub fn game_pid(&self) -> u32 {
         self.game_pid
     }
 
-    pub(crate) fn prefix(&self) -> &Path {
+    pub fn prefix(&self) -> &Path {
         &self.prefix
     }
 
-    pub(crate) fn helper_command(&self, helper: &Path) -> Command {
+    pub fn helper_command(&self, helper: &Path) -> Command {
         let mut command = Command::new(&self.wine);
         command
             .arg(helper)
@@ -78,7 +86,7 @@ impl Runtime {
 }
 
 #[derive(Debug)]
-pub(crate) enum Event {
+pub enum Event {
     Record {
         game_pid: u32,
         sender_pid: u32,
@@ -90,13 +98,30 @@ pub(crate) enum Event {
     },
 }
 
-pub(crate) struct Bridge {
+pub struct Bridge {
     game_pid: u32,
-    child: Child,
+    child: Option<Child>,
+    subscription: Option<UnixStream>,
+    running: Arc<AtomicBool>,
 }
 
 impl Bridge {
-    pub(crate) fn start(runtime: &Runtime, events: mpsc::Sender<Event>) -> Result<Self, String> {
+    pub fn start(runtime: &Runtime, events: mpsc::Sender<Event>) -> Result<Self, String> {
+        let acquisition = Hub::acquire(runtime.prefix())?;
+        if let Acquisition::Subscriber(stream) = acquisition {
+            let input = stream.try_clone().map_err(|e| e.to_string())?;
+            let running = Arc::new(AtomicBool::new(true));
+            forward(input, runtime.game_pid, events, None, running.clone());
+            return Ok(Self {
+                game_pid: runtime.game_pid,
+                child: None,
+                subscription: Some(stream),
+                running,
+            });
+        }
+        let Acquisition::Owner(hub) = acquisition else {
+            unreachable!()
+        };
         let helper = helper_path().ok_or_else(|| {
             "wfcompanion DBWIN helper not found; rebuild companion with make companion".to_owned()
         })?;
@@ -108,60 +133,88 @@ impl Bridge {
             .stdout
             .take()
             .ok_or_else(|| "DBWIN helper stdout was not piped".to_owned())?;
-        let game_pid = runtime.game_pid;
-        thread::spawn(move || {
-            let mut input = io::BufReader::new(stdout);
-            loop {
-                match read_record(&mut input) {
-                    Ok(Some((sender_pid, message))) => {
-                        if events
-                            .send(Event::Record {
-                                game_pid,
-                                sender_pid,
-                                message,
-                            })
-                            .is_err()
-                        {
-                            return;
-                        }
-                    }
-                    Ok(None) => {
-                        let _ = events.send(Event::Stopped {
-                            game_pid,
-                            reason: "DBWIN helper closed its output".to_owned(),
-                        });
-                        return;
-                    }
-                    Err(error) => {
-                        let _ = events.send(Event::Stopped {
-                            game_pid,
-                            reason: format!("DBWIN helper protocol failed: {error}"),
-                        });
-                        return;
-                    }
-                }
-            }
-        });
-        Ok(Self { game_pid, child })
+        let running = Arc::new(AtomicBool::new(true));
+        forward(stdout, runtime.game_pid, events, Some(hub), running.clone());
+        Ok(Self {
+            game_pid: runtime.game_pid,
+            child: Some(child),
+            subscription: None,
+            running,
+        })
     }
 
-    pub(crate) fn game_pid(&self) -> u32 {
+    pub fn game_pid(&self) -> u32 {
         self.game_pid
     }
 
-    pub(crate) fn is_running(&mut self) -> bool {
-        matches!(self.child.try_wait(), Ok(None))
+    pub fn is_running(&mut self) -> bool {
+        self.running.load(Ordering::Relaxed)
+            && self
+                .child
+                .as_mut()
+                .is_none_or(|child| matches!(child.try_wait(), Ok(None)))
     }
+}
+
+fn forward(
+    input: impl Read + Send + 'static,
+    game_pid: u32,
+    events: mpsc::Sender<Event>,
+    mut hub: Option<Hub>,
+    running: Arc<AtomicBool>,
+) {
+    thread::spawn(move || {
+        let mut input = io::BufReader::new(input);
+        loop {
+            match read_record(&mut input) {
+                Ok(Some((sender_pid, message))) => {
+                    if let Some(hub) = &mut hub {
+                        hub.publish(sender_pid, &message);
+                    }
+                    if events
+                        .send(Event::Record {
+                            game_pid,
+                            sender_pid,
+                            message: String::from_utf8_lossy(&message).into_owned(),
+                        })
+                        .is_err()
+                    {
+                        break;
+                    }
+                }
+                Ok(None) => {
+                    let _ = events.send(Event::Stopped {
+                        game_pid,
+                        reason: "DBWIN helper closed its output".to_owned(),
+                    });
+                    break;
+                }
+                Err(error) => {
+                    let _ = events.send(Event::Stopped {
+                        game_pid,
+                        reason: format!("DBWIN helper protocol failed: {error}"),
+                    });
+                    break;
+                }
+            }
+        }
+        running.store(false, Ordering::Relaxed);
+    });
 }
 
 impl Drop for Bridge {
     fn drop(&mut self) {
-        let _ = self.child.kill();
-        let _ = self.child.wait();
+        if let Some(stream) = &self.subscription {
+            let _ = stream.shutdown(std::net::Shutdown::Both);
+        }
+        if let Some(child) = &mut self.child {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
     }
 }
 
-fn read_record(input: &mut impl Read) -> io::Result<Option<(u32, String)>> {
+fn read_record(input: &mut impl Read) -> io::Result<Option<(u32, Vec<u8>)>> {
     let mut header = [0_u8; RECORD_HEADER_SIZE];
     match input.read_exact(&mut header) {
         Ok(()) => {}
@@ -178,10 +231,7 @@ fn read_record(input: &mut impl Read) -> io::Result<Option<(u32, String)>> {
     }
     let mut message = vec![0_u8; length];
     input.read_exact(&mut message)?;
-    Ok(Some((
-        sender_pid,
-        String::from_utf8_lossy(&message).into_owned(),
-    )))
+    Ok(Some((sender_pid, message)))
 }
 
 fn helper_path() -> Option<PathBuf> {
@@ -266,7 +316,7 @@ mod tests {
         bytes.extend_from_slice(b"Got rewards");
         assert_eq!(
             read_record(&mut Cursor::new(bytes)).unwrap(),
-            Some((42, "Got rewards".to_owned()))
+            Some((42, b"Got rewards".to_vec()))
         );
     }
 

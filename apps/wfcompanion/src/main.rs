@@ -1,7 +1,6 @@
 mod assets;
 mod capture;
 mod daemon;
-mod debug_output;
 mod desktop;
 mod external;
 mod focus;
