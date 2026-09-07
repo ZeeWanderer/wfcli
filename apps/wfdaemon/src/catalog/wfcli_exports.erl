@@ -53,13 +53,13 @@ load_item_sources([{File, Path} | Rest], Acc) ->
 item_entry(File, V) ->
     Base = #{
         name => item_name(V),
-        uniqueName => get_bin(V, <<"uniqueName">>),
+        uniqueName => get_string(V, <<"uniqueName">>),
         file => normalize_file_name(File),
         category => export_category(File),
         description => get_text(V, <<"description">>),
         codexSecret => get_bool(V, <<"codexSecret">>),
         excludeFromCodex => get_bool(V, <<"excludeFromCodex">>),
-        productCategory => get_bin(V, <<"productCategory">>),
+        productCategory => get_string(V, <<"productCategory">>),
         masteryReq => get_int(V, <<"masteryReq">>),
         totalDamage => get_number(V, <<"totalDamage">>),
         criticalChance => get_number(V, <<"criticalChance">>),
@@ -76,6 +76,7 @@ item_entry(File, V) ->
 
 file_fields("ExportWeapons_en.json", V) ->
     #{
+        slot => get_int(V, <<"slot">>),
         trigger => get_text(V, <<"trigger">>),
         fireRate => get_number(V, <<"fireRate">>),
         magazineSize => get_number(V, <<"magazineSize">>),
@@ -142,14 +143,14 @@ normalize_mod_entry(M) ->
     Effects = all_stats(Stats),
     MaxStats = max_stats(Stats),
     #{
-        name => get_bin(M, <<"name">>),
-        type => get_bin(M, <<"type">>),
-        polarity => get_bin(M, <<"polarity">>),
-        rarity => get_bin(M, <<"rarity">>),
+        name => get_string(M, <<"name">>),
+        type => get_string(M, <<"type">>),
+        polarity => get_string(M, <<"polarity">>),
+        rarity => get_string(M, <<"rarity">>),
         baseDrain => maps:get(<<"baseDrain">>, M, undefined),
         fusionLimit => maps:get(<<"fusionLimit">>, M, undefined),
-        compatName => get_bin(M, <<"compatName">>),
-        uniqueName => get_bin(M, <<"uniqueName">>),
+        compatName => get_string(M, <<"compatName">>),
+        uniqueName => get_string(M, <<"uniqueName">>),
         description => Desc,
         effects => Effects,
         levelStats => Stats,
@@ -242,7 +243,7 @@ pick_existing([Path | Rest], Fallback) ->
         false -> pick_existing(Rest, Fallback)
     end.
 
-get_bin(Map, Key) ->
+get_string(Map, Key) ->
     case maps:get(Key, Map, undefined) of
         undefined -> "";
         Val -> to_list(Val)

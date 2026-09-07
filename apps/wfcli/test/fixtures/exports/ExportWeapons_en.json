@@ -5,6 +5,7 @@
       "name": "Test Gun",
       "description": "A test weapon.",
       "productCategory": "Pistols",
+      "slot": 0,
       "masteryReq": 9,
       "totalDamage": 40,
       "criticalChance": 0.1,

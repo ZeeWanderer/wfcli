@@ -21,6 +21,7 @@
          items_query_abilities/1,
          items_format_alias/1,
          items_json_output/1,
+         items_weapon_slot/1,
          items_explicit_omitted_export/1,
          query_command_returns_results/1,
          items_large_offset_empty/1]).
@@ -43,6 +44,7 @@ all() ->
      items_query_abilities,
      items_format_alias,
      items_json_output,
+     items_weapon_slot,
      items_explicit_omitted_export,
      query_command_returns_results,
      items_large_offset_empty].
@@ -259,6 +261,12 @@ items_json_output(_Config) ->
     end),
     ?assert(string:find(Output, "\"results\"") =/= nomatch),
     ?assert(string:find(Output, "Test Gun") =/= nomatch).
+
+items_weapon_slot(_Config) ->
+    {ok, [Item]} = wfcli_exports:load_items(fixture_dir(), ["ExportWeapons_en.json"]),
+    ?assertEqual(0, maps:get(slot, Item)),
+    ?assertEqual("/Lotus/Weapons/Test/TestGun", maps:get(uniqueName, Item)),
+    ?assertEqual("Pistols", maps:get(productCategory, Item)).
 
 items_explicit_omitted_export(_Config) ->
     Dir = fixture_dir(),
