@@ -12,7 +12,7 @@ Clients remain focused on their interface.
 | [`wfdaemon`](docs/daemon.md) | Supervised data, persistence, query, market, watch, and planning service |
 | [`wfcompanion`](docs/companion.md) | Linux/Proton game observer and Wayland overlay |
 | [`wfgui`](docs/gui.md) | Native Qt desktop client for account and world-state views |
-| [`wfinspect`](docs/developer/companion.md#development) | Explicit runtime diagnostics for developers |
+| [`wfinspect`](docs/wfinspect.md) | Warframe research and runtime inspection |
 | [`wfcore`](docs/developer/shared_utilities.md) | Process-free contracts and value helpers shared by OTP applications |
 
 Clients start `wfdaemon` when needed. Concurrent clients reuse its caches and rate-limited work.
@@ -129,6 +129,7 @@ Repository-root links select either staged environment:
 | `wfdaemond` | `wfdaemon` |
 | `wfcompaniond` | `wfcompanion` |
 | `wfinspectd` | `wfinspect` |
+| `wf-luau-decompilerd` | `wf-luau-decompiler` |
 | `wfguid` | `wfgui` |
 
 Common contributor commands and individual build targets are documented in

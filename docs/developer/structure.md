@@ -59,8 +59,25 @@ and value helpers here.
 The companion owns native window and overlay state. It publishes normalized observations to the
 daemon and requests shared data from it.
 
-`wfinspect` is a separate diagnostic executable built from the companion crate. It invokes
-observer collectors explicitly without inheriting companion lifecycle or polling policy.
+`wfinspect` is a separate research and diagnostic executable built from the companion crate. It invokes
+observer collectors explicitly without inheriting companion lifecycle or polling policy. Cache,
+build-adapter, DBWIN, GEP, replay, script, and local-protocol diagnostics share companion parsers
+rather than research copies. Generic Ghidra exporters live under `tools/wfinspect-ghidra/`;
+build-specific projects and evidence remain ignored research data.
+
+Its read-only research-memory layer opens either `/proc/PID/mem` or bounded capture blocks behind
+the same query functions. Live and captured UI text, references, pointer paths, and typed probes
+therefore use one implementation. Snapshot commands emit JSON, watches emit NDJSON, and raw byte
+commands keep standard output free of metadata.
+
+Warframe Luau source reconstruction is a separate pinned toolchain stage under
+`tools/wf-luau-decompiler/`. `wfinspect` owns cache extraction and build-specific normalization;
+the helper owns only normalized-bytecode reconstruction and exposes file/standard-input plus JSON
+diagnostics. Staged builds place both executables together so helper discovery needs no config.
+
+Oodle decoding uses the separate `libexec/unoodle` helper. `scripts/build-oozextract`
+pins its registry archive and checksum, builds with the caller's Rust flags, and
+stages its source and license under `share/licenses/oozextract/`.
 
 ## `wfgui`
 
