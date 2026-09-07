@@ -40,6 +40,8 @@ fi
 
 mkdir -p "$stage/bin" "$stage/libexec"
 mkdir -p "$stage/share/licenses/wfcompanion" "$stage/share/licenses/wf-luau-decompiler"
+RUSTFLAGS="$rustflags" CARGO_TARGET_DIR="$target_dir" \
+    "$root/scripts/build-oozextract" "$mode"
 "$root/scripts/build-debug-bridge" "$debug_bridge"
 WFCOMPANION_BUILD_DEBUG_BRIDGE="$debug_bridge" \
     WFCOMPANION_BUILD_TESSERACT="$tesseract_bin" \
