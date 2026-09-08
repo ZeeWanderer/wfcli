@@ -306,7 +306,12 @@ connection(Socket, Parent) ->
     process_flag(trap_exit, true),
     Handler = self(),
     {Reader, ReaderMonitor} = spawn_monitor(fun() -> socket_reader(Socket, Handler) end),
+    Owners = lists:usort([Parent | [Pid || #{id := Name} <- wfcli_sup:child_specs(),
+                                         Pid <- [whereis(Name)], is_pid(Pid)]]),
+    OwnerMonitors = maps:from_list([{erlang:monitor(process, Pid), Pid}
+                                   || Pid <- Owners]),
     State = #{socket => Socket, parent => Parent, reader => Reader,
+              owner_monitors => OwnerMonitors,
               reader_monitor => ReaderMonitor, buffer => <<>>,
               hello => false, client => <<"unknown">>, features => [],
               subscriptions => #{}, refs => #{}, market_refs => #{},
@@ -326,7 +331,8 @@ connection(Socket, Parent) ->
         _ = socket:close(Socket)
     end.
 
-connection_loop(State = #{reader_monitor := ReaderMonitor}) ->
+connection_loop(State = #{reader_monitor := ReaderMonitor,
+                          owner_monitors := OwnerMonitors}) ->
     receive
         {socket_data, Data} ->
             case consume_data(Data, State) of
@@ -372,6 +378,8 @@ connection_loop(State = #{reader_monitor := ReaderMonitor}) ->
             send_json(maps:get(socket, State),
                       #{<<"event">> => <<"command">>, <<"data">> => Command}),
             connection_loop(State);
+        {'DOWN', Monitor, process, _Owner, _Reason}
+          when is_map_key(Monitor, OwnerMonitors) -> State;
         {'DOWN', ReaderMonitor, process, _Reader, Reason} ->
             case Reason of
                 normal -> State;
@@ -599,14 +607,13 @@ handle_request(#{<<"op">> := <<"build_group_plan">>,
                  <<"group_id">> := GroupId, <<"revision">> := Revision} = Request,
                State) when is_binary(GroupId), is_integer(Revision) ->
     Id = request_id(Request),
-    case wfcli_build_service:plan_group(self(), GroupId, Revision) of
-        {ok, Ref} ->
-            Refs = maps:get(build_refs, State),
-            {ok, State#{build_refs => Refs#{Ref => {Id, <<"build_plan">>}}}};
-        {error, Reason} ->
-            send_error(maps:get(socket, State), Id, Reason),
-            {ok, State}
-    end;
+    Work = fun() ->
+        case wfcli_build_service:plan_group(self(), GroupId, Revision) of
+            {ok, Ref} -> receive {wfcli_build, Ref, Reply} -> Reply end;
+            Error -> Error
+        end
+    end,
+    {ok, start_local_request(Id, <<"build_plan">>, Work, State)};
 handle_request(#{<<"op">> := Op} = Request, State)
   when Op =:= <<"build_group_get">>; Op =:= <<"build_group_create">>;
        Op =:= <<"build_group_update">>; Op =:= <<"build_group_delete">>;
@@ -1419,29 +1426,12 @@ nullable(undefined) -> null;
 nullable(Value) -> Value.
 
 cleanup_connection(State) ->
-    maps:foreach(fun(_Id, Ref) -> wfcli_player_service:unsubscribe(Ref) end,
-                 maps:get(subscriptions, State, #{})),
     maps:foreach(
       fun(_Token, #{pid := Pid, monitor := Monitor}) ->
           exit(Pid, shutdown),
           erlang:demonitor(Monitor, [flush])
       end,
       maps:get(workers, State, #{})),
-    case maps:get(market_presence_ref, State, undefined) of
-        Ref when is_reference(Ref) ->
-            _ = wfcli_market_presence_service:unsubscribe(Ref);
-        _ -> ok
-    end,
-    case maps:get(asset_ref, State, undefined) of
-        AssetRef when is_reference(AssetRef) ->
-            _ = wfcli_asset_service:unsubscribe(AssetRef);
-        _ -> ok
-    end,
-    case maps:get(build_group_ref, State, undefined) of
-        BuildGroupRef when is_reference(BuildGroupRef) ->
-            _ = wfcli_build_service:unsubscribe(BuildGroupRef);
-        _ -> ok
-    end,
     exit(maps:get(reader, State), shutdown),
     erlang:demonitor(maps:get(reader_monitor, State), [flush]),
     ok.

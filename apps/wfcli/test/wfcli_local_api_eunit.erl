@@ -9,6 +9,62 @@ unix_socket_lifecycle_test_() ->
     {setup, fun setup/0, fun cleanup/1,
      fun(State) -> fun() -> lifecycle(State) end end}.
 
+backend_restart_disconnects_and_restores_events_test_() ->
+    {setup, fun setup/0, fun cleanup/1,
+     fun(#{socket := Path}) -> fun() ->
+         Socket = connect_client(Path, <<"test">>, #{}),
+         Request = #{<<"op">> => <<"subscribe">>, <<"id">> => 2,
+                     <<"dataset">> => <<"player">>, <<"include_data">> => false},
+         ok = socket:send(Socket, wfcli_local_protocol:encode(Request)),
+         _ = receive_response(Socket, 2, <<>>),
+         ok = gen_server:stop(wfcli_player_service),
+         {ok, _} = wfcli_player_service:start_link(),
+         ?assertEqual({error, closed}, socket:recv(Socket, 0, 2000)),
+         ok = socket:close(Socket),
+         request_player_metadata_subscription(Path)
+     end end}.
+
+backend_restart_closes_pending_requests_test_() ->
+    {setup, fun setup/0, fun cleanup/1,
+     fun(#{socket := Path}) -> fun() ->
+         Test = self(),
+         application:set_env(wfdaemon, build_source_fun,
+                             fun(_, _) ->
+                                 Test ! build_started,
+                                 receive finish -> {error, unused} end
+                             end),
+         Socket = connect_client(Path, <<"test">>, #{}),
+         ok = socket:send(Socket, wfcli_local_protocol:encode(
+                           #{<<"op">> => <<"build_detail">>, <<"id">> => 2,
+                             <<"build_id">> => 300})),
+         receive build_started -> ok after 2000 -> error(build_not_started) end,
+         ok = gen_server:stop(wfcli_build_service),
+         {ok, _} = wfcli_build_service:start_link(),
+         ?assertEqual({error, closed}, socket:recv(Socket, 0, 2000)),
+         ok = socket:close(Socket)
+     end end}.
+
+api_owner_death_closes_accepted_sockets_test_() ->
+    {setup, fun() ->
+                State = setup(),
+                unlink(whereis(wfcli_local_api)),
+                State
+            end, fun cleanup/1,
+     fun(#{socket := Path}) -> fun() ->
+         Socket = connect_client(Path, <<"test">>, #{}),
+         Pid = whereis(wfcli_local_api),
+         Ref = monitor(process, Pid),
+         exit(Pid, kill),
+         receive {'DOWN', Ref, process, Pid, killed} -> ok
+         after 2000 -> error(api_not_stopped)
+         end,
+         {ok, _} = wfcli_local_api:start_link(),
+         ?assertEqual({error, closed}, socket:recv(Socket, 0, 2000)),
+         ok = socket:close(Socket),
+         Fresh = connect_client(Path, <<"test">>, #{}),
+         ok = socket:close(Fresh)
+     end end}.
+
 contract_change_disconnects_native_clients_test() ->
     State = #{contract => #{}, connections => #{self() => #{}},
               worker_holders => #{}, worker_waiters => queue:new(),
@@ -63,6 +119,7 @@ setup() ->
     application:set_env(wfdaemon, overframe_account_file, OverframeSession),
     application:set_env(wfdaemon, overframe_http_fun, fun overframe_http/2),
     application:set_env(wfdaemon, build_store_file, BuildStore),
+    application:set_env(wfdaemon, build_cache_file, BuildStore ++ ".cache"),
     application:set_env(wfdaemon, resolution_issues_file, ResolutionIssues),
     application:set_env(wfdaemon, build_catalog_fun, fun build_catalog/0),
     application:set_env(wfdaemon, build_source_fun, fun build_source/2),
@@ -128,6 +185,7 @@ cleanup(#{root := Root, socket := SocketPath, cache := CachePath,
     application:unset_env(wfdaemon, overframe_account_file),
     application:unset_env(wfdaemon, overframe_http_fun),
     application:unset_env(wfdaemon, build_store_file),
+    application:unset_env(wfdaemon, build_cache_file),
     application:unset_env(wfdaemon, resolution_issues_file),
     application:unset_env(wfdaemon, build_catalog_fun),
     application:unset_env(wfdaemon, build_source_fun),

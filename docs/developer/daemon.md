@@ -94,6 +94,9 @@ or decode on BEAM, so JSON is retained until profiling shows transport encoding 
 GUI and companion can reconcile current decode failures through the optional diagnostics feature;
 the daemon stores them with its own name, metadata, and asset failures.
 
+Native sessions monitor their backend owners. A backend restart closes affected sessions;
+clients reconnect and reconcile snapshots instead of retaining dead subscriptions or requests.
+
 ## Build Groups
 
 `wfcli_build_service` owns saved groups and immutable member snapshots. Mutations are acknowledged
