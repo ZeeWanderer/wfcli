@@ -35,7 +35,7 @@ pub(crate) fn spawn(
     outbound: OutboundSender,
     relic: mpsc::Sender<RelicTrigger>,
     stopping: Arc<AtomicBool>,
-) {
+) -> thread::JoinHandle<()> {
     thread::spawn(move || {
         let (debug_tx, debug_rx) = mpsc::channel();
         let (inventory_tx, inventory_rx) = mpsc::channel();
@@ -211,7 +211,9 @@ pub(crate) fn spawn(
                 );
             }
         }
-    });
+        // Release DBWIN before waiting for the memory collectors to finish.
+        drop(bridge);
+    })
 }
 
 fn handle_metadata_event(
@@ -443,6 +445,14 @@ fn unix_time_millis() -> u128 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn stopped_observer_can_be_joined() {
+        let (outbound, _receiver) = tokio::sync::mpsc::unbounded_channel();
+        let (relic, _relic_receiver) = mpsc::channel();
+        let stopping = Arc::new(AtomicBool::new(true));
+        spawn(outbound, relic, stopping).join().unwrap();
+    }
 
     #[test]
     fn ui_console_open_suppresses_immediate_suggestion_trigger() {

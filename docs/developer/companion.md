@@ -163,6 +163,10 @@ wire adapters.
 Launch mode keeps companion tied to the Steam child and gives the inventory
 collector ptrace ancestry. Standalone mode is managed by the CLI.
 
+Shutdown joins the observer, releases its DBWIN helper/subscriber and reader,
+then waits for memory collectors. Resource-owning workers must not be detached
+from application lifetime.
+
 Companion starts or reconnects to the daemon without passing Proton loader
 variables into BEAM. Reconnect replays latest observations for every owned
 namespace. An active companion connection keeps an implicitly started daemon

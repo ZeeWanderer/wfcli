@@ -109,6 +109,8 @@ impl Hub {
 impl Drop for Hub {
     fn drop(&mut self) {
         let _ = fs::remove_file(&self.path);
+        // A concurrent fork can still hold this file description until exec.
+        let _ = self._lock.unlock();
     }
 }
 
@@ -138,8 +140,10 @@ mod tests {
             stream.read_exact(&mut bytes).unwrap();
             assert_eq!(&bytes[8..], b"test");
         }
+        let inherited_lock = hub._lock.try_clone().unwrap();
         drop(hub);
         assert!(matches!(Hub::at(&path).unwrap(), Acquisition::Owner(_)));
+        drop(inherited_lock);
         let _ = fs::remove_file(path.with_extension("lock"));
     }
 }

@@ -103,6 +103,7 @@ pub struct Bridge {
     child: Option<Child>,
     subscription: Option<UnixStream>,
     running: Arc<AtomicBool>,
+    reader: Option<thread::JoinHandle<()>>,
 }
 
 impl Bridge {
@@ -111,12 +112,13 @@ impl Bridge {
         if let Acquisition::Subscriber(stream) = acquisition {
             let input = stream.try_clone().map_err(|e| e.to_string())?;
             let running = Arc::new(AtomicBool::new(true));
-            forward(input, runtime.game_pid, events, None, running.clone());
+            let reader = forward(input, runtime.game_pid, events, None, running.clone());
             return Ok(Self {
                 game_pid: runtime.game_pid,
                 child: None,
                 subscription: Some(stream),
                 running,
+                reader: Some(reader),
             });
         }
         let Acquisition::Owner(hub) = acquisition else {
@@ -134,12 +136,13 @@ impl Bridge {
             .take()
             .ok_or_else(|| "DBWIN helper stdout was not piped".to_owned())?;
         let running = Arc::new(AtomicBool::new(true));
-        forward(stdout, runtime.game_pid, events, Some(hub), running.clone());
+        let reader = forward(stdout, runtime.game_pid, events, Some(hub), running.clone());
         Ok(Self {
             game_pid: runtime.game_pid,
             child: Some(child),
             subscription: None,
             running,
+            reader: Some(reader),
         })
     }
 
@@ -162,7 +165,7 @@ fn forward(
     events: mpsc::Sender<Event>,
     mut hub: Option<Hub>,
     running: Arc<AtomicBool>,
-) {
+) -> thread::JoinHandle<()> {
     thread::spawn(move || {
         let mut input = io::BufReader::new(input);
         loop {
@@ -199,7 +202,7 @@ fn forward(
             }
         }
         running.store(false, Ordering::Relaxed);
-    });
+    })
 }
 
 impl Drop for Bridge {
@@ -210,6 +213,9 @@ impl Drop for Bridge {
         if let Some(child) = &mut self.child {
             let _ = child.kill();
             let _ = child.wait();
+        }
+        if let Some(reader) = self.reader.take() {
+            let _ = reader.join();
         }
     }
 }
@@ -307,6 +313,50 @@ fn push_unique(paths: &mut Vec<PathBuf>, path: PathBuf) {
 mod tests {
     use super::*;
     use std::io::Cursor;
+
+    #[test]
+    fn drop_reaps_idle_helper_and_joins_reader() {
+        let mut child = Command::new("sleep")
+            .arg("60")
+            .stdout(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let pid = child.id();
+        let (events, _) = mpsc::channel();
+        let running = Arc::new(AtomicBool::new(true));
+        let reader = forward(
+            child.stdout.take().unwrap(),
+            0,
+            events,
+            None,
+            running.clone(),
+        );
+        drop(Bridge {
+            game_pid: 0,
+            child: Some(child),
+            subscription: None,
+            running: running.clone(),
+            reader: Some(reader),
+        });
+        assert!(!running.load(Ordering::Relaxed));
+        assert!(!Path::new(&format!("/proc/{pid}")).exists());
+    }
+
+    #[test]
+    fn drop_disconnects_idle_subscriber_and_joins_reader() {
+        let (input, _writer) = UnixStream::pair().unwrap();
+        let (events, _) = mpsc::channel();
+        let running = Arc::new(AtomicBool::new(true));
+        let reader = forward(input.try_clone().unwrap(), 0, events, None, running.clone());
+        drop(Bridge {
+            game_pid: 0,
+            child: None,
+            subscription: Some(input),
+            running: running.clone(),
+            reader: Some(reader),
+        });
+        assert!(!running.load(Ordering::Relaxed));
+    }
 
     #[test]
     fn decodes_bridge_record() {

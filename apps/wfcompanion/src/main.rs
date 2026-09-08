@@ -221,7 +221,7 @@ fn run_overlay(
     );
     let (relic_tx, relic_rx) = mpsc::channel();
     let outbound = daemon::spawn(ui_tx.clone(), relic_tx.clone(), Arc::clone(&stopping), mode);
-    observer::spawn(outbound.clone(), relic_tx.clone(), Arc::clone(&stopping));
+    let observer = observer::spawn(outbound.clone(), relic_tx.clone(), Arc::clone(&stopping));
     relic::spawn(
         relic_rx,
         outbound.clone(),
@@ -238,6 +238,9 @@ fn run_overlay(
     let shortcut = shortcut::spawn(ui_tx);
     let result = overlay::run(ui_rx, relic_tx, outbound, shortcut, Arc::clone(&stopping));
     stopping.store(true, Ordering::Relaxed);
+    if observer.join().is_err() {
+        incident::warn("observer.shutdown_failed", "observer thread panicked");
+    }
     incident::info("process.stop", format!("mode={mode}"));
     result.map_err(|error| error.to_string())
 }
