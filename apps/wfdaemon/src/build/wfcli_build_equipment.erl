@@ -3,21 +3,26 @@
 %%%-------------------------------------------------------------------
 -module(wfcli_build_equipment).
 
--export([snapshot/0, from_snapshot/2, from_snapshot_with_issues/2]).
+-export([snapshot/0, snapshot/1, from_snapshot/2, from_snapshot/3,
+         from_snapshot_with_issues/2]).
 
 -define(SCHEMA_VERSION, 3).
 
 -doc "Return normalized equipment definitions and concrete player instances.".
 -spec snapshot() -> {ok, map()}.
 snapshot() ->
+    snapshot(all).
+
+-spec snapshot(all | [binary()]) -> {ok, map()}.
+snapshot(InstanceIds) ->
     Player = wfcli_player_service:snapshot(),
     case wfcli_item_catalog:load() of
         {ok, Catalog, Meta} ->
-            {View, _Issues} = from_snapshot_with_issues(Player, Catalog),
+            View = from_snapshot(Player, Catalog, InstanceIds),
             CatalogMeta = catalog_meta(Meta),
             {ok, View#{<<"catalog">> => CatalogMeta}};
         {error, Reason} ->
-            View = from_snapshot(Player, []),
+            View = from_snapshot(Player, [], InstanceIds),
             {ok, View#{
                    <<"catalog">> => #{<<"available">> => false,
                                         <<"error">> => error_text(Reason)}}}
@@ -26,17 +31,24 @@ snapshot() ->
 -doc "Build an equipment snapshot from supplied player and catalog data.".
 -spec from_snapshot(map(), [map()]) -> map().
 from_snapshot(Player, Catalog) ->
-    {View, _Issues} = from_snapshot_with_issues(Player, Catalog),
+    from_snapshot(Player, Catalog, all).
+
+-spec from_snapshot(map(), [map()], all | [binary()]) -> map().
+from_snapshot(Player, Catalog, InstanceIds) ->
+    {View, _Issues} = from_snapshot_with_issues(Player, Catalog, InstanceIds),
     View.
 
 -doc "Build equipment plus attributed metadata-resolution issues.".
 -spec from_snapshot_with_issues(map(), [map()]) -> {map(), [map()]}.
 from_snapshot_with_issues(Player, Catalog) ->
+    from_snapshot_with_issues(Player, Catalog, all).
+
+from_snapshot_with_issues(Player, Catalog, InstanceIds) ->
     Projection = wfcli_player_projection:build(Player),
     CatalogIndex = wfcli_item_catalog:index(Catalog),
     Loadouts = loadout_index(Projection),
     {Definitions, Instances, Issues} = normalize_equipment(
-                                         maps:get(<<"equipment">>, Projection, []),
+                                         select_instances(Projection, InstanceIds),
                                          CatalogIndex, Loadouts),
     View = #{<<"schema">> => ?SCHEMA_VERSION,
              <<"player_revision">> => maps:get(revision, Player, 0),
@@ -44,6 +56,12 @@ from_snapshot_with_issues(Player, Catalog) ->
              <<"definitions">> => Definitions,
              <<"instances">> => Instances},
     {View, unique_issues(wfcli_resolution_audit:scan(View) ++ Issues)}.
+
+select_instances(Projection, all) -> maps:get(<<"equipment">>, Projection, []);
+select_instances(Projection, InstanceIds) ->
+    Ids = sets:from_list(InstanceIds),
+    [Item || Item <- maps:get(<<"equipment">>, Projection, []),
+             sets:is_element(maps:get(<<"instance_id">>, Item, null), Ids)].
 
 normalize_equipment(Equipment, Catalog, Loadouts) ->
     {DefinitionMap, Instances0, Issues0} = lists:foldl(

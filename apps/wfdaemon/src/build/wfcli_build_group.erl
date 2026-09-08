@@ -4,7 +4,7 @@
 -module(wfcli_build_group).
 
 -export([create/4, update/4, add_source/3, add_config/5,
-         remove_member/3, public/1]).
+         remove_member/3, public/1, refresh_target/2]).
 
 -define(SCHEMA, 1).
 
@@ -153,6 +153,18 @@ public(Group) ->
     Group#{<<"member_count">> => length(Members),
            <<"source_member_count">> => count_kind(<<"source_revision">>, Members),
            <<"config_member_count">> => count_kind(<<"player_config">>, Members)}.
+
+-spec refresh_target(map(), map()) -> map().
+refresh_target(Group, Equipment) ->
+    Id = maps:get(<<"instance_id">>, Group, null),
+    case target(maps:get(<<"definition_id">>, Group), Id, Equipment) of
+        {ok, undefined} -> Group#{<<"baseline">> => null,
+                                  <<"target_status">> => <<"unassigned">>};
+        {ok, Baseline} -> Group#{<<"baseline">> => Baseline,
+                                 <<"target_status">> => <<"available">>};
+        {error, _} -> Group#{<<"baseline">> => null,
+                             <<"target_status">> => <<"missing">>}
+    end.
 
 updated_name(Group, Patch) ->
     case maps:find(<<"name">>, Patch) of

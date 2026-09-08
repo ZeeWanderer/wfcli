@@ -94,6 +94,17 @@ or decode on BEAM, so JSON is retained until profiling shows transport encoding 
 GUI and companion can reconcile current decode failures through the optional diagnostics feature;
 the daemon stores them with its own name, metadata, and asset failures.
 
+## Build Groups
+
+`wfcli_build_service` owns saved groups and immutable member snapshots. Mutations are acknowledged
+only after an atomic, synchronous state-file save. A rejected state file remains untouched and
+group operations report the error. Refetchable source revisions and plan results live separately
+in XDG cache.
+
+Physical targets are resolved from current player equipment when read or planned. Plans are keyed
+by group revision and target fingerprint; completion rechecks both. Missing targets retain their
+groups but require retargeting before calculation.
+
 ## Supervision
 
 `wfcli_sup` uses `one_for_one` permanent children for daemon protocol, worldstate, catalogs,

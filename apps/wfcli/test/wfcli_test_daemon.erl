@@ -22,6 +22,8 @@ start() ->
                         filename:join(TestRoot, "market-token")),
     application:set_env(wfdaemon, market_presence_file,
                         filename:join(TestRoot, "market-presence.json")),
+    application:set_env(wfdaemon, build_store_file, filename:join(TestRoot, "builds.term")),
+    application:set_env(wfdaemon, build_cache_file, filename:join(TestRoot, "builds.cache")),
     persistent_term:put({?MODULE, test_root}, TestRoot),
     application:set_env(wfcli, test_local_daemon, true),
     application:set_env(wfdaemon, daemon_enabled, true),
@@ -47,6 +49,8 @@ stop() ->
     application:unset_env(wfdaemon, notification_settings_file),
     application:unset_env(wfdaemon, market_account_file),
     application:unset_env(wfdaemon, market_presence_file),
+    application:unset_env(wfdaemon, build_store_file),
+    application:unset_env(wfdaemon, build_cache_file),
     ok.
 
 cleanup_test_root(undefined) -> ok;
@@ -64,5 +68,5 @@ cleanup_test_root(TestRoot) ->
     _ = file:delete(filename:join(TestRoot, "market-presence.json.tmp")),
     _ = file:delete(filename:join(TestRoot, "market-presence.json")),
     _ = file:delete(filename:join(TestRoot, "wfdaemon.sock")),
-    _ = file:del_dir(TestRoot),
+    _ = file:del_dir_r(TestRoot),
     ok.

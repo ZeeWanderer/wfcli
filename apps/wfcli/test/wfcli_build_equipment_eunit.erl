@@ -2,6 +2,20 @@
 
 -include_lib("eunit/include/eunit.hrl").
 
+selected_instances_use_the_same_normalized_state_test() ->
+    Full = wfcli_build_equipment:from_snapshot(snapshot(), catalog()),
+    Selected = wfcli_build_equipment:from_snapshot(
+                 snapshot(), catalog(), [<<"suit-1">>, <<"suit-1">>, <<"missing">>]),
+    [Suit] = [Item || #{<<"id">> := <<"suit-1">>} = Item <-
+                         maps:get(<<"instances">>, Full)],
+    ?assertEqual([Suit], maps:get(<<"instances">>, Selected)),
+    ?assertEqual(1, length(maps:get(<<"definitions">>, Selected))),
+    ?assertEqual(maps:get(<<"player_revision">>, Full),
+                 maps:get(<<"player_revision">>, Selected)),
+    Empty = wfcli_build_equipment:from_snapshot(snapshot(), catalog(), []),
+    ?assertEqual([], maps:get(<<"instances">>, Empty)),
+    ?assertEqual([], maps:get(<<"definitions">>, Empty)).
+
 normalizes_definitions_instances_and_exalted_items_test() ->
     View = wfcli_build_equipment:from_snapshot(snapshot(), catalog()),
     ?assertEqual(7, maps:get(<<"player_revision">>, View)),

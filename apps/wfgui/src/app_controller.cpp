@@ -337,7 +337,13 @@ AppController::AppController(QObject *parent)
                 buildGroupsError_ = parseError;
               }
             }
-            buildGroupsLoaded_ = true;
+            const qint64 revision = group.value("player_revision").toInteger(-1);
+            if (revision >= 0 && revision < playerRevision_) {
+              buildGroupsLoaded_ = false;
+              if (activePage_ == "build-planner") {
+                refreshBuildGroups();
+              }
+            }
             emit buildGroupsStateChanged();
             emit buildGroupChanged(action, group);
           });
@@ -1223,7 +1229,12 @@ void AppController::handlePlayerDatasetChanged(qint64 revision,
   inventoryState_.stale = true;
   masteryState_.stale = true;
   buildEquipmentState_.stale = true;
+  buildGroupsLoaded_ = false;
   relicState_.stale = true;
+
+  if (activePage_ == "build-planner") {
+    refreshBuildGroups();
+  }
 
   if (activePage_ == "foundry" && !foundryState_.pending) {
     refreshFoundry();
@@ -1428,6 +1439,13 @@ void AppController::applyBuildSourceReply(const QJsonObject &request,
   if (op.startsWith("build_group_")) {
     pendingBuildGroupRequests_.remove(key);
     buildGroupsError_.clear();
+    const qint64 revision = data.value("player_revision").toInteger(-1);
+    if (revision >= 0 && revision < playerRevision_) {
+      buildGroupsLoaded_ = false;
+      emit buildGroupRequestFinished(request, data);
+      refreshBuildGroups();
+      return;
+    }
     if (op == "build_group_list") {
       QString parseError;
       if (!buildGroups_.replace(data, &parseError)) {
@@ -1441,8 +1459,6 @@ void AppController::applyBuildSourceReply(const QJsonObject &request,
       QString parseError;
       if (!buildGroups_.upsert(data, &parseError)) {
         buildGroupsError_ = parseError;
-      } else {
-        buildGroupsLoaded_ = true;
       }
     }
     emit buildGroupsStateChanged();

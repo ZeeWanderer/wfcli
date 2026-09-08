@@ -44,7 +44,7 @@ revision(Source, ExternalId, Fingerprint) ->
     gen_server:call(?SERVER, {revision, Source, ExternalId, Fingerprint}).
 
 -doc "List saved build groups.".
--spec groups() -> {ok, map()}.
+-spec groups() -> {ok, map()} | {error, term()}.
 groups() -> gen_server:call(?SERVER, groups).
 
 -doc "Return one saved build group.".
@@ -107,12 +107,13 @@ init([]) ->
             logger:warning("build store load failed: ~p", [Reason]),
             {wfcli_build_store:empty(), Reason}
     end,
-    {ok, #{store => Store, store_error => StoreError, dirty => false,
+    {ok, #{store => Store, store_error => StoreError,
+           store_load_error => StoreError, dirty => false,
            persist_timer => undefined, cache => #{}, pending => #{},
            queue => queue:new(), workers => #{}, worker_monitors => #{},
            client_monitors => #{}, catalog_refresh => undefined,
            subscribers => #{}, subscriber_monitors => #{},
-           plan_jobs => #{}, plan_keys => #{},
+           plan_jobs => #{}, plan_keys => #{}, forma_owner => undefined,
            worker_limit => worker_limit()}}.
 
 handle_call({submit, Client, Request0}, _From, State) ->
@@ -140,19 +141,29 @@ handle_call(status, _From, State) ->
               results => map_size(maps:get(results, Store)),
               planning => map_size(maps:get(plan_jobs, State)),
               catalog_refresh => maps:get(catalog_refresh, State) =/= undefined,
-              store_error => maps:get(store_error, State)}, State};
+              store_error => case maps:get(store_load_error, State) of
+                                 undefined -> maps:get(store_error, State);
+                                 LoadError -> LoadError
+                             end}, State};
 handle_call({revision, Source, ExternalId}, _From, State) ->
     Reply = find_revision(Source, ExternalId, latest, maps:get(store, State)),
     {reply, Reply, State};
 handle_call({revision, Source, ExternalId, Fingerprint}, _From, State) ->
     Reply = find_revision(Source, ExternalId, Fingerprint, maps:get(store, State)),
     {reply, Reply, State};
+handle_call(groups, _From, State = #{store_load_error := Reason})
+  when Reason =/= undefined ->
+    {reply, {error, {build_store_unavailable, Reason}}, State};
 handle_call(groups, _From, State) ->
     Store = maps:get(store, State),
-    Values = [group_summary(Group, Store)
-              || Group <- maps:values(maps:get(goals, maps:get(store, State)))],
+    Groups = maps:values(maps:get(goals, Store)),
+    Equipment = equipment_snapshot(Groups),
+    Values = [group_summary(Group, Store, Equipment)
+              || Group <- Groups],
     Sorted = lists:sort(fun group_before/2, Values),
-    {reply, {ok, #{<<"schema">> => 1, <<"groups">> => Sorted}}, State};
+    {reply, {ok, #{<<"schema">> => 1, <<"groups">> => Sorted,
+                   <<"player_revision">> => maps:get(<<"player_revision">>,
+                                                      Equipment, 0)}}, State};
 handle_call({group, Id}, _From, State) ->
     {reply, find_group(Id, State), State};
 handle_call({create_group, Input, Equipment}, _From, State) ->
@@ -160,8 +171,7 @@ handle_call({create_group, Input, Equipment}, _From, State) ->
     Now = erlang:system_time(millisecond),
     case wfcli_build_group:create(Input, Equipment, Now, Id) of
         {ok, Group} ->
-            State1 = store_group(created, Group, State),
-            {reply, {ok, public_group(Group, maps:get(store, State1))}, State1};
+            store_group(created, Group, State);
         {error, _Reason} = Error -> {reply, Error, State}
     end;
 handle_call({update_group, Id, Revision, Patch, Equipment}, _From, State) ->
@@ -175,9 +185,7 @@ handle_call({delete_group, Id, Revision}, _From, State) ->
             Store0 = maps:get(store, State),
             Store = Store0#{goals => maps:remove(Id, maps:get(goals, Store0)),
                             results => maps:remove(Id, maps:get(results, Store0))},
-            State1 = publish_group(deleted, Group,
-                                   mark_dirty(State#{store => Store})),
-            {reply, ok, State1};
+            commit_group(deleted, Group, Store, State);
         {error, _Reason} = Error -> {reply, Error, State}
     end;
 handle_call({add_source_member, Id, Revision, Source, ExternalId, Fingerprint},
@@ -250,6 +258,9 @@ handle_info({catalog_result, Token, Reply},
     end;
 handle_info({wfcli_daemon, FormaRef, Reply}, State) ->
     {noreply, complete_group_plan(FormaRef, Reply, State)};
+handle_info({'DOWN', Monitor, process, _Pid, Reason},
+            State = #{forma_owner := {_Owner, Monitor}}) ->
+    {noreply, fail_plans({forma_service_unavailable, Reason}, State)};
 handle_info({'DOWN', Monitor, process, _Pid, Reason}, State) ->
     case maps:take(Monitor, maps:get(subscriber_monitors, State, #{})) of
         {Ref, SubscriberMonitors} ->
@@ -282,7 +293,7 @@ handle_info(persist_store, State) ->
     case maps:get(dirty, State) of
         false -> {noreply, State#{persist_timer => undefined}};
         true ->
-            case wfcli_build_store:save(maps:get(store, State)) of
+            case wfcli_build_store:save_cache(maps:get(store, State)) of
                 ok ->
                     {noreply, State#{dirty => false, persist_timer => undefined,
                                       store_error => undefined}};
@@ -302,14 +313,30 @@ terminate(_Reason, State) ->
         Worker -> stop_worker(Worker)
     end,
     case maps:get(dirty, State, false) of
-        true -> _ = wfcli_build_store:save(maps:get(store, State));
+        true -> _ = wfcli_build_store:save_cache(maps:get(store, State));
         false -> ok
     end,
     ok.
 
 code_change(_OldVsn, State, _Extra) ->
+    LoadError = case wfcli_build_store:load() of
+        {ok, _} -> undefined;
+        {error, Reason} -> Reason
+    end,
+    case persist_legacy_groups(State, LoadError) of
+        ok -> migrate_state(State, LoadError);
+        Error -> Error
+    end.
+
+persist_legacy_groups(#{store_load_error := _}, _) -> ok;
+persist_legacy_groups(#{dirty := true, store := Store}, undefined) ->
+    wfcli_build_store:save(Store);
+persist_legacy_groups(_, _) -> ok.
+
+migrate_state(State, LoadError) ->
     {ok, State#{store => maps:get(store, State, wfcli_build_store:empty()),
                 store_error => maps:get(store_error, State, undefined),
+                store_load_error => maps:get(store_load_error, State, LoadError),
                 dirty => maps:get(dirty, State, false),
                 persist_timer => maps:get(persist_timer, State, undefined),
                 cache => #{},
@@ -322,6 +349,7 @@ code_change(_OldVsn, State, _Extra) ->
                 subscriber_monitors => maps:get(subscriber_monitors, State, #{}),
                 plan_jobs => maps:get(plan_jobs, State, #{}),
                 plan_keys => maps:get(plan_keys, State, #{}),
+                forma_owner => maps:get(forma_owner, State, undefined),
                 catalog_refresh => maps:get(catalog_refresh, State, undefined),
                 worker_limit => maps:get(worker_limit, State, worker_limit())}}.
 
@@ -620,6 +648,8 @@ find_revision(Source, ExternalId, Fingerprint, Store) when is_binary(Fingerprint
 find_revision(_Source, _ExternalId, _Fingerprint, _Store) ->
     {error, invalid_build_revision}.
 
+find_group(_Id, #{store_load_error := Reason}) when Reason =/= undefined ->
+    {error, {build_store_unavailable, Reason}};
 find_group(Id, State) when is_binary(Id) ->
     Store = maps:get(store, State),
     case maps:get(Id, maps:get(goals, Store), undefined) of
@@ -628,6 +658,9 @@ find_group(Id, State) when is_binary(Id) ->
     end;
 find_group(_Id, _State) -> {error, invalid_build_group_id}.
 
+checked_group(_Id, _Revision, #{store_load_error := Reason})
+  when Reason =/= undefined ->
+    {error, {build_store_unavailable, Reason}};
 checked_group(Id, Revision, State)
   when is_binary(Id), is_integer(Revision), Revision > 0 ->
     case maps:get(Id, maps:get(goals, maps:get(store, State)), undefined) of
@@ -645,8 +678,7 @@ mutate_group(Id, Revision, Event, State, Fun) ->
                 {ok, Before} ->
                     {reply, {ok, public_group(Before, maps:get(store, State))}, State};
                 {ok, After} ->
-                    State1 = store_group(Event, After, State),
-                    {reply, {ok, public_group(After, maps:get(store, State1))}, State1};
+                    store_group(Event, After, State);
                 {error, _Reason} = Error -> {reply, Error, State}
             end;
         {error, _Reason} = Error -> {reply, Error, State}
@@ -658,8 +690,23 @@ store_group(Event, Group, State) ->
     Id = maps:get(<<"id">>, Group),
     Store = Store0#{goals => Goals#{Id => Group},
                     results => maps:remove(Id, maps:get(results, Store0))},
-    publish_group(Event, Group,
-                  mark_dirty(State#{store => Store})).
+    commit_group(Event, Group, Store, State).
+
+commit_group(_Event, _Group, _Store, State = #{store_load_error := Reason})
+  when Reason =/= undefined ->
+    {reply, {error, {build_store_unavailable, Reason}}, State};
+commit_group(Event, Group, Store, State) ->
+    case wfcli_build_store:save(Store) of
+        ok ->
+            State1 = publish_group(Event, Group, mark_dirty(State#{store => Store})),
+            Reply = case Event of
+                deleted -> ok;
+                _ -> {ok, public_group(Group, Store)}
+            end,
+            {reply, Reply, State1};
+        {error, Reason} ->
+            {reply, {error, {build_store_save_failed, Reason}}, State}
+    end.
 
 publish_group(Event, Group, State) ->
     Public = public_group(Group, maps:get(store, State)),
@@ -681,18 +728,42 @@ remove_subscriber(Ref, State) ->
                                                      State, #{}))}
     end.
 
-group_summary(Group, Store) ->
-    Public = public_group(Group, Store),
+group_summary(Group, Store, Equipment) ->
+    Public = public_group(Group, Store, Equipment),
     Members = [maps:remove(<<"snapshot">>, Member)
                || Member <- maps:get(<<"members">>, Public, [])],
     Public#{<<"members">> => Members}.
 
 public_group(Group, Store) ->
-    Public = wfcli_build_group:public(hydrate_group(Group, Store)),
-    case current_result(Group, Store) of
+    public_group(Group, Store, equipment_snapshot([Group])).
+
+public_group(Group, Store, Equipment) ->
+    Current = wfcli_build_group:refresh_target(Group, Equipment),
+    Public = (wfcli_build_group:public(hydrate_group(Current, Store)))#{
+                 <<"player_revision">> => maps:get(<<"player_revision">>, Equipment, 0)},
+    case current_result(Current, Store) of
         undefined -> Public#{<<"plan_result">> => null};
         Result -> Public#{<<"plan_result">> => Result}
     end.
+
+-ifdef(TEST).
+equipment_snapshot(Groups) ->
+    case application:get_env(wfdaemon, build_equipment_fun) of
+        {ok, Fun} -> Fun();
+        _ -> current_equipment(Groups)
+    end.
+-else.
+equipment_snapshot(Groups) -> current_equipment(Groups).
+-endif.
+
+current_equipment(Groups) ->
+    InstanceIds = [Id || #{<<"instance_id">> := Id} <- Groups, is_binary(Id)],
+    {ok, Equipment} = wfcli_build_equipment:snapshot(InstanceIds),
+    Equipment.
+
+target_fingerprint(#{<<"baseline">> := #{<<"fingerprint">> := Fingerprint}}) ->
+    Fingerprint;
+target_fingerprint(_) -> null.
 
 public_member(Member = #{<<"kind">> := <<"source_revision">>,
                          <<"source">> := Source,
@@ -717,47 +788,68 @@ stored_revision(Source, ExternalId, Fingerprint, Store) ->
 current_result(Group, Store) ->
     Id = maps:get(<<"id">>, Group),
     Revision = maps:get(<<"revision">>, Group),
+    Fingerprint = target_fingerprint(Group),
     case maps:get(Id, maps:get(results, Store, #{}), undefined) of
-        #{<<"group_revision">> := Revision} = Result -> Result;
+        #{<<"group_revision">> := Revision,
+          <<"target_fingerprint">> := Fingerprint} = Result when Fingerprint =/= null ->
+            Result;
         _ -> undefined
     end.
 
 queue_group_plan(Client, Id, Revision, State) ->
     case checked_group(Id, Revision, State) of
         {ok, Group} ->
-            PlanningGroup = hydrate_group(Group, maps:get(store, State)),
-            case wfcli_build_plan:request(PlanningGroup) of
-                {ok, Request} ->
-                    RequestRef = make_ref(),
-                    Key = {Id, Revision},
-                    case maps:get(Key, maps:get(plan_keys, State), undefined) of
-                        FormaRef when is_reference(FormaRef) ->
-                            Jobs = maps:get(plan_jobs, State),
-                            case maps:get(FormaRef, Jobs, undefined) of
-                                Job when is_map(Job) ->
-                                    Waiters = maps:get(waiters, Job),
-                                    State1 = State#{plan_jobs =>
-                                                        Jobs#{FormaRef =>
-                                                                  Job#{waiters =>
-                                                                           Waiters#{RequestRef =>
-                                                                                        Client}}}},
-                                    {reply, {ok, RequestRef}, State1};
-                                undefined -> submit_group_plan(
-                                               Client, RequestRef, Key, PlanningGroup,
-                                               Request, State#{plan_keys =>
-                                                                  maps:remove(
-                                                                    Key,
-                                                                    maps:get(plan_keys,
-                                                                             State))})
-                            end;
-                        undefined ->
-                            submit_group_plan(Client, RequestRef, Key, PlanningGroup,
-                                              Request, State)
-                    end;
-                {error, _Reason} = Error -> {reply, Error, State}
+            Current = wfcli_build_group:refresh_target(Group, equipment_snapshot([Group])),
+            queue_current_group_plan(Client, Current, State);
+        {error, _Reason} = Error -> {reply, Error, State}
+    end.
+
+queue_current_group_plan(_Client, #{<<"target_status">> := <<"missing">>}, State) ->
+    {reply, {error, build_instance_not_found}, State};
+queue_current_group_plan(Client, Group, State) ->
+    PlanningGroup = hydrate_group(Group, maps:get(store, State)),
+    case wfcli_build_plan:request(PlanningGroup) of
+        {ok, Request} ->
+            State0 = ensure_forma_owner(State),
+            RequestRef = make_ref(),
+            Key = {maps:get(<<"id">>, Group), maps:get(<<"revision">>, Group),
+                   target_fingerprint(Group)},
+            case maps:get(Key, maps:get(plan_keys, State0), undefined) of
+                FormaRef when is_reference(FormaRef) ->
+                    Jobs = maps:get(plan_jobs, State0),
+                    Job = maps:get(FormaRef, Jobs),
+                    Waiters = maps:get(waiters, Job),
+                    {reply, {ok, RequestRef},
+                     State0#{plan_jobs => Jobs#{FormaRef => Job#{
+                                 waiters => Waiters#{RequestRef => Client}}}}};
+                undefined ->
+                    submit_group_plan(Client, RequestRef, Key, PlanningGroup,
+                                      Request, State0)
             end;
         {error, _Reason} = Error -> {reply, Error, State}
     end.
+
+ensure_forma_owner(State) ->
+    Pid = whereis(wfcli_forma_service),
+    case maps:get(forma_owner, State) of
+        {Pid, _} -> State;
+        Previous ->
+            case Previous of
+                {_, Monitor} -> erlang:demonitor(Monitor, [flush]);
+                undefined -> ok
+            end,
+            State0 = fail_plans(forma_service_restarted, State),
+            case Pid of
+                undefined -> State0;
+                _ -> State0#{forma_owner => {Pid, erlang:monitor(process, Pid)}}
+            end
+    end.
+
+fail_plans(Reason, State) ->
+    maps:foreach(fun(_, Job) ->
+                     notify_plan_waiters(maps:get(waiters, Job), {error, Reason})
+                 end, maps:get(plan_jobs, State)),
+    State#{plan_jobs => #{}, plan_keys => #{}, forma_owner => undefined}.
 
 submit_group_plan(Client, RequestRef, Key, Group, Request, State) ->
     try wfcli_forma_service:submit(self(), Request) of
@@ -782,7 +874,7 @@ complete_group_plan(FormaRef, Reply, State) ->
             Group = maps:get(group, Job),
             Id = maps:get(<<"id">>, Group),
             Revision = maps:get(<<"revision">>, Group),
-            case checked_group(Id, Revision, State0) of
+            case checked_plan_target(Id, Revision, Group, State0) of
                 {ok, Current} ->
                     case wfcli_build_plan:result(Current, Reply) of
                         {ok, Result} ->
@@ -804,6 +896,17 @@ complete_group_plan(FormaRef, Reply, State) ->
                     notify_plan_waiters(maps:get(waiters, Job), Error),
                     State0
             end
+    end.
+
+checked_plan_target(Id, Revision, Planned, State) ->
+    case checked_group(Id, Revision, State) of
+        {ok, Group} ->
+            Current = wfcli_build_group:refresh_target(Group, equipment_snapshot([Group])),
+            case target_fingerprint(Current) =:= target_fingerprint(Planned) of
+                true -> {ok, Current};
+                false -> {error, build_target_changed}
+            end;
+        Error -> Error
     end.
 
 notify_plan_waiters(Waiters, Reply) ->

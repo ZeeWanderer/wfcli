@@ -318,6 +318,8 @@ result_base(Group) ->
     #{<<"schema">> => ?SCHEMA,
       <<"group_id">> => maps:get(<<"id">>, Group),
       <<"group_revision">> => maps:get(<<"revision">>, Group),
+      <<"target_fingerprint">> => maps:get(<<"fingerprint">>,
+                                            maps:get(<<"baseline">>, Group), null),
       <<"generated_at">> => erlang:system_time(millisecond)}.
 
 polarity_binary(Value) when is_atom(Value) -> atom_to_binary(Value);

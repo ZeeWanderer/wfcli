@@ -26,6 +26,15 @@ bool hasMemberSnapshots(const QJsonObject &group) {
   return false;
 }
 
+bool isOlder(const QJsonObject &candidate, const QJsonObject &current) {
+  const auto revision = candidate.value("revision").toInteger(-1);
+  const auto currentRevision = current.value("revision").toInteger(-1);
+  return revision < currentRevision ||
+         (revision == currentRevision &&
+          candidate.value("player_revision").toInteger(-1) <
+              current.value("player_revision").toInteger(-1));
+}
+
 QJsonObject preserveDetail(const QJsonObject &current,
                            const QJsonObject &candidate) {
   if (current.value("revision").toInteger(-1) !=
@@ -35,6 +44,9 @@ QJsonObject preserveDetail(const QJsonObject &current,
   }
   QJsonObject merged = current;
   for (auto it = candidate.constBegin(); it != candidate.constEnd(); ++it) {
+    if (it.key() == "members") {
+      continue;
+    }
     merged.insert(it.key(), it.value());
   }
   return merged;
@@ -115,9 +127,7 @@ bool BuildGroupModel::replace(const QJsonObject &data, QString *error) {
     }
     QJsonObject candidate = value.toObject();
     const QJsonObject current = group(candidate.value("id").toString());
-    const qint64 candidateRevision = candidate.value("revision").toInteger();
-    const qint64 currentRevision = current.value("revision").toInteger(-1);
-    if (currentRevision > candidateRevision) {
+    if (isOlder(candidate, current)) {
       candidate = current;
     } else {
       candidate = preserveDetail(current, candidate);
@@ -140,8 +150,7 @@ bool BuildGroupModel::upsert(const QJsonObject &group, QString *error) {
   }
   const QString id = group.value("id").toString();
   const QJsonObject current = this->group(id);
-  if (!current.isEmpty() && current.value("revision").toInteger() >
-                                group.value("revision").toInteger()) {
+  if (isOlder(group, current)) {
     return true;
   }
   const QJsonObject candidate = preserveDetail(current, group);

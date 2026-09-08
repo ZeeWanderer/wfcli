@@ -10,6 +10,7 @@ class BuildGroupModelTest final : public QObject {
 private slots:
   void ordersAndUpdatesGroups();
   void preservesDetailedGroupOnSummaryUpdate();
+  void rejectsOlderPhysicalTarget();
   void rejectsMalformedGroups();
 };
 
@@ -54,6 +55,25 @@ void BuildGroupModelTest::rejectsMalformedGroups() {
   QVERIFY(!error.isEmpty());
 }
 
+void BuildGroupModelTest::rejectsOlderPhysicalTarget() {
+  BuildGroupModel model;
+  QJsonObject current{{"id", "group"}, {"name", "Group"},
+                      {"definition_id", "/item"}, {"revision", 2},
+                      {"player_revision", 10}, {"baseline", QJsonObject{{"forma_count", 3}}}};
+  QVERIFY(model.upsert(current));
+  auto old = current;
+  old.insert("player_revision", 9);
+  old.insert("baseline", QJsonObject{{"forma_count", 2}});
+  QVERIFY(model.upsert(old));
+  QCOMPARE(model.group("group"), current);
+  QVERIFY(model.replace({{"groups", QJsonArray{old}}}));
+  QCOMPARE(model.group("group"), current);
+  current.insert("player_revision", 11);
+  current.insert("baseline", QJsonValue::Null);
+  QVERIFY(model.upsert(current));
+  QCOMPARE(model.group("group"), current);
+}
+
 void BuildGroupModelTest::preservesDetailedGroupOnSummaryUpdate() {
   BuildGroupModel model;
   const QJsonObject member{{"id", "member"},
@@ -72,12 +92,14 @@ void BuildGroupModelTest::preservesDetailedGroupOnSummaryUpdate() {
                             {"revision", 2},
                             {"updated_at", 20},
                             {"member_count", 1},
+                            {"members", QJsonArray{QJsonObject{{"id", "member"}}}},
                             {"plan_result",
                              QJsonObject{{"status", "ready"},
                                          {"forma_cost", 2}}}};
   QVERIFY(model.upsert(summary));
   const QJsonObject merged = model.group("group");
   QCOMPARE(merged.value("members").toArray().size(), 1);
+  QCOMPARE(merged.value("members").toArray().first().toObject(), member);
   QCOMPARE(merged.value("updated_at").toInteger(), 20);
   QCOMPARE(merged.value("plan_result").toObject().value("forma_cost").toInt(),
            2);
