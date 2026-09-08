@@ -66,6 +66,7 @@ activity_end() ->
 
 -spec init([]) -> {ok, state()}.
 init([]) ->
+    process_flag(trap_exit, true),
     PollMs = daemon_env(daemon_poll_interval_ms, ?DEFAULT_POLL_INTERVAL_MS),
     IdleMs = daemon_env(daemon_idle_timeout_ms, ?DEFAULT_IDLE_TIMEOUT_MS),
     ConfiguredIdle = daemon_env(daemon_idle_shutdown, false),
@@ -215,10 +216,21 @@ terminate(_Reason, State) ->
     cancel_timer(maps:get(idle_timer, State, undefined)),
     [erlang:demonitor(Monitor, [flush])
      || Monitor <- maps:keys(maps:get(activity_monitors, State, #{}))],
+    maps:foreach(fun(_, Dataset) ->
+                     case maps:get(fetch, Dataset, undefined) of
+                         #{pid := Pid, monitor := Ref} ->
+                             exit(Pid, shutdown),
+                             receive {'DOWN', Ref, process, Pid, _} -> ok
+                             after 1000 -> ok
+                             end;
+                         _ -> ok
+                     end
+                 end, maps:get(datasets, State)),
     ok.
 
 -spec code_change(term(), state(), term()) -> {ok, state()}.
 code_change(_OldVsn, State, _Extra) ->
+    process_flag(trap_exit, true),
     DefaultMs = maps:get(
                   default_idle_timeout_ms,
                   State,
@@ -304,13 +316,14 @@ start_fetch(Key, Request, State) ->
             Parent = self(),
             LoadOpts = fetch_opts(Key, Request, Dataset),
             Source = maps:get(source, Request, worldstate),
-            {_Pid, Monitor} = spawn_monitor(fun() ->
+            {Pid, Monitor} = spawn_opt(fun() ->
                 Result = try fetch_source(Source, LoadOpts)
                          catch Class:Reason:Stack -> {error, {fetch_crash, Class, Reason, Stack}}
                          end,
                 Parent ! {worldstate_fetch_result, Key, Token, Result}
-            end),
-            put_dataset(Key, Dataset#{fetch => #{token => Token, monitor => Monitor}}, State);
+            end, [link, monitor]),
+            put_dataset(Key, Dataset#{fetch => #{pid => Pid, token => Token,
+                                                 monitor => Monitor}}, State);
         _ ->
             State
     end.

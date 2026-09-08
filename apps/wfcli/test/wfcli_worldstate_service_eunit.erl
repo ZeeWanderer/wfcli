@@ -188,6 +188,45 @@ fetch_worker_crash_is_reported_without_killing_service_test() ->
         _ = file:delete(Cache ++ ".lock")
     end.
 
+fetch_worker_stops_with_owner_test_() ->
+    [fun() -> fetch_worker_stops_with_owner(Reason) end || Reason <- [normal, kill]].
+
+fetch_worker_stops_with_owner(Reason) ->
+    ensure_service_stopped(),
+    Test = self(),
+    application:set_env(wfdaemon, daemon_idle_shutdown, false),
+    application:set_env(wfdaemon, daemon_worldstate_fetch_fun,
+                        fun() ->
+                            Test ! {blocked_fetch, self()},
+                            receive finish -> {error, unused} end
+                        end),
+    {ok, Pid} = wfcli_worldstate_service:start_link(),
+    unlink(Pid),
+    Cache = filename:join("/tmp", "wfcli-fetch-owner-" ++
+                         integer_to_list(erlang:unique_integer([positive]))),
+    try
+        {ok, _} = wfcli_worldstate_service:submit(
+                    self(), #{source => worldstate,
+                              opts => #{cache => Cache, refresh => true},
+                              type_filter => alert, mode => list}),
+        Worker = receive {blocked_fetch, W} -> W
+                 after 1000 -> error(fetch_not_started)
+                 end,
+        Ref = monitor(process, Worker),
+        case Reason of
+            normal -> gen_server:stop(Pid);
+            kill -> exit(Pid, kill)
+        end,
+        receive {'DOWN', Ref, process, Worker, _} -> ok
+        after 1000 -> error(orphaned_fetch_worker)
+        end
+    after
+        case is_process_alive(Pid) of true -> gen_server:stop(Pid); false -> ok end,
+        application:unset_env(wfdaemon, daemon_worldstate_fetch_fun),
+        _ = file:delete(Cache),
+        _ = file:delete(Cache ++ ".lock")
+    end.
+
 teshin_one_shot_is_calculated_without_worldstate_test() ->
     Started = setup_service(),
     try
