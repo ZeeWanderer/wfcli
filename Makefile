@@ -6,8 +6,12 @@ SCCACHE ?= $(shell command -v sccache 2>/dev/null)
 SCCACHE_BASEDIRS ?= $(CURDIR)
 SCCACHE_DIR ?= $(CURDIR)/.cache/sccache
 SCCACHE_SERVER_UDS ?= $(CURDIR)/.cache/sccache.sock
-LLVM_ROOT ?= $(shell brew --prefix llvm 2>/dev/null)
+LLVM_ROOT ?= $(shell command -v clang >/dev/null 2>&1 && dirname "$$(dirname "$$(realpath "$$(command -v clang)")")")
 NINJA ?= $(shell command -v ninja 2>/dev/null)
+
+ifneq ($(strip $(LLVM_ROOT)),)
+export LLVM_ROOT
+endif
 
 ifeq ($(origin CC),default)
 CC := $(if $(LLVM_ROOT),$(LLVM_ROOT)/bin/clang,clang)
@@ -67,36 +71,32 @@ companion: dev-companion
 gui: gui-dev
 
 gui-configure-dev: sccache-setup
-	test -n "$(LLVM_ROOT)"
 	test -n "$(NINJA)"
-	+LLVM_ROOT="$(LLVM_ROOT)" cmake --preset gui-dev --log-level=WARNING -DCMAKE_MAKE_PROGRAM="$(NINJA)"
+	+cmake --preset gui-dev --log-level=WARNING -DCMAKE_MAKE_PROGRAM="$(NINJA)"
 
 gui-dev: gui-configure-dev
-	+LLVM_ROOT="$(LLVM_ROOT)" cmake --build --preset gui-dev
+	+cmake --build --preset gui-dev
 	rm -rf dev/lib dev/Qt6
-	LLVM_ROOT="$(LLVM_ROOT)" cmake --install _build/cmake/gui-dev
+	cmake --install _build/cmake/gui-dev
 
 gui-configure-prod: sccache-setup
-	test -n "$(LLVM_ROOT)"
 	test -n "$(NINJA)"
-	+LLVM_ROOT="$(LLVM_ROOT)" cmake --preset gui-prod --log-level=WARNING -DCMAKE_MAKE_PROGRAM="$(NINJA)"
+	+cmake --preset gui-prod --log-level=WARNING -DCMAKE_MAKE_PROGRAM="$(NINJA)"
 
 gui-prod: gui-configure-prod
-	+LLVM_ROOT="$(LLVM_ROOT)" cmake --build --preset gui-prod
+	+cmake --build --preset gui-prod
 	rm -rf prod/lib prod/Qt6
-	LLVM_ROOT="$(LLVM_ROOT)" cmake --install _build/cmake/gui-prod
+	cmake --install _build/cmake/gui-prod
 
 gui-reconfigure: gui-reconfigure-dev gui-reconfigure-prod
 
 gui-reconfigure-dev: sccache-setup
-	test -n "$(LLVM_ROOT)"
 	test -n "$(NINJA)"
-	+LLVM_ROOT="$(LLVM_ROOT)" cmake --fresh --preset gui-dev --log-level=WARNING -DCMAKE_MAKE_PROGRAM="$(NINJA)"
+	+cmake --fresh --preset gui-dev --log-level=WARNING -DCMAKE_MAKE_PROGRAM="$(NINJA)"
 
 gui-reconfigure-prod: sccache-setup
-	test -n "$(LLVM_ROOT)"
 	test -n "$(NINJA)"
-	+LLVM_ROOT="$(LLVM_ROOT)" cmake --fresh --preset gui-prod --log-level=WARNING -DCMAKE_MAKE_PROGRAM="$(NINJA)"
+	+cmake --fresh --preset gui-prod --log-level=WARNING -DCMAKE_MAKE_PROGRAM="$(NINJA)"
 
 dev-erlang:
 	$(REBAR3) escriptize
@@ -146,7 +146,7 @@ previews: $(PREVIEW_DEPS)
 	./scripts/generate-previews
 
 icon-optics: gui-configure-dev
-	LLVM_ROOT="$(LLVM_ROOT)" cmake --build --preset gui-dev --target wfgui_icon_optics
+	cmake --build --preset gui-dev --target wfgui_icon_optics
 	QT_QPA_PLATFORM=offscreen _build/cmake/gui-dev/apps/wfgui/wfgui-icon-optics \
 		--config "$(ICON_OPTICS_CONFIG)" --ui-scale "$(ICON_OPTICS_SCALE)" \
 		--output-dir "$(ICON_OPTICS_OUTPUT)"

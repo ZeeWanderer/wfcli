@@ -28,8 +28,15 @@ export VCPKG_ROOT=/path/to/vcpkg
 make gui
 ```
 
-`make gui` derives `LLVM_ROOT` from Homebrew; override it to select another complete LLVM prefix.
-Host tools and target libraries share one triplet. The build environment supplies LLVM's runtime
+Configuration runs `vcpkg` from `PATH`; `VCPKG_ROOT` supplies the shared ports and CMake
+scripts. Homebrew's executable works directly. Override the executable with
+`-DWFCLI_VCPKG_EXECUTABLE=/path/to/vcpkg` when configuring CMake.
+
+`make gui` selects Clang from `PATH`; set `LLVM_ROOT` to select another complete LLVM prefix.
+System packages must include the matching LLVM tools, libc++, libc++abi, and libunwind development
+files. After changing LLVM, run `make gui-reconfigure` to refresh both CMake trees; this preserves
+vcpkg installations and build caches.
+Host tools and target libraries share one fixed `x86-64-v2` triplet in dev and prod. The build environment supplies LLVM's runtime
 path while generated tools execute. vcpkg archives and sccache data remain under `.cache/`;
 compiler output remains under `_build/`.
 

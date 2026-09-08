@@ -283,7 +283,13 @@ target_link_libraries(wfgui_icon_optics PRIVATE Qt6::Gui)
 install(TARGETS wfgui RUNTIME DESTINATION bin)
 install(FILES resources/qt.conf DESTINATION bin)
 install(FILES resources/Lucide-LICENSE.txt DESTINATION share/licenses/wfcli)
-install(FILES "${WFCLI_LLVM_ROOT}/LICENSE.TXT"
+string(REGEX MATCH "^[0-9]+" llvm_major "${CMAKE_CXX_COMPILER_VERSION}")
+find_file(WFCLI_LLVM_LICENSE_FILE NAMES LICENSE.TXT copyright
+  PATHS "${WFCLI_LLVM_ROOT}"
+        "/usr/share/doc/libc++-${llvm_major}-dev"
+        "/usr/share/doc/libc++-dev"
+  NO_DEFAULT_PATH REQUIRED)
+install(FILES "${WFCLI_LLVM_LICENSE_FILE}"
   DESTINATION share/licenses/wfcli
   RENAME LLVM-LICENSE.txt
 )

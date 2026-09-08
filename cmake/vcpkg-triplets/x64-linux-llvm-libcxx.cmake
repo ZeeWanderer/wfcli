@@ -2,11 +2,9 @@ set(VCPKG_TARGET_ARCHITECTURE x64)
 set(VCPKG_CRT_LINKAGE dynamic)
 set(VCPKG_LIBRARY_LINKAGE dynamic)
 set(VCPKG_CMAKE_SYSTEM_NAME Linux)
-
-if(DEFINED ENV{WFCLI_CPU_BASELINE} AND NOT "$ENV{WFCLI_CPU_BASELINE}" STREQUAL "")
-  set(VCPKG_C_FLAGS "-march=$ENV{WFCLI_CPU_BASELINE}")
-  set(VCPKG_CXX_FLAGS "-march=$ENV{WFCLI_CPU_BASELINE}")
-endif()
+# Dev and prod share this dependency prefix and its portable ABI.
+set(VCPKG_C_FLAGS "-march=x86-64-v2")
+set(VCPKG_CXX_FLAGS "-march=x86-64-v2")
 
 set(WFCLI_LLVM_DISCOVERY
   "${CMAKE_CURRENT_LIST_DIR}/../toolchains/find-llvm.cmake"

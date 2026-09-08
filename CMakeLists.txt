@@ -24,6 +24,8 @@ foreach(INTERFACE DATASETS PLAYER WORLDSTATE NOTIFICATIONS MARKET OVERFRAME
   wfcli_protocol_define("INTERFACE_${INTERFACE}" "WFCLI_INTERFACE_${INTERFACE}")
 endforeach()
 
+include(cmake/gui-toolchain.cmake)
+
 find_program(WFCLI_SCCACHE NAMES sccache)
 if(WFCLI_SCCACHE)
   execute_process(
@@ -32,6 +34,8 @@ if(WFCLI_SCCACHE)
     ERROR_QUIET
   )
 endif()
+
+include(cmake/gui-vcpkg.cmake)
 
 project(wfcli VERSION "${WFCLI_VERSION}" LANGUAGES CXX)
 
@@ -46,4 +50,14 @@ if(WFCLI_LLVM_ROOT)
 endif()
 
 include(CTest)
+if(BUILD_TESTING)
+  add_test(NAME gui_toolchain
+    COMMAND "${CMAKE_COMMAND}"
+      "-DTEST_DIR=${CMAKE_CURRENT_BINARY_DIR}/toolchain-test"
+      -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/tests/gui-toolchain.cmake")
+  add_test(NAME gui_vcpkg
+    COMMAND "${CMAKE_COMMAND}"
+      "-DTEST_DIR=${CMAKE_CURRENT_BINARY_DIR}/vcpkg-test"
+      -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/tests/gui-vcpkg.cmake")
+endif()
 add_subdirectory(apps/wfgui)
