@@ -957,6 +957,7 @@ void AppController::applyAssets(const QJsonArray &assets) {
   for (const QJsonValue &value : assets) {
     const wfgui::AssetRef asset = wfgui::AssetRef::fromJson(value.toObject());
     if (asset.isValid() && assets_.value(asset.id) != asset) {
+      wfgui::acceptThumbnailAsset(asset);
       assets_.insert(asset.id, asset);
       changedAssets.insert(asset.id, asset);
     }

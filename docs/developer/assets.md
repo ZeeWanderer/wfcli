@@ -126,5 +126,8 @@ drawing. Blend2D static-scene caching remains useful after decode: static card a
 rasterized once, while a changed price or selection invalidates only the affected scene region.
 
 Qt widgets load catalog and embedded images through `wfgui::cachedThumbnail` in `image_cache`.
-The cache key includes source path, target bounds, and device-pixel ratio; individual widgets must
-not decode full-size pixmaps or maintain separate thumbnail caches.
+Keys include source digest (path for embedded assets), target bounds, and device-pixel ratio.
+Individual widgets must not decode full-size pixmaps or maintain separate thumbnail caches.
+Accept daemon descriptors through `acceptThumbnailAsset` before updating models. Its ordered
+background writer owns source freshness; decode jobs only read identities. Clearing derivatives
+retains source markers so delayed jobs cannot revive superseded images.

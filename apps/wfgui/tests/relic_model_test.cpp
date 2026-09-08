@@ -57,7 +57,13 @@
 class RelicModelTest final : public QObject {
   Q_OBJECT
 
+  QTemporaryDir cacheRoot_;
+
 private slots:
+  void initTestCase() {
+    QVERIFY(cacheRoot_.isValid());
+    qputenv("XDG_CACHE_HOME", cacheRoot_.path().toUtf8());
+  }
   void parsesRecommendations();
   void appliesResolvedAssets();
   void priceUpdatesPreserveRows();
@@ -98,6 +104,7 @@ private slots:
   void masteryGridRequestsAllComponentQuotes();
   void playerGridRequestsAssetsWhenShown();
   void subscribesToPlayerUpdatesAndCoalescesViews();
+  void buildGroupsFollowPlayerRevisions();
   void updatesOnlyOlderDaemonContracts();
   void cacheMissDoesNotBecomeMarketMiss();
   void playerGridPreservesScrollAcrossResort();
@@ -111,6 +118,7 @@ private slots:
   void alignsFractionalDprThumbnailsToDevicePixels();
   void widgetThumbnailDecodeCompletesOffPaintPath();
   void derivativeCacheTracksUpstreamIdentity();
+  void renderingOlderAssetCannotRegressFreshness();
   void settingsExposeIndependentCacheControls();
   void pathReportIsStructured();
   void marketOrderCardUsesReferenceStructure();
@@ -126,7 +134,10 @@ namespace {
 class ThumbnailProbe final : public QWidget {
 public:
   explicit ThumbnailProbe(QString path, QRect dirtyRegion = {})
-      : path_(std::move(path)), dirtyRegion_(dirtyRegion) {}
+      : ThumbnailProbe(wfgui::AssetRef::embedded(path, path), dirtyRegion) {}
+
+  explicit ThumbnailProbe(wfgui::AssetRef asset, QRect dirtyRegion = {})
+      : asset_(std::move(asset)), dirtyRegion_(dirtyRegion) {}
 
   const QPixmap &thumbnail() const { return thumbnail_; }
   QRect resolvedPaintRegion() const { return resolvedPaintRegion_; }
@@ -136,14 +147,14 @@ protected:
     const bool unresolved = thumbnail_.isNull();
     QPainter painter(this);
     thumbnail_ =
-        wfgui::cachedThumbnail(painter, path_, QSize(20, 20), dirtyRegion_);
+        wfgui::cachedThumbnail(painter, asset_, QSize(20, 20), dirtyRegion_);
     if (unresolved && !thumbnail_.isNull()) {
       resolvedPaintRegion_ = event->region().boundingRect();
     }
   }
 
 private:
-  QString path_;
+  wfgui::AssetRef asset_;
   QRect dirtyRegion_;
   QRect resolvedPaintRegion_;
   QPixmap thumbnail_;
@@ -1952,6 +1963,51 @@ void RelicModelTest::updatesOnlyOlderDaemonContracts() {
       {{"envelope", "invalid"}, {"interfaces", QJsonObject{}}}, required, 1));
 }
 
+void RelicModelTest::buildGroupsFollowPlayerRevisions() {
+  QTemporaryDir directory;
+  QLocalServer server;
+  QVERIFY(server.listen(directory.filePath("wfdaemon.sock")));
+  const QByteArray oldSocket = qgetenv("WFCLI_DAEMON_SOCKET");
+  qputenv("WFCLI_DAEMON_SOCKET", server.fullServerName().toUtf8());
+  const auto restoreSocket = qScopeGuard([oldSocket] {
+    if (oldSocket.isNull()) {
+      qunsetenv("WFCLI_DAEMON_SOCKET");
+    } else {
+      qputenv("WFCLI_DAEMON_SOCKET", oldSocket);
+    }
+  });
+  AppController controller;
+  auto *client = controller.findChild<DaemonClient *>();
+  QVERIFY(client);
+  client->playerDatasetChanged(10, "inventory");
+  const QJsonObject group{{"id", "group"}, {"name", "Group"},
+                         {"definition_id", "/item"}, {"revision", 1},
+                         {"player_revision", 10}};
+  client->buildGroupEvent("created", group);
+  QVERIFY(!controller.buildGroupsLoaded());
+  const QJsonObject request{{"op", "build_group_list"}};
+  const QJsonObject reply{{"groups", QJsonArray{group}}, {"player_revision", 10}};
+  client->buildSourceReady(request, reply);
+  QVERIFY(controller.buildGroupsLoaded());
+
+  controller.setActivePage("build-planner");
+  client->playerDatasetChanged(11, "inventory");
+  QVERIFY(!controller.buildGroupsLoaded());
+  QVERIFY(controller.buildGroupsLoading());
+  client->buildSourceReady(request, reply);
+  QVERIFY(!controller.buildGroupsLoaded());
+  QVERIFY(controller.buildGroupsLoading());
+  auto updated = group;
+  updated.insert("player_revision", 11);
+  client->buildSourceReady(request, {{"groups", QJsonArray{updated}},
+                                   {"player_revision", 11}});
+  QVERIFY(controller.buildGroupsLoaded());
+  QVERIFY(!controller.buildGroupsLoading());
+  client->buildGroupEvent("planned", group);
+  QCOMPARE(controller.buildGroup("group").value("player_revision").toInteger(), 11);
+  QVERIFY(!controller.buildGroupsLoaded());
+}
+
 void RelicModelTest::cacheMissDoesNotBecomeMarketMiss() {
   QTemporaryDir directory;
   QVERIFY(directory.isValid());
@@ -2567,6 +2623,12 @@ void RelicModelTest::derivativeCacheTracksUpstreamIdentity() {
   QVERIFY(cache.store(replacement, QSize(32, 32), image));
   QCOMPARE(cache.stats().files, 1);
 
+  // An older decode finishing late may read/write its digest, never register it.
+  QVERIFY(cache.load(first, QSize(32, 32)).isNull());
+  QVERIFY(!cache.store(first, QSize(64, 64), image));
+  QCOMPARE(cache.load(replacement, QSize(32, 32)).convertToFormat(image.format()),
+           image);
+
   QDirIterator files(cache.root(), {"*.png"}, QDir::Files,
                      QDirIterator::Subdirectories);
   QVERIFY(files.hasNext());
@@ -2580,6 +2642,44 @@ void RelicModelTest::derivativeCacheTracksUpstreamIdentity() {
   QVERIFY(cache.store(replacement, QSize(32, 32), image));
   QVERIFY(cache.clear());
   QCOMPARE(cache.stats().files, 0);
+  QVERIFY(!cache.store(first, QSize(32, 32), image));
+  QVERIFY(cache.store(replacement, QSize(32, 32), image));
+  wfgui::DerivativeCache reopened(cache.root());
+  QCOMPARE(reopened.load(replacement, QSize(32, 32)).convertToFormat(image.format()),
+           image);
+}
+
+void RelicModelTest::renderingOlderAssetCannotRegressFreshness() {
+  QTemporaryDir sources;
+  QVERIFY(sources.isValid());
+  QImage image(40, 40, QImage::Format_ARGB32_Premultiplied);
+  image.fill(Qt::green);
+  const QString firstPath = sources.filePath("old.png");
+  const QString secondPath = sources.filePath("new.png");
+  QVERIFY(image.save(firstPath));
+  image.fill(Qt::blue);
+  QVERIFY(image.save(secondPath));
+  const wfgui::AssetRef first{.id = "test-asset", .source = "test",
+                            .imageName = "revised.png", .path = firstPath,
+                            .digest = "old"};
+  auto second = first;
+  second.path = secondPath;
+  second.digest = "new";
+  wfgui::acceptThumbnailAsset(first);
+  wfgui::acceptThumbnailAsset(second);
+  ThumbnailProbe current(second);
+  current.show();
+  QTRY_VERIFY(!current.thumbnail().isNull());
+  const QSize bounds(qCeil(20 * current.devicePixelRatioF()),
+                     qCeil(20 * current.devicePixelRatioF()));
+  wfgui::DerivativeCache cache;
+  QTRY_VERIFY(!cache.load(second, bounds).isNull());
+
+  ThumbnailProbe old(first);
+  old.show();
+  QTRY_VERIFY(!old.thumbnail().isNull());
+  QVERIFY(!cache.load(second, bounds).isNull());
+  QVERIFY(cache.load(first, bounds).isNull());
 }
 
 void RelicModelTest::settingsExposeIndependentCacheControls() {

@@ -27,6 +27,8 @@ using ImageIssueReporter =
                                       const QSize &logicalBounds,
                                       QRect dirtyRegion = {});
 
+// Accept descriptors on the GUI thread; render jobs never advance source identity.
+void acceptThumbnailAsset(const AssetRef &asset);
 [[nodiscard]] DerivativeCacheStats derivativeCacheStats();
 [[nodiscard]] bool clearDerivativeCache();
 void clearThumbnailMemoryCache();

@@ -123,8 +123,14 @@ DerivativeCacheStats DerivativeCache::stats() const {
 
 bool DerivativeCache::clear() {
   const QMutexLocker lock(&mutex_);
-  QDir directory(root_);
-  return !directory.exists() || directory.removeRecursively();
+  // Keep source markers: pending jobs must not revive superseded identities.
+  QDirIterator files(root_, {"*.png"}, QDir::Files,
+                     QDirIterator::Subdirectories);
+  bool success = true;
+  while (files.hasNext()) {
+    success = QFile::remove(files.next()) && success;
+  }
+  return success;
 }
 
 QString DerivativeCache::originDirectory(const AssetRef &asset) const {

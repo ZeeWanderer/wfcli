@@ -128,6 +128,19 @@ public:
     writer_.waitForDone();
   }
 
+  void acceptAsset(const wfgui::AssetRef &asset) {
+    if (!asset.isPersistent() || stopping_.load()) {
+      return;
+    }
+    QPointer<ThumbnailLoader> loader(this);
+    // One FIFO writer orders source changes before lower-priority derivative writes.
+    writer_.start([loader, asset] {
+      if (loader && !loader->stopping_.load()) {
+        derivativeCache().registerAsset(asset);
+      }
+    });
+  }
+
   void request(const QString &key, const wfgui::AssetRef &asset,
                const QSize &pixelBounds, qreal dpr, QWidget *target,
                const QRect &dirtyRegion) {
@@ -165,7 +178,6 @@ public:
           if (!loader || loader->stopping_.load()) {
             return;
           }
-          derivativeCache().registerAsset(asset);
           QImage image = derivativeCache().load(asset, pixelBounds);
           const bool needsStore = image.isNull() && asset.isPersistent();
           QString decodeError;
@@ -412,6 +424,10 @@ QPixmap cachedThumbnail(QPainter &painter, const AssetRef &asset,
                        false);
   }
   return image;
+}
+
+void acceptThumbnailAsset(const AssetRef &asset) {
+  thumbnailLoader()->acceptAsset(asset);
 }
 
 DerivativeCacheStats derivativeCacheStats() {
