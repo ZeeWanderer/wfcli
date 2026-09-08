@@ -976,7 +976,7 @@ fn wfcli_command() -> PathBuf {
             return candidate;
         }
     }
-    if let Ok(executable) = std::env::current_exe() {
+    if let Some(executable) = wfcompanion::executable_path() {
         for ancestor in executable.ancestors() {
             let candidate = ancestor.join("wfcli");
             if candidate.is_file() {

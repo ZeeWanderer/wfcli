@@ -54,6 +54,7 @@ enum Daemon {
 }
 
 fn main() -> ExitCode {
+    let _ = wfcompanion::executable_path();
     let mut arguments = std::env::args_os().collect::<Vec<_>>();
     if arguments.last().is_some_and(|arg| arg == "help") && !arguments.iter().any(|arg| arg == "--")
     {

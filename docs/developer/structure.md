@@ -77,7 +77,8 @@ diagnostics. Staged builds place both executables together so helper discovery n
 
 Oodle decoding uses the separate `libexec/unoodle` helper. `scripts/build-oozextract`
 pins its registry archive and checksum, builds with the caller's Rust flags, and
-stages its source and license under `share/licenses/oozextract/`.
+prepares its source and license. `scripts/build-companion` stages them under
+`share/licenses/oozextract/` with the completed companion build.
 
 ## `wfgui`
 

@@ -14,22 +14,21 @@ case "$mode" in
 esac
 
 profile_dir="$root/_build/$profile"
-stage="$root/$mode"
 release="$profile_dir/rel/wfdaemon"
-core_ebin="$profile_dir/lib/wfcore/ebin"
-daemon_ebin="$profile_dir/lib/wfdaemon/ebin"
 
 if [[ ! -x "$profile_dir/bin/wfcli" || ! -x "$release/bin/wfdaemon" ]]; then
     printf 'missing %s Erlang build; run make %s-erlang first\n' "$mode" "$mode" >&2
     exit 1
 fi
 
+source "$root/scripts/lib/staging.sh"
+stage_begin "$root/$mode"
 mkdir -p "$stage/bin" "$stage/libexec"
 rm -rf "$stage/libexec/wfdaemon" "$stage/libexec/wfcli"
 mkdir -p "$stage/libexec/wfcli"
 install -m 0755 "$profile_dir/bin/wfcli" "$stage/libexec/wfcli/wfcli.escript"
 install -m 0755 "$root/scripts/wfcli-wrapper" "$stage/bin/wfcli"
-cp -a "$release" "$stage/libexec/wfdaemon"
+cp -a --reflink=auto "$release" "$stage/libexec/wfdaemon"
 install -m 0755 "$root/scripts/wfdaemon-wrapper" "$stage/bin/wfdaemon"
 printf '%s\n' "$mode" > "$stage/BUILD_FLAVOR"
 
@@ -39,9 +38,11 @@ mkdir -p "$completion_dir"
 "$stage/bin/wfcli" completion bash > "$completion_dir/wfcli.bash"
 cp "$completion_dir/wfcli.bash" "$completion_dir/wfclid.bash"
 
+core_ebin=("$stage"/libexec/wfdaemon/lib/wfcore-*/ebin)
+daemon_ebin=("$stage"/libexec/wfdaemon/lib/wfdaemon-*/ebin)
 identity="$(
-    WFCLI_CORE_EBIN="$core_ebin" WFCLI_DAEMON_EBIN="$daemon_ebin" \
-        erl -pa "$daemon_ebin" -noshell -eval '
+    WFCLI_CORE_EBIN="${core_ebin[0]}" WFCLI_DAEMON_EBIN="${daemon_ebin[0]}" \
+        erl -pa "${daemon_ebin[0]}" -noshell -eval '
         Dirs = [os:getenv("WFCLI_CORE_EBIN"), os:getenv("WFCLI_DAEMON_EBIN")],
         {ok, Bundles} = wfcli_hot_update:read_directories(Dirs),
         {ok, Identity} = wfcli_hot_update:build_identity(Bundles),
@@ -50,3 +51,4 @@ identity="$(
     '
 )"
 printf '%s\n' "$identity" > "$stage/BUILD_ID"
+stage_commit

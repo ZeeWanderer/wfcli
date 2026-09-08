@@ -21,6 +21,12 @@ Run `make dev-erlang` before direct `wfclid` tests and after daemon application 
 Run `make prod-erlang` before direct `wfcli` tests. Run the matching companion target after Rust,
 asset, or native bridge changes.
 
+Each staging step prepares a private prefix under `.staging/`, then atomically exchanges it with
+`dev/` or `prod/`. Writers are serialized; failures before activation leave the installed tree
+unchanged. Preparation uses reflinks where available and copies otherwise. Activation requires
+Linux filesystem support for `renameat2(RENAME_EXCHANGE)` on the destination filesystem.
+Both Erlang releases contain copied files; dev keeps debug metadata and `_build/` source paths.
+
 The GUI uses vcpkg manifest mode with the tracked LLVM/libc++ triplet:
 
 ```bash
@@ -48,10 +54,11 @@ VS Code CMake Tools uses the tracked presets and existing `_build/cmake/` trees.
 - `./scripts/test-quiet eunit`: EUnit with passing output suppressed.
 - `./scripts/test-quiet ct`: Common Test with passing output suppressed.
 - `./scripts/test-quiet gui`: native desktop model tests with build output suppressed.
+- `make test-staging`: failed/interrupted installs, concurrent writers, and prefix activation.
 - `cargo test --locked --quiet --manifest-path apps/wfcompanion/Cargo.toml`: Rust tests.
 - `make test-gui`: native desktop model tests.
 - `make test-release`: production startup under the x86-64-v2 baseline using QEMU user emulation.
-- `make test`: Erlang, Rust, and native desktop suites.
+- `make test`: Erlang, Rust, native desktop, and staging suites.
 - `make check`: Rust formatting, xref, tests, and both staged builds.
 
 The quiet wrapper prints one line on success. On failure it prints a bounded tail and retains the

@@ -133,6 +133,7 @@ enum PreviewSource {
 }
 
 fn main() -> ExitCode {
+    let _ = wfcompanion::executable_path();
     let arguments: Vec<String> = std::env::args().skip(1).collect();
     match parse_command(&arguments).and_then(run_command) {
         Ok(()) => ExitCode::SUCCESS,

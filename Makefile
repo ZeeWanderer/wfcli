@@ -50,7 +50,7 @@ endif
 	gui-configure-dev gui-configure-prod gui-reconfigure gui-reconfigure-dev gui-reconfigure-prod \
 	dev-erlang prod-erlang dev-companion prod-companion links \
 	debug-bridge native-bridges previews icon-optics aleca-layout-setup fix-executables \
-	native-compile-commands test test-erlang test-companion test-gui test-release check fmt-check xref package clean
+	native-compile-commands test test-erlang test-companion test-gui test-release test-staging check fmt-check xref package clean
 
 all: dev
 build: dev prod native-compile-commands
@@ -76,8 +76,7 @@ gui-configure-dev: sccache-setup
 
 gui-dev: gui-configure-dev
 	+cmake --build --preset gui-dev
-	rm -rf dev/lib dev/Qt6
-	cmake --install _build/cmake/gui-dev
+	./scripts/stage-gui dev
 
 gui-configure-prod: sccache-setup
 	test -n "$(NINJA)"
@@ -85,8 +84,7 @@ gui-configure-prod: sccache-setup
 
 gui-prod: gui-configure-prod
 	+cmake --build --preset gui-prod
-	rm -rf prod/lib prod/Qt6
-	cmake --install _build/cmake/gui-prod
+	./scripts/stage-gui prod
 
 gui-reconfigure: gui-reconfigure-dev gui-reconfigure-prod
 
@@ -157,7 +155,7 @@ aleca-layout-setup:
 fix-executables:
 	bash ./scripts/fix-executables
 
-test: test-erlang test-companion test-gui
+test: test-erlang test-companion test-gui test-staging
 
 test-erlang:
 	./scripts/test-quiet eunit
@@ -168,6 +166,9 @@ test-companion: native-bridges
 
 test-gui:
 	./scripts/test-quiet gui
+
+test-staging:
+	./scripts/test-quiet staging
 
 test-release: prod
 	./scripts/test-quiet release

@@ -42,6 +42,9 @@ jq \
     --arg compiler "$debug_compiler" \
     --arg source "$debug_source" \
     --arg output "$build_dir/wfcompanion-debug-output.exe" \
+    --arg host_compiler "${CC:-cc}" \
+    --arg host_source "$root/tools/staging/exchange.c" \
+    --arg host_output "$root/_build/tools/stage-exchange" \
     -s 'add + [{
         directory: $directory,
         file: $source,
@@ -56,6 +59,11 @@ jq \
             "-o",
             $output
         ]
+    }, {
+        directory: $directory,
+        file: $host_source,
+        arguments: [$host_compiler, "-std=c11", "-O2", "-Wall", "-Wextra", "-Werror",
+                    $host_source, "-o", $host_output]
     }]' \
     "${jq_inputs[@]}" > "$merged"
 mv "$merged" "$database"

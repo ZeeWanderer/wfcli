@@ -6,8 +6,7 @@ mode="${1:-dev}"
 manifest="$root/apps/wfcompanion/Cargo.toml"
 target_dir="${CARGO_TARGET_DIR:-$root/_build/cargo}"
 decompiler_target_dir="$target_dir/wf-luau-decompiler"
-stage="$root/$mode"
-debug_bridge="$stage/libexec/wfcompanion-debug-output.exe"
+debug_bridge="$root/_build/native/$mode/wfcompanion-debug-output.exe"
 tesseract_bin="$(command -v tesseract || true)"
 
 case "$mode" in
@@ -38,12 +37,10 @@ if [[ -n "$cpu_baseline" ]]; then
     rustflags="${rustflags:+$rustflags }-Ctarget-cpu=$cpu_baseline -Clink-arg=-march=$cpu_baseline"
 fi
 
-mkdir -p "$stage/bin" "$stage/libexec"
-mkdir -p "$stage/share/licenses/wfcompanion" "$stage/share/licenses/wf-luau-decompiler"
 RUSTFLAGS="$rustflags" CARGO_TARGET_DIR="$target_dir" \
     "$root/scripts/build-oozextract" "$mode"
 "$root/scripts/build-debug-bridge" "$debug_bridge"
-WFCOMPANION_BUILD_DEBUG_BRIDGE="$debug_bridge" \
+WFCOMPANION_BUILD_DEBUG_BRIDGE="$root/$mode/libexec/wfcompanion-debug-output.exe" \
     WFCOMPANION_BUILD_TESSERACT="$tesseract_bin" \
     WFCLI_CPU_BASELINE="$cpu_baseline" \
     RUSTFLAGS="$rustflags" \
@@ -55,6 +52,15 @@ RUSTC_BOOTSTRAP=1 \
     cargo build "${cargo_args[@]}" --locked \
         --manifest-path "$root/tools/wf-luau-decompiler/Cargo.toml" \
         -p luau-lifter --bin wf-luau-decompiler
+
+source "$root/scripts/lib/staging.sh"
+stage_begin "$root/$mode"
+mkdir -p "$stage/bin" "$stage/libexec"
+mkdir -p "$stage/share/licenses/wfcompanion" "$stage/share/licenses/wf-luau-decompiler"
+install -m 0755 "$debug_bridge" "$stage/libexec/wfcompanion-debug-output.exe"
+install -m 0755 "$target_dir/oozextract/$cargo_profile/unoodle" "$stage/libexec/unoodle"
+rm -rf "$stage/share/licenses/oozextract"
+cp -a "$target_dir/oozextract/$cargo_profile/licenses/oozextract" "$stage/share/licenses/"
 install -m 0755 "$target_dir/$cargo_profile/wfcompanion" "$stage/bin/wfcompanion"
 install -m 0755 "$target_dir/$cargo_profile/wfinspect" "$stage/bin/wfinspect"
 install -m 0755 "$decompiler_target_dir/$cargo_profile/wf-luau-decompiler" \
@@ -63,4 +69,5 @@ install -m 0644 "$root/apps/wfcompanion/assets/LuauDecompiler-LICENSE.txt" \
     "$stage/share/licenses/wfcompanion/luau-decompiler.txt"
 install -m 0644 "$root/tools/wf-luau-decompiler/LICENSE.txt" \
     "$stage/share/licenses/wf-luau-decompiler/LICENSE.txt"
-printf '%s\n' "$stage/bin/wfcompanion"
+stage_commit
+printf '%s\n' "$root/$mode/bin/wfcompanion"

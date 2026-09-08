@@ -243,7 +243,7 @@ fn read_record(input: &mut impl Read) -> io::Result<Option<(u32, Vec<u8>)>> {
 fn helper_path() -> Option<PathBuf> {
     helper_candidates(
         std::env::var_os("WFCOMPANION_DEBUG_BRIDGE"),
-        std::env::current_exe().ok().as_deref(),
+        crate::executable_path(),
         option_env!("WFCOMPANION_BUILD_DEBUG_BRIDGE"),
     )
     .into_iter()

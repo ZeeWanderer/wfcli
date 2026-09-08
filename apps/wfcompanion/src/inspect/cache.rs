@@ -635,7 +635,7 @@ impl Oodle {
                 .map_err(|error| format!("could not use WFINSPECT_OODLE_COMMAND: {error}"));
         }
         let mut errors = Vec::new();
-        if let Ok(executable) = env::current_exe()
+        if let Some(executable) = crate::executable_path()
             && let Some(prefix) = executable.parent().and_then(Path::parent)
         {
             let bundled = prefix.join("libexec/unoodle");

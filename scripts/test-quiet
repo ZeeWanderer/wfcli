@@ -7,9 +7,9 @@ if [[ $# -gt 0 ]]; then
 fi
 
 case "$command_name" in
-    ct|eunit|gui|release) ;;
+    ct|eunit|gui|release|staging) ;;
     *)
-        printf 'usage: %s [ct|eunit|gui|release] [options...]\n' "$0" >&2
+        printf 'usage: %s [ct|eunit|gui|release|staging] [options...]\n' "$0" >&2
         exit 2
         ;;
 esac
@@ -22,6 +22,9 @@ if [[ "$command_name" == "gui" ]]; then
 elif [[ "$command_name" == "release" ]]; then
     label="release portability"
     ./scripts/test-release-portability >"$log_file" 2>&1
+elif [[ "$command_name" == "staging" ]]; then
+    label="staging"
+    bash ./scripts/tests/staging.sh >"$log_file" 2>&1
 else
     label="rebar3 $command_name"
     rebar3 "$command_name" "$@" >"$log_file" 2>&1

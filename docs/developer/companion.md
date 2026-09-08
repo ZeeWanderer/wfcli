@@ -167,6 +167,10 @@ Shutdown joins the observer, releases its DBWIN helper/subscriber and reader,
 then waits for memory collectors. Resource-owning workers must not be detached
 from application lifetime.
 
+Capture the executable path at startup and use `wfcompanion::executable_path()` for sibling
+tools. Prefix activation can move the running executable's `/proc/self/exe` path; helper
+lookup must continue using the installed prefix.
+
 Companion starts or reconnects to the daemon without passing Proton loader
 variables into BEAM. Reconnect replays latest observations for every owned
 namespace. An active companion connection keeps an implicitly started daemon

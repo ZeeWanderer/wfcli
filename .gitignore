@@ -2,6 +2,7 @@
 _build
 /dev/
 /prod/
+/.staging/
 /releases/
 _checkouts
 _vendor

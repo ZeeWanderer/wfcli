@@ -76,6 +76,62 @@ fn document(output: Output) -> Value {
     serde_json::from_slice(&output.stdout).unwrap()
 }
 
+fn copy_executable(source: &Path, destination: &Path) {
+    // Other test threads may fork; do not let them inherit a writable executable FD.
+    assert!(
+        Command::new("cp")
+            .arg(source)
+            .arg(destination)
+            .status()
+            .unwrap()
+            .success()
+    );
+}
+
+fn await_path(path: &Path) {
+    for _ in 0..500 {
+        if path.exists() {
+            return;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    panic!("timed out waiting for {}", path.display());
+}
+
+#[test]
+fn helper_prefix_survives_directory_exchange() {
+    if let Some(root) = std::env::var_os("WFCLI_TEST_MOVED_PREFIX") {
+        let root = PathBuf::from(root);
+        let initial = wfcompanion::executable_path().unwrap().to_owned();
+        fs::write(root.join("ready"), "").unwrap();
+        await_path(&root.join("continue"));
+        assert_ne!(std::env::current_exe().unwrap(), initial);
+        assert_eq!(wfcompanion::executable_path().unwrap(), initial);
+        assert!(initial.parent().unwrap().join("helper").is_file());
+        return;
+    }
+    let fixture = Fixture::new();
+    let prefix = fixture.0.join("prefix");
+    fs::create_dir_all(prefix.join("bin")).unwrap();
+    let executable = prefix.join("bin/test");
+    copy_executable(&std::env::current_exe().unwrap(), &executable);
+    let mut child = Command::new(&executable)
+        .args([
+            "--exact",
+            "helper_prefix_survives_directory_exchange",
+            "--nocapture",
+        ])
+        .env("WFCLI_TEST_MOVED_PREFIX", &fixture.0)
+        .spawn()
+        .unwrap();
+    await_path(&fixture.0.join("ready"));
+    fs::rename(&prefix, fixture.0.join("retired")).unwrap();
+    fs::create_dir_all(prefix.join("bin")).unwrap();
+    fs::write(prefix.join("bin/helper"), "replacement").unwrap();
+    fs::write(fixture.0.join("continue"), "").unwrap();
+    assert!(child.wait().unwrap().success());
+}
+
 #[test]
 fn bundled_decoder_is_relocatable_and_explicit_overrides_win() {
     let fixture = Fixture::new();
@@ -84,7 +140,7 @@ fn bundled_decoder_is_relocatable_and_explicit_overrides_win() {
     fs::create_dir(&bin).unwrap();
     fs::create_dir(&libexec).unwrap();
     let executable = bin.join("wfinspect");
-    fs::copy(env!("CARGO_BIN_EXE_wfinspect"), &executable).unwrap();
+    copy_executable(Path::new(env!("CARGO_BIN_EXE_wfinspect")), &executable);
     let helper = libexec.join("unoodle");
     fs::write(&helper, "#!/bin/sh\nexit 0\n").unwrap();
     fs::set_permissions(&helper, fs::Permissions::from_mode(0o755)).unwrap();

@@ -273,7 +273,7 @@ fn resolve_decompiler() -> Result<PathBuf, String> {
     }
 
     let name = format!("wf-luau-decompiler{}", std::env::consts::EXE_SUFFIX);
-    if let Ok(executable) = std::env::current_exe()
+    if let Some(executable) = crate::executable_path()
         && let Some(directory) = executable.parent()
     {
         let sibling = directory.join(&name);

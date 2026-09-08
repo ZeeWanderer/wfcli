@@ -14,7 +14,6 @@ checksum=0812195e10763135833def9f2d1ee3c1816a06c9d789d1f1026faafc7156e65c
 archive="$root/.cache/downloads/oozextract-$version.crate"
 source_dir="$root/.cache/tools/oozextract-$version"
 target_dir="${CARGO_TARGET_DIR:-$root/_build/cargo}/oozextract"
-stage="$root/$mode"
 
 mkdir -p "$(dirname "$archive")" "$(dirname "$source_dir")"
 exec 9>"$root/.cache/tools/oozextract.lock"
@@ -39,8 +38,9 @@ CARGO_TARGET_DIR="$target_dir" CARGO_PROFILE_RELEASE_STRIP=true \
     cargo build "${cargo_args[@]}" --locked --manifest-path "$source_dir/Cargo.toml" \
         --features cli --bin unoodle
 
-mkdir -p "$stage/libexec" "$stage/share/licenses/oozextract"
-install -m 0755 "$target_dir/$profile/unoodle" "$stage/libexec/unoodle"
-install -m 0644 "$archive" "$stage/share/licenses/oozextract/"
+licenses="$target_dir/$profile/licenses/oozextract"
+rm -rf "$licenses"
+mkdir -p "$licenses"
+install -m 0644 "$archive" "$licenses/"
 install -m 0644 "$root/apps/wfcompanion/assets/Oozextract-LICENSE.txt" \
-    "$stage/share/licenses/oozextract/LICENSE.txt"
+    "$licenses/LICENSE.txt"
