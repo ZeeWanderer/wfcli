@@ -95,14 +95,14 @@ stateful_service_runs_code_change_test() ->
     end.
 
 all_supervised_stateful_services_are_migrated_test() ->
+    Children = wfcli_sup:child_specs(),
     ?assertEqual(
-       [wfcli_worldstate_service, wfcli_exports_store, wfcli_source_manager,
-        wfcli_query_service, wfcli_forma_service, wfcli_player_service,
-         wfcli_market_limiter, wfcli_market_service, wfcli_market_account_service,
-         wfcli_market_presence_service,
-         wfcli_asset_service, wfcli_resolution_issues,
-         wfcli_local_api, wfcli_daemon],
-       [Module || {_Name, Module} <- wfcli_hot_update:stateful_candidates()]).
+       lists:sort([Module || #{modules := Modules} <- Children, Module <- Modules]),
+       lists:sort([Module || {_Name, Module} <- wfcli_hot_update:stateful_candidates()])),
+    lists:foreach(fun({_, Module}) ->
+                      {module, Module} = code:ensure_loaded(Module),
+                      ?assert(erlang:function_exported(Module, code_change, 3))
+                  end, wfcli_hot_update:stateful_candidates()).
 
 local_api_can_be_restarted_for_code_purge_test() ->
     Started = whereis(wfcli_sup) =:= undefined,
@@ -123,6 +123,65 @@ local_protocol_changes_restart_native_connections_test() ->
     ?assert(wfcli_hot_update:runtime_restart_required([wfcli_local_protocol])),
     ?assert(wfcli_hot_update:runtime_restart_required([wfcli_local_api])),
     ?assertNot(wfcli_hot_update:runtime_restart_required([wfcli_protocol])).
+
+failed_migration_restarts_from_durable_state_test() ->
+    Module = wfcli_build_service,
+    {Module, Original, Filename} = code:get_object_code(Module),
+    {ok, Module, Changed} = failing_migration(Module, Original),
+    ok = wfcli_test_daemon:start(),
+    try
+        {ok, Group} = Module:create_group(
+                        #{<<"definition_id">> => <<"/test">>},
+                        #{<<"definitions">> => [#{<<"id">> => <<"/test">>,
+                                                   <<"name">> => <<"Test">>}]}),
+        Id = maps:get(<<"id">>, Group),
+        Pid = whereis(Module),
+        Bundle = #{module => Module, filename => Filename, binary => Changed},
+        ?assertMatch({error, {code_change_failed, Module, _}},
+                     wfcli_hot_update:apply([Bundle])),
+        NewPid = whereis(Module),
+        ?assert(is_pid(NewPid)),
+        ?assertNotEqual(Pid, NewPid),
+        ?assertMatch({ok, #{<<"id">> := Id}}, Module:group(Id)),
+        ?assertMatch({ok, #{loaded := [], migrated := []}},
+                     wfcli_hot_update:apply([Bundle])),
+        ?assertEqual(NewPid, whereis(Module))
+    after
+        wfcli_test_daemon:stop(),
+        persistent_term:erase({wfcli_hot_update, pending_migrations}),
+        restore_module(Module, Filename, Original)
+    end.
+
+unrecovered_migration_never_succeeds_on_retry_test() ->
+    Module = wfcli_worldstate_service,
+    ensure_service_stopped(),
+    {Module, Original, Filename} = code:get_object_code(Module),
+    {ok, Module, Changed} = failing_migration(Module, Original),
+    application:set_env(wfdaemon, daemon_idle_shutdown, false),
+    {ok, Pid} = Module:start_link(),
+    try
+        Bundle = #{module => Module, filename => Filename, binary => Changed},
+        ?assertMatch({error, {migration_recovery_failed, _, _}},
+                     wfcli_hot_update:apply([Bundle])),
+        ?assertEqual({error, {migration_requires_restart, Module}},
+                      wfcli_hot_update:apply([Bundle]))
+    after
+        gen_server:stop(Pid),
+        persistent_term:erase({wfcli_hot_update, pending_migrations}),
+        restore_module(Module, Filename, Original)
+    end.
+
+failing_migration(Module, Binary) ->
+    {ok, {Module, [{abstract_code, {raw_abstract_v1, Forms}}]}} =
+        beam_lib:chunks(Binary, [abstract_code]),
+    Changed = [case Form of
+        {function, Line, code_change, 3, _} ->
+            {function, Line, code_change, 3,
+             [{clause, Line, [{var, Line, '_'}, {var, Line, '_'}, {var, Line, '_'}],
+               [], [erl_parse:abstract({error, forced_migration_failure})]}]};
+        _ -> Form
+    end || Form <- Forms],
+    compile:forms(Changed, [binary, debug_info]).
 
 compile_fixture(Module, Value) ->
     Forms = [

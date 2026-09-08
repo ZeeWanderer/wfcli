@@ -124,6 +124,10 @@ Both explicit and automatic updates use `wfcli_hot_update`:
 6. Restart the local socket API when its accept loop cannot leave old code.
 7. Commit the new build identity only after successful load and migration.
 
+Migration targets come from supervisor child definitions. Failed or interrupted migrations stay
+pending until the affected services restart from persisted state. Identical BEAMs alone never
+prove migration success.
+
 Each staged root contains `BUILD_ID`. The daemon checks it every five seconds and reads BEAMs from
 its stable update root. Repository builds use `dev/` or `prod/`; a Homebrew Cellar install resolves
 to its stable `opt/<formula>` link. This supports same-version updates without a client request.

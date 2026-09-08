@@ -13,6 +13,7 @@
 
 -define(SYS_TIMEOUT_MS, 5000).
 -define(BUILD_ID_KEY, {?MODULE, build_identity}).
+-define(PENDING_KEY, {?MODULE, pending_migrations}).
 
 -type bundle() :: #{module := module(), filename := string(), binary := binary()}.
 -type build_identity() :: binary().
@@ -185,6 +186,12 @@ allowed_module(Module) ->
         lists:prefix("wfcli_", Name).
 
 apply_validated(Bundles, BuildIdentity) ->
+    case recover_pending() of
+        ok -> apply_recovered(Bundles, BuildIdentity);
+        {error, _} = Error -> Error
+    end.
+
+apply_recovered(Bundles, BuildIdentity) ->
     {Changed0, Unchanged} = lists:partition(fun bundle_changed/1, Bundles),
     Changed = Changed0,
     Result = case Changed of
@@ -246,6 +253,9 @@ apply_prepared(Changed, Unchanged, Prepared) ->
     case suspend_all(Stateful, []) of
         {ok, Suspended} ->
             Result = try
+                persistent_term:put(?PENDING_KEY,
+                                    [{Name, Module, whereis(Name)}
+                                     || {Name, Module} <- Stateful]),
                 case code:finish_loading(Prepared) of
                     ok ->
                         case change_code_all(Stateful, OldVersions, []) of
@@ -259,12 +269,18 @@ apply_prepared(Changed, Unchanged, Prepared) ->
                                 end;
                             {error, _Reason} = Error -> Error
                         end;
-                    {error, Reasons} -> {error, {finish_loading_failed, Reasons}}
+                    {error, Reasons} ->
+                        persistent_term:erase(?PENDING_KEY),
+                        {error, {finish_loading_failed, Reasons}}
                 end
             after
                 resume_all(Suspended)
             end,
-            maybe_restart_runtime_workers(Result);
+            case recover_pending() of
+                ok -> maybe_restart_runtime_workers(Result);
+                {error, RecoveryReason} ->
+                    {error, {migration_recovery_failed, Result, RecoveryReason}}
+            end;
         {error, _Reason} = Error -> Error
     end.
 
@@ -334,8 +350,34 @@ change_code_all([{Name, Module} | Rest], OldVersions, Migrated) ->
     OldVsn = maps:get(Module, OldVersions, undefined),
     case safe_sys_call(
            fun() -> sys:change_code(Name, Module, OldVsn, hot_update, ?SYS_TIMEOUT_MS) end) of
-        ok -> change_code_all(Rest, OldVersions, [Module | Migrated]);
+        ok ->
+            [_Done | Pending] = persistent_term:get(?PENDING_KEY),
+            persistent_term:put(?PENDING_KEY, Pending),
+            change_code_all(Rest, OldVersions, [Module | Migrated]);
         {error, Reason} -> {error, {code_change_failed, Module, Reason}}
+    end.
+
+recover_pending() ->
+    recover_pending(persistent_term:get(?PENDING_KEY, [])).
+
+recover_pending([]) ->
+    persistent_term:erase(?PENDING_KEY),
+    ok;
+recover_pending([{Name, Module, OriginalPid} | Rest]) ->
+    Current = whereis(Name),
+    Result = case Current =/= OriginalPid andalso is_pid(Current) of
+        true -> ok;
+        false ->
+            case whereis(wfcli_sup) of
+                undefined -> {error, {migration_requires_restart, Module}};
+                _ -> restart_supervised_child(Name)
+            end
+    end,
+    case Result of
+        ok ->
+            persistent_term:put(?PENDING_KEY, Rest),
+            recover_pending(Rest);
+        {error, _} = Error -> Error
     end.
 
 resume_all(Suspended) ->
@@ -361,22 +403,8 @@ stateful_processes(Modules) ->
                        whereis(Name) =/= undefined].
 
 stateful_candidates() ->
-    [
-        {wfcli_worldstate_service, wfcli_worldstate_service},
-        {wfcli_exports_store, wfcli_exports_store},
-        {wfcli_source_manager, wfcli_source_manager},
-        {wfcli_query_service, wfcli_query_service},
-        {wfcli_forma_service, wfcli_forma_service},
-        {wfcli_player_service, wfcli_player_service},
-        {wfcli_market_limiter, wfcli_market_limiter},
-        {wfcli_market_service, wfcli_market_service},
-        {wfcli_market_account_service, wfcli_market_account_service},
-        {wfcli_market_presence_service, wfcli_market_presence_service},
-        {wfcli_asset_service, wfcli_asset_service},
-        {wfcli_resolution_issues, wfcli_resolution_issues},
-        {wfcli_local_api, wfcli_local_api},
-        {wfcli_daemon, wfcli_daemon}
-    ].
+    [{Name, Module} || #{id := Name, type := worker, modules := Modules}
+                          <- wfcli_sup:child_specs(), Module <- Modules].
 
 bundle_changed(#{module := Module, binary := Binary}) ->
     case {loaded_md5(Module), beam_md5(Binary)} of
