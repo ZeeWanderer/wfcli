@@ -240,7 +240,7 @@ touch(Group, Now) ->
            <<"updated_at">> => Now}.
 
 default_options() ->
-    #{<<"preserve_source_slots">> => true,
+    #{<<"preserve_source_slots">> => false,
       <<"allow_omni">> => false,
       <<"allow_umbral_forma">> => false,
       <<"prefer_omni">> => false}.

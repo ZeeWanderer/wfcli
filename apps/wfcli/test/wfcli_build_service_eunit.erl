@@ -37,7 +37,7 @@ planning_refreshes_physical_target_test_() ->
 interrupted_plan_releases_waiters_test_() ->
     [{setup, fun setup/0, fun cleanup/1,
       fun(_) -> fun() -> interrupted_plan(Interruption) end end}
-     || Interruption <- [target_changed, service_restarted]].
+     || Interruption <- [target_changed, service_restarted, catalog_changed]].
 
 setup() ->
     Root = filename:join("/tmp", "wfcli-build-service-" ++
@@ -156,12 +156,33 @@ group_exercise() ->
     ?assertEqual(<<"ready">>, maps:get(<<"status">>, Plan)),
     {ok, PlannedGroup} = wfcli_build_service:group(GroupId),
     ?assertEqual(Plan, maps:get(<<"plan_result">>, PlannedGroup)),
+    refresh_catalog_version(unchanged),
+    {ok, StillCurrent} = wfcli_build_service:group(GroupId),
+    ?assertEqual(Plan, maps:get(<<"plan_result">>, StillCurrent)),
+    refresh_catalog_version(<<"new-data">>),
+    {ok, NeedsRecalculation} = wfcli_build_service:group(GroupId),
+    ?assertEqual(null, maps:get(<<"plan_result">>, NeedsRecalculation)),
+    ?assertEqual(3, maps:get(<<"revision">>, NeedsRecalculation)),
     ?assertMatch({error, {build_group_conflict, 3}},
                  wfcli_build_service:update_group(
                    GroupId, 1, #{<<"name">> => <<"Stale">>}, equipment())),
     {ok, #{<<"groups">> := [Summary]}} = wfcli_build_service:groups(),
     ?assertEqual(2, maps:get(<<"member_count">>, Summary)),
     ?assertEqual(ok, wfcli_build_service:unsubscribe(Subscription)).
+
+refresh_catalog_version(Version) ->
+    State = sys:get_state(wfcli_build_service),
+    Store = maps:get(store, State),
+    Catalog = maps:get(overframe, maps:get(catalogs, Store)),
+    Fresh = Catalog#{fetched_at => erlang:system_time(millisecond)},
+    Updated = case Version of unchanged -> Fresh; _ -> Fresh#{version => Version} end,
+    Token = make_ref(),
+    Monitor = erlang:monitor(process, self()),
+    _ = sys:replace_state(wfcli_build_service,
+                           fun(S) -> S#{catalog_refresh => #{token => Token, monitor => Monitor}} end),
+    whereis(wfcli_build_service) ! {catalog_result, Token, {ok, Updated}},
+    _ = sys:get_state(wfcli_build_service),
+    erlang:demonitor(Monitor, [flush]).
 
 group_write_failure() ->
     Input = #{<<"definition_id">> => <<"/item">>,
@@ -251,8 +272,16 @@ interrupted_plan(Interruption) ->
                      #{<<"definition_id">> => <<"/item">>,
                        <<"instance_id">> => <<"copy-1">>}, equipment()),
     Id = maps:get(<<"id">>, Group0),
-    {ok, Group} = wfcli_build_service:add_config_member(Id, 1, <<"copy-1">>, 0,
+    {ok, WithConfig} = wfcli_build_service:add_config_member(Id, 1, <<"copy-1">>, 0,
                                                        equipment()),
+    Group = case Interruption of
+        catalog_changed ->
+            {ok, SourceRef} = wfcli_build_service:submit(self(), #{source => overframe, action => detail, id => 300}),
+            receive {wfcli_build, SourceRef, {ok, _}} -> ok after 1000 -> error(source_timeout) end,
+            {ok, WithSource} = wfcli_build_service:add_source_member(Id, 2, <<"overframe">>, 300, latest),
+            WithSource;
+        _ -> WithConfig
+    end,
     Revision = maps:get(<<"revision">>, Group),
     {ok, Ref} = wfcli_build_service:plan_group(self(), Id, Revision),
     Expected = case Interruption of
@@ -262,6 +291,11 @@ interrupted_plan(Interruption) ->
             Worker ! finish,
             receive {wfcli_daemon, BusyRef, _} -> ok after 1000 -> error(busy_timeout) end,
             build_target_changed;
+        catalog_changed ->
+            refresh_catalog_version(<<"changed-while-planning">>),
+            Worker ! finish,
+            receive {wfcli_daemon, BusyRef, _} -> ok after 1000 -> error(busy_timeout) end,
+            build_catalog_changed;
         service_restarted ->
             gen_server:stop(wfcli_forma_service),
             {ok, _} = wfcli_forma_service:start_link(),

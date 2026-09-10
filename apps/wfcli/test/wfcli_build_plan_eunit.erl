@@ -51,6 +51,70 @@ planning_requires_concrete_instance_and_members_test() ->
     ?assertEqual({error, build_group_members_required},
                  wfcli_build_plan:request((group())#{<<"members">> => []})).
 
+result_contains_every_renderable_loadout_test() ->
+    Group = group(),
+    {ok, Request} = wfcli_build_plan:request(Group),
+    {ok, #{results := [{ok, Config, _, _}]}} = wfcli_forma_service:plan_request(Request),
+    Plan = #{aura => madurai, exilus => none, 1 => vazarin, 2 => vazarin},
+    Cost = wfcli_forma_rules:cost(Plan, maps:get(item, Config), #{}),
+    {ok, Result} = wfcli_build_plan:result(Group, {ok, #{results => [{ok, Config, Plan, Cost}]}}),
+    ?assertEqual(2, maps:get(<<"forma_count">>, Result)),
+    ?assertEqual(#{<<"standard">> => 2}, maps:get(<<"forma_requirements">>, Result)),
+    [Player, Source] = maps:get(<<"builds">>, Result),
+    ?assertEqual(<<"config:1">>, maps:get(<<"member_id">>, Player)),
+    ?assertEqual(<<"source:1">>, maps:get(<<"member_id">>, Source)),
+    [Mod, Arcane] = maps:get(<<"upgrade_slots">>, Player),
+    ?assertMatch(#{<<"topology_slot">> := <<"mod-1">>, <<"effective_drain">> := 4,
+                   <<"polarity_state">> := <<"matched">>, <<"rank">> := 6}, Mod),
+    ?assertMatch(#{<<"topology_slot">> := <<"arcane-1">>, <<"rank">> := 5}, Arcane),
+    lists:foreach(fun(Build) ->
+        ?assertEqual(60, maps:get(<<"capacity">>, Build)),
+        ?assertEqual(4, maps:get(<<"drain">>, Build)),
+        ?assertEqual(56, maps:get(<<"remaining_capacity">>, Build))
+    end, [Player, Source]).
+
+free_assignment_preserves_duplicate_mod_identity_test() ->
+    Source = source_member(),
+    Snapshot = maps:get(<<"snapshot">>, Source),
+    [Mod] = maps:get(<<"upgrades">>, maps:get(<<"presentation">>, Snapshot)),
+    Upgrades = [Mod#{<<"asset">> => #{<<"id">> => <<"first">>}},
+                Mod#{<<"topology_slot">> => <<"mod-1">>,
+                     <<"cost">> => 12, <<"asset">> => #{<<"id">> => <<"second">>}}],
+    Member = Source#{<<"snapshot">> => Snapshot#{<<"presentation">> => #{<<"upgrades">> => Upgrades}}},
+    Group = (group())#{<<"members">> => [Member],
+                       <<"options">> => #{<<"preserve_source_slots">> => false}},
+    {ok, Request} = wfcli_build_plan:request(Group),
+    {ok, Reply} = wfcli_forma_service:plan_request(Request),
+    {ok, Result} = wfcli_build_plan:result(Group, {ok, Reply}),
+    [Build] = maps:get(<<"builds">>, Result),
+    [First, Second] = maps:get(<<"upgrade_slots">>, Build),
+    ?assertEqual(8, maps:get(<<"drain">>, First)),
+    ?assertEqual(12, maps:get(<<"drain">>, Second)),
+    ?assertEqual(#{<<"id">> => <<"first">>}, maps:get(<<"asset">>, First)),
+    ?assertNotEqual(maps:get(<<"topology_slot">>, First), maps:get(<<"topology_slot">>, Second)).
+
+weapon_reordering_requires_known_elements_test() ->
+    Source = source_member(),
+    Group = (group())#{<<"members">> => [Source],
+                      <<"baseline">> => (baseline())#{<<"class">> => <<"primary">>},
+                      <<"options">> => #{<<"preserve_source_slots">> => false}},
+    ?assertMatch({error, {invalid_build_group_member, _, {unknown_mod_elements, _}}},
+                 wfcli_build_plan:request(Group)),
+    Snapshot = maps:get(<<"snapshot">>, Source),
+    [Mod] = maps:get(<<"upgrades">>, maps:get(<<"presentation">>, Snapshot)),
+    Member = Source#{<<"snapshot">> => Snapshot#{<<"presentation">> =>
+               #{<<"upgrades">> => [Mod#{<<"elemental_types">> => [<<"cold">>]}]}}},
+    {ok, Request} = wfcli_build_plan:request(Group#{<<"members">> => [Member]}),
+    [Raw] = maps:get(config_data, Request),
+    [Build] = maps:get(builds, Raw),
+    ?assertEqual([<<"cold">>], maps:get(<<"elemental_order">>, Build)),
+    [Converted] = maps:get(<<"mods">>, Build),
+    ?assertNot(maps:is_key(<<"slot">>, Converted)),
+    ?assertMatch({ok, _}, wfcli_build_plan:request(Group#{
+                    <<"options">> => #{<<"preserve_source_slots">> => true}})),
+    ?assertMatch({ok, _}, wfcli_build_plan:request(Group#{
+                    <<"baseline">> => (baseline())#{<<"class">> => <<"archwing">>}})).
+
 group() ->
     #{<<"id">> => <<"group-1">>, <<"revision">> => 4,
       <<"options">> => #{<<"preserve_source_slots">> => true,

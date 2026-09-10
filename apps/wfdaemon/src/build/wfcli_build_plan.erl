@@ -5,13 +5,19 @@
 
 -export([request/1, result/2]).
 
--define(SCHEMA, 1).
+-define(SCHEMA, 2).
 
 -doc "Convert one saved build group into an in-memory Forma request.".
 -spec request(map()) -> {ok, map()} | {error, term()}.
 request(#{<<"baseline">> := Baseline, <<"members">> := Members} = Group)
   when is_map(Baseline), is_list(Members), Members =/= [] ->
-    Slots = planner_slots(maps:get(<<"topology">>, Baseline, #{})),
+    Topology = maps:get(<<"topology">>, Baseline, #{}),
+    Class = maps:get(<<"layout_class">>, Topology, maps:get(<<"class">>, Baseline, <<"other">>)),
+    Slots = (planner_slots(Topology))#{
+        weapon => lists:member(Class, [<<"primary">>, <<"secondary">>, <<"melee">>,
+                                      <<"archgun">>, <<"archmelee">>, <<"exalted">>,
+                                      <<"companion_weapon">>, <<"amp">>]),
+        order_sensitive => lists:member(Class, [<<"companion">>, <<"parazon">>])},
     case convert_members(Members, Slots,
                          maps:get(<<"options">>, Group, #{}), []) of
         {ok, Builds} ->
@@ -36,13 +42,23 @@ result(Group, {ok, #{results := [{ok, Config, Plan, Cost}]}})
     Baseline = maps:get(<<"baseline">>, Group),
     Slots = planner_slots(maps:get(<<"topology">>, Baseline, #{})),
     Final = final_layout(Slots, Baseline, Plan),
+    Operations = [operation(Op, Slots)
+                   || Op <- wfcli_forma_rules:operations(Plan, maps:get(item, Config))],
+    Requirements = lists:foldl(
+      fun(#{<<"forma">> := Kind}, Acc) ->
+              maps:update_with(Kind, fun(N) -> N + 1 end, 1, Acc);
+         (_, Acc) -> Acc
+      end, #{}, Operations),
     {ok, (result_base(Group))#{
            <<"status">> => <<"ready">>,
            <<"forma_cost">> => Cost,
+           <<"forma_count">> => lists:sum(maps:values(Requirements)),
+           <<"forma_requirements">> => Requirements,
+           <<"operations">> => Operations,
            <<"change_count">> => length(changes(Final)),
            <<"changes">> => changes(Final),
            <<"final_polarities">> => Final,
-           <<"builds">> => result_builds(Config),
+           <<"builds">> => result_builds(Config, Plan, Group, Slots),
            <<"shard_slots">> => maps:get(<<"shard_slots">>, Baseline, [])}};
 result(Group, {ok, #{results := [{error, _Config, Reason}]}}) ->
     {ok, (result_base(Group))#{<<"status">> => <<"blocked">>,
@@ -63,7 +79,18 @@ item(Baseline, Slots) ->
                                  maps:get(<<"features">>, Baseline, #{}), false),
       <<"aura_slot">> => special_polarity(aura, Slots, Polarities),
       <<"exilus_slot">> => special_polarity(exilus, Slots, Polarities),
+      <<"swap_unlocked">> => case maps:get(<<"forma_count">>, Baseline, null) of
+                                  N when is_integer(N) -> N > 0;
+                                  _ -> true
+                              end,
+      <<"swap_locked_slots">> =>
+          [atom_to_binary(Key) || Key <- [aura, exilus],
+                                  not swappable(maps:get(Key, Slots, undefined))],
       <<"slots">> => Normal}.
+
+swappable(undefined) -> false;
+swappable(#{<<"role">> := <<"stance">>}) -> false;
+swappable(Slot) -> maps:get(<<"unlocked">>, Slot, true).
 
 constraints(Group) ->
     Options = maps:get(<<"options">>, Group, #{}),
@@ -136,8 +163,11 @@ build_from_slots(Member, Upgrades, AbilityOverride, Slots, Options, Origin)
   when is_list(Upgrades) ->
     case convert_upgrades(Upgrades, Slots, Options, Origin, [], []) of
         {ok, Mods, Arcanes} ->
+            Ordered = lists:keysort(1, [{maps:get(<<"source_position">>, M, 0), M} || M <- Mods]),
+            ElementOrder = lists:append([maps:get(<<"elements">>, M, []) || {_, M} <- Ordered]),
             {ok, #{<<"member_id">> => maps:get(<<"id">>, Member),
                    <<"name">> => maps:get(<<"name">>, Member, <<"Build">>),
+                   <<"elemental_order">> => ElementOrder,
                    <<"mods">> => Mods,
                    <<"arcanes">> => Arcanes,
                    <<"ability_override">> => AbilityOverride}};
@@ -212,11 +242,31 @@ mod(Upgrade, Slot, Slots, Options, Origin) ->
         _ ->
             Base = #{<<"name">> => Name, <<"polarity">> => Polarity,
                      <<"cost">> => Cost},
-            Preserve = maps:get(<<"preserve_source_slots">>, Options, true),
-            {mod, case planner_slot(Slot, Slots, Preserve) of
-                      undefined -> Base;
-                      Target -> Base#{<<"slot">> => Target}
-                  end}
+            Preserve = maps:get(<<"preserve_source_slots">>, Options, false)
+                       orelse maps:get(order_sensitive, Slots),
+            case planning_elements(Upgrade, Slot, Slots, Preserve) of
+                {error, _} = Error -> Error;
+                Elements ->
+                    Position = planner_slot(Slot, Slots, true),
+                    WithElements = Base#{<<"elements">> => Elements,
+                                         <<"source_position">> => Position},
+                    {mod, case planner_slot(Slot, Slots, Preserve) of
+                              undefined -> WithElements;
+                              Target -> WithElements#{<<"slot">> => Target}
+                          end}
+            end
+    end.
+
+planning_elements(_Upgrade, _Slot, _Slots, true) -> [];
+planning_elements(Upgrade, Slot, Slots, false) ->
+    Weapon = maps:get(weapon, Slots),
+    case Weapon andalso maps:get(<<"role">>, Slot) =:= <<"mod">> of
+        false -> [];
+        true ->
+            case wfcli_forma_elements:normalize(maps:get(<<"elemental_types">>, Upgrade, null)) of
+                {ok, Elements} -> [atom_to_binary(E) || E <- Elements];
+                {error, _} -> {error, {unknown_mod_elements, upgrade_name(Upgrade)}}
+            end
     end.
 
 mod_metadata(Upgrade, source) ->
@@ -302,13 +352,75 @@ changes(Final) ->
     [maps:remove(<<"changed">>, Entry)
      || Entry <- Final, maps:get(<<"changed">>, Entry) =:= true].
 
-result_builds(#{builds := Builds}) ->
-    [#{<<"name">> => text(maps:get(name, Build, <<"Build">>)),
-       <<"ability_override">> => [text(Value)
-                                    || Value <- maps:get(ability_override, Build, [])],
-       <<"arcanes">> => [arcane_result(Arcane)
-                           || Arcane <- maps:get(arcanes, Build, [])]}
-     || Build <- Builds].
+result_builds(Config = #{builds := Builds}, Plan, Group, Slots) ->
+    Loadouts = wfcli_forma_assignment:loadouts(Config, Plan),
+    [result_build(Member, Build, Loadout, Plan, Slots)
+     || {Member, Build, Loadout} <- lists:zip3(maps:get(<<"members">>, Group),
+                                              Builds, Loadouts)].
+
+result_build(Member, Build, Loadout, Plan, Slots) ->
+    {Upgrades, Origin} = member_upgrades(Member),
+    Mods = maps:get(mods, Build),
+    Assignments = maps:get(assignments, Loadout),
+    {Presented, _} = lists:mapfoldl(
+      fun(Upgrade, Index) ->
+          Original = upgrade_slot(Upgrade, Slots, Origin),
+          case maps:get(<<"role">>, Original) of
+              <<"arcane">> -> {Upgrade#{<<"topology_slot">> => maps:get(<<"id">>, Original)}, Index};
+              _ ->
+                  Mod = lists:nth(Index, Mods),
+                  TargetKey = maps:get(Index, Assignments),
+                  Target = result_slot(TargetKey, Slots),
+                  Polarity = maps:get(TargetKey, Plan),
+                  ModPolarity = maps:get(polarity, Mod),
+                  Cost = maps:get(cost, Mod),
+                  Drain = case TargetKey of
+                      aura -> -wfcli_polarity:aura_value(ModPolarity, Polarity, Cost);
+                      _ -> wfcli_polarity:mod_cost(ModPolarity, Polarity, Cost)
+                  end,
+                  {Upgrade#{<<"topology_slot">> => maps:get(<<"id">>, Target),
+                             <<"original_slot">> => maps:get(<<"id">>, Original),
+                             <<"role">> => maps:get(<<"role">>, Target),
+                             <<"mod_polarity">> => polarity_binary(ModPolarity),
+                             <<"slot_polarity">> => polarity_binary(Polarity),
+                             <<"polarity_state">> => atom_to_binary(
+                                 wfcli_polarity:compatibility(ModPolarity, Polarity)),
+                             <<"drain">> => Cost, <<"effective_drain">> => Drain}, Index + 1}
+          end
+      end, 1, Upgrades),
+    Capacity = maps:get(capacity, Loadout),
+    Used = maps:get(drain, Loadout),
+    #{<<"member_id">> => maps:get(<<"id">>, Member),
+      <<"name">> => text(maps:get(name, Build)),
+      <<"capacity">> => Capacity, <<"drain">> => Used,
+      <<"remaining_capacity">> => Capacity - Used,
+      <<"upgrade_slots">> => Presented,
+      <<"ability_override">> => [text(Value) || Value <- maps:get(ability_override, Build, [])],
+      <<"arcanes">> => [arcane_result(Arcane) || Arcane <- maps:get(arcanes, Build, [])]}.
+
+member_upgrades(#{<<"kind">> := <<"player_config">>, <<"snapshot">> := Snapshot}) ->
+    {maps:get(<<"upgrade_slots">>, maps:get(<<"config">>, Snapshot), []), player};
+member_upgrades(#{<<"kind">> := <<"source_revision">>, <<"snapshot">> := Snapshot}) ->
+    {maps:get(<<"upgrades">>, maps:get(<<"presentation">>, Snapshot), []), source}.
+
+result_slot(aura, Slots) -> maps:get(aura, Slots);
+result_slot(exilus, Slots) -> maps:get(exilus, Slots);
+result_slot(Index, Slots) -> lists:nth(Index, maps:get(normal, Slots)).
+
+operation(Op, Slots) ->
+    Slot = result_slot(maps:get(slot, Op), Slots),
+    Base = #{<<"action">> => atom_to_binary(maps:get(action, Op)),
+             <<"slot_id">> => maps:get(<<"id">>, Slot),
+             <<"label">> => maps:get(<<"label">>, Slot),
+             <<"before">> => polarity_binary(maps:get(before, Op)),
+             <<"polarity">> => polarity_binary(maps:get(polarity, Op))},
+    case Op of
+        #{other_slot := Other} ->
+            OtherSlot = result_slot(Other, Slots),
+            Base#{<<"other_slot_id">> => maps:get(<<"id">>, OtherSlot),
+                   <<"other_label">> => maps:get(<<"label">>, OtherSlot)};
+        #{forma := Kind} -> Base#{<<"forma">> => atom_to_binary(Kind)}
+    end.
 
 arcane_result(Arcane) ->
     Base = #{<<"name">> => text(maps:get(name, Arcane, <<>>))},

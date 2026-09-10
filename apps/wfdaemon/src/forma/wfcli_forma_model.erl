@@ -72,9 +72,13 @@ normalize_item(Map) when is_map(Map) ->
     AuraSlot = normalize_polarity(maps:get(<<"aura_slot">>, Map, undefined)),
     ExilusSlot = normalize_polarity(maps:get(<<"exilus_slot">>, Map, undefined)),
     Slots = normalize_slots(maps:get(<<"slots">>, Map, [])),
-    Errs = ErrType ++ ErrCap ++ require_field(Capacity, "item.capacity"),
+    {SwapLocked, SwapErrors} = normalize_swap_locks(
+                                maps:get(<<"swap_locked_slots">>, Map, []), length(Slots)),
+    Errs = ErrType ++ ErrCap ++ SwapErrors ++ require_field(Capacity, "item.capacity"),
     {#{type => Type, capacity => Capacity, reactor => Reactor,
-       aura_slot => AuraSlot, exilus_slot => ExilusSlot, slots => Slots}, Errs};
+       aura_slot => AuraSlot, exilus_slot => ExilusSlot, slots => Slots,
+       swap_unlocked => maps:get(<<"swap_unlocked">>, Map, true) =:= true,
+       swap_locked_slots => SwapLocked}, Errs};
 normalize_item(_) ->
     {#{}, ["item must be a map"]}.
 
@@ -99,6 +103,18 @@ normalize_slots(Slots) when is_list(Slots) ->
     [normalize_polarity(S) || S <- Slots];
 normalize_slots(_) -> [].
 
+normalize_swap_locks(Values, Count) when is_list(Values) ->
+    Parsed = [normalize_slot(Value) || Value <- Values],
+    Slots = [Slot || {Slot, []} <- Parsed,
+                    Slot =:= aura orelse Slot =:= exilus orelse
+                        (is_integer(Slot) andalso Slot > 0 andalso Slot =< Count)],
+    case length(Slots) =:= length(Values) of
+        true -> {lists:usort(Slots), []};
+        false -> {[], ["item.swap_locked_slots contains an invalid slot"]}
+    end;
+normalize_swap_locks(_, _) ->
+    {[], ["item.swap_locked_slots must be a list"]}.
+
 normalize_builds(Builds) when is_list(Builds) ->
     {Reversed, Errs} =
         lists:foldl(
@@ -120,10 +136,12 @@ normalize_build(Map) when is_map(Map) ->
     Arcanes = maps:get(<<"arcanes">>, Map, maps:get(arcanes, Map, [])),
     {Mods1, ModErrs} = normalize_mods(Mods),
     {Arcanes1, ArcErrs} = normalize_arcanes(Arcanes),
+    {Elements, ElementErrors} = normalize_elements(elemental_order, Map),
     AbilityOverride = maps:get(<<"ability_override">>, Map,
                                maps:get(ability_override, Map, [])),
-    Errs = require_field(Name, "build.name") ++ ModErrs ++ ArcErrs,
+    Errs = require_field(Name, "build.name") ++ ModErrs ++ ArcErrs ++ ElementErrors,
     {#{name => Name, mods => Mods1, arcanes => Arcanes1,
+       elemental_orders => wfcli_forma_elements:equivalent_orders(Elements),
        ability_override => normalize_ability_override(AbilityOverride)}, Errs};
 normalize_build(_) ->
     {#{}, ["build must be a map"]}.
@@ -196,11 +214,21 @@ normalize_mod(Map) when is_map(Map) ->
     {Cost, ErrCost} = normalize_int(coalesce(CostRaw, LookupCost),
                                     "mod.cost", 0),
     {Slot, SlotErr} = normalize_slot(maps:get(<<"slot">>, Map, maps:get(slot, Map, undefined))),
+    {Elements, ElementErrors} = normalize_elements(elements, Map),
     %% Slot can be omitted (flex slot); keep errors only when an explicit slot is invalid.
-    Errs = require_field(Name, "mod.name") ++ ErrCost ++ polarity_err(Pol) ++ SlotErr,
-    {#{name => Name, polarity => Pol, cost => Cost, slot => Slot}, Errs};
+    Errs = require_field(Name, "mod.name") ++ ErrCost ++ polarity_err(Pol) ++ SlotErr
+           ++ ElementErrors,
+    {#{name => Name, polarity => Pol, cost => Cost, slot => Slot,
+       elements => Elements}, Errs};
 normalize_mod(_) ->
     {#{}, ["mod must be a map"]}.
+
+normalize_elements(Key, Map) ->
+    case wfcli_forma_elements:normalize(
+           maps:get(atom_to_binary(Key), Map, maps:get(Key, Map, []))) of
+        {ok, Elements} -> {Elements, []};
+        {error, _} -> {[], ["elements must contain only heat, cold, electricity or toxin"]}
+    end.
 
 lookup_mod_defaults(Name, PolRaw, CostRaw) ->
     case wfcli_forma_mod_db:lookup(Name) of

@@ -5,6 +5,17 @@
 
 -include_lib("eunit/include/eunit.hrl").
 
+rearrangement_is_default_and_explicit_choice_persists_test() ->
+    {ok, Group} = wfcli_build_group:create(#{<<"definition_id">> => <<"/item">>},
+                                          equipment(), 100, <<"group-1">>),
+    ?assertEqual(false, maps:get(<<"preserve_source_slots">>, maps:get(<<"options">>, Group))),
+    {ok, Locked} = wfcli_build_group:update(
+                     Group, #{<<"options">> => #{<<"preserve_source_slots">> => true}},
+                     equipment(), 200),
+    {ok, Renamed} = wfcli_build_group:update(Locked, #{<<"name">> => <<"Renamed">>},
+                                            equipment(), 300),
+    ?assertEqual(true, maps:get(<<"preserve_source_slots">>, maps:get(<<"options">>, Renamed))).
+
 captures_config_without_copying_instance_state_into_config_test() ->
     {ok, Group0} = wfcli_build_group:create(
                      #{<<"definition_id">> => <<"/item">>,

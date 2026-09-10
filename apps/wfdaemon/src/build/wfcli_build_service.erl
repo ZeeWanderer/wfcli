@@ -163,9 +163,11 @@ handle_call(groups, _From, State) ->
     Sorted = lists:sort(fun group_before/2, Values),
     {reply, {ok, #{<<"schema">> => 1, <<"groups">> => Sorted,
                    <<"player_revision">> => maps:get(<<"player_revision">>,
-                                                      Equipment, 0)}}, State};
+                                                      Equipment, 0)}}, maybe_refresh_group_catalog(Groups, State)};
 handle_call({group, Id}, _From, State) ->
-    {reply, find_group(Id, State), State};
+    Reply = find_group(Id, State),
+    Groups = case Reply of {ok, Group} -> [Group]; _ -> [] end,
+    {reply, Reply, maybe_refresh_group_catalog(Groups, State)};
 handle_call({create_group, Input, Equipment}, _From, State) ->
     Id = new_id(),
     Now = erlang:system_time(millisecond),
@@ -248,10 +250,15 @@ handle_info({catalog_result, Token, Reply},
         {ok, Catalog} ->
             Store0 = maps:get(store, State1),
             Catalogs = maps:get(catalogs, Store0),
+            Changed = catalog_identity(Store0) =/= maps:with([schema, version], Catalog),
             Store = Store0#{catalogs => Catalogs#{overframe => Catalog}},
             State2 = mark_dirty(State1#{store => Store, cache => #{},
                                         store_error => undefined}),
-            {noreply, schedule(release_blocked(State2))};
+            Updated = [Group || Group <- maps:values(maps:get(goals, Store)),
+                                Changed, needs_catalog(Group)],
+            Published = lists:foldl(fun(Group, Acc) -> publish_group(updated, Group, Acc) end,
+                                    State2, Updated),
+            {noreply, schedule(release_blocked(Published))};
         {error, Reason} ->
             logger:warning("Overframe catalog refresh failed: ~p", [Reason]),
             {noreply, fail_blocked(Reason, State1#{store_error => Reason})}
@@ -761,6 +768,23 @@ current_equipment(Groups) ->
     {ok, Equipment} = wfcli_build_equipment:snapshot(InstanceIds),
     Equipment.
 
+maybe_refresh_group_catalog(Groups, State) ->
+    case lists:any(fun needs_catalog/1, Groups) of
+        true -> ensure_fresh_catalog(State);
+        false -> State
+    end.
+
+needs_catalog(Group) -> maps:get(<<"members">>, Group, []) =/= [].
+
+catalog_identity(Store) ->
+    maps:with([schema, version], maps:get(overframe, maps:get(catalogs, Store), #{})).
+
+plan_catalog(Group, Store) ->
+    case needs_catalog(Group) of
+        true -> #{atom_to_binary(Key) => Value || Key := Value <- catalog_identity(Store)};
+        false -> null
+    end.
+
 target_fingerprint(#{<<"baseline">> := #{<<"fingerprint">> := Fingerprint}}) ->
     Fingerprint;
 target_fingerprint(_) -> null.
@@ -774,6 +798,13 @@ public_member(Member = #{<<"kind">> := <<"source_revision">>,
         StoredRevision -> StoredRevision
     end,
     Member#{<<"snapshot">> => public_revision(Revision, Store)};
+public_member(Member = #{<<"kind">> := <<"player_config">>,
+                         <<"snapshot">> := Snapshot = #{<<"config">> := Config}}, Store) ->
+    Catalog = maps:get(overframe, maps:get(catalogs, Store, #{}), #{}),
+    Upgrades = [Upgrade#{<<"elemental_types">> => wfcli_overframe_source:mod_elements(
+                         Catalog, maps:get(<<"item_type">>, Upgrade, null))}
+                || Upgrade <- maps:get(<<"upgrade_slots">>, Config, [])],
+    Member#{<<"snapshot">> => Snapshot#{<<"config">> => Config#{<<"upgrade_slots">> => Upgrades}}};
 public_member(Member, _Store) -> Member.
 
 hydrate_group(Group, Store) ->
@@ -789,8 +820,10 @@ current_result(Group, Store) ->
     Id = maps:get(<<"id">>, Group),
     Revision = maps:get(<<"revision">>, Group),
     Fingerprint = target_fingerprint(Group),
+    Catalog = plan_catalog(Group, Store),
     case maps:get(Id, maps:get(results, Store, #{}), undefined) of
-        #{<<"group_revision">> := Revision,
+        #{<<"schema">> := 2, <<"group_revision">> := Revision,
+          <<"catalog">> := Catalog,
           <<"target_fingerprint">> := Fingerprint} = Result when Fingerprint =/= null ->
             Result;
         _ -> undefined
@@ -813,7 +846,7 @@ queue_current_group_plan(Client, Group, State) ->
             State0 = ensure_forma_owner(State),
             RequestRef = make_ref(),
             Key = {maps:get(<<"id">>, Group), maps:get(<<"revision">>, Group),
-                   target_fingerprint(Group)},
+                   target_fingerprint(Group), plan_catalog(Group, maps:get(store, State0))},
             case maps:get(Key, maps:get(plan_keys, State0), undefined) of
                 FormaRef when is_reference(FormaRef) ->
                     Jobs = maps:get(plan_jobs, State0),
@@ -855,6 +888,7 @@ submit_group_plan(Client, RequestRef, Key, Group, Request, State) ->
     try wfcli_forma_service:submit(self(), Request) of
         {ok, FormaRef} ->
             Job = #{key => Key, group => Group,
+                    catalog => plan_catalog(Group, maps:get(store, State)),
                     waiters => #{RequestRef => Client}},
             {reply, {ok, RequestRef},
              State#{plan_jobs => (maps:get(plan_jobs, State))#{FormaRef => Job},
@@ -874,10 +908,11 @@ complete_group_plan(FormaRef, Reply, State) ->
             Group = maps:get(group, Job),
             Id = maps:get(<<"id">>, Group),
             Revision = maps:get(<<"revision">>, Group),
-            case checked_plan_target(Id, Revision, Group, State0) of
+            case checked_plan_target(Id, Revision, Job, State0) of
                 {ok, Current} ->
-                    case wfcli_build_plan:result(Current, Reply) of
-                        {ok, Result} ->
+                    case wfcli_build_plan:result(Group, Reply) of
+                        {ok, Result0} ->
+                            Result = Result0#{<<"catalog">> => maps:get(catalog, Job)},
                             Store0 = maps:get(store, State0),
                             Results = maps:get(results, Store0),
                             State1 = mark_dirty(
@@ -898,13 +933,15 @@ complete_group_plan(FormaRef, Reply, State) ->
             end
     end.
 
-checked_plan_target(Id, Revision, Planned, State) ->
+checked_plan_target(Id, Revision, #{group := Planned, catalog := Catalog}, State) ->
     case checked_group(Id, Revision, State) of
         {ok, Group} ->
             Current = wfcli_build_group:refresh_target(Group, equipment_snapshot([Group])),
-            case target_fingerprint(Current) =:= target_fingerprint(Planned) of
-                true -> {ok, Current};
-                false -> {error, build_target_changed}
+            case {target_fingerprint(Current) =:= target_fingerprint(Planned),
+                  plan_catalog(Current, maps:get(store, State)) =:= Catalog} of
+                {true, true} -> {ok, Current};
+                {false, _} -> {error, build_target_changed};
+                {_, false} -> {error, build_catalog_changed}
             end;
         Error -> Error
     end.

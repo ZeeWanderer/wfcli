@@ -69,15 +69,22 @@ get_flag(Key, Flags, Constraints) ->
     SlotCount = length(Slots),
     ModsBySlot = mods_by_slot(Builds),
     FlexPols = maps:get(normal, ModsBySlot, []),
+    Locked = maps:get(swap_locked_slots, Item, []),
+    Movable = [Pol || Slot := Pol <- wfcli_forma_rules:current_plan(Item),
+                      (Pol =:= omni orelse Pol =:= umbral),
+                      not lists:member(Slot, Locked)],
+    Reusable = fun(Slot) -> case lists:member(Slot, Locked) of
+                               true -> []; false -> Movable
+                           end end,
     NormalCandidates =
-        [ {Idx, slot_candidates(Idx, maps:get(Idx, ModsBySlot, []) ++ FlexPols,
+        [ {Idx, slot_candidates(Idx, maps:get(Idx, ModsBySlot, []) ++ FlexPols ++ Reusable(Idx),
                                safe_nth(Idx, Slots, none),
                                AllowOmni, AllowUmbral)}
           || Idx <- lists:seq(1, SlotCount)],
-    AuraCand = {aura, slot_candidates(aura, maps:get(aura, ModsBySlot, []),
+    AuraCand = {aura, slot_candidates(aura, maps:get(aura, ModsBySlot, []) ++ Reusable(aura),
                                       maps:get(aura_slot, Item, none),
                                       AllowOmni, AllowUmbral)},
-    ExilusCand = {exilus, slot_candidates(exilus, maps:get(exilus, ModsBySlot, []),
+    ExilusCand = {exilus, slot_candidates(exilus, maps:get(exilus, ModsBySlot, []) ++ Reusable(exilus),
                                           maps:get(exilus_slot, Item, none),
                                           AllowOmni, AllowUmbral)},
     [AuraCand, ExilusCand | NormalCandidates].
@@ -301,7 +308,13 @@ run_parallel_tasks(Tasks, Ctx, Seed, Budget) ->
     Workers = start_parallel_workers(Parent, Ctx, Seed, WorkerCount),
     {InitialItems, Queue} = take_n(WorkerCount, WorkItems),
     lists:foreach(fun({Worker, WorkItem}) -> Worker ! {run, WorkItem} end, lists:zip(Workers, InitialItems)),
-    collect_parallel_work(length(WorkItems), Queue, #{}, Seed, Ctx, 0, false).
+    case collect_parallel_work(length(WorkItems), Queue, #{}, Seed, Ctx, 0, false) of
+        {Best, Left, true} when Left > 0 ->
+            %% Static slices can starve a hard branch while other workers finish early.
+            {Slots, Cands} = lists:unzip(maps:get(slot_candidates, Ctx)),
+            search_slots(Slots, Cands, #{}, Ctx, Best, Left);
+        Result -> Result
+    end.
 
 start_parallel_workers(Parent, Ctx, Seed, WorkerCount) ->
     [spawn_link(fun() -> parallel_worker(Parent, Ctx, Seed) end)
@@ -537,8 +550,7 @@ should_prune(Plan, Ctx, Best) ->
     Flags = maps:get(flags, Ctx),
     Max = maps:get(max_forma, Flags, undefined),
     PartialCost = wfcli_forma_rules:cost(Plan, maps:get(item, Ctx), Flags),
-    LowerBound = lower_bound_cost(Plan, Ctx),
-    ProjectedCost = PartialCost + LowerBound,
+    ProjectedCost = PartialCost,
     OverBudget = case Max of
                      M when is_integer(M), M >= 0 -> ProjectedCost > M;
                      _ -> false
@@ -547,30 +559,10 @@ should_prune(Plan, Ctx, Best) ->
                       {_BestPlan, BestCost} -> ProjectedCost > BestCost;
                       _ -> false
                   end,
-    OverBudget orelse BetterFound.
+    PartialCost >= 99999 orelse OverBudget orelse BetterFound orelse
+        not wfcli_forma_assignment:possibly_fits_all(
+              Plan, maps:get(item, Ctx), maps:get(builds, Ctx)).
 
--doc "Cheap optimistic remaining Forma estimate used only for pruning.".
-lower_bound_cost(Plan, Ctx) ->
-    Item = maps:get(item, Ctx),
-    SlotCands = maps:get(slot_candidates, Ctx),
-    lists:sum([min_candidate_cost(Slot, Cands, Item, Plan) || {Slot, Cands} <- SlotCands]).
-
-min_candidate_cost(Slot, Cands, Item, Plan) ->
-    case maps:is_key(Slot, Plan) of
-        true -> 0;
-        false ->
-            Current = wfcli_forma_rules:current_polarity(Slot, Item),
-            min_candidate_cost(Cands, Current)
-    end.
-
-min_candidate_cost([], _Current) -> 0;
-min_candidate_cost(Cands, Current) ->
-    Costs = [candidate_cost(Cand, Current) || Cand <- Cands],
-    lists:min(Costs).
-
-candidate_cost(Cand, Current) when Cand =:= Current -> 0;
-candidate_cost(none, _Current) -> 0;
-candidate_cost(Cand, _Current) -> wfcli_forma_model:forma_cost(Cand).
 
 safe_nth(N, List, Default) when is_integer(N), N > 0 ->
     case lists:nthtail(N-1, List) of

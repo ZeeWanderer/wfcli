@@ -105,8 +105,19 @@ group operations report the error. Refetchable source revisions and plan results
 in XDG cache.
 
 Physical targets are resolved from current player equipment when read or planned. Plans are keyed
-by group revision and target fingerprint; completion rechecks both. Missing targets retain their
-groups but require retargeting before calculation.
+by group revision, target fingerprint, and source catalog identity; completion rechecks all three.
+Missing targets retain their groups but require retargeting before calculation.
+
+The daemon supplies executable operations and complete normalized loadouts, including final
+slots, polarities and drain. Clients use the shared topology renderer, without source-specific
+repairs. `forma_cost` is the weighted search objective; `forma_count` and `forma_requirements`
+describe actual consumables.
+
+Flexible weapon assignments preserve the signature of basic-element pairs in visual row-major
+order. Duplicate types merge; combined-element and non-elemental mods do not enter this sequence.
+Never treat unresolved effect metadata as an empty list. Exact slot locking bypasses rearrangement,
+not the physical target's current polarities. Partial capacity checks must be optimistic; validate
+complete plans using the same assignment implementation used to produce their loadouts.
 
 ## Supervision
 
