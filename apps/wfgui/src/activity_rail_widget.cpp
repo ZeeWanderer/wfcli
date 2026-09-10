@@ -346,7 +346,7 @@ ActivityRailWidget::ActivityRailWidget(AppController *controller,
   body->setObjectName("activityBody");
   wfgui::setCaptureTarget(body, "right-rail.timers");
   auto *bodyLayout = new QVBoxLayout(body);
-  bodyLayout->setContentsMargins(4, 8, 4, 4);
+  bodyLayout->setContentsMargins(4, 8, 4, 0);
   bodyLayout->setSpacing(0);
 
   auto *events = new QHBoxLayout;

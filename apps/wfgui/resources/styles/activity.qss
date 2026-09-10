@@ -100,8 +100,8 @@ QWidget#fissureSection {
   background: #101623;
   border-top-left-radius: 8px;
   border-top-right-radius: 8px;
-  border-bottom-left-radius: 12px;
-  border-bottom-right-radius: 12px;
+  border-bottom-left-radius: 0;
+  border-bottom-right-radius: 0;
 }
 
 QWidget#fissureHeader {
@@ -146,8 +146,5 @@ QListView#relicGrid QWidget#qt_scrollarea_viewport {
 QWidget#fissureList {
   background: #101623;
   border: none;
-  border-top-left-radius: 0;
-  border-top-right-radius: 0;
-  border-bottom-left-radius: 12px;
-  border-bottom-right-radius: 12px;
+  border-radius: 0;
 }

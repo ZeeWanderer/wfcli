@@ -125,6 +125,7 @@ private slots:
   void masteryOwnedBadgeKeepsPaintMargin();
   void marketSearchKeyboardNavigation();
   void filtersExpiredFissures();
+  void rightRailReachesBottom();
   void styleLayersAvoidImplicitSurfaces();
   void marketSpinBoxPaintsVisibleArrows();
   void capturesNamedUiTargets();
@@ -2919,6 +2920,55 @@ void RelicModelTest::filtersExpiredFissures() {
   QCOMPARE(wfgui::relicEraForFissureTier("Requiem"), QString("requiem"));
   QCOMPARE(wfgui::relicEraForFissureTier("Axi"), QString("axi"));
   QCOMPARE(wfgui::relicEraForFissureTier("Omnia"), QString("all"));
+}
+
+void RelicModelTest::rightRailReachesBottom() {
+  QTemporaryDir directory;
+  QVERIFY(directory.isValid());
+  QLocalServer server;
+  QVERIFY(server.listen(directory.filePath("wfdaemon.sock")));
+  const QByteArray oldSocket = qgetenv("WFCLI_DAEMON_SOCKET");
+  qputenv("WFCLI_DAEMON_SOCKET", server.fullServerName().toUtf8());
+  const auto restoreSocket = qScopeGuard([oldSocket] {
+    if (oldSocket.isNull()) {
+      qunsetenv("WFCLI_DAEMON_SOCKET");
+    } else {
+      qputenv("WFCLI_DAEMON_SOCKET", oldSocket);
+    }
+  });
+
+  AppController controller;
+  QTRY_VERIFY(server.hasPendingConnections());
+  QVERIFY(server.nextPendingConnection());
+  ActivityRailWidget rail(&controller);
+  QString style;
+  for (const auto *layer : {"foundation", "activity"}) {
+    QFile file(QStringLiteral(WFGUI_SOURCE_DIR "/resources/styles/%1.qss")
+                   .arg(layer));
+    QVERIFY(file.open(QIODevice::ReadOnly));
+    style += QString::fromUtf8(file.readAll());
+  }
+  rail.setStyleSheet(style);
+  rail.resize(400, 760);
+  rail.show();
+
+  for (const auto *name : {"fissureSection", "fissureList"}) {
+    auto *panel = rail.findChild<QWidget *>(name);
+    QVERIFY(panel);
+    QTRY_COMPARE(panel->mapTo(&rail, panel->rect().bottomLeft()).y(),
+                 rail.rect().bottom());
+    const QImage image = panel->grab().toImage();
+    QCOMPARE(image.pixelColor(0, image.height() - 1), QColor("#101623"));
+    QCOMPARE(image.pixelColor(image.width() - 1, image.height() - 1),
+             QColor("#101623"));
+  }
+  for (const auto *tab : {"timers", "market"}) {
+    QVERIFY(rail.setTab(tab));
+    const QImage image = rail.grab().toImage();
+    QCOMPARE(image.pixelColor(0, image.height() - 1), QColor("#171e30"));
+    QCOMPARE(image.pixelColor(image.width() - 1, image.height() - 1),
+             QColor("#171e30"));
+  }
 }
 
 void RelicModelTest::styleLayersAvoidImplicitSurfaces() {
