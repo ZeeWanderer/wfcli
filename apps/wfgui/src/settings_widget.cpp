@@ -273,8 +273,10 @@ void SettingsWidget::clearLocalCache() {
           self->localBusy_ = false;
           if (!cleared) {
             self->localUsage_->setText("Could not clear cache");
+            self->clearLocal_->setEnabled(true);
+          } else {
+            self->refreshLocalCache();
           }
-          self->refreshLocalCache();
         },
         Qt::QueuedConnection);
   });
