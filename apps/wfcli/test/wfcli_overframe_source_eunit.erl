@@ -26,6 +26,13 @@ catalog_refresh_and_search_test_() ->
                       maps:get(schema, Catalog)),
          ?assertEqual(5, map_size(maps:get(items_by_path, Catalog))),
          ?assertEqual(1, map_size(maps:get(mods_by_id, Catalog))),
+         Mod = maps:get(200, maps:get(mods_by_id, Catalog)),
+         ?assertEqual(2, maps:get(<<"base_drain">>, Mod)),
+         ?assertEqual(<<"galvanized">>, maps:get(<<"mod_variant">>, Mod)),
+         ?assertEqual([<<"cold">>, <<"toxin">>], maps:get(<<"elemental_types">>, Mod)),
+         ?assertEqual([<<"cold">>, <<"toxin">>],
+                      wfcli_overframe_source:mod_elements(Catalog, <<"/Lotus/Mods/Test">>)),
+         ?assertEqual(null, wfcli_overframe_source:mod_elements(Catalog, <<"/unknown">>)),
          {ok, Search} = wfcli_overframe_source:search(
                           Catalog, <<"test">>, <<"primary">>, 10),
          [Item] = maps:get(<<"items">>, Search),
@@ -87,6 +94,21 @@ revision_fingerprint_ignores_metadata_test() ->
     ?assertEqual(<<"Test-v2.png">>,
                  maps:get(<<"image_name">>, maps:get(<<"asset">>, ChangedUpgrade))).
 
+pinned_revision_refreshes_derived_metadata_test() ->
+    Catalog = test_catalog(),
+    Original = wfcli_overframe_source:normalize_detail(raw_build(), Catalog),
+    Content = maps:get(<<"content">>, Original),
+    [Slot] = maps:get(<<"slots">>, Content),
+    Stale = Original#{<<"content">> => Content#{<<"slots">> =>
+        [Slot#{<<"base_drain">> => null, <<"cost">> => null,
+               <<"mod_variant">> => <<"standard">>}]}},
+    Updated = wfcli_overframe_source:present_revision(Stale, Catalog),
+    ?assertEqual(maps:get(<<"content">>, Stale), maps:get(<<"content">>, Updated)),
+    ?assertEqual(maps:get(<<"fingerprint">>, Stale), maps:get(<<"fingerprint">>, Updated)),
+    [Presented] = maps:get(<<"upgrades">>, maps:get(<<"presentation">>, Updated)),
+    ?assertEqual(12, maps:get(<<"cost">>, Presented)),
+    ?assertEqual(<<"galvanized">>, maps:get(<<"mod_variant">>, Presented)).
+
 catalog_http_fun() ->
     Items = #{<<"/Lotus/Weapons/TestRifle">> =>
                   #{<<"id">> => 100, <<"name">> => <<"Test Rifle">>,
@@ -118,7 +140,12 @@ catalog_http_fun() ->
                  #{<<"id">> => 200, <<"name">> => <<"Test Mod">>,
                    <<"categories">> => [<<"mod">>],
                    <<"data">> => #{<<"ArtifactPolarity">> => 1,
-                                     <<"BaseDrain">> => <<"QA_MEDIUM">>,
+                                     <<"IsGalvanized">> => 1,
+                                     <<"SubUpgrades">> => [#{<<"ConditionalUpgrades">> => [<<"on_kill">>],
+                                        <<"Upgrades">> => [#{<<"DamageType">> => <<"DT_ANY">>}]}],
+                                     <<"Upgrades">> => [#{<<"DamageType">> => <<"DT_FREEZE">>},
+                                                         #{<<"DamageType">> => <<"DT_EXPLOSION">>},
+                                                         #{<<"DamageType">> => <<"DT_POISON">>}],
                                      <<"FusionLimit">> => <<"QA_VERY_HIGH">>}}},
     Rivens = #{},
     fun(Url, _Headers) ->

@@ -4,13 +4,13 @@
 -module(wfcli_overframe_source).
 
 -export([catalog_schema/0, refresh_catalog/0, search/4, list/2, detail/2,
-         decode_database/1, normalize_detail/2, present_revision/2]).
+         decode_database/1, normalize_detail/2, present_revision/2, mod_elements/2]).
 
 -define(PROBE_URL, "https://overframe.gg/_next/static/chunks/webpack.js").
 -define(API_ROOT, "https://overframe.gg/api/v1").
 -define(STATIC_ROOT, "https://static.overframe.gg/_next/static/chunks/").
 -define(CATALOG_TIMEOUT, 45000).
--define(CATALOG_SCHEMA, 3).
+-define(CATALOG_SCHEMA, 5).
 
 -doc "Return normalized Overframe catalog schema understood by this adapter.".
 -spec catalog_schema() -> pos_integer().
@@ -180,6 +180,8 @@ fetch_chunks(Urls, RuntimeUrl) ->
                    items_by_path => Items,
                    items_by_id => index_external_id(Items),
                    mods_by_id => Mods,
+                   mods_by_path => maps:from_list(
+                     [{maps:get(<<"canonical_id">>, Mod), Mod} || Mod <- maps:values(Mods)]),
                    rivens_by_id => Rivens}};
         {error, _Reason} = Error -> Error
     end.
@@ -280,17 +282,18 @@ normalize_mods(Database) ->
                                     <<"polarity">> =>
                                         overframe_polarity(
                                           maps:get(<<"ArtifactPolarity">>, Data,
-                                                   null)),
+                                                   <<"AP_UNIVERSAL">>)),
                                     <<"base_drain">> =>
                                         overframe_base_drain(
-                                          maps:get(<<"BaseDrain">>, Data, null)),
+                                          maps:get(<<"BaseDrain">>, Data, <<"QA_LOW">>)),
                                     <<"max_rank">> =>
                                         overframe_max_rank(
-                                          maps:get(<<"FusionLimit">>, Data, null)),
+                                          maps:get(<<"FusionLimit">>, Data, <<"QA_HIGH">>)),
                                     <<"rarity">> =>
                                         overframe_rarity(
                                           maps:get(<<"Rarity">>, Data, null)),
                                     <<"mod_variant">> => mod_variant(Data),
+                                    <<"elemental_types">> => elemental_types(Data),
                                     <<"texture">> =>
                                         maps:get(<<"texture_new">>, Record,
                                                  maps:get(<<"texture">>, Record, null))},
@@ -368,8 +371,17 @@ present_slot(Slot, Catalog) ->
     CanonicalId = maps:get(<<"canonical_id">>, Slot,
                            maps:get(<<"canonical_id">>, Mod, null)),
     Texture = maps:get(<<"texture">>, Mod, null),
-    Slot#{<<"item_type">> => CanonicalId,
-          <<"asset">> => asset(CanonicalId, Texture)}.
+    Fields = maps:with([<<"name">>, <<"rarity">>, <<"mod_variant">>,
+                        <<"base_drain">>, <<"max_rank">>, <<"elemental_types">>], Mod),
+    Current = maps:merge(Slot, Fields),
+    Cost = case ranked_cost(maps:get(<<"base_drain">>, Current, null),
+                             maps:get(<<"rank">>, Slot, 0)) of
+        null -> maps:get(<<"cost">>, Slot, null);
+        Value -> Value
+    end,
+    Current#{<<"item_type">> => CanonicalId,
+             <<"cost">> => Cost,
+             <<"asset">> => asset(CanonicalId, Texture)}.
 
 present_slot(Slot, Catalog, Bindings) ->
     Presented = present_slot(Slot, Catalog),
@@ -447,10 +459,31 @@ overframe_max_rank(Value) ->
 overframe_rarity(Value) when is_binary(Value) -> string:lowercase(Value);
 overframe_rarity(_Value) -> null.
 
-mod_variant(#{<<"IsGalvanized">> := true}) -> <<"galvanized">>;
-mod_variant(#{<<"IsAmalgam">> := true}) -> <<"amalgam">>;
-mod_variant(#{<<"IsRiven">> := true}) -> <<"riven">>;
+mod_variant(#{<<"IsGalvanized">> := V}) when V =:= true; V =:= 1 -> <<"galvanized">>;
+mod_variant(#{<<"IsAmalgam">> := V}) when V =:= true; V =:= 1 -> <<"amalgam">>;
+mod_variant(#{<<"IsRiven">> := V}) when V =:= true; V =:= 1 -> <<"riven">>;
 mod_variant(_Data) -> <<"standard">>.
+
+mod_elements(Catalog, ItemType) ->
+    Mod = maps:get(ItemType, maps:get(mods_by_path, Catalog, #{}), #{}),
+    maps:get(<<"elemental_types">>, Mod, null).
+
+elemental_types(Data) ->
+    Types = #{<<"DT_FIRE">> => <<"heat">>, <<"DT_FREEZE">> => <<"cold">>,
+              <<"DT_ELECTRICITY">> => <<"electricity">>, <<"DT_POISON">> => <<"toxin">>},
+    Elements = [maps:get(Type, Types) || Upgrade <- maps:get(<<"Upgrades">>, Data, []),
+                 Type <- [maps:get(<<"DamageType">>, Upgrade, undefined)],
+                 maps:is_key(Type, Types)],
+    Sub = maps:get(<<"SubUpgrades">>, Data, []) ++
+          case maps:find(<<"SubUpgrade">>, Data) of {ok, S} -> [S]; error -> [] end,
+    SubElements = [case S of M when is_map(M) -> elemental_types(M); _ -> null end || S <- Sub],
+    Conditional = maps:get(<<"ConditionalUpgrades">>, Data, false),
+    case mod_variant(Data) =:= <<"riven">> orelse
+         (Elements =/= [] andalso Conditional =/= false andalso Conditional =/= 0)
+         orelse lists:any(fun(E) -> E =/= [] end, SubElements) of
+        true -> null;
+        false -> Elements
+    end.
 
 quality_value(Value, Values) when is_integer(Value) ->
     maps:get(Value, Values, null);
