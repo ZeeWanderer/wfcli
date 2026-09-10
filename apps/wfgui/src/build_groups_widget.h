@@ -4,63 +4,66 @@
 #include <QWidget>
 
 class AppController;
+class BuildPlanWidget;
 class BuildTopologyWidget;
 class QCheckBox;
+class QComboBox;
 class QLabel;
-class QLineEdit;
-class QListView;
-class QListWidget;
-class QModelIndex;
 class QPushButton;
+class QScrollArea;
 class QStackedWidget;
 
 class BuildGroupsWidget final : public QWidget {
   Q_OBJECT
 
 public:
-  explicit BuildGroupsWidget(AppController *controller,
-                             QWidget *parent = nullptr);
+  explicit BuildGroupsWidget(AppController *controller, QWidget *parent = nullptr);
   void selectGroup(const QString &id);
 
 signals:
-  void equipmentRequested(const QString &definitionId,
-                          const QString &instanceId);
+  void equipmentRequested(const QString &definitionId, const QString &instanceId);
   void discoverRequested(const QString &definitionId);
 
 private:
-  void restoreSelection();
-  void selectGroupIndex(const QModelIndex &index);
-  void rebuild();
-  void selectMember(int row);
-  void save();
-  void removeMember();
-  void deleteGroup();
+  bool eventFilter(QObject *watched, QEvent *event) override;
+  void refresh();
+  void refreshTargets();
+  void showMember();
+  void saveOptions();
   void calculate();
 
   AppController *controller_;
   QStackedWidget *pages_;
+  QStackedWidget *contentPages_;
   QWidget *editor_;
   QWidget *emptyPage_;
-  QListView *groups_;
+  QScrollArea *scroll_;
+  QWidget *actions_;
+  QComboBox *groups_;
+  QComboBox *target_;
+  QComboBox *members_;
+  QLabel *meta_;
+  QLabel *state_;
   QLabel *emptyTitle_;
   QLabel *emptyDescription_;
   QPushButton *emptyEquipment_;
   QPushButton *emptyDiscover_;
-  QLineEdit *name_;
-  QLabel *meta_;
   QCheckBox *preserveSlots_;
   QCheckBox *allowOmni_;
   QCheckBox *allowUmbral_;
-  QListWidget *members_;
+  BuildPlanWidget *plan_;
   BuildTopologyWidget *topology_;
-  QLabel *state_;
-  QPushButton *save_;
+  QLabel *capacity_;
+  QLabel *notes_;
+  QPushButton *original_;
+  QPushButton *planned_;
   QPushButton *remove_;
-  QPushButton *delete_;
   QPushButton *calculate_;
   QPushButton *equipment_;
   QPushButton *discover_;
   QString selectedId_;
   QJsonObject group_;
+  QJsonObject rendered_;
+  bool refreshing_ = false;
   bool planning_ = false;
 };

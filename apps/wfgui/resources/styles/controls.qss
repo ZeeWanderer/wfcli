@@ -1,5 +1,78 @@
 /* Reusable controls. Page-specific variants belong with their page. */
 
+QSpinBox,
+QComboBox {
+  color: #ffffff;
+  background: #171e30;
+  border: 1px solid #313a58;
+  border-radius: 5px;
+  min-height: 24px;
+  padding: 3px 6px;
+}
+
+QComboBox QAbstractItemView {
+  color: #ffffff;
+  background: #20283e;
+  selection-color: #ffffff;
+  selection-background-color: #443364;
+  outline: none;
+}
+
+QComboBox {
+  padding-right: 24px;
+}
+
+QComboBox::drop-down {
+  subcontrol-origin: padding;
+  subcontrol-position: top right;
+  width: 22px;
+  border: none;
+  background: transparent;
+}
+
+QComboBox::down-arrow {
+  image: url(:/resources/ui/chevron-down.png);
+  width: 12px;
+  height: 12px;
+}
+
+QComboBox:disabled {
+  color: #8a8c95;
+}
+
+QSpinBox {
+  padding: 3px 22px 3px 6px;
+}
+
+QSpinBox::up-button,
+QSpinBox::down-button {
+  subcontrol-origin: border;
+  width: 18px;
+  background: transparent;
+  border: none;
+  border-left: 1px solid #313a58;
+}
+
+QSpinBox::up-button {
+  subcontrol-position: top right;
+  border-top-right-radius: 4px;
+}
+
+QSpinBox::down-button {
+  subcontrol-position: bottom right;
+  border-bottom-right-radius: 4px;
+}
+
+QSpinBox::up-button:hover,
+QSpinBox::down-button:hover {
+  background: #272f47;
+}
+
+QSpinBox::up-button:pressed,
+QSpinBox::down-button:pressed {
+  background: #432289;
+}
+
 QLineEdit {
   background: #20283e;
   border: 1px solid #313a58;

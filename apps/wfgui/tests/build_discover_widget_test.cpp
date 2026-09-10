@@ -1,10 +1,13 @@
 #include <QJsonArray>
 #include <QLabel>
 #include <QListView>
+#include <QMenu>
 #include <QLocalServer>
+#include <QPushButton>
 #include <QScopeGuard>
 #include <QScrollArea>
 #include <QTemporaryDir>
+#include <QTimer>
 #include <QtTest>
 
 #include "app_controller.h"
@@ -125,6 +128,31 @@ void BuildDiscoverWidgetTest::rendersBuildCardsAndNotesInOneScrollArea() {
   QTRY_VERIFY(widget.findChild<QWidget *>("buildModCard") != nullptr);
   const QWidget *mod = widget.findChild<QWidget *>("buildModCard");
   QCOMPARE(mod->property("upgradeName").toString(), QString("Serration"));
+
+  QJsonObject group{{"id", "group-1"}, {"name", "Rifle builds"}, {"definition_id", "/item"},
+                    {"revision", 1}, {"members", QJsonArray{}}};
+  client->buildSourceReady({{"op", "build_group_list"}}, {{"groups", QJsonArray{group}}});
+  QSignalSpy navigation(&widget, &BuildDiscoverWidget::groupRequested);
+  QTimer::singleShot(0, [] {
+    auto *menu = qobject_cast<QMenu *>(QApplication::activePopupWidget());
+    QVERIFY(menu);
+    menu->setActiveAction(menu->actions().first());
+    QTest::keyClick(menu, Qt::Key_Return);
+  });
+  auto buttons = widget.findChildren<QPushButton *>();
+  auto add = std::find_if(buttons.begin(), buttons.end(), [](auto *button) { return button->text() == "Add to group"; });
+  QVERIFY(add != buttons.end());
+  (*add)->click();
+  group.insert("revision", 2);
+  client->buildSourceReady({{"op", "build_group_add_source"}, {"group_id", "group-1"}}, group);
+  QCOMPARE(navigation.count(), 0);
+  QCOMPARE(state->text(), QString("Added to Rifle builds"));
+  auto open = std::find_if(buttons.begin(), buttons.end(), [](auto *button) { return button->property("testId") == "buildAddedGroup"; });
+  QVERIFY(open != buttons.end());
+  QVERIFY((*open)->isVisible());
+  (*open)->click();
+  QCOMPARE(navigation.count(), 1);
+  QCOMPARE(navigation.first().first().toString(), QString("group-1"));
 }
 
 QTEST_MAIN(BuildDiscoverWidgetTest)

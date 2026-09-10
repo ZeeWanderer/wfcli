@@ -125,6 +125,50 @@ QFrame#buildPane {
   border-radius: 8px;
 }
 
+QFrame#buildPolarityCell {
+  background: #20283e;
+  border: 1px solid transparent;
+  border-radius: 4px;
+}
+
+QFrame#buildPolarityCell[changed="true"] {
+  border-color: #d7b76b;
+}
+
+QLabel#buildPolarityLabel {
+  color: #c4cada;
+  font-size: 9pt;
+}
+
+QLabel#buildPlanSummary,
+QLabel#buildCapacity {
+  color: #91d8b4;
+}
+
+QLabel#buildPlanOperation,
+QLabel#buildGroupState {
+  color: #d8dbea;
+}
+
+QToolButton#buildOptionsToggle {
+  background: transparent;
+  border: none;
+  color: #c4cada;
+  padding: 4px;
+}
+
+QFrame#buildScrollEdge {
+  border: none;
+  background: qlineargradient(x1: 0, y1: 0, x2: 0, y2: 1,
+                              stop: 0 rgba(4, 8, 16, 120), stop: 1 rgba(4, 8, 16, 0));
+}
+
+QWidget#buildGroupActions {
+  background: #101623;
+  border: 1px solid #313a58;
+  border-radius: 6px;
+}
+
 QListView#buildEquipmentList,
 QListView#buildEquipmentList QWidget#qt_scrollarea_viewport,
 QListView#buildSourceItemList,

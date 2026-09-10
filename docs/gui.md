@@ -62,6 +62,20 @@ or invisible.
 Settings shows daemon connection state and source-image, rendered-image, and in-memory cache usage.
 Each cache can be cleared independently; downloaded source images are fetched again when needed.
 
+### Build Planner
+
+Equipment shows each owned copy and its saved configurations. Discover browses Overframe builds;
+adding a build keeps the current page open, with an explicit **Open group** action.
+
+Groups combine target builds for one owned copy. **Calculate** shows required polarity changes,
+ordered swaps and Forma applications, then each build's resulting mod layout and
+capacity. Select a member and switch between its target build and planned loadout. Notes follow
+the cards in the same scroll area.
+
+New groups allow rearrangement while preserving weapon elemental combinations. **Keep exact mod
+slots** locks positions; unresolved elemental effects require this option. Companion precept and Parazon
+order stay fixed. New Omni and Umbral Forma applications are separate planning options.
+
 ## Activity Rail
 
 The right rail has Timers & Events and WFMarket tabs. Timers shows active world cycles, Baro and

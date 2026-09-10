@@ -21,6 +21,8 @@ qt_add_library(wfgui_core STATIC
   src/build_source_model.h
   src/build_topology_widget.cpp
   src/build_topology_widget.h
+  src/build_plan_widget.cpp
+  src/build_plan_widget.h
   src/compact_search.cpp
   src/compact_search.h
   src/daemon_client.cpp
@@ -104,9 +106,7 @@ qt_add_executable(wfgui
   src/style_loader.h
 )
 
-qt_add_resources(wfgui "wfgui_resources"
-  PREFIX "/"
-  FILES
+set(WFGUI_RESOURCES
     resources/categories/all.png
     resources/categories/arcanes.png
     resources/categories/arch.png
@@ -133,6 +133,7 @@ qt_add_resources(wfgui "wfgui_resources"
     resources/activity/vallis.png
     resources/app/wfgui-512.png
     resources/ui/all.png
+    resources/ui/chevron-down.png
     resources/ui/favorite.png
     resources/ui/favorite_active.png
     resources/ui/filter.png
@@ -229,11 +230,9 @@ qt_add_resources(wfgui "wfgui_resources"
     resources/styles/foundation.qss
     resources/styles/market.qss
 )
+qt_add_resources(wfgui "wfgui_resources" PREFIX "/" FILES ${WFGUI_RESOURCES})
 
-qt_add_resources(wfgui "wfgui_shared_assets"
-  PREFIX "/assets"
-  BASE "${CMAKE_CURRENT_SOURCE_DIR}/../wfcompanion/assets"
-  FILES
+set(WFGUI_SHARED_ASSETS
     ../wfcompanion/assets/Roboto-Bold.ttf
     ../wfcompanion/assets/Roboto-Light.ttf
     ../wfcompanion/assets/Roboto-Medium.ttf
@@ -243,6 +242,11 @@ qt_add_resources(wfgui "wfgui_shared_assets"
     ../wfcompanion/assets/platinum.png
     ../wfcompanion/assets/unvaulted.png
     ../wfcompanion/assets/vaulted.png
+)
+qt_add_resources(wfgui "wfgui_shared_assets"
+  PREFIX "/assets"
+  BASE "${CMAKE_CURRENT_SOURCE_DIR}/../wfcompanion/assets"
+  FILES ${WFGUI_SHARED_ASSETS}
 )
 
 target_compile_features(wfgui_core PUBLIC cxx_std_23)
@@ -428,12 +432,17 @@ if(BUILD_TESTING)
     src/build_groups_widget.cpp
     src/build_groups_widget.h
     tests/build_groups_widget_test.cpp
+    src/style_loader.cpp
   )
   qt_add_resources(wfgui_build_groups_widget_tests
     "wfgui_build_groups_widget_resources"
     PREFIX "/"
-    FILES
-      resources/ui/nav_builds.png
+    FILES ${WFGUI_RESOURCES}
+  )
+  qt_add_resources(wfgui_build_groups_widget_tests "wfgui_build_groups_assets"
+    PREFIX "/assets"
+    BASE "${CMAKE_CURRENT_SOURCE_DIR}/../wfcompanion/assets"
+    FILES ${WFGUI_SHARED_ASSETS}
   )
   target_link_libraries(wfgui_build_groups_widget_tests PRIVATE
     Qt6::Test

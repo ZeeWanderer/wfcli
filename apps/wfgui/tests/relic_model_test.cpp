@@ -2993,20 +2993,17 @@ void RelicModelTest::styleLayersAvoidImplicitSurfaces() {
   QVERIFY(
       controlsText.contains("image: url(:/resources/market/wfgui-check.png);"));
 
-  QFile market(QStringLiteral(WFGUI_SOURCE_DIR "/resources/styles/market.qss"));
-  QVERIFY(market.open(QIODevice::ReadOnly));
-  const QString marketText = QString::fromUtf8(market.readAll());
-  QVERIFY(marketText.contains("QSpinBox::up-button,"));
-  QVERIFY(marketText.contains("QSpinBox::down-button"));
-  QVERIFY(marketText.contains("border-left: 1px solid #313a58;"));
+  QVERIFY(controlsText.contains("QSpinBox::up-button,"));
+  QVERIFY(controlsText.contains("QSpinBox::down-button"));
+  QVERIFY(controlsText.contains("border-left: 1px solid #313a58;"));
 }
 
 void RelicModelTest::marketSpinBoxPaintsVisibleArrows() {
-  QFile market(QStringLiteral(WFGUI_SOURCE_DIR "/resources/styles/market.qss"));
-  QVERIFY(market.open(QIODevice::ReadOnly));
+  QFile controls(QStringLiteral(WFGUI_SOURCE_DIR "/resources/styles/controls.qss"));
+  QVERIFY(controls.open(QIODevice::ReadOnly));
 
   wfgui::MarketSpinBox spin;
-  spin.setStyleSheet(QString::fromUtf8(market.readAll()));
+  spin.setStyleSheet(QString::fromUtf8(controls.readAll()));
   spin.resize(104, 32);
   spin.show();
   QCoreApplication::processEvents();

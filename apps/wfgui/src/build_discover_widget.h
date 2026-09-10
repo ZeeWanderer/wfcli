@@ -54,6 +54,7 @@ private:
   QLabel *note_;
   QLabel *state_;
   QPushButton *add_;
+  QPushButton *openGroup_;
   QTimer *itemSearchTimer_;
   QTimer *buildSearchTimer_;
   QString selectedItemId_;
@@ -61,5 +62,6 @@ private:
   QString buildListItemId_;
   qint64 selectedBuildId_ = 0;
   QString pendingGroupId_;
+  QString addedGroupId_;
   bool pendingCreate_ = false;
 };

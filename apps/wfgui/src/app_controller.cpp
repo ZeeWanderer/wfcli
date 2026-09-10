@@ -1432,9 +1432,16 @@ void AppController::applyBuildSourceReply(const QJsonObject &request,
   if (op == "build_group_plan") {
     pendingBuildGroupRequests_.remove(key);
     buildGroupsError_.clear();
+    const QString id = request.value("group_id").toString();
+    QJsonObject group = buildGroups_.group(id);
+    if (group.value("revision").toInteger(-1) == data.value("group_revision").toInteger(-2) &&
+        group.value("baseline").toObject().value("fingerprint") == data.value("target_fingerprint")) {
+      group.insert("plan_result", data);
+      buildGroups_.upsert(group);
+    }
     emit buildGroupsStateChanged();
     emit buildGroupRequestFinished(request, data);
-    requestBuildGroup(request.value("group_id").toString());
+    requestBuildGroup(id);
     return;
   }
   if (op.startsWith("build_group_")) {

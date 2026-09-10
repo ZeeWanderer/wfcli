@@ -152,6 +152,13 @@ BuildEquipmentWidget::BuildEquipmentWidget(AppController *controller,
   state_->setWordWrap(true);
   detailLayout->addWidget(state_);
   auto *actions = new QHBoxLayout;
+  openGroup_ = new QPushButton("Open group");
+  openGroup_->setObjectName("textAction");
+  openGroup_->hide();
+  actions->addWidget(openGroup_);
+  connect(openGroup_, &QPushButton::clicked, this, [this] {
+    emit groupRequested(addedGroupId_);
+  });
   actions->addStretch();
   actions->addWidget(createGroup_);
   captureConfig_->setObjectName("primaryAction");
@@ -225,10 +232,11 @@ BuildEquipmentWidget::BuildEquipmentWidget(AppController *controller,
               }
             } else if (op == "build_group_add_config" &&
                        group.value("id").toString() == pendingGroupId_) {
-              const QString id = pendingGroupId_;
+              addedGroupId_ = pendingGroupId_;
               pendingGroupId_.clear();
               pendingCapture_ = false;
-              emit groupRequested(id);
+              openGroup_->setText("Open " + group.value("name").toString());
+              openGroup_->show();
             }
             updateState();
           });
@@ -339,6 +347,7 @@ void BuildEquipmentWidget::selectCopy(int index) {
 }
 
 void BuildEquipmentWidget::selectConfig(int index) {
+  openGroup_->hide();
   if (instance_.isEmpty() || index < 0) {
     topology_->clear();
     return;

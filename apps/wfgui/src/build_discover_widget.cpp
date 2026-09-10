@@ -41,7 +41,7 @@ BuildDiscoverWidget::BuildDiscoverWidget(AppController *controller,
       empty_(new QLabel), buildTitle_(new QLabel), buildMeta_(new QLabel),
       topology_(new BuildTopologyWidget(controller)), noteTitle_(new QLabel),
       note_(new QLabel), state_(new QLabel),
-      add_(new QPushButton("Add to group")), itemSearchTimer_(new QTimer(this)),
+      add_(new QPushButton("Add to group")), openGroup_(new QPushButton("Open group")), itemSearchTimer_(new QTimer(this)),
       buildSearchTimer_(new QTimer(this)) {
   auto *layout = new QVBoxLayout(this);
   layout->setContentsMargins(0, 0, 0, 0);
@@ -147,7 +147,14 @@ BuildDiscoverWidget::BuildDiscoverWidget(AppController *controller,
   detailLayout->addWidget(buildMeta_);
   detailLayout->addWidget(revisionScroll, 1);
   detailLayout->addWidget(state_);
-  detailLayout->addWidget(add_, 0, Qt::AlignRight);
+  auto *actions = new QHBoxLayout;
+  openGroup_->setObjectName("textAction");
+  openGroup_->setProperty("testId", "buildAddedGroup");
+  openGroup_->hide();
+  actions->addWidget(openGroup_);
+  actions->addStretch();
+  actions->addWidget(add_);
+  detailLayout->addLayout(actions);
   splitter->addWidget(detail);
   splitter->setStretchFactor(0, 2);
   splitter->setStretchFactor(1, 3);
@@ -178,6 +185,9 @@ BuildDiscoverWidget::BuildDiscoverWidget(AppController *controller,
           [this](const QModelIndex &index) { selectBuild(index); });
   connect(add_, &QPushButton::clicked, this,
           &BuildDiscoverWidget::showGroupMenu);
+  connect(openGroup_, &QPushButton::clicked, this, [this] {
+    emit groupRequested(addedGroupId_);
+  });
   connect(controller_, &AppController::buildSourceItemsStateChanged, this,
           [this] {
             restoreItemSelection();
@@ -207,9 +217,10 @@ BuildDiscoverWidget::BuildDiscoverWidget(AppController *controller,
               addToGroup(group);
             } else if (op == "build_group_add_source" &&
                        group.value("id").toString() == pendingGroupId_) {
-              const QString id = pendingGroupId_;
+              addedGroupId_ = pendingGroupId_;
               pendingGroupId_.clear();
-              emit groupRequested(id);
+              state_->setText("Added to " + group.value("name").toString());
+              openGroup_->show();
             }
             updateState();
           });
@@ -325,6 +336,7 @@ void BuildDiscoverWidget::selectBuild(const QModelIndex &index) {
     return;
   }
   selectedBuildId_ = index.data(BuildSummaryModel::ExternalIdRole).toLongLong();
+  openGroup_->hide();
   buildTitle_->setText(index.data(BuildSummaryModel::TitleRole).toString());
   QStringList meta;
   const QString author = index.data(BuildSummaryModel::AuthorRole).toString();

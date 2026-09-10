@@ -67,11 +67,13 @@ private:
   BuildTopologyWidget *topology_;
   QPushButton *createGroup_;
   QPushButton *captureConfig_;
+  QPushButton *openGroup_;
   QLabel *state_;
   QJsonObject instance_;
   QString selectedDefinitionId_;
   QString selectedInstanceId_;
   QString pendingGroupId_;
+  QString addedGroupId_;
   bool pendingCreate_ = false;
   bool pendingCapture_ = false;
   bool railCollapsed_ = false;
