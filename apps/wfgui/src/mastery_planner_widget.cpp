@@ -1,4 +1,5 @@
 #include "mastery_planner_widget.h"
+#include "thumbnail_widget.h"
 
 #include <QAbstractItemModel>
 #include <QButtonGroup>
@@ -84,10 +85,10 @@ public:
     headerLayout->setContentsMargins(10, 5, 10, 5);
     headerLayout->setSpacing(7);
     headerLayout->addStretch();
-    auto *iconLabel = new QLabel;
+    auto *iconLabel = new ThumbnailWidget;
     iconLabel->setFixedSize(30, 30);
-    iconLabel->setAlignment(Qt::AlignCenter);
-    iconLabel->setPixmap(QIcon(icon).pixmap(28, 28));
+    iconLabel->setImageBounds(QSize(28, 28));
+    iconLabel->setAsset(wfgui::AssetRef::embedded(icon, icon));
     headerLayout->addWidget(iconLabel);
     auto *heading = new QLabel(title);
     heading->setObjectName("masterySummaryHeading");
@@ -148,8 +149,8 @@ MasteryPlannerWidget::MasteryPlannerWidget(AppController *controller,
     : QWidget(parent), controller_(controller),
       items_(new PlayerItemFilterModel(this)),
       grid_(new PlayerItemGridWidget(PlayerItemGridWidget::Kind::Mastery)),
-      rank_(new QLabel), rankIcon_(new QLabel), completionPercent_(new QLabel),
-      completionText_(new QLabel),
+      rank_(new QLabel), rankIcon_(new ThumbnailWidget),
+      completionPercent_(new QLabel), completionText_(new QLabel),
       gameContent_(new MasterySummaryPanel(
           "Game Content", ":/resources/ui/summary_game.png",
           {{"Warframes / Archwings:", "warframes"},
@@ -188,8 +189,6 @@ MasteryPlannerWidget::MasteryPlannerWidget(AppController *controller,
   topLayout->addWidget(rank_);
   rankIcon_->setObjectName("masteryRankIcon");
   rankIcon_->setFixedSize(60, 60);
-  rankIcon_->setPixmap(QIcon(":/resources/ui/mastery_rank.png").pixmap(60, 60));
-  rankIcon_->setAlignment(Qt::AlignCenter);
   topLayout->addWidget(rankIcon_);
   topLayout->addSpacing(10);
 
@@ -329,7 +328,6 @@ MasteryPlannerWidget::MasteryPlannerWidget(AppController *controller,
                                             .value("id")
                                             .toString();
             if (ids.contains(rankAssetId)) {
-              rankIconPath_.clear();
               updateContent();
             }
           });
@@ -425,15 +423,11 @@ void MasteryPlannerWidget::updateContent() {
   const QJsonObject profile = controller_->playerProfile();
   const QString rankAssetId =
       profile.value("rank_asset").toObject().value("id").toString();
-  const QString rankAssetPath = controller_->assetPath(rankAssetId);
-  const QString iconPath = rankAssetPath.isEmpty()
-                               ? ":/resources/ui/mastery_rank.png"
-                               : rankAssetPath;
-  if (rankIconPath_ != iconPath) {
-    rankIconPath_ = iconPath;
-    rankIcon_->setPixmap(QPixmap(iconPath).scaled(60, 60, Qt::KeepAspectRatio,
-                                                  Qt::SmoothTransformation));
-  }
+  const auto asset = controller_->assetRef(rankAssetId);
+  rankIcon_->setAsset(
+      asset.isValid() ? asset
+                      : wfgui::AssetRef::embedded(
+                            "mastery_rank", ":/resources/ui/mastery_rank.png"));
   const QJsonObject rankProgress = summary.value("rank_progress").toObject();
   const bool hasRankProgress = rankProgress.value("available").toBool() &&
                                rankProgress.value("current").isDouble() &&

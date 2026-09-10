@@ -22,8 +22,14 @@
 
 #include <algorithm>
 #include <atomic>
-#include <limits>
+#include <memory>
 #include <utility>
+
+#ifdef Q_OS_LINUX
+#include <sys/resource.h>
+#include <sys/syscall.h>
+#include <unistd.h>
+#endif
 
 #include "derivative_cache.h"
 
@@ -32,6 +38,20 @@ constexpr int MemoryCacheKiB = 64 * 1024;
 constexpr int ReadyBatchSize = 4;
 constexpr qint64 MaximumSourcePixels = 64 * 1024 * 1024;
 constexpr int MaximumSourceDimension = 16384;
+constexpr qint64 DecodeBudget = 32 * 1024 * 1024;
+constexpr qint64 WriteBudget = 32 * 1024 * 1024;
+
+int lowerWorkerPriority() {
+#ifdef Q_OS_LINUX
+  const auto tid = static_cast<id_t>(syscall(SYS_gettid));
+  if (getpriority(PRIO_PROCESS, tid) < 5) {
+    setpriority(PRIO_PROCESS, tid, 5);
+  }
+  return getpriority(PRIO_PROCESS, tid);
+#else
+  return 0;
+#endif
+}
 
 wfgui::ImageIssueReporter imageIssueReporter;
 
@@ -48,7 +68,7 @@ bool oversized(const QSize &size) {
 }
 
 QImage normalized(QImage image) {
-  if (!image.isNull() && image.hasAlphaChannel() &&
+  if (!image.isNull() && image.format() != QImage::Format_RGB32 &&
       image.format() != QImage::Format_ARGB32_Premultiplied) {
     return image.convertToFormat(QImage::Format_ARGB32_Premultiplied);
   }
@@ -135,6 +155,7 @@ public:
     QPointer<ThumbnailLoader> loader(this);
     // One FIFO writer orders source changes before lower-priority derivative writes.
     writer_.start([loader, asset] {
+      lowerWorkerPriority();
       if (loader && !loader->stopping_.load()) {
         derivativeCache().registerAsset(asset);
       }
@@ -167,37 +188,13 @@ public:
     } else if (!waiter->full) {
       waiter->region += dirtyRegion;
     }
-    if (pending_.contains(key)) {
+    if (active_.contains(key)) {
       return;
     }
-    pending_.insert(key);
-
-    QPointer<ThumbnailLoader> loader(this);
-    pool_.start(
-        [loader, key, asset, pixelBounds, dpr] {
-          if (!loader || loader->stopping_.load()) {
-            return;
-          }
-          QImage image = derivativeCache().load(asset, pixelBounds);
-          const bool needsStore = image.isNull() && asset.isPersistent();
-          QString decodeError;
-          if (image.isNull()) {
-            DecodedImage decoded = decodeThumbnail(asset.path, pixelBounds);
-            image = std::move(decoded.image);
-            decodeError = std::move(decoded.error);
-          } else {
-            image = normalized(std::move(image));
-          }
-          if (needsStore && !image.isNull()) {
-            loader->storeLater(asset, pixelBounds, image);
-          }
-          if (!loader || loader->stopping_.load()) {
-            return;
-          }
-          loader->enqueueResult(key, asset, std::move(image),
-                                std::move(decodeError), dpr);
-        },
-        nextPriority());
+    queued_.insert(key, Request{asset, pixelBounds, dpr});
+    queue_.removeAll(key);
+    queue_.append(key);
+    dispatch();
   }
 
   void clearMemory() {
@@ -205,7 +202,33 @@ public:
     failures_.clear();
   }
 
+  wfgui::ThumbnailWorkStats stats() {
+    const QMutexLocker lock(&readyMutex_);
+    qint64 readyBytes = 0;
+    for (const ReadyResult &result : ready_) {
+      readyBytes += result.image.sizeInBytes();
+    }
+    return {.queued = static_cast<int>(queue_.size()),
+            .active = static_cast<int>(active_.size()),
+            .ready = static_cast<int>(ready_.size()),
+            .readyBytes = readyBytes,
+            .reservedBytes = reservedBytes_,
+            .writeBytes = writeBytes_.load(),
+            .skippedWrites = skippedWrites_.load(),
+            .workerNice = workerNice_.load()};
+  }
+
 private:
+  struct Request {
+    wfgui::AssetRef asset;
+    QSize pixelBounds;
+    qreal dpr;
+    qint64 bytes() const {
+      return static_cast<qint64>(pixelBounds.width()) * pixelBounds.height() *
+             4;
+    }
+  };
+
   struct ReadyResult {
     QString key;
     wfgui::AssetRef asset;
@@ -236,27 +259,88 @@ private:
     }
     pool_.clear();
     writer_.clear();
-    pending_.clear();
+    queue_.clear();
+    queued_.clear();
+    active_.clear();
+    reservedBytes_ = 0;
     waiters_.clear();
     const QMutexLocker lock(&readyMutex_);
     ready_.clear();
     drainScheduled_ = false;
   }
 
-  int nextPriority() {
-    if (priority_ == std::numeric_limits<int>::max()) {
-      priority_ = 0;
+  void dispatch() {
+    while (!stopping_.load() && !queue_.isEmpty() &&
+           active_.size() < pool_.maxThreadCount()) {
+      const QString key = queue_.last();
+      const auto &waiters = waiters_[key];
+      const bool requested = std::any_of(
+          waiters.cbegin(), waiters.cend(),
+          [](const Waiter &waiter) { return !waiter.target.isNull(); });
+      if (!requested) {
+        queue_.removeLast();
+        queued_.remove(key);
+        waiters_.remove(key);
+        continue;
+      }
+      const Request request = queued_.value(key);
+      // A larger preview can run alone; ordinary thumbnails share the byte
+      // budget.
+      if (!active_.isEmpty() &&
+          reservedBytes_ + request.bytes() > DecodeBudget) {
+        break;
+      }
+      queue_.removeLast();
+      queued_.remove(key);
+      active_.insert(key, request.bytes());
+      reservedBytes_ += request.bytes();
+      pool_.start([this, key, request] {
+        workerNice_.store(lowerWorkerPriority());
+        if (stopping_.load()) {
+          return;
+        }
+        QImage image =
+            derivativeCache().load(request.asset, request.pixelBounds);
+        const bool needsStore = image.isNull() && request.asset.isPersistent();
+        QString error;
+        if (image.isNull()) {
+          DecodedImage decoded =
+              decodeThumbnail(request.asset.path, request.pixelBounds);
+          image = std::move(decoded.image);
+          error = std::move(decoded.error);
+        } else {
+          image = normalized(std::move(image));
+        }
+        if (needsStore && !image.isNull() && !stopping_.load()) {
+          storeLater(request.asset, request.pixelBounds, image);
+        }
+        enqueueResult(key, request.asset, std::move(image), std::move(error),
+                      request.dpr);
+      });
     }
-    return ++priority_;
   }
 
   void storeLater(const wfgui::AssetRef &asset, const QSize &pixelBounds,
                   const QImage &image) {
-    QPointer<ThumbnailLoader> loader(this);
+    const qint64 bytes = image.sizeInBytes();
+    qint64 reserved = writeBytes_.load();
+    do {
+      if (reserved + bytes > WriteBudget) {
+        ++skippedWrites_;
+        return;
+      }
+    } while (!writeBytes_.compare_exchange_weak(reserved, reserved + bytes));
+    // The reservation also releases if shutdown discards a queued write.
+    const std::shared_ptr<QImage> pending(new QImage(image),
+                                          [this, bytes](QImage *value) {
+                                            delete value;
+                                            writeBytes_.fetch_sub(bytes);
+                                          });
     writer_.start(
-        [loader, asset, pixelBounds, image] {
-          if (loader && !loader->stopping_.load()) {
-            (void)derivativeCache().store(asset, pixelBounds, image);
+        [this, asset, pixelBounds, pending] {
+          lowerWorkerPriority();
+          if (!stopping_.load()) {
+            (void)derivativeCache().store(asset, pixelBounds, *pending);
           }
         },
         -1);
@@ -311,6 +395,7 @@ private:
         target.key()->update(target.value().region);
       }
     }
+    dispatch();
     if (more) {
       QTimer::singleShot(0, this, [this] { drainResults(); });
     }
@@ -319,7 +404,7 @@ private:
   void finish(const QString &key, const wfgui::AssetRef &asset, QImage image,
               const QString &error, qreal dpr,
               QHash<QWidget *, TargetUpdate> &targets) {
-    pending_.remove(key);
+    reservedBytes_ -= active_.take(key);
     if (image.isNull()) {
       Failure &failure = failures_[key];
       failure.attempts = std::min(failure.attempts + 1, 6);
@@ -353,14 +438,19 @@ private:
 
   QThreadPool pool_;
   QThreadPool writer_;
-  QSet<QString> pending_;
+  QList<QString> queue_;
+  QHash<QString, Request> queued_;
+  QHash<QString, qint64> active_;
   QHash<QString, Failure> failures_;
   QHash<QString, QList<Waiter>> waiters_;
   QMutex readyMutex_;
   QQueue<ReadyResult> ready_;
   std::atomic_bool stopping_ = false;
+  std::atomic<qint64> writeBytes_ = 0;
+  std::atomic<qint64> skippedWrites_ = 0;
+  std::atomic_int workerNice_ = 0;
+  qint64 reservedBytes_ = 0;
   bool drainScheduled_ = false;
-  int priority_ = 0;
 };
 
 ThumbnailLoader *thumbnailLoader() {
@@ -401,6 +491,9 @@ QPixmap cachedThumbnail(QPainter &painter, const AssetRef &asset,
       painter.device() ? painter.device()->devicePixelRatioF() : 1.0;
   const QSize pixelBounds(qCeil(logicalBounds.width() * dpr),
                           qCeil(logicalBounds.height() * dpr));
+  if (oversized(pixelBounds)) {
+    return {};
+  }
   const QString key = memoryKey(asset, pixelBounds, dpr);
   if (QPixmapCache::find(key, &image)) {
     return image;
@@ -441,6 +534,8 @@ void clearThumbnailMemoryCache() { thumbnailLoader()->clearMemory(); }
 qint64 thumbnailMemoryCacheLimit() {
   return static_cast<qint64>(QPixmapCache::cacheLimit()) * 1024;
 }
+
+ThumbnailWorkStats thumbnailWorkStats() { return thumbnailLoader()->stats(); }
 
 void setImageIssueReporter(ImageIssueReporter reporter) {
   imageIssueReporter = std::move(reporter);

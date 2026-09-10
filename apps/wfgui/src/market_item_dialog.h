@@ -18,6 +18,7 @@ class QSpinBox;
 class QTableWidget;
 class QTimer;
 class QWidget;
+class ThumbnailWidget;
 
 class MarketItemView final : public QWidget {
   Q_OBJECT
@@ -47,7 +48,7 @@ private:
   QString listingPlayer(const QJsonObject &order) const;
 
   AppController *controller_;
-  QLabel *image_;
+  ThumbnailWidget *image_;
   QLabel *name_;
   QLabel *status_;
   QButtonGroup *modes_;

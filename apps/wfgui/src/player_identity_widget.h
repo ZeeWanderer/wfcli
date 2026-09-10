@@ -6,6 +6,7 @@
 class AppController;
 class QLabel;
 class QResizeEvent;
+class ThumbnailWidget;
 
 class PlayerIdentityWidget final : public QWidget {
 public:
@@ -20,9 +21,8 @@ private:
   void updateName();
 
   AppController *controller_;
-  QLabel *icon_;
+  ThumbnailWidget *icon_;
   QLabel *rank_;
   QLabel *name_;
-  QString rankIconPath_;
   QString playerName_;
 };

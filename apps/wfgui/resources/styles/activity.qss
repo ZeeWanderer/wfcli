@@ -91,7 +91,7 @@ QWidget#cycleCard {
   max-height: 50px;
 }
 
-QLabel#cycleIcon {
+QWidget#cycleIcon {
   background: #20283e;
   border-radius: 24px;
 }

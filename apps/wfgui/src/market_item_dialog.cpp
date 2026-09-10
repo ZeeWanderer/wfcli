@@ -1,4 +1,5 @@
 #include "market_item_dialog.h"
+#include "thumbnail_widget.h"
 
 #include <QAbstractItemView>
 #include <QApplication>
@@ -179,7 +180,7 @@ QWidget *compactListingRow(const QJsonObject &order, const QString &player) {
 
 MarketItemView::MarketItemView(AppController *controller,
                                Presentation presentation, QWidget *parent)
-    : QWidget(parent), controller_(controller), image_(new QLabel),
+    : QWidget(parent), controller_(controller), image_(new ThumbnailWidget),
       name_(new QLabel), status_(new QLabel), modes_(new QButtonGroup(this)),
       listings_(presentation == Presentation::Dialog ? new QTableWidget
                                                      : nullptr),
@@ -214,7 +215,6 @@ MarketItemView::MarketItemView(AppController *controller,
     auto *header = new QHBoxLayout;
     image_->setObjectName("marketItemImage");
     image_->setFixedSize(72, 72);
-    image_->setAlignment(Qt::AlignCenter);
     header->addWidget(image_);
     header->addWidget(name_, 1);
     refresh = new QPushButton("Refresh");
@@ -500,13 +500,7 @@ void MarketItemView::updateContent() {
   }
 
   const QString assetId = item.value("asset").toObject().value("id").toString();
-  const QString assetPath = controller_->assetPath(assetId);
-  image_->setPixmap(assetPath.isEmpty()
-                        ? QPixmap()
-                        : QPixmap(assetPath).scaled(image_->size(),
-                                                    Qt::KeepAspectRatio,
-                                                    Qt::SmoothTransformation));
-  image_->setText(assetPath.isEmpty() ? "..." : QString());
+  image_->setAsset(controller_->assetRef(assetId));
 
   const QJsonArray orders =
       quote.value(mode_ == "sell" ? "sell_orders" : "buy_orders").toArray();

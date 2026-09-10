@@ -9,12 +9,21 @@ Use Qt model/view for dense or unbounded collections:
   and model `data()` calls. Create `QPixmap` objects only on the GUI thread.
 - Size thumbnails for the paint device's DPR. QPainter target geometry is logical;
   pixmap source rectangles use physical pixels (`pixmap.rect()`). Test fractional DPR.
+- Use `ThumbnailWidget` for image-only widgets and `cachedThumbnail` in delegates.
+  Both share async decode, derivative identity and DPR-aware caching.
 - Complete asynchronous work with `update(itemRect)`. Repaint the whole viewport only
   when shared visual state changes. Use `update()`, not synchronous `repaint()`.
 - Emit role-specific `dataChanged` ranges. Reset a model only when row identity or
   structure changes, and preserve the visible anchor across reordering.
 - Use uniform item sizes and `QListView::SinglePass` where card geometry allows it.
   Change layout mode or widget paint attributes only after measuring the result.
+
+Thumbnail work admits at most three decodes, with a 32 MiB output reservation
+budget (one larger image may run alone). The result stays admitted until the GUI
+consumes it. Queued derivative writes have a separate 32 MiB memory budget;
+optional writes may be skipped under pressure. Neither budget caps disk storage.
+Keep source registration FIFO and ahead of derivative writes. Linux image workers
+use nice 5 or lower scheduling priority; the GUI thread's priority is unchanged.
 
 Qt coalesces `update()` calls and clips paint events to dirty regions. Delegates add
 application drawing while the view retains virtualization, scrolling, and backing-store

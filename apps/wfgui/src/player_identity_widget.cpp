@@ -8,10 +8,11 @@
 #include <QVBoxLayout>
 
 #include "app_controller.h"
+#include "thumbnail_widget.h"
 
 PlayerIdentityWidget::PlayerIdentityWidget(AppController *controller,
                                            QWidget *parent)
-    : QWidget(parent), controller_(controller), icon_(new QLabel),
+    : QWidget(parent), controller_(controller), icon_(new ThumbnailWidget),
       rank_(new QLabel), name_(new QLabel(this)), playerName_("Player") {
   setObjectName("playerIdentity");
 
@@ -25,10 +26,6 @@ PlayerIdentityWidget::PlayerIdentityWidget(AppController *controller,
   icon_->setParent(emblem);
   icon_->setObjectName("playerEmblemIcon");
   icon_->setGeometry(0, 0, 50, 50);
-  icon_->setAlignment(Qt::AlignCenter);
-  icon_->setPixmap(
-      QPixmap(":/resources/ui/mastery_rank.png")
-          .scaled(50, 50, Qt::KeepAspectRatio, Qt::SmoothTransformation));
   rank_->setParent(emblem);
   rank_->setObjectName("playerRankBadge");
   rank_->setAlignment(Qt::AlignCenter);
@@ -50,7 +47,6 @@ PlayerIdentityWidget::PlayerIdentityWidget(AppController *controller,
                                             .value("id")
                                             .toString();
             if (ids.contains(rankAssetId)) {
-              rankIconPath_.clear();
               updateProfile();
             }
           });
@@ -74,15 +70,11 @@ void PlayerIdentityWidget::updateProfile() {
   rank_->move(47 - rank_->width(), 47 - rank_->height());
   const QString rankAssetId =
       profile.value("rank_asset").toObject().value("id").toString();
-  const QString rankAssetPath = controller_->assetPath(rankAssetId);
-  const QString iconPath = rankAssetPath.isEmpty()
-                               ? ":/resources/ui/mastery_rank.png"
-                               : rankAssetPath;
-  if (rankIconPath_ != iconPath) {
-    rankIconPath_ = iconPath;
-    icon_->setPixmap(QPixmap(iconPath).scaled(50, 50, Qt::KeepAspectRatio,
-                                              Qt::SmoothTransformation));
-  }
+  const auto asset = controller_->assetRef(rankAssetId);
+  icon_->setAsset(asset.isValid()
+                      ? asset
+                      : wfgui::AssetRef::embedded(
+                            "mastery_rank", ":/resources/ui/mastery_rank.png"));
   name_->setToolTip(playerName_);
   updateName();
 }

@@ -251,7 +251,7 @@ QPushButton#marketSide[side="buy"]:checked {
   color: #ffffff;
 }
 
-QLabel#marketItemImage {
+QWidget#marketItemImage {
   background: #20283e;
   border-radius: 8px;
 }

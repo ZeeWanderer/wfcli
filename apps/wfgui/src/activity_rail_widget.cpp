@@ -1,4 +1,5 @@
 #include "activity_rail_widget.h"
+#include "thumbnail_widget.h"
 
 #include <QAbstractButton>
 #include <QButtonGroup>
@@ -187,17 +188,16 @@ QIcon maskedIcon(const QString &path) {
   return icon;
 }
 
-QLabel *imageLabel(const QString &path, int frameSize, const char *objectName,
-                   int imageSize = 0, const QColor &tint = {}) {
-  auto *label = new QLabel;
+ThumbnailWidget *imageLabel(const QString &path, int frameSize,
+                            const char *objectName, int imageSize = 0,
+                            const QColor &tint = {}) {
+  auto *label = new ThumbnailWidget;
   label->setObjectName(objectName);
   label->setFixedSize(frameSize, frameSize);
-  label->setAlignment(Qt::AlignCenter);
   const int targetSize = imageSize > 0 ? imageSize : frameSize;
-  const QPixmap source =
-      tint.isValid() ? tintedPixmap(path, tint) : QPixmap(path);
-  label->setPixmap(source.scaled(targetSize, targetSize, Qt::KeepAspectRatio,
-                                 Qt::SmoothTransformation));
+  label->setImageBounds(QSize(targetSize, targetSize));
+  label->setAsset(wfgui::AssetRef::embedded(path, path));
+  label->setTint(tint);
   return label;
 }
 

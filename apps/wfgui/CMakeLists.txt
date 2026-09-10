@@ -31,6 +31,8 @@ qt_add_library(wfgui_core STATIC
   src/derivative_cache.h
   src/image_cache.cpp
   src/image_cache.h
+  src/thumbnail_widget.cpp
+  src/thumbnail_widget.h
   src/inventory_card_layout.cpp
   src/inventory_card_layout.h
   src/market_order_card.cpp
@@ -369,6 +371,12 @@ if(BUILD_TESTING)
   set_tests_properties(wfgui-models PROPERTIES
     ENVIRONMENT "QT_QPA_PLATFORM=offscreen"
   )
+  foreach(scale 1.25 2)
+    add_test(NAME wfgui-thumbnail-${scale}
+      COMMAND wfgui_tests thumbnailWidgetKeepsTintAndSurfaceAtDpr)
+    set_tests_properties(wfgui-thumbnail-${scale} PROPERTIES
+      ENVIRONMENT "QT_QPA_PLATFORM=offscreen;QT_SCALE_FACTOR=${scale}")
+  endforeach()
   qt_add_executable(wfgui_build_equipment_tests
     tests/build_equipment_model_test.cpp
   )

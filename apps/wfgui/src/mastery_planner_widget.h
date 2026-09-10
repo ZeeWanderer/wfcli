@@ -13,6 +13,7 @@ class QProgressBar;
 class QPushButton;
 class QStackedLayout;
 class QTimer;
+class ThumbnailWidget;
 
 class MasteryPlannerWidget final : public QWidget {
   Q_OBJECT
@@ -36,7 +37,7 @@ private:
   PlayerItemFilterModel *items_;
   PlayerItemGridWidget *grid_;
   QLabel *rank_;
-  QLabel *rankIcon_;
+  ThumbnailWidget *rankIcon_;
   QLabel *completionPercent_;
   QLabel *completionText_;
   MasterySummaryPanel *gameContent_;
@@ -48,7 +49,6 @@ private:
   QPushButton *refresh_;
   QStackedLayout *content_;
   QTimer *priceUpdateTimer_;
-  QString rankIconPath_;
   QString mode_ = "easy";
   bool priceLoading_ = false;
 };

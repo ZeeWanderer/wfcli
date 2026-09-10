@@ -18,6 +18,17 @@ namespace wfgui {
 using ImageIssueReporter =
     std::function<void(const AssetRef &, const QString &, bool resolved)>;
 
+struct ThumbnailWorkStats {
+  int queued = 0;
+  int active = 0;
+  int ready = 0;
+  qint64 readyBytes = 0;
+  qint64 reservedBytes = 0;
+  qint64 writeBytes = 0;
+  qint64 skippedWrites = 0;
+  int workerNice = 0;
+};
+
 // Widget paints schedule disk decode off-thread; cache identity includes bounds
 // and DPR.
 [[nodiscard]] QPixmap cachedThumbnail(QPainter &painter, const QString &path,
@@ -33,6 +44,7 @@ void acceptThumbnailAsset(const AssetRef &asset);
 [[nodiscard]] bool clearDerivativeCache();
 void clearThumbnailMemoryCache();
 [[nodiscard]] qint64 thumbnailMemoryCacheLimit();
+[[nodiscard]] ThumbnailWorkStats thumbnailWorkStats();
 void setImageIssueReporter(ImageIssueReporter reporter);
 
 void drawContained(QPainter &painter, const QRectF &rect, const QPixmap &image);

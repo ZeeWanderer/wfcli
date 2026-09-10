@@ -30,6 +30,10 @@
 
 #include <utility>
 
+#ifdef Q_OS_LINUX
+#include <sys/resource.h>
+#endif
+
 #include "activity_data.h"
 #include "activity_rail_widget.h"
 #include "animated_progress_bar.h"
@@ -50,6 +54,7 @@
 #include "relic_model.h"
 #include "relic_planner_widget.h"
 #include "settings_widget.h"
+#include "thumbnail_widget.h"
 #include "tooltip.h"
 #include "wfgui_paths.h"
 #include "widget_capture.h"
@@ -117,6 +122,8 @@ private slots:
   void thumbnailCacheRespectsSizeAndDpr();
   void alignsFractionalDprThumbnailsToDevicePixels();
   void widgetThumbnailDecodeCompletesOffPaintPath();
+  void thumbnailWorkIsBoundedWhenGuiFallsBehind();
+  void thumbnailWidgetKeepsTintAndSurfaceAtDpr();
   void derivativeCacheTracksUpstreamIdentity();
   void renderingOlderAssetCannotRegressFreshness();
   void settingsExposeIndependentCacheControls();
@@ -2591,6 +2598,100 @@ void RelicModelTest::widgetThumbnailDecodeCompletesOffPaintPath() {
   QTRY_VERIFY_WITH_TIMEOUT(!probe.thumbnail().isNull(), 2000);
   QCOMPARE(probe.thumbnail().deviceIndependentSize(), QSizeF(20, 10));
   QCOMPARE(probe.resolvedPaintRegion(), dirtyRegion);
+}
+
+void RelicModelTest::thumbnailWorkIsBoundedWhenGuiFallsBehind() {
+  class Burst final : public QWidget {
+  public:
+    QList<wfgui::AssetRef> assets;
+    int loaded = 0;
+    void paintEvent(QPaintEvent *) override {
+      QPainter painter(this);
+      loaded = 0;
+      for (const auto &asset : assets) {
+        loaded +=
+            !wfgui::cachedThumbnail(painter, asset, QSize(512, 512)).isNull();
+      }
+    }
+  } probe;
+  QTemporaryDir directory;
+  const QString path = directory.filePath("source.png");
+  QImage source(512, 512, QImage::Format_ARGB32_Premultiplied);
+  source.fill(Qt::green);
+  QVERIFY(source.save(path));
+  wfgui::clearThumbnailMemoryCache();
+  for (int i = 0; i < 24; ++i) {
+    auto asset = wfgui::AssetRef::embedded(QString::number(i), path);
+    asset.digest = directory.path() + QString::number(i);
+    probe.assets.append(asset);
+  }
+#ifdef Q_OS_LINUX
+  const int guiNice = getpriority(PRIO_PROCESS, 0);
+#endif
+  probe.resize(80, 80);
+  probe.show();
+  probe.grab();
+  const auto submitted = wfgui::thumbnailWorkStats();
+  QVERIFY(submitted.active > 0 && submitted.active <= 3);
+  QVERIFY(submitted.queued > 0);
+  QTest::qSleep(80);
+  const auto blocked = wfgui::thumbnailWorkStats();
+  QVERIFY(blocked.ready <= 3);
+  QVERIFY(blocked.active <= 3);
+  QVERIFY(blocked.readyBytes <= 32 * 1024 * 1024);
+  QVERIFY(blocked.writeBytes <= 32 * 1024 * 1024);
+  QCOMPARE(blocked.queued, submitted.queued);
+#ifdef Q_OS_LINUX
+  QVERIFY(blocked.workerNice >= 5);
+  QCOMPARE(getpriority(PRIO_PROCESS, 0), guiNice);
+#endif
+  QElapsedTimer elapsed;
+  elapsed.start();
+  QTimer heartbeat;
+  heartbeat.setInterval(1);
+  qint64 lastBeat = 0;
+  qint64 longestBeat = 0;
+  connect(&heartbeat, &QTimer::timeout, &probe, [&] {
+    const qint64 now = elapsed.elapsed();
+    longestBeat = qMax(longestBeat, now - lastBeat);
+    lastBeat = now;
+  });
+  heartbeat.start();
+  QTRY_COMPARE_WITH_TIMEOUT(probe.loaded, probe.assets.size(), 5000);
+  QTRY_COMPARE(wfgui::thumbnailWorkStats().active, 0);
+  QCOMPARE(wfgui::thumbnailWorkStats().queued, 0);
+  qInfo("thumbnail burst: ready=%d ready_bytes=%lld worker_nice=%d "
+        "completion_ms=%lld longest_event_gap_ms=%lld",
+        blocked.ready, static_cast<long long>(blocked.readyBytes),
+        blocked.workerNice, static_cast<long long>(elapsed.elapsed()),
+        static_cast<long long>(longestBeat));
+}
+
+void RelicModelTest::thumbnailWidgetKeepsTintAndSurfaceAtDpr() {
+  QTemporaryDir directory;
+  const QString path = directory.filePath("glyph.png");
+  QImage source(80, 80, QImage::Format_ARGB32_Premultiplied);
+  source.fill(Qt::white);
+  QVERIFY(source.save(path));
+  ThumbnailWidget widget;
+  widget.setAttribute(Qt::WA_TranslucentBackground);
+  widget.setObjectName("cycleIcon");
+  widget.setStyleSheet(
+      "QWidget#cycleIcon { background: #20283e; border-radius: 20px; }");
+  widget.setFixedSize(40, 40);
+  widget.setImageBounds({20, 20});
+  widget.setAsset(wfgui::AssetRef::embedded("glyph", path));
+  widget.setTint(Qt::blue);
+  const auto colorAt = [&widget](int x, int y) {
+    const QPixmap capture = widget.grab();
+    const qreal dpr = capture.devicePixelRatio();
+    return capture.toImage().pixelColor(qRound(x * dpr), qRound(y * dpr));
+  };
+  QTRY_COMPARE(colorAt(20, 20), QColor(Qt::blue));
+  QCOMPARE(colorAt(5, 20), QColor("#20283e"));
+  QCOMPARE(colorAt(0, 0).alpha(), 0);
+  const QPixmap capture = widget.grab();
+  QCOMPARE(capture.size().width(), qRound(40 * widget.devicePixelRatioF()));
 }
 
 void RelicModelTest::derivativeCacheTracksUpstreamIdentity() {
