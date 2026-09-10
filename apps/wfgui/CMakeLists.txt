@@ -518,6 +518,13 @@ if(BUILD_TESTING)
   set_tests_properties(wfgui-build-topology PROPERTIES
     ENVIRONMENT "QT_QPA_PLATFORM=offscreen"
   )
+  foreach(scale IN ITEMS 1.25 2)
+    add_test(NAME wfgui-mod-artwork-${scale}
+      COMMAND wfgui_build_topology_tests preservesModArtworkAtHighDpi)
+    set_tests_properties(wfgui-mod-artwork-${scale} PROPERTIES
+      ENVIRONMENT "QT_QPA_PLATFORM=offscreen;QT_SCALE_FACTOR=${scale}"
+    )
+  endforeach()
   add_test(
     NAME wfgui-icon-optics
     COMMAND wfgui_icon_optics

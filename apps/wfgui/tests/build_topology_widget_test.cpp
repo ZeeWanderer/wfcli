@@ -6,12 +6,16 @@
 #include <QJsonArray>
 #include <QJsonObject>
 #include <QLabel>
+#include <QLocalServer>
 #include <QPainter>
+#include <QScopeGuard>
+#include <QTemporaryDir>
 #include <QtTest>
 
 #include "app_controller.h"
 #include "arcane_card_widget.h"
 #include "build_topology_widget.h"
+#include "daemon_client.h"
 #include "mod_card_widget.h"
 
 class BuildTopologyWidgetTest final : public QObject {
@@ -31,7 +35,97 @@ private slots:
   void keepsExpandedModCenteredAtWindowEdge();
   void centersRankPipsWithoutStretchingAcrossTrack();
   void preservesArcaneGlyphAspectAtFractionalScale();
+  void preservesModArtworkAtHighDpi();
+  void openPreviewRepaintsWhenArtworkArrives();
 };
+
+void BuildTopologyWidgetTest::openPreviewRepaintsWhenArtworkArrives() {
+  QTemporaryDir directory;
+  QLocalServer server;
+  QVERIFY(server.listen(directory.filePath("daemon.sock")));
+  const QByteArray oldSocket = qgetenv("WFCLI_DAEMON_SOCKET");
+  qputenv("WFCLI_DAEMON_SOCKET", server.fullServerName().toUtf8());
+  const auto restoreSocket = qScopeGuard([oldSocket] {
+    if (oldSocket.isNull()) qunsetenv("WFCLI_DAEMON_SOCKET");
+    else qputenv("WFCLI_DAEMON_SOCKET", oldSocket);
+  });
+  AppController controller;
+  QWidget host;
+  host.resize(600, 500);
+  auto *mod = new wfgui::ModCardWidget(
+      &controller, {{"id", "mod-1"}, {"role", "mod"}},
+      {{"rarity", "common"}, {"asset", QJsonObject{{"id", "test:late-art"}}}},
+      "none", &host);
+  mod->move(200, 200);
+  host.show();
+  QTest::qWait(20);
+  QEnterEvent enter(QPointF(20, 20), QPointF(220, 220), QPointF(220, 220));
+  QCoreApplication::sendEvent(mod, &enter);
+  auto *preview = host.findChild<QWidget *>("buildModCardPreview");
+  QVERIFY(preview);
+  QTRY_COMPARE(preview->size(), QSize(220, 308));
+  QTest::qWait(30);
+  class PaintCounter final : public QObject {
+  public:
+    int paints = 0;
+    bool eventFilter(QObject *, QEvent *event) override {
+      paints += event->type() == QEvent::Paint;
+      return false;
+    }
+  } counter;
+  preview->installEventFilter(&counter);
+  QImage source(384, 384, QImage::Format_RGB32);
+  source.fill(Qt::cyan);
+  const QString path = directory.filePath("art.png");
+  QVERIFY(source.save(path));
+  controller.findChild<DaemonClient *>()->assetsResolved(
+      {QJsonObject{{"id", "test:late-art"}, {"ok", true}, {"path", path}}});
+  QTRY_VERIFY(counter.paints > 0);
+}
+
+void BuildTopologyWidgetTest::preservesModArtworkAtHighDpi() {
+  QTemporaryDir directory;
+  QVERIFY(directory.isValid());
+  QLocalServer server;
+  QVERIFY(server.listen(directory.filePath("daemon.sock")));
+  const QByteArray oldSocket = qgetenv("WFCLI_DAEMON_SOCKET");
+  qputenv("WFCLI_DAEMON_SOCKET", server.fullServerName().toUtf8());
+  const auto restoreSocket = qScopeGuard([oldSocket] {
+    if (oldSocket.isNull())
+      qunsetenv("WFCLI_DAEMON_SOCKET");
+    else
+      qputenv("WFCLI_DAEMON_SOCKET", oldSocket);
+  });
+  AppController controller;
+  auto *daemon = controller.findChild<DaemonClient *>();
+  QVERIFY(daemon);
+
+  QImage source(384, 384, QImage::Format_RGB32);
+  source.fill(Qt::red);
+  QPainter sourcePainter(&source);
+  sourcePainter.fillRect(192, 0, 192, 384, Qt::green);
+  sourcePainter.end();
+  const QString path = directory.filePath("split.png");
+  QVERIFY(source.save(path));
+  daemon->assetsResolved(QJsonArray{
+      QJsonObject{{"id", "test:mod"}, {"ok", true}, {"path", path}}});
+  wfgui::ModCardWidget widget(
+      &controller, {{"id", "mod-1"}, {"role", "mod"}},
+      {{"rarity", "common"}, {"asset", QJsonObject{{"id", "test:mod"}}}},
+      "none");
+
+  const qreal dpr = widget.devicePixelRatioF();
+  const auto artwork = [&widget, dpr](int x) {
+    return widget.grab().toImage().pixelColor(qRound(x * dpr),
+                                              qRound(40 * dpr));
+  };
+  QTRY_VERIFY_WITH_TIMEOUT(artwork(85).red() > artwork(85).green() + 80, 2000);
+  const QColor right = artwork(110);
+  QVERIFY2(
+      right.green() > right.red() + 80,
+      qPrintable(
+          QString("Right artwork at DPR %1: %2").arg(dpr).arg(right.name())));
+}
 
 void BuildTopologyWidgetTest::rendersConfigAndInstanceState() {
   const QJsonObject topology{

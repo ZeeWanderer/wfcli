@@ -122,8 +122,8 @@ void addSlotHeader(QVBoxLayout *layout, const QJsonObject &slot,
     polarityLabel->setProperty("polarity", polarity);
     polarityLabel->setToolTip("Slot polarity: " + polarity);
     polarityLabel->setPixmap(
-        wfgui::modPolarityPixmap(polarity, QColor("#c4cada"))
-            .scaled(16, 16, Qt::KeepAspectRatio, Qt::SmoothTransformation));
+        QIcon(wfgui::modPolarityPixmap(polarity, QColor("#c4cada")))
+            .pixmap(QSize(16, 16), polarityLabel->devicePixelRatioF()));
     header->addWidget(polarityLabel);
   }
   layout->addLayout(header);

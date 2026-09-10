@@ -343,7 +343,7 @@ void drawCovered(QPainter &painter, const QRectF &bounds,
   const QRectF destination(bounds.center().x() - target.width() / 2.0,
                            bounds.center().y() - target.height() / 2.0,
                            target.width(), target.height());
-  painter.drawPixmap(destination, image, QRectF(QPointF{}, source));
+  painter.drawPixmap(destination, image, QRectF(image.rect()));
 }
 
 void drawFrameLayer(QPainter &painter, const QRectF &root, qreal scale,

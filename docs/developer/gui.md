@@ -7,6 +7,8 @@ Use Qt model/view for dense or unbounded collections:
 - Put card geometry in a layout helper shared by painting, tooltips, and hit testing.
 - Keep disk, network, image decoding, and expensive transformation out of `paint()`
   and model `data()` calls. Create `QPixmap` objects only on the GUI thread.
+- Size thumbnails for the paint device's DPR. QPainter target geometry is logical;
+  pixmap source rectangles use physical pixels (`pixmap.rect()`). Test fractional DPR.
 - Complete asynchronous work with `update(itemRect)`. Repaint the whole viewport only
   when shared visual state changes. Use `update()`, not synchronous `repaint()`.
 - Emit role-specific `dataChanged` ranges. Reset a model only when row identity or
