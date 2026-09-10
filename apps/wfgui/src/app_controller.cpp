@@ -1013,17 +1013,23 @@ void AppController::requestMarketVariantQuote(const QString &item,
                                               bool refresh) {
   const QString key = marketVariantKey(item, filters);
   const QJsonObject cached = marketVariantQuote(item, filters);
-  if (!refresh && !cached.isEmpty()) {
-    QTimer::singleShot(0, this, [this, item, filters, cached] {
-      emit marketVariantQuoteReady(item, filters, cached);
+  const qint64 now = QDateTime::currentMSecsSinceEpoch();
+  const qint64 requestedAt = marketVariantRequestedAt_.value(key, 0);
+  const bool fresh = requestedAt > 0 && now - requestedAt < 60'000;
+  if (!refresh && !cached.isEmpty() && fresh) {
+    QTimer::singleShot(0, this, [this, item, filters] {
+      emit marketVariantQuoteReady(item, filters, marketVariantQuote(item, filters));
     });
     return;
   }
-  if (marketVariantPending_.contains(key)) {
+  if (marketVariantPending_.contains(key) ||
+      (!refresh && cached.isEmpty() && fresh)) {
     return;
   }
   marketVariantPending_.insert(key);
-  daemon_.requestMarketVariantQuote(item, filters, refresh);
+  marketVariantRequestedAt_.insert(key, now);
+  daemon_.requestMarketVariantQuote(item, filters,
+                                    refresh || !cached.isEmpty());
 }
 
 void AppController::searchMarketItems(const QString &query, int limit) {

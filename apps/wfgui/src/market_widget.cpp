@@ -381,13 +381,15 @@ MarketWidget::MarketWidget(AppController *controller, QWidget *parent)
   views_->addWidget(loginView_);
   views_->addWidget(ordersView_);
 
-  connect(refresh, &QPushButton::clicked, controller_,
-          &AppController::refreshMarket);
+  connect(refresh, &QPushButton::clicked, this, [this] {
+    controller_->refreshMarket();
+    refreshQuotes(true);
+  });
   connect(presence_, &QComboBox::activated, this, [this](int index) {
     controller_->setMarketPresenceMode(presence_->itemData(index).toString());
   });
   connect(controller_, &AppController::marketVariantQuoteReady, this,
-          [this] { rebuildOrders(); });
+          &MarketWidget::scheduleRebuild);
   connect(logout, &QPushButton::clicked, controller_,
           &AppController::marketLogout);
   connect(login_, &QPushButton::clicked, this, [this] {
@@ -426,7 +428,15 @@ MarketWidget::MarketWidget(AppController *controller, QWidget *parent)
   connect(controller_, &AppController::inventoryStateChanged, this,
           &MarketWidget::scheduleRebuild);
   connect(controller_, &AppController::assetsChanged, this,
-          [this](const QStringList &) { scheduleRebuild(); });
+          [this](const QStringList &ids) {
+            for (auto card = cardsById_.cbegin(); card != cardsById_.cend();
+                 ++card) {
+              const QString asset = cardAssets_.value(card.key());
+              if (ids.contains(asset)) {
+                card.value()->setAsset(controller_->assetRef(asset));
+              }
+            }
+          });
   rebuildTimer_->setSingleShot(true);
   rebuildTimer_->setInterval(16);
   connect(rebuildTimer_, &QTimer::timeout, this, &MarketWidget::rebuildOrders);
@@ -435,6 +445,7 @@ MarketWidget::MarketWidget(AppController *controller, QWidget *parent)
     if (controller_->marketAccount().value("authenticated").toBool() &&
         !controller_->marketBusy()) {
       controller_->refreshMarket();
+      refreshQuotes(false);
     }
   });
   updateState();
@@ -455,6 +466,7 @@ void MarketWidget::showEvent(QShowEvent *event) {
   }
   controller_->ensureInventory();
   controller_->ensureMarket();
+  refreshQuotes(false);
 }
 
 void MarketWidget::hideEvent(QHideEvent *event) {
@@ -580,14 +592,15 @@ void MarketWidget::rebuildOrders() {
                 comparison = QString::localeAwareCompare(orderName(left),
                                                          orderName(right));
               }
+              if (comparison == 0) {
+                comparison = QString::compare(left.value("id").toString(),
+                                              right.value("id").toString());
+              }
               return descending_ ? comparison > 0 : comparison < 0;
             });
 
-  while (QLayoutItem *item = orderGrid_->takeAt(0)) {
-    delete item->widget();
-    delete item;
-  }
-  orderCards_.clear();
+  QList<QWidget *> cards;
+  QSet<QString> kept;
   qint64 sellTotal = 0;
   qint64 buyTotal = 0;
   for (const QJsonObject &order : std::as_const(filteredOrders_)) {
@@ -595,7 +608,6 @@ void MarketWidget::rebuildOrders() {
         controller_->marketItem(order.value("itemId").toString());
     const QString assetId =
         item.value("asset").toObject().value("id").toString();
-    item.insert("asset_path", controller_->assetPath(assetId));
     const QString name = item.value("name").toString(
         item.isEmpty() ? "Loading item..." : "Unknown item");
     const QJsonObject filters = orderFilters(order);
@@ -645,29 +657,69 @@ void MarketWidget::rebuildOrders() {
             [this, itemId, order] {
               emit marketItemRequested(itemId, order.value("type").toString());
             }};
-    orderCards_.append(new MarketOrderCard(order, item, quote, owned,
-                                           std::move(actions), orderHost_));
+    MarketOrderCard *card = cardsById_.value(id);
+    if (card) {
+      card->updateOrder(order, item, quote, owned, std::move(actions));
+    } else {
+      card = new MarketOrderCard(order, item, quote, owned, std::move(actions),
+                                 orderHost_);
+      cardsById_.insert(id, card);
+    }
+    card->setAsset(controller_->assetRef(assetId));
+    cardAssets_.insert(id, assetId);
+    kept.insert(id);
+    cards.append(card);
+  }
+  for (auto card = cardsById_.begin(); card != cardsById_.end();) {
+    if (kept.contains(card.key())) {
+      ++card;
+    } else {
+      cardAssets_.remove(card.key());
+      delete card.value();
+      card = cardsById_.erase(card);
+    }
   }
   summary_->setText(
       QString("WTS: %1  ·  WTB: %2").arg(sellTotal).arg(buyTotal));
   if (filteredOrders_.isEmpty()) {
-    auto *empty =
-        new QLabel("No Market orders match these filters.", orderHost_);
-    empty->setObjectName("emptyState");
-    empty->setAlignment(Qt::AlignCenter);
-    orderCards_.append(empty);
+    if (!empty_) {
+      empty_ = new QLabel("No Market orders match these filters.", orderHost_);
+      empty_->setObjectName("emptyState");
+      empty_->setAlignment(Qt::AlignCenter);
+    }
+    cards.append(empty_);
   }
-  columns_ = 0;
-  relayoutOrders();
+  if (empty_) {
+    empty_->setVisible(filteredOrders_.isEmpty());
+  }
+  const bool changed = orderCards_ != cards;
+  orderCards_ = std::move(cards);
+  relayoutOrders(changed);
 }
 
-void MarketWidget::relayoutOrders() {
+void MarketWidget::refreshQuotes(bool force) {
+  QStringList items;
+  for (const QJsonObject &order : std::as_const(filteredOrders_)) {
+    const QString item = order.value("itemId").toString();
+    const QJsonObject filters = orderFilters(order);
+    if (filters.isEmpty()) {
+      items.append(item);
+    } else {
+      controller_->requestMarketVariantQuote(item, filters, force);
+    }
+  }
+  items.removeDuplicates();
+  controller_->resolveMarketQuotes(items, force);
+}
+
+void MarketWidget::relayoutOrders(bool force) {
   if (orderCards_.isEmpty()) {
     return;
   }
   const int available = qMax(1, scroll_->viewport()->width());
   const int columns = qMax(1, available / 380);
-  if (columns_ == columns && orderGrid_->count() == orderCards_.size()) {
+  if (!force && columns_ == columns &&
+      orderGrid_->count() == orderCards_.size()) {
     return;
   }
   while (QLayoutItem *item = orderGrid_->takeAt(0)) {

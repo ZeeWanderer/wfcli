@@ -257,6 +257,7 @@ private:
   QHash<QString, QJsonObject> marketItems_;
   QHash<QString, QJsonObject> marketQuotes_;
   QHash<QString, QJsonObject> marketVariantQuotes_;
+  QHash<QString, qint64> marketVariantRequestedAt_;
   QSet<QString> marketVariantPending_;
   QJsonObject marketAccount_;
   QJsonObject overframeAccount_{{"authenticated", false},

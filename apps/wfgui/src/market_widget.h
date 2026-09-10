@@ -1,11 +1,13 @@
 #pragma once
 
+#include <QHash>
 #include <QJsonObject>
 #include <QList>
 #include <QWidget>
 
 class AppController;
 class AnimatedProgressBar;
+class MarketOrderCard;
 class QButtonGroup;
 class QComboBox;
 class QGridLayout;
@@ -37,7 +39,8 @@ private:
   void updateState();
   void scheduleRebuild();
   void rebuildOrders();
-  void relayoutOrders();
+  void relayoutOrders(bool force = false);
+  void refreshQuotes(bool force);
   void setView(QWidget *view);
   void editOrder(const QJsonObject &order);
   void deleteFiltered();
@@ -73,6 +76,9 @@ private:
   QTimer *refreshTimer_;
   QTimer *rebuildTimer_;
   QList<QWidget *> orderCards_;
+  QHash<QString, MarketOrderCard *> cardsById_;
+  QHash<QString, QString> cardAssets_;
+  QLabel *empty_ = nullptr;
   QList<QJsonObject> filteredOrders_;
   QString category_ = "all";
   bool descending_ = false;

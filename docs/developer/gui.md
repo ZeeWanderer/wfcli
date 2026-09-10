@@ -18,6 +18,11 @@ Use Qt model/view for dense or unbounded collections:
 - Use uniform item sizes and `QListView::SinglePass` where card geometry allows it.
   Change layout mode or widget paint attributes only after measuring the result.
 
+Bounded widget compositions, including Market orders, retain children by stable
+identity and update fields in place. Do not rebuild controls when an image or
+quote arrives. Copy an action callback before invoking it if synchronous model
+updates can replace that callback.
+
 Thumbnail work admits at most three decodes, with a 32 MiB output reservation
 budget (one larger image may run alone). The result stays admitted until the GUI
 consumes it. Queued derivative writes have a separate 32 MiB memory budget;

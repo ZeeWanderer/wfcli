@@ -351,6 +351,14 @@ endif()
 
 if(BUILD_TESTING)
   find_package(Qt6 REQUIRED COMPONENTS Test)
+  qt_add_executable(wfgui_market_tests
+    src/market_widget.cpp
+    src/market_widget.h
+    tests/market_widget_test.cpp
+  )
+  target_link_libraries(wfgui_market_tests PRIVATE Qt6::Test wfgui_core)
+  add_test(NAME wfgui-market COMMAND wfgui_market_tests)
+  set_tests_properties(wfgui-market PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
   qt_add_executable(wfgui_tests
     src/activity_rail_widget.cpp
     src/activity_rail_widget.h
