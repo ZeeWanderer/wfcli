@@ -359,6 +359,10 @@ if(BUILD_TESTING)
   target_link_libraries(wfgui_market_tests PRIVATE Qt6::Test wfgui_core)
   add_test(NAME wfgui-market COMMAND wfgui_market_tests)
   set_tests_properties(wfgui-market PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+  qt_add_executable(wfgui_io_tests tests/daemon_client_io_test.cpp)
+  target_link_libraries(wfgui_io_tests PRIVATE Qt6::Test wfgui_core)
+  add_test(NAME wfgui-io COMMAND wfgui_io_tests)
+  set_tests_properties(wfgui-io PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
   qt_add_executable(wfgui_tests
     src/activity_rail_widget.cpp
     src/activity_rail_widget.h

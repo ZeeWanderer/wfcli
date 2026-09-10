@@ -1,6 +1,7 @@
 #pragma once
 
 #include <QByteArray>
+#include <QDeadlineTimer>
 #include <QHash>
 #include <QJsonArray>
 #include <QJsonObject>
@@ -131,6 +132,8 @@ private:
   void connectSocket();
   void ensureDaemon(bool update = false);
   void handleLine(const QByteArray &line);
+  void drainInput();
+  void armReplyDeadline();
   void handlePlayerSnapshot(const QJsonObject &data, const QString &source);
   void sendHello();
   void sendPlayerSubscription();
@@ -200,8 +203,17 @@ private:
 
   QLocalSocket *socket_;
   QTimer *reconnectTimer_;
+  QTimer *inputTimer_;
+  QTimer *replyTimer_;
   QProcess ensureProcess_;
   QByteArray input_;
+  qsizetype scanOffset_ = 0;
+  bool draining_ = false;
+  struct PendingReply {
+    QDeadlineTimer deadline;
+    QString operation;
+  };
+  QHash<qint64, PendingReply> replies_;
   QHash<QString, RelicRequest> pendingRelicRequests_;
   QHash<qint64, RelicRequest> activeRelicRequests_;
   QSet<QString> pendingPlayerViews_;

@@ -30,6 +30,11 @@ optional writes may be skipped under pressure. Neither budget caps disk storage.
 Keep source registration FIFO and ahead of derivative writes. Linux image workers
 use nice 5 or lower scheduling priority; the GUI thread's priority is unchanged.
 
+Socket input uses bounded reads and yields after eight frames or 4 ms of dispatch.
+A single frame is limited to 64 MiB. Reply deadlines use the existing reconnect
+path: reads may retry; mutations with unknown outcomes are reconciled, not replayed.
+Build planning has a longer deadline than ordinary reads.
+
 Qt coalesces `update()` calls and clips paint events to dirty regions. Delegates add
 application drawing while the view retains virtualization, scrolling, and backing-store
 behavior. See the Qt documentation for

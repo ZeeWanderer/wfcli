@@ -109,6 +109,7 @@ private slots:
   void masteryGridRequestsAllComponentQuotes();
   void playerGridRequestsAssetsWhenShown();
   void subscribesToPlayerUpdatesAndCoalescesViews();
+  void malformedReplyReconnectsWithoutReplayingMutations();
   void buildGroupsFollowPlayerRevisions();
   void updatesOnlyOlderDaemonContracts();
   void cacheMissDoesNotBecomeMarketMiss();
@@ -1706,6 +1707,81 @@ void RelicModelTest::masteryGridRequestsAllComponentQuotes() {
 
   QCOMPARE(quotes.count(), 1);
   QCOMPARE(quotes.takeFirst().at(0).toStringList(), expected);
+}
+
+void RelicModelTest::malformedReplyReconnectsWithoutReplayingMutations() {
+  QTemporaryDir directory;
+  QVERIFY(directory.isValid());
+  QLocalServer server;
+  QVERIFY(server.listen(directory.filePath("wfdaemon.sock")));
+  const QByteArray oldSocket = qgetenv("WFCLI_DAEMON_SOCKET");
+  qputenv("WFCLI_DAEMON_SOCKET", server.fullServerName().toUtf8());
+  const auto restoreSocket = qScopeGuard([oldSocket] {
+    if (oldSocket.isNull())
+      qunsetenv("WFCLI_DAEMON_SOCKET");
+    else
+      qputenv("WFCLI_DAEMON_SOCKET", oldSocket);
+  });
+
+  DaemonClient client;
+  QSignalSpy activity(&client, &DaemonClient::activityReady);
+  QSignalSpy assets(&client, &DaemonClient::assetRefreshed);
+  QSignalSpy mutations(&client, &DaemonClient::buildSourceFailed);
+  client.start();
+  QTRY_VERIFY(server.hasPendingConnections());
+  QLocalSocket *peer = server.nextPendingConnection();
+  QTRY_VERIFY(peer->canReadLine());
+  QCOMPARE(
+      QJsonDocument::fromJson(peer->readLine()).object().value("op").toString(),
+      QString("hello"));
+  const QByteArray helloReply =
+      QJsonDocument(localContractReply()).toJson(QJsonDocument::Compact) + '\n';
+  peer->write(helloReply);
+  QTRY_VERIFY(client.connected());
+
+  QHash<QString, QJsonObject> requests;
+  const auto received = [&](const QString &operation) {
+    while (peer->canReadLine()) {
+      const QJsonObject request =
+          QJsonDocument::fromJson(peer->readLine()).object();
+      requests.insert(request.value("op").toString(), request);
+    }
+    return requests.contains(operation);
+  };
+  client.requestActivity();
+  client.createBuildGroup({{"name", "Test group"}});
+  QTRY_VERIFY(received("activity_view"));
+  QTRY_VERIFY(received("build_group_create"));
+  const QJsonObject staleEvent{{"event", "asset"},
+                               {"data", QJsonObject{{"id", "stale"}}}};
+  peer->write("{invalid-json}\n" +
+              QJsonDocument(staleEvent).toJson(QJsonDocument::Compact) + '\n');
+  QTRY_VERIFY_WITH_TIMEOUT(!client.connected(), 500);
+  QCOMPARE(assets.count(), 0);
+  QCOMPARE(mutations.count(), 1);
+  QVERIFY(mutations.first().at(1).toString().contains("result is unknown"));
+
+  QTRY_VERIFY_WITH_TIMEOUT(server.hasPendingConnections(), 2000);
+  peer = server.nextPendingConnection();
+  QTRY_VERIFY(peer->canReadLine());
+  QCOMPARE(
+      QJsonDocument::fromJson(peer->readLine()).object().value("op").toString(),
+      QString("hello"));
+  requests.clear();
+  peer->write(helloReply);
+  QTRY_VERIFY(client.connected());
+  QTRY_VERIFY(received("activity_view"));
+  QTRY_VERIFY(received("build_group_list"));
+  QVERIFY(!received("build_group_create"));
+  peer->write(
+      QJsonDocument(
+          QJsonObject{{"id", requests.value("activity_view").value("id")},
+                      {"ok", true},
+                      {"data", QJsonObject{{"recovered", true}}}})
+          .toJson(QJsonDocument::Compact) +
+      '\n');
+  QTRY_COMPARE(activity.count(), 1);
+  QVERIFY(activity.first().at(0).toJsonObject().value("recovered").toBool());
 }
 
 void RelicModelTest::subscribesToPlayerUpdatesAndCoalescesViews() {

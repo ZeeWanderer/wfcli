@@ -3,6 +3,7 @@
 
 #include <QCoreApplication>
 #include <QDir>
+#include <QElapsedTimer>
 #include <QFileInfo>
 #include <QJsonArray>
 #include <QJsonDocument>
@@ -27,6 +28,23 @@ constexpr int MaxActiveMarketDescriptionRequests = 2;
 constexpr int MaxActiveMarketQuoteRequests = 3;
 constexpr int MaxActiveBuildRequests = 4;
 constexpr int MarketQuoteTtlSeconds = 15 * 60;
+constexpr qsizetype MaximumFrameBytes = 64 * 1024 * 1024;
+constexpr qsizetype ReadChunkBytes = 64 * 1024;
+constexpr int DispatchBatchSize = 8;
+constexpr int DispatchBudgetMs = 4;
+
+int replyTimeout(const QString &operation) {
+  if (operation == "hello") {
+    return 10'000;
+  }
+  if (operation == "build_group_plan") {
+    return 10 * 60'000;
+  }
+  if (operation.startsWith("asset_cache_")) {
+    return 5 * 60'000;
+  }
+  return 120'000;
+}
 
 QJsonObject guiInterfaces() {
   return {
@@ -101,9 +119,29 @@ bool wfgui::daemonContractNeedsUpdate(const QJsonObject &reply,
 
 DaemonClient::DaemonClient(QObject *parent)
     : QObject(parent), socket_(new QLocalSocket(this)),
-      reconnectTimer_(new QTimer(this)) {
+      reconnectTimer_(new QTimer(this)), inputTimer_(new QTimer(this)),
+      replyTimer_(new QTimer(this)) {
   reconnectTimer_->setInterval(1000);
   reconnectTimer_->setSingleShot(true);
+  socket_->setReadBufferSize(4 * ReadChunkBytes);
+  inputTimer_->setSingleShot(true);
+  replyTimer_->setObjectName("replyDeadline");
+  replyTimer_->setSingleShot(true);
+  replyTimer_->setTimerType(Qt::PreciseTimer);
+  connect(inputTimer_, &QTimer::timeout, this, &DaemonClient::drainInput);
+  connect(replyTimer_, &QTimer::timeout, this, [this] {
+    if (replies_.isEmpty()) {
+      return;
+    }
+    const auto oldest =
+        std::min_element(replies_.cbegin(), replies_.cend(),
+                         [](const PendingReply &a, const PendingReply &b) {
+                           return a.deadline < b.deadline;
+                         });
+    const QString operation = oldest->operation;
+    socket_->abort();
+    setStatus(QString("Timed out waiting for wfdaemon (%1)").arg(operation));
+  });
 
   connect(reconnectTimer_, &QTimer::timeout, this,
           &DaemonClient::connectSocket);
@@ -112,20 +150,18 @@ DaemonClient::DaemonClient(QObject *parent)
     sendHello();
   });
   connect(socket_, &QLocalSocket::readyRead, this, [this] {
-    input_.append(socket_->readAll());
-    for (;;) {
-      const qsizetype newline = input_.indexOf('\n');
-      if (newline < 0) {
-        break;
-      }
-      const QByteArray line = input_.left(newline).trimmed();
-      input_.remove(0, newline + 1);
-      if (!line.isEmpty()) {
-        handleLine(line);
-      }
+    if (!inputTimer_->isActive()) {
+      drainInput();
     }
   });
   connect(socket_, &QLocalSocket::disconnected, this, [this] {
+    ready_ = false;
+    setConnected(false);
+    input_.clear();
+    scanOffset_ = 0;
+    inputTimer_->stop();
+    replyTimer_->stop();
+    replies_.clear();
     for (const RelicRequest &request : std::as_const(activeRelicRequests_)) {
       pendingRelicRequests_.insert(relicRequestKey(request), request);
     }
@@ -685,6 +721,7 @@ void DaemonClient::handleLine(const QByteArray &line) {
   QJsonParseError parseError;
   const QJsonDocument document = QJsonDocument::fromJson(line, &parseError);
   if (parseError.error != QJsonParseError::NoError || !document.isObject()) {
+    socket_->abort();
     setStatus("wfdaemon returned invalid JSON");
     return;
   }
@@ -714,7 +751,20 @@ void DaemonClient::handleLine(const QByteArray &line) {
                          message.value("data").toObject());
     return;
   }
+  if (message.contains("event")) {
+    return;
+  }
+  if (!validProtocolNumber(message.value("id")) ||
+      !message.value("ok").isBool()) {
+    socket_->abort();
+    setStatus("wfdaemon returned an invalid reply envelope");
+    return;
+  }
   const qint64 id = message.value("id").toInteger();
+  if (!replies_.remove(id)) {
+    return;
+  }
+  armReplyDeadline();
   if (id == HelloRequestId) {
     if (!message.value("ok").toBool() ||
         !message.value("compatible").toBool()) {
@@ -1481,8 +1531,68 @@ void DaemonClient::sendPendingAssetCacheRequest() {
 void DaemonClient::write(const QJsonObject &message) {
   QByteArray encoded = QJsonDocument(message).toJson(QJsonDocument::Compact);
   encoded.append('\n');
+  const QString operation = message.value("op").toString();
+  replies_.insert(
+      message.value("id").toInteger(),
+      {QDeadlineTimer(replyTimeout(operation), Qt::PreciseTimer), operation});
+  armReplyDeadline();
   socket_->write(encoded);
   socket_->flush();
+}
+
+void DaemonClient::armReplyDeadline() {
+  if (replies_.isEmpty()) {
+    replyTimer_->stop();
+    return;
+  }
+  const auto oldest =
+      std::min_element(replies_.cbegin(), replies_.cend(),
+                       [](const PendingReply &a, const PendingReply &b) {
+                         return a.deadline < b.deadline;
+                       });
+  replyTimer_->start(
+      static_cast<int>(qMax<qint64>(1, oldest->deadline.remainingTime())));
+}
+
+void DaemonClient::drainInput() {
+  if (draining_) {
+    return;
+  }
+  draining_ = true;
+  QElapsedTimer elapsed;
+  elapsed.start();
+  int frames = 0;
+  while (socket_->state() == QLocalSocket::ConnectedState &&
+         frames < DispatchBatchSize && elapsed.elapsed() < DispatchBudgetMs) {
+    const qsizetype newline = input_.indexOf('\n', scanOffset_);
+    if (newline >= 0) {
+      const QByteArray line = input_.left(newline).trimmed();
+      input_.remove(0, newline + 1);
+      scanOffset_ = 0;
+      ++frames;
+      if (!line.isEmpty()) {
+        handleLine(line);
+      }
+      continue;
+    }
+    scanOffset_ = input_.size();
+    if (input_.size() > MaximumFrameBytes) {
+      socket_->abort();
+      setStatus("wfdaemon reply exceeds the 64 MiB frame limit");
+      break;
+    }
+    if (socket_->bytesAvailable() == 0) {
+      break;
+    }
+    input_.append(socket_->read(
+        qMin(ReadChunkBytes, MaximumFrameBytes + 1 - input_.size())));
+  }
+  draining_ = false;
+  if (socket_->state() == QLocalSocket::ConnectedState &&
+      (socket_->bytesAvailable() > 0 || input_.size() > MaximumFrameBytes ||
+       input_.indexOf('\n', scanOffset_) >= 0)) {
+    inputTimer_->start(0);
+  }
 }
 
 void DaemonClient::setConnected(bool connected) {
