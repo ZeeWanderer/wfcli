@@ -24,6 +24,12 @@ initialize_falls_back_for_unknown_protocol_test() ->
     {ok, Result} = wfcli_mcp_server:request(Message),
     ?assertEqual(<<"2025-11-25">>, maps:get(<<"protocolVersion">>, Result)).
 
+initialize_rejects_non_object_params_test() ->
+    lists:foreach(fun(Params) ->
+        ?assertMatch({error, -32602, _, _}, wfcli_mcp_server:request(
+                     #{<<"method">> => <<"initialize">>, <<"params">> => Params}))
+    end, [null, [], <<"invalid">>, 1]).
+
 tool_definitions_expose_headless_surface_test() ->
     Names = [maps:get(<<"name">>, Definition) || Definition <- wfcli_mcp_tools:definitions()],
     ?assertEqual([<<"query">>, <<"forma_plan">>, <<"daemon_status">>,
@@ -80,6 +86,16 @@ daemon_backed_tools_test_() ->
          ?assertEqual(worldstate, maps:get(dataset, Dataset)),
          {ok, Worldstate} = maps:get(reply, Dataset),
          ?assert(maps:get(entries, Worldstate) =/= []),
+
+         {ok, Catalog} = wfcli_mcp_tools:call(<<"query">>,
+             #{<<"query">> => <<"dataset=items">>, <<"limit">> => 1,
+               <<"exports_dir">> => <<"apps/wfcli/test/fixtures/exports">>,
+               <<"cwd">> => unicode:characters_to_binary(Root)}),
+         [#{reply := {ok, #{results := CatalogResult}}}] = maps:get(datasets, Catalog),
+         ?assert(maps:get(total, CatalogResult) > 1),
+         ?assertEqual(1, maps:get(shown, CatalogResult)),
+         ?assertEqual(1, length(maps:get(slice, CatalogResult))),
+         ?assertNot(maps:is_key(all, CatalogResult)),
 
          FormaArgs = #{<<"configs">> =>
                            [<<"apps/wfcli/test/fixtures/simple_capacity.yml">>],

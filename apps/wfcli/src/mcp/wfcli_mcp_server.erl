@@ -19,6 +19,8 @@ run() ->
 
 -doc "Handle one side-effect-free MCP request; used by tests and immediate methods.".
 -spec request(map()) -> {ok, map()} | {error, integer(), binary(), term()} | async.
+request(#{<<"params">> := Params}) when not is_map(Params) ->
+    {error, -32602, <<"Invalid params">>, object_required};
 request(#{<<"method">> := <<"initialize">>} = Message) ->
     Params = maps:get(<<"params">>, Message, #{}),
     Requested = maps:get(<<"protocolVersion">>, Params, ?LATEST_PROTOCOL),
