@@ -69,7 +69,7 @@ run(["visualize" | _]) ->
 run(["help"]) ->
     run([]);
 run([Topic | Rest]) ->
-    case lists:member(Topic, wfcli_worldstate_cli:command_help_names()) of
+    case lists:member(Topic, wfcli_worldstate_cli:command_names()) of
         true -> wfcli_worldstate_cli:help([Topic | Rest]);
         false ->
             io:format("unknown help topic: ~s~n", [Topic]),

@@ -3,7 +3,7 @@
 %%%-------------------------------------------------------------------
 -module(wfcli_exports_cli).
 
--export([run/1, run_command/2, command_names/0, help/1, known_args/0]).
+-export([run/1, run_command/2, command_names/0, help/1, known_args/0, known_args/1]).
 
 -ifdef(TEST).
 -export([parse_request/2]).
@@ -12,7 +12,8 @@
 -type command() :: string().
 
 run(Args0) ->
-    Args = expand_args(Args0),
+    Command = case Args0 of [Cmd | _] -> Cmd; [] -> "" end,
+    Args = expand_args(Command, Args0),
     case help_request(Args) of
         {help, Topic} -> help(Topic), halt(0);
         none ->
@@ -25,7 +26,7 @@ run(Args0) ->
 
 -spec run_command(command(), [string()]) -> ok | no_return().
 run_command(Command, Args0) ->
-    Args = expand_args(Args0),
+    Args = expand_args(Command, Args0),
     case wfcli_cli_args:has_help_flag(Args) of
         true -> help([Command]), halt(0);
         false -> run_query(Command, Args)
@@ -50,10 +51,10 @@ fail_with_help(Errors) ->
     help([]),
     halt(1).
 
-expand_args(Args) ->
+expand_args(Command, Args) ->
     Aliases = #{"-h" => "--help", "-f" => "--format", "-l" => "--limit", "-o" => "--offset"},
     Expanded = wfcli_cli_args:expand_aliases(Args, Aliases),
-    wfcli_cli_args:prompt_suggestions(Expanded, known_args()).
+    wfcli_cli_args:prompt_suggestions(Expanded, known_args(Command)).
 
 -doc "Return focused official-export command names.".
 -spec command_names() -> [command()].
@@ -77,6 +78,8 @@ parsed_request(Parsed) ->
     end.
 
 parse_mod_args([], Acc) -> Acc;
+parse_mod_args(["--" | Rest], Acc) ->
+    Acc#{query_tokens := maps:get(query_tokens, Acc) ++ Rest};
 parse_mod_args(["--type", Value | Rest], Acc) ->
     parse_mod_args(Rest, add_filter(type, eq, Value, Acc));
 parse_mod_args(["--polarity", Value | Rest], Acc) ->
@@ -106,6 +109,8 @@ parse_mod_args([Arg | Rest], Acc) ->
     parse_arg(Arg, Rest, Acc, fun parse_mod_args/2).
 
 parse_item_args([], Acc) -> Acc;
+parse_item_args(["--" | Rest], Acc) ->
+    Acc#{query_tokens := maps:get(query_tokens, Acc) ++ Rest};
 parse_item_args(["--file", Value | Rest], Acc) ->
     parse_item_args(Rest, add_file_filter(eq, Value, Acc));
 parse_item_args(["--name", Value | Rest], Acc) ->
@@ -130,7 +135,7 @@ parse_item_args([Arg | Rest], Acc) ->
 
 parse_arg(Arg, Rest, Acc, Continue) ->
     case lists:prefix("-", wfcli_text:to_list(Arg)) of
-        true -> Continue(Rest, add_error(Acc, unknown_arg(Arg)));
+        true -> Continue(Rest, add_error(Acc, unknown_arg(Arg, maps:get(command, Acc))));
         false -> Continue(Rest, add_list(query_tokens, Arg, Acc))
     end.
 
@@ -144,10 +149,10 @@ add_file_filter(Op, Value, Acc) ->
                 Acc1, split_values(Value)).
 
 request_defaults("mods") ->
-    #{filters => [], text => [], query_tokens => [], limit => 50, offset => 0,
+    #{command => "mods", filters => [], text => [], query_tokens => [], limit => 50, offset => 0,
       output_format => table, raw => false, exports_dir => undefined, sort => [], errors => []};
 request_defaults("items") ->
-    (request_defaults("mods"))#{files => []}.
+    (request_defaults("mods"))#{command := "items", files => []}.
 
 split_values(Value) ->
     [string:trim(Part) || Part <- string:split(wfcli_text:to_list(Value), "|", all),
@@ -168,17 +173,24 @@ set_output_format(_, Acc) -> add_error(Acc, "invalid output format").
 
 add_error(Acc, Error) -> Acc#{errors => maps:get(errors, Acc, []) ++ [Error]}.
 
-unknown_arg(Arg) ->
-    Suggest = wfcli_cli_suggest:suggest(Arg, known_args()),
+unknown_arg(Arg, Command) ->
+    Suggest = wfcli_cli_suggest:suggest(Arg, known_args(Command)),
     lists:flatten(io_lib:format("unknown arg: ~s~s", [Arg, Suggest])).
 
 -doc "Return argv tokens accepted by parser suggestions and shell completion.".
 -spec known_args() -> [string()].
 known_args() ->
-    ["--type", "--polarity", "--rarity", "--compat", "--name", "--text", "--limit",
-     "--offset", "--output-format", "--format", "--raw", "--exports-dir", "--file",
-     "--help", "-h", "-f", "-l", "-o", "--no-suggest-prompt", "mods", "items",
-     "help", "query"].
+    lists:usort(known_args("mods") ++ known_args("items")).
+
+known_args(Command) ->
+    Common = ["--name", "--text", "--limit", "--offset", "--output-format", "--format",
+              "--raw", "--exports-dir", "--help", "-h", "-f", "-l", "-o",
+              "--no-suggest-prompt"],
+    case Command of
+        "mods" -> Common ++ ["--type", "--polarity", "--rarity", "--compat"];
+        "items" -> Common ++ ["--file"];
+        _ -> Common
+    end.
 
 help_request(["help" | Rest]) -> {help, Rest};
 help_request(Args) ->

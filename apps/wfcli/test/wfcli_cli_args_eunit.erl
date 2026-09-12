@@ -42,3 +42,11 @@ strip_prompt_flag_test() ->
 prompt_suggestions_disabled_test() ->
     Args = wfcli_cli_args:prompt_suggestions(["--no-suggest-prompt", "--formatt", "table"], ["--format"]),
     ?assertEqual(["--formatt", "table"], Args).
+
+literal_arguments_are_not_preprocessed_test() ->
+    Literal = ["--", "--help", "-f", "--no-suggest-prompt", "help"],
+    ?assertEqual(Literal, wfcli_cli_args:expand_aliases(Literal, #{"-f" => "--format"})),
+    ?assertNot(wfcli_cli_args:has_help_flag(Literal)),
+    ?assertEqual(none, wfcli_cli_args:help_path(["query" | Literal])),
+    ?assertEqual({Literal, true}, wfcli_cli_args:strip_prompt_flag(Literal)),
+    ?assertEqual(Literal, wfcli_cli_args:strip_help_flags(Literal)).

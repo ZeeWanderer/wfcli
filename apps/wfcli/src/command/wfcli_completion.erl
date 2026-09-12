@@ -147,8 +147,8 @@ contexts() ->
         {["notifications"], ["status", "off", "on", "persistent" | help_flags()]},
         {["diagnostics"], ["unresolved" | help_flags()]},
         {["diagnostics", "unresolved"], ["--json" | help_flags()]},
-        {["mods"], options(wfcli_exports_cli:known_args())},
-        {["items"], options(wfcli_exports_cli:known_args())},
+        {["mods"], options(wfcli_exports_cli:known_args("mods"))},
+        {["items"], options(wfcli_exports_cli:known_args("items"))},
         {["codex"], options(wfcli_knowledge_cli:known_args())},
         {["enemies"], options(wfcli_knowledge_cli:known_args())},
         {["drops"], options(wfcli_knowledge_cli:known_args())},
@@ -183,7 +183,7 @@ contexts() ->
 worldstate_contexts() ->
     [
         {[Command], worldstate_scoped_choices(Command) ++
-                    options(wfcli_worldstate_cli:known_args())}
+                    options(wfcli_worldstate_cli:known_args(Command))}
         || Command <- wfcli_worldstate_cli:command_names()
     ].
 

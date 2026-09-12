@@ -13,6 +13,7 @@ main(Args) ->
     ensure_started(),
     ok = application:set_env(wfcli, use_daemon, true),
     Prompt = wfcli_cli_args:prompt_enabled(Args),
+    ok = application:set_env(wfcli, suggest_prompt, Prompt),
     dispatch(Args, Prompt).
 
 ensure_started() ->
@@ -94,7 +95,7 @@ command_handler(Cmd) ->
     end.
 
 handle_unknown_command(Cmd, Rest, Prompt) ->
-    case maybe_prompt_command(Cmd, Rest, Prompt) of
+    case maybe_prompt_command(Cmd, Rest, Prompt andalso wfcli_cli_args:interactive()) of
         {ok, NewArgs} -> dispatch_args(NewArgs, Prompt);
         error ->
             Suggest = wfcli_cli_suggest:suggest(Cmd, command_names()),

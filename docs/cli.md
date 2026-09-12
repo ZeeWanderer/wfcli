@@ -50,6 +50,9 @@ wfcli daemon autostart --help
 wfcli daemon autostart -h
 ```
 
+For query commands, arguments after `--` are literal text. Correction prompts require an
+interactive terminal; `--no-suggest-prompt` disables them.
+
 Commands narrow an operation. Options modify it. Where both forms improve shell use, both are
 accepted:
 

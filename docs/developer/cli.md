@@ -13,9 +13,9 @@
 - Shared help text snippets live in `wfcli_help_text.erl`.
 - `wfcli_cli_args:help_path/1` resolves contextual `help`, `--help`, and `-h`.
 - `wfcli_completion.erl` derives Bash candidates from command registries and each
-  parser's `known_args/0`. Builds stage it under `share/bash-completion/completions` for
-  on-demand loading. The function uses Bash 5.3 `compgen -V`; shell startup and completion
-  start no wfcli process.
+  parser's `known_args/0` or command-specific `known_args/1`. Builds stage it under
+  `share/bash-completion/completions` for on-demand loading. The function uses Bash 5.3
+  `compgen -V`; shell startup and completion start no wfcli process.
 
 ## Parsing
 
@@ -25,7 +25,10 @@
   both improve direct shell use.
 - Put command-specific detail in subcommand help rather than expanding top-level help.
 - Use layered help: summaries at top level, command/topic-specific detail in `help <topic>` or `<command> --help`.
-- Use `--no-suggest-prompt` to disable interactive correction prompts for mistyped commands/flags.
+- Preserve `--` through preprocessing; everything after it is literal. Correction prompts
+  require terminal stdin/stdout and respect the root `--no-suggest-prompt` option.
+- Keep accepted options, help, and completion command-specific. Test real process exit status
+  and stdout as well as parser return values.
 - Watch specs use `watch_type_filter/1`; update both parse and watch paths for new commands.
 - Inventory mode (`--inventory`) is only valid for baro/prime-vault.
 - Calendar supports `--day N` and validates it against the calendar subcommand.
@@ -61,6 +64,8 @@
   syntax/evaluator behavior there and field metadata in the owning `wfcli_entity_*` module.
 - Catalog terminal output belongs to `wfcli_exports_format` and `wfcli_knowledge_format`, shared by
   focused and unified commands.
+- Catalog JSON uses field types in `wfcli_catalog_json`; never infer strings from integer arrays
+  or empty lists. Nested source JSON retains its original types.
 - Table columns and labels are stable contracts in `wfcore` schema modules. Terminal block
   ordering belongs in CLI presentation modules.
 - `print_entries/4` and `table_row_map/2` keep output consistent.

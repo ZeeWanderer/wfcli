@@ -4,7 +4,7 @@
 -module(wfcli_worldstate_cli).
 
 -export([run/1, run_command/2, help/1, command_names/0, command_help_names/0,
-         command_description/1, known_args/0]).
+         command_description/1, known_args/0, known_args/1]).
 -ifdef(TEST).
 -export([parse_args/2, default_acc/0]).
 -endif.
@@ -37,7 +37,7 @@ run_command(Command, Args) ->
     Aliases = #{"-h" => "--help", "-f" => "--format", "-q" => "--search",
                 "-w" => "--watch", "-d" => "--diff", "-a" => "--always"},
     Args1 = wfcli_cli_args:expand_aliases(Args, Aliases),
-    Args2 = wfcli_cli_args:prompt_suggestions(Args1, known_args()),
+    Args2 = wfcli_cli_args:prompt_suggestions(Args1, known_args(Command)),
     DefaultCache = wfcli_paths:cache_file("worldstate.json"),
     case Args2 of
         ["help" | _] ->
@@ -351,8 +351,8 @@ parse_args(["--help" | Rest], Acc) ->
     parse_args(Rest, Acc#{help := true});
 parse_args(["--ttl", Val | Rest], Acc) ->
     case string:to_integer(Val) of
-        {Int, _} when Int >= 60 -> parse_args(Rest, Acc#{ttl := Int});
-        {Int, _} when Int >= 0 ->
+        {Int, ""} when Int >= 60 -> parse_args(Rest, Acc#{ttl := Int});
+        {Int, ""} when Int >= 0 ->
             parse_args(Rest, Acc#{errors := ["--ttl must be >= 60" | maps:get(errors, Acc, [])]});
         _ -> parse_args(Rest, Acc#{errors := ["invalid --ttl" | maps:get(errors, Acc, [])]})
     end;
@@ -360,14 +360,14 @@ parse_args(["--cache", Path | Rest], Acc) ->
     parse_args(Rest, Acc#{cache := Path});
 parse_args(["--interval", Val | Rest], Acc) ->
     case string:to_integer(Val) of
-        {Int, _} when Int >= 0 -> parse_args(Rest, Acc#{interval := Int});
+        {Int, ""} when Int >= 0 -> parse_args(Rest, Acc#{interval := Int});
         _ -> parse_args(Rest, Acc#{errors := ["invalid --interval" | maps:get(errors, Acc, [])]})
     end;
 parse_args(["--day"], Acc) ->
     parse_args([], Acc#{errors := ["--day requires a value" | maps:get(errors, Acc, [])]});
 parse_args(["--day", Val | Rest], Acc) ->
     case string:to_integer(Val) of
-        {Int, _} when Int >= 0 -> parse_args(Rest, Acc#{calendar_day := Int});
+        {Int, ""} when Int >= 0 -> parse_args(Rest, Acc#{calendar_day := Int});
         _ -> parse_args(Rest, Acc#{errors := ["invalid --day" | maps:get(errors, Acc, [])]})
     end;
 parse_args(["--deep" | Rest], Acc = #{type_filter := archimedea}) ->
@@ -385,8 +385,12 @@ parse_args(["--"], Acc = #{watch := true}) ->
     parse_watch_specs([], Acc);
 parse_args(["--" | Rest], Acc = #{watch := true}) ->
     parse_watch_specs(Rest, Acc);
-parse_args(["--"], Acc) ->
-    parse_args([], Acc#{errors := ["-- requires watch mode" | maps:get(errors, Acc, [])]});
+parse_args(["--" | Rest], Acc) ->
+    Query = string:join(Rest, " "),
+    parse_args([], case maps:get(search, Acc, undefined) of
+                       undefined -> Acc#{search := Query};
+                       Existing -> Acc#{search := Existing ++ " " ++ Query}
+                   end);
 parse_args(["--search"], Acc) ->
     parse_args([], Acc#{errors := ["--search requires a query" | maps:get(errors, Acc, [])]});
 parse_args(["--search", Q | Rest], Acc) ->
@@ -459,6 +463,10 @@ parse_args(["--format", Format | Rest], Acc) ->
     parse_args(Rest, parse_output_format(Format, Acc));
 parse_args(["--raw" | Rest], Acc) ->
     parse_args(Rest, Acc#{resolve_items := false, raw := true});
+parse_args([[$- | _] = Unknown | Rest], Acc) ->
+    Suggest = wfcli_cli_suggest:suggest(Unknown, known_args()),
+    parse_args(Rest, Acc#{errors := [io_lib:format("unknown arg: ~s~s", [Unknown, Suggest]) |
+                                     maps:get(errors, Acc)]});
 parse_args([Command | Rest], Acc = #{watch := false}) ->
     case command_type(Command) of
         {ok, Type} ->
@@ -495,6 +503,15 @@ known_args() ->
         "inventory", "deep", "temporal", "help", "query"
     ],
     Flags ++ command_names().
+
+known_args(Command) ->
+    Specific = case command_type(Command) of
+        {ok, calendar} -> ["--day"];
+        {ok, archimedea} -> ["--deep", "--temporal"];
+        {ok, Type} when Type =:= baro; Type =:= prime_vault; Type =:= teshin -> ["--inventory"];
+        _ -> []
+    end,
+    (known_args() -- ["--day", "--deep", "--temporal", "--inventory"]) ++ Specific.
 
 parse_watch_specs([], Acc) -> Acc;
 parse_watch_specs([Spec | Rest], Acc) ->
