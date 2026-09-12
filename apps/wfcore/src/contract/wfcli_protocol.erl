@@ -16,7 +16,7 @@ handshake_version() -> 1.
 interfaces() ->
     #{daemon => 1,
       worldstate => 1,
-      query => 1,
+      query => 2,
       metadata => 1,
       forma => 1,
       player => 1,

@@ -50,8 +50,8 @@ run_query(Parsed) ->
     case wfcli_client:one_shot(Request) of
         {ok, #{datasets := Datasets, query_tokens := Tokens}} ->
             Query = string:join(Tokens, " "),
-            Success = lists:all(fun(Result) -> print_dataset(Result, Query, Parsed) end,
-                                Datasets),
+            Outcomes = [print_dataset(Result, Query, Parsed) || Result <- Datasets],
+            Success = lists:all(fun(Succeeded) -> Succeeded end, Outcomes),
             case Success of true -> ok; false -> halt(1) end;
         {error, {query_errors, Errors}} -> fail(Errors);
         {error, Reason} -> fail([wfcli_client:format_error(Reason)])
@@ -231,8 +231,8 @@ set_int(Key, Val, Acc) ->
 
 set_ttl(Val, Acc) ->
     case string:to_integer(Val) of
-        {Int, _} when Int >= 60 -> Acc#{ttl := Int};
-        {Int, _} when Int >= 0 -> add_error(Acc, "--ttl must be >= 60");
+        {Int, ""} when Int >= 60 -> Acc#{ttl := Int};
+        {Int, ""} when Int >= 0 -> add_error(Acc, "--ttl must be >= 60");
         _ -> add_error(Acc, "invalid --ttl")
     end.
 

@@ -75,6 +75,8 @@ old files and later catalog signatures rebuild cached entities.
 
 Query text reaches the daemon uncompiled. `wfcli_query_parse` builds the AST; entity modules expose
 typed fields and retain raw data paths where a parser has not added semantics.
+Catalog query replies contain only the requested `slice` plus `total` and `shown` counts;
+the complete matching set stays inside the daemon.
 
 ## Market And Player Data
 

@@ -25,20 +25,10 @@ print(Query, Results) ->
 
 print_json(Results, Entries) ->
     Payload = #{count => maps:get(total, Results), shown => maps:get(shown, Results),
-                source => maps:get(source_meta, Results),
-                results => [maps:get(data, E) || E <- Entries]},
-    io:format("~ts~n", [jsone:encode(json_friendly(Payload))]).
-
-json_friendly(Map) when is_map(Map) ->
-    maps:from_list([{K, json_friendly(V)} || {K, V} <- maps:to_list(Map)]);
-json_friendly(undefined) -> null;
-json_friendly(Value) when is_binary(Value) -> Value;
-json_friendly(Value) when is_list(Value) ->
-    case lists:all(fun(C) -> is_integer(C, 0, 255) end, Value) of
-        true -> list_to_binary(Value);
-        false -> [json_friendly(V) || V <- Value]
-    end;
-json_friendly(Value) -> Value.
+                source => wfcli_catalog_json:record(source, maps:get(source_meta, Results)),
+                results => [wfcli_catalog_json:record(maps:get(kind, Results), maps:get(data, E))
+                            || E <- Entries]},
+    io:format("~ts~n", [jsone:encode(Payload)]).
 
 print_source(Meta) ->
     io:format("Source: ~ts (version: ~ts)~n", [maps:get(source, Meta, "unknown"),

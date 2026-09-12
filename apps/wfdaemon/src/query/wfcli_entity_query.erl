@@ -46,7 +46,7 @@ execute(Entries, Ast, Sorts, Schema, Kind, Offset, Limit) ->
     Filtered = [Entry || Entry <- Entries, match(Entry, Ast, Schema, Kind)],
     Sorted = sort_entries(Filtered, Sorts),
     Slice = take(Limit, drop(Offset, Sorted)),
-    #{kind => Kind, all => Sorted, slice => Slice,
+    #{kind => Kind, slice => Slice,
       total => length(Sorted), shown => length(Slice)}.
 
 compile_ast(match_all, _Schema, _Kind) -> {ok, match_all};

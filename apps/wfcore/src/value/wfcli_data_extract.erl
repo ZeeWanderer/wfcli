@@ -12,7 +12,16 @@
 -spec extract_string(term(), path()) -> string().
 extract_string(Value, Path) ->
     Values = extract_values(Value, Path),
-    string:join([wfcli_text:to_list(V) || V <- Values], ", ").
+    string:join([display_value(V) || V <- Values], ", ").
+
+display_value(Value) when is_map(Value) ->
+    lists:flatten(io_lib:format("~tp", [Value]));
+display_value(Value) when is_list(Value) ->
+    case io_lib:printable_unicode_list(Value) of
+        true -> Value;
+        false -> lists:flatten(io_lib:format("~tp", [Value]))
+    end;
+display_value(Value) -> wfcli_text:to_list(Value).
 
 -doc "Extract all values under a dotted path; `*` fans out and numeric segments index lists.".
 -spec extract_values(term(), path()) -> [term()].

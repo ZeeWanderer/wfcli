@@ -12,9 +12,9 @@
 print("mods", Query, Results) -> print_mods(Results, Query);
 print("items", Query, Results) -> print_items(Results, Query).
 
-print_mods(#{all := Only, slice := Slice, total := Total, shown := Shown}, Query) ->
+print_mods(#{slice := Slice, total := Total, shown := Shown}, Query) ->
     case maps:get(output_format, Query, table) of
-        json -> print_json(entries_data(Only), entries_data(Slice));
+        json -> print_json(mod, Total, Slice);
         _ ->
             io:format("Matches: ~p (showing ~p)~n~n", [Total, Shown]),
             case Slice of
@@ -29,9 +29,9 @@ print_mods(#{all := Only, slice := Slice, total := Total, shown := Shown}, Query
             end
     end.
 
-print_items(#{all := Only, slice := Slice, total := Total, shown := Shown}, Query) ->
+print_items(#{slice := Slice, total := Total, shown := Shown}, Query) ->
     case maps:get(output_format, Query, table) of
-        json -> print_json(entries_data(Only), entries_data(Slice));
+        json -> print_json(item, Total, Slice);
         _ ->
             io:format("Matches: ~p (showing ~p)~n~n", [Total, Shown]),
             case Slice of
@@ -217,19 +217,7 @@ column_label(Col) ->
     maps:get(label, wfcli_exports_schema:column_spec(Col), atom_to_list(Col)).
 
 entry_data(Entry) -> maps:get(data, Entry, Entry).
-entries_data(Entries) -> [entry_data(E) || E <- Entries].
-
-print_json(All, Slice) ->
-    Payload = #{count => length(All), shown => length(Slice), results => json_friendly(Slice)},
-    io:format("~s~n", [jsone:encode(Payload)]).
-
-json_friendly(Map) when is_map(Map) ->
-    maps:from_list([{K, json_friendly(V)} || {K, V} <- maps:to_list(Map)]);
-json_friendly(undefined) -> null;
-json_friendly(Value) when is_binary(Value) -> Value;
-json_friendly(Value) when is_list(Value) ->
-    case lists:all(fun(E) -> is_integer(E, 0, 255) end, Value) of
-        true -> list_to_binary(Value);
-        false -> [json_friendly(E) || E <- Value]
-    end;
-json_friendly(Value) -> Value.
+print_json(Kind, Total, Slice) ->
+    Data = [wfcli_catalog_json:record(Kind, entry_data(E)) || E <- Slice],
+    Payload = #{count => Total, shown => length(Slice), results => Data},
+    io:format("~ts~n", [jsone:encode(Payload)]).
