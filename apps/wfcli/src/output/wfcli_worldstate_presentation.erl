@@ -88,9 +88,10 @@ block_spec(Type) ->
         descent ->
             #{title => "Descent",
               fields => [{"Window", window}, {"Challenges", details}]};
-        endless_xp ->
-            #{title => "Endless XP",
-              fields => [{"Category", summary}, {"Choices", details}]};
+        circuit ->
+            #{title => "Circuit: {summary}",
+              fields => [{"Choices", details}, {"Week", window}],
+              skip_fields => [name, category, choices, window_start, window_end]};
         experiment_recommended ->
             #{title => "Experiment recommended",
               fields => [{"Tag", summary}, {"Score", details}]};

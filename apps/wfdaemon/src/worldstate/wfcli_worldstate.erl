@@ -189,7 +189,7 @@ index_raw(Raw, Opts) ->
         index_conquests(maps:get(<<"Conquests">>, Raw, []), Opts),
         index_construction_projects(maps:get(<<"ConstructionProjects">>, Raw, []), Opts),
         index_descents(maps:get(<<"Descents">>, Raw, []), Opts),
-        index_endless_xp(maps:get(<<"EndlessXpChoices">>, Raw, []), Opts),
+        index_circuit(maps:get(<<"EndlessXpSchedule">>, Raw, []), Opts),
         index_experiment_recommended(maps:get(<<"ExperimentRecommended">>, Raw, []), Opts),
         index_featured_guilds(maps:get(<<"FeaturedGuilds">>, Raw, []), Opts),
         index_hub_events(maps:get(<<"HubEvents">>, Raw, []), Opts),
@@ -299,10 +299,16 @@ index_descents(List, Opts) ->
                  wfcli_worldstate_projector:to_list(maps:get(<<"RandSeed">>, Map, <<"Descent">>)))
      || {Idx, Map} <- with_index(List)].
 
-index_endless_xp(List, Opts) ->
-    [build_entry(endless_xp, Map, Opts, oid_or_index(Map, "endless_xp", Idx),
-                 wfcli_worldstate_projector:to_list(maps:get(<<"Category">>, Map, <<"Endless XP">>)))
-     || {Idx, Map} <- with_index(List)].
+index_circuit(List, Opts) ->
+    [build_entry(circuit,
+                 maps:merge(maps:with([<<"Activation">>, <<"Expiry">>], Schedule), Choice),
+                 Opts, oid_or_index(Schedule, "circuit", Idx) ++ ":" ++
+                           wfcli_text:to_list(Category),
+                 wfcli_worldstate_projector:circuit_category(Category))
+     || {Idx, #{<<"CategoryChoices">> := Choices} = Schedule} <- with_index(List),
+        is_list(Choices),
+        #{<<"Category">> := Category, <<"Choices">> := Rewards} = Choice <- Choices,
+        is_binary(Category), is_list(Rewards)].
 
 index_experiment_recommended(List, Opts) ->
     [build_entry(experiment_recommended, Map, Opts, oid_or_index(Map, "experiment_recommended", Idx),

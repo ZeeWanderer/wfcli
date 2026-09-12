@@ -15,6 +15,18 @@ public_commands_are_unique_test() ->
     Commands = wfcli_cli:public_command_names(),
     ?assertEqual(length(Commands), length(lists:usort(Commands))).
 
+focused_option_completion_test() ->
+    ?assertEqual([], wfcli_completion:candidates(["items", "--pol"])),
+    ?assertEqual(["--polarity"], wfcli_completion:candidates(["mods", "--pol"])),
+    ?assertEqual([], wfcli_completion:candidates(["mods", "--file"])),
+    ?assertEqual(["--file"], wfcli_completion:candidates(["items", "--file"])),
+    ?assertEqual([], wfcli_completion:candidates(["forma-plan", "--show"])),
+    ?assertEqual([], wfcli_completion:candidates(["fissures", "--deep"])),
+    ?assertEqual(["--deep"], wfcli_completion:candidates(["archimedea", "--deep"])),
+    ?assertEqual(["circuit"], wfcli_completion:candidates(["circ"])),
+    ?assertEqual(["normal"], wfcli_completion:candidates(["circuit", "nor"])),
+    ?assertEqual(["steel-path"], wfcli_completion:candidates(["endless-xp", "steel"])).
+
 nested_command_completion_test() ->
     ?assert(lists:member("status", wfcli_completion:candidates(["daemon", ""]))),
     ?assertEqual(

@@ -22,7 +22,22 @@ summary(Entries) ->
 -spec entries(ws(), type_filter(), day_filter()) -> [entry()].
 entries(Ws, TypeFilter, DayFilter) ->
     Index0 = wfcli_worldstate:index(Ws),
-    maybe_filter_calendar_day(maybe_filter_type(Index0, TypeFilter), DayFilter).
+    Now = (maps:get(now_fun, wfcli_worldstate:opts(Ws),
+                    fun() -> erlang:system_time(second) end))() * 1000,
+    Index = [Entry || Entry <- Index0, current_rotation(Entry, Now)],
+    maybe_filter_calendar_day(maybe_filter_type(Index, TypeFilter), DayFilter).
+
+current_rotation(#{type := circuit, data := Data}, Now) ->
+    Start = date_millis(maps:get(<<"Activation">>, Data, undefined)),
+    End = date_millis(maps:get(<<"Expiry">>, Data, undefined)),
+    is_integer(Start) andalso is_integer(End) andalso Start =< Now andalso Now < End;
+current_rotation(_, _) -> true.
+
+date_millis(#{<<"$date">> := Date}) -> date_millis(Date);
+date_millis(#{<<"$numberLong">> := Value}) when is_binary(Value) ->
+    try binary_to_integer(Value) catch error:badarg -> undefined end;
+date_millis(Value) when is_integer(Value) -> Value;
+date_millis(_) -> undefined.
 
 -doc "Run parsed query filters or fallback text search, then apply explicit/default sorting.".
 -spec query(ws(), string() | undefined, day_filter()) -> {[entry()], parsed_query()}.

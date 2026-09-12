@@ -22,15 +22,6 @@ semantics. WFCD maps them to `news` and `events`.
 A correction needs a `news` command, `events` backed by `Goals`, and a deliberate compatibility
 policy for the existing names.
 
-### Circuit choices
-
-The parser reads obsolete `EndlessXpChoices`, while current data is in
-`EndlessXpSchedule[0].CategoryChoices` under `EXC_NORMAL` and `EXC_HARD`. The existing
-`endless-xp` view is therefore empty for current snapshots.
-
-A correction needs typed normal and Steel Path Circuit tracks plus fixtures for the current
-`EndlessXpSchedule` shape.
-
 ## Incomplete Views
 
 | Current type | Meaning | Missing projection |
@@ -42,6 +33,10 @@ A correction needs typed normal and Steel Path Circuit tracks plus fixtures for 
 `archimedea` is no longer part of this list. `Conquests` is projected into Deep and Temporal
 Archimedea entries with missions, factions, deviations, risks, personal modifiers, windows, and
 query fields.
+
+Circuit choices use `EndlessXpSchedule[].CategoryChoices` under `EXC_NORMAL` and `EXC_HARD`.
+The [`circuit` command](../cli.md) selects the active `[Activation, Expiry)` window at query time,
+including when the indexed snapshot is cached. Boundary tests cover weekly rollover.
 
 ## Unexposed Data
 
@@ -63,7 +58,6 @@ presentation is also a local choice rather than a parser-correctness requirement
 ## Priority
 
 1. Correct `Events` and `Goals` naming with fixtures for both shapes.
-2. Replace `EndlessXpChoices` with current Circuit schedules.
-3. Add a structured Nightwave view.
-4. Add clan weekly initiative and labelled construction progress.
-5. Add calculated cycles with transition-boundary tests.
+2. Add a structured Nightwave view.
+3. Add clan weekly initiative and labelled construction progress.
+4. Add calculated cycles with transition-boundary tests.

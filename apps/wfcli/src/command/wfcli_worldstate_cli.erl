@@ -229,6 +229,7 @@ default_acc() ->
       interval => 60, clear => false, once => false,
       calendar_day => undefined,
       archimedea_selection => all,
+      circuit_selection => all,
       watch_specs => []}.
 
 -spec command_names() -> [string()].
@@ -247,6 +248,8 @@ command_description("prime-vault") -> "show Prime Vault schedule or inventory";
 command_description("calendar") -> "show calendar season schedule";
 command_description("arbitration") -> "show current Arbitration";
 command_description("archimedea") -> "show current Deep and Temporal Archimedea rotations";
+command_description(Command) when Command =:= "circuit"; Command =:= "endless-xp" ->
+    "show this week's Normal and Steel Path Circuit rewards";
 command_description("sorties") -> "show current Sortie";
 command_description("watch") -> "watch one or more data commands";
 command_description(Name) ->
@@ -280,7 +283,8 @@ command_specs() ->
         {"conquests", archimedea, false},
         {"construction-projects", construction_project, true},
         {"descents", descent, true},
-        {"endless-xp", endless_xp, true},
+        {"circuit", circuit, true},
+        {"endless-xp", circuit, false},
         {"experiment-recommended", experiment_recommended, true},
         {"featured-guilds", featured_guild, true},
         {"hub-events", hub_event, true},
@@ -406,6 +410,14 @@ parse_args(["deep" | Rest], Acc = #{type_filter := archimedea}) ->
     parse_args(Rest, set_archimedea_selection(deep, Acc));
 parse_args(["temporal" | Rest], Acc = #{type_filter := archimedea}) ->
     parse_args(Rest, set_archimedea_selection(temporal, Acc));
+parse_args([Selection | Rest], Acc = #{type_filter := circuit})
+  when Selection =:= "normal"; Selection =:= "steel-path" ->
+    case maps:get(circuit_selection, Acc, all) of
+        all -> parse_args(Rest, Acc#{circuit_selection := Selection});
+        Selection -> parse_args(Rest, Acc);
+        _ -> parse_args(Rest, Acc#{errors := ["normal and steel-path are mutually exclusive" |
+                                             maps:get(errors, Acc)]})
+    end;
 parse_args(["--inventory" | Rest], Acc = #{watch := true}) ->
     parse_args(Rest, Acc#{errors := ["--inventory is not supported with watch" | maps:get(errors, Acc, [])]});
 parse_args(["--inventory" | Rest], Acc) ->
@@ -559,10 +571,15 @@ parse_watch_specs_list([Spec | Rest], Acc) ->
       end.
 
 validate_search_query(Acc) ->
-    case maps:get(archimedea_selection, Acc, all) of
+    Acc1 = case maps:get(circuit_selection, Acc, all) of
         all -> Acc;
-        deep -> add_search_clause("archimedea=deep", Acc);
-        temporal -> add_search_clause("archimedea=temporal", Acc)
+        "normal" -> add_search_clause("data.Category=EXC_NORMAL", Acc);
+        "steel-path" -> add_search_clause("data.Category=EXC_HARD", Acc)
+    end,
+    case maps:get(archimedea_selection, Acc, all) of
+        all -> Acc1;
+        deep -> add_search_clause("archimedea=deep", Acc1);
+        temporal -> add_search_clause("archimedea=temporal", Acc1)
     end.
 
 set_archimedea_selection(Selection, Acc) ->

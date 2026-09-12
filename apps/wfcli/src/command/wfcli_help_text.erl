@@ -163,8 +163,7 @@ worldstate_subcommand(Sub, teshin, Description, _DefaultCache) ->
 worldstate_subcommand(Sub, Type, Description, DefaultCache) ->
     [
         "USAGE:\n",
-        io_lib:format("  wfcli ~s [options] [query]~n", [Sub]),
-        inventory_usage(Sub, Type),
+        command_usage(Sub, Type),
         "\n",
         "DESCRIPTION:\n",
         io_lib:format("  ~s.\n", [sentence_case(Description)]),
@@ -195,9 +194,12 @@ worldstate_subcommand(Sub, Type, Description, DefaultCache) ->
         command_examples(Sub, Type)
     ].
 
-inventory_usage(Sub, Type) when Type =:= baro; Type =:= prime_vault ->
-    io_lib:format("  wfcli ~s inventory [options] [query]~n", [Sub]);
-inventory_usage(_Sub, _Type) -> [].
+command_usage(Sub, Type) when Type =:= baro; Type =:= prime_vault ->
+    io_lib:format("  wfcli ~s [inventory] [options] [query]~n", [Sub]);
+command_usage(Sub, circuit) ->
+    io_lib:format("  wfcli ~s [normal|steel-path] [options] [query]~n", [Sub]);
+command_usage(Sub, _Type) ->
+    io_lib:format("  wfcli ~s [options] [query]~n", [Sub]).
 
 command_options(baro) ->
     ["\nCOMMAND OPTIONS:\n",
@@ -217,6 +219,10 @@ command_options(archimedea) ->
     ["\nCOMMAND OPTIONS:\n",
      "  deep, --deep       show only Deep Archimedea\n",
      "  temporal, --temporal show only Temporal Archimedea\n"];
+command_options(circuit) ->
+    ["\nCOMMANDS:\n",
+     "  normal             show Warframe reward choices\n",
+     "  steel-path         show Incarnon Genesis reward choices\n"];
 command_options(_Type) -> [].
 
 command_output_option(archimedea) ->
@@ -254,6 +260,10 @@ command_examples(_Sub, archimedea) ->
      "  wfcli archimedea deep\n",
      "  wfcli archimedea temporal\n",
      "  wfcli archimedea --search 'risk~regeneration'\n"];
+command_examples(_Sub, circuit) ->
+    ["  wfcli circuit\n",
+     "  wfcli circuit normal\n",
+     "  wfcli circuit steel-path\n"];
 command_examples(Sub, _Type) ->
     [io_lib:format("  wfcli ~s~n", [Sub]),
      io_lib:format("  wfcli ~s QUERY~n", [Sub]),

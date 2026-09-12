@@ -3,7 +3,7 @@
 %%%-------------------------------------------------------------------
 -module(wfcli_worldstate_projector).
 
--export([table_row_map/2, expiry/1, expiry/2, to_list/1,
+-export([table_row_map/2, expiry/1, expiry/2, to_list/1, circuit_category/1,
          event_name/2, global_upgrade_name/2, syndicate_name/2, daily_deal_name/2, prime_vault_name/2,
          goal_name/2, season_info_name/2, in_game_market_name/2, library_info_name/2,
          resolve_extra_field/3]).
@@ -328,15 +328,20 @@ table_row_map(#{type := descent, data := D} = Entry, Opts) ->
         window_end => End,
         details => Challenges
     });
-table_row_map(#{type := endless_xp, data := D} = Entry, _Opts) ->
-    Category = to_list(maps:get(<<"Category">>, D, <<"Unknown">>)),
+table_row_map(#{type := circuit, data := D} = Entry, Opts) ->
+    Category = circuit_category(maps:get(<<"Category">>, D)),
     Choices = join_list(maps:get(<<"Choices">>, D, []), ", "),
+    {Window, Start, End} = window_from_dates_parts(maps:get(<<"Activation">>, D, undefined),
+                                                 maps:get(<<"Expiry">>, D, undefined), Opts),
     with_id(Entry, #{
-        type => "Endless XP",
+        type => "Circuit",
         summary => Category,
         category => Category,
         choices => Choices,
         details => Choices,
+        window => Window,
+        window_start => Start,
+        window_end => End,
         name => Category
     });
 table_row_map(#{type := experiment_recommended, data := D} = Entry, _Opts) ->
@@ -904,6 +909,10 @@ expiry(Value) ->
 
 expiry(Value, Opts) ->
     expiry_value(Value, fun(Ms) -> wfcli_time:format_millis(Ms, Opts) end).
+
+circuit_category(<<"EXC_NORMAL">>) -> "Normal";
+circuit_category(<<"EXC_HARD">>) -> "Steel Path";
+circuit_category(Category) -> to_list(Category).
 
 expiry_value(undefined, _FormatFun) -> "unknown";
 expiry_value(#{<<"$date">> := #{<<"$numberLong">> := MsBin}}, FormatFun) ->

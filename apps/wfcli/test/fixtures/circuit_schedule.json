@@ -1,0 +1,21 @@
+{
+  "Time": 1788739200,
+  "EndlessXpSchedule": [
+    {
+      "Activation": {"$date": {"$numberLong": "1788739200000"}},
+      "Expiry": {"$date": {"$numberLong": "1789344000000"}},
+      "CategoryChoices": [
+        {"Category": "EXC_NORMAL", "Choices": ["Garuda", "Baruuk", "Hildryn"]},
+        {"Category": "EXC_HARD", "Choices": ["Boar", "Gammacor", "Anku", "Gorgon", "Angstrum"]}
+      ]
+    },
+    {
+      "Activation": {"$date": {"$numberLong": "1789344000000"}},
+      "Expiry": {"$date": {"$numberLong": "1789948800000"}},
+      "CategoryChoices": [
+        {"Category": "EXC_NORMAL", "Choices": ["Rhino", "Excalibur", "Mag"]},
+        {"Category": "EXC_HARD", "Choices": ["Braton", "Lato"]}
+      ]
+    }
+  ]
+}

@@ -190,6 +190,8 @@ worldstate_contexts() ->
 worldstate_scoped_choices("baro") -> ["inventory"];
 worldstate_scoped_choices("prime-vault") -> ["inventory"];
 worldstate_scoped_choices("archimedea") -> ["deep", "temporal"];
+worldstate_scoped_choices(Command) when Command =:= "circuit"; Command =:= "endless-xp" ->
+    ["normal", "steel-path"];
 worldstate_scoped_choices(_) -> [].
 
 values() ->

@@ -14,7 +14,12 @@ wfcli sorties
 wfcli baro inventory
 wfcli teshin
 wfcli archimedea
+wfcli circuit
+wfcli circuit steel-path
 ```
+
+`circuit` shows this week's Normal Warframe and Steel Path Incarnon Genesis choices.
+Use `normal` or `steel-path` to select one track. `endless-xp` remains an alias.
 
 Catalog and account commands search one domain with domain-specific output:
 

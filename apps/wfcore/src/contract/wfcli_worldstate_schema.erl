@@ -50,6 +50,7 @@ columns_for_type(void_trader_item) -> [type, name, ducats, credits, mod];
 columns_for_type(teshin_item) -> [name, steel_essence, availability, window];
 columns_for_type(arbitration) -> [type, node];
 columns_for_type(archimedea) -> [type, missions, window, seed];
+columns_for_type(circuit) -> [name, choices, window];
 columns_for_type(raw_worldstate) -> [type, summary, details];
 columns_for_type(meta) -> [meta_key, meta_value];
 columns_for_type(_) -> default_table_columns().
@@ -79,7 +80,8 @@ type_from_label(Label0) ->
         "raw worldstate" -> raw_worldstate;
         "construction" -> construction_project;
         "descent" -> descent;
-        "endless xp" -> endless_xp;
+        "circuit" -> circuit;
+        "endless xp" -> circuit;
         "experiment" -> experiment_recommended;
         "featured guild" -> featured_guild;
         "hub event" -> hub_event;
@@ -137,6 +139,7 @@ columns_spec() ->
         #{key => details, label => "Details", role => details, optional => true},
         #{key => id, label => "ID", role => id, optional => true},
         #{key => name, label => "Name", role => name},
+        #{key => choices, label => "Choices", role => details},
         #{key => node, label => "Node", role => location},
         #{key => mission, label => "Mission", role => mission},
         #{key => level, label => "Level", role => stat},

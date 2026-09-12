@@ -15,7 +15,7 @@ handshake_version() -> 1.
 -spec interfaces() -> #{atom() := pos_integer()}.
 interfaces() ->
     #{daemon => 1,
-      worldstate => 1,
+      worldstate => 2,
       query => 2,
       metadata => 1,
       forma => 1,
