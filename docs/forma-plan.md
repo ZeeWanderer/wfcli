@@ -18,14 +18,13 @@ Important options:
 - `--allow-umbral-forma`: permit Umbral Forma.
 - `--prefer-omni`: prefer flexible Omni assignments where possible.
 - `--max-forma N`: cap total Forma expenditure.
-- `--show-alt`: include near-optimal alternatives.
 - `--output FILE`: write plan YAML.
 - `--visualize`: render after planning.
 - `--viz html|image`: choose the renderer.
 - `--viz-output FILE`: choose visualization output.
 - `--viz-config`: also render the input layout.
 
-When output paths are omitted, generated files are placed beside the provided config.
+When output paths are omitted, generated files are placed beside the first config.
 
 ## Config
 
@@ -55,5 +54,10 @@ Capacity rules:
 The plan records target slot polarities, Omni assignments, total Forma, each build's
 slot-to-mod assignment, and configured arcanes. Unsatisfied constraints are returned as
 validation errors.
+
+Each config describes one item and its target builds. Repeated `--config` inputs are
+independent jobs, saved as separate YAML documents that `visualize` can read together.
+Any failed job makes the command exit nonzero. A mixed batch saves successful plans;
+if all jobs fail, existing output is left untouched.
 
 HTML output opens through the platform file opener. Image output is SVG.

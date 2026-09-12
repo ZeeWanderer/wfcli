@@ -478,7 +478,6 @@ forma_plan_help() ->
         "  --allow-umbral-forma allow Umbral Forma (off by default)\n",
         "  --prefer-omni        bias toward Omni where flexible\n",
         "  --max-forma N        cap total Forma expenditure\n",
-        "  --show-alt           show alternate near-optimal plans\n",
         "  --output FILE        write plan YAML (default: auto-named .plan.yml)\n",
         "  --visualize          render plan (html by default) and open it\n",
         "  --viz MODE           choose viz mode: html | image\n",

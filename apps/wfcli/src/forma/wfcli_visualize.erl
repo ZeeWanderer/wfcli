@@ -5,6 +5,10 @@
 
  -export([run/1, known_args/0]).
 
+-ifdef(TEST).
+-export([load_plan/1]).
+-endif.
+
 run(Args) ->
     Args1 = wfcli_cli_args:prompt_suggestions(Args, known_args()),
     case parse_args(Args1, #{plan => undefined, viz_mode => none, viz_output => undefined,

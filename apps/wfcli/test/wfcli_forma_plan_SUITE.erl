@@ -18,6 +18,7 @@
          mod_lookup_preserves_cost/1,
          mod_lookup_warns_on_mismatch/1,
          yaml_output_serialization/1,
+         independent_plan_documents/1,
          default_plan_output_path/1,
          visualize_plan_html/1,
          default_visualization_paths/1,
@@ -44,6 +45,7 @@ all() ->
      mod_lookup_preserves_cost,
     mod_lookup_warns_on_mismatch,
     yaml_output_serialization,
+    independent_plan_documents,
     default_plan_output_path,
     visualize_plan_html,
     default_visualization_paths,
@@ -189,6 +191,19 @@ yaml_output_serialization(CtConfig) ->
     Slot2Mods = maps:get(<<"mods">>, expect_slot(SlotMods, 2)),
     ?assert(mod_present(Slot1Mods, <<"Primary">>, <<"Madurai One">>)),
     ?assert(mod_present(Slot2Mods, <<"Primary">>, <<"Madurai Two">>)).
+
+independent_plan_documents(_CtConfig) ->
+    {Config, Plan, Cost} = plan_for("simple_capacity.yml", #{}),
+    Special = Config#{file := "name: with # marks.yml",
+                      computed_slot_mods := [{1, [{<<"Build: ON #1">>, <<"Mod: quoted">>}]}]},
+    Bin = iolist_to_binary(wfcli_forma_plan:plans_to_yaml(
+                            [{ok, Config, Plan, Cost}, {ok, Special, Plan, Cost}])),
+    {ok, [First, Second]} = wfcli_visualize:load_plan(Bin),
+    ?assertEqual(maps:get(file, Config), maps:get(config, First)),
+    ?assertEqual("name: with # marks.yml", maps:get(config, Second)),
+    ?assertEqual([{1, [{"Build: ON #1", "Mod: quoted"}]}], maps:get(slot_mods, Second)),
+    ?assertEqual(Plan, maps:get(plan, First)),
+    ?assertEqual(Plan, maps:get(plan, Second)).
 
 default_plan_output_path(CtConfig) ->
     Priv = proplists:get_value(priv_dir, CtConfig, "."),

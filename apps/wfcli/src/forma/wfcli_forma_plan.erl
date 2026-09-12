@@ -1,5 +1,5 @@
 %%%-------------------------------------------------------------------
-%% Placeholder for Forma plan calculator CLI.
+%% Forma plan calculator CLI.
 %%%-------------------------------------------------------------------
 -module(wfcli_forma_plan).
 
@@ -42,7 +42,7 @@ dispatch_args(Args) ->
 known_args() ->
     [
         "--config", "--allow-omni", "--allow-umbral-forma", "--prefer-omni", "--max-forma",
-        "--show-alt", "--output", "--visualize", "--viz", "--viz-output", "--viz-config",
+        "--output", "--visualize", "--viz", "--viz-output", "--viz-config",
         "--help", "-h", "--no-suggest-prompt"
     ].
 
@@ -80,12 +80,17 @@ render_results(Results, Output0, VizMode, VizOut, VizCfg) ->
                          Config =/= undefined],
     Output = ensure_output_path(Output0, Configs),
     lists:foreach(fun print_result/1, Results),
-    case write_output(Output, Results) of
+    Good = [Result || {ok, _, _, _} = Result <- Results],
+    case Good of
+        [] -> halt(1);
+        _ -> ok
+    end,
+    case write_output(Output, Good) of
         {ok, Path} ->
             io:format("plan output: ~s~n", [to_list(Path)]),
             maybe_visualize_config(VizCfg, VizMode, VizOut, Configs),
             maybe_visualize(VizMode, VizOut, Results),
-            case lists:any(fun({error, _}) -> true; (_) -> false end, Results) of
+            case length(Good) =/= length(Results) of
                 true -> halt(1);
                 false -> ok
             end;
@@ -190,7 +195,7 @@ parse_args(["--allow-umbral-forma" | Rest], Acc) ->
     parse_args(Rest, put_flag(Acc, allow_umbral_forma, true));
 parse_args(["--max-forma", N | Rest], Acc) ->
     case string:to_integer(N) of
-        {Int, _} when Int >= 0 ->
+        {Int, ""} when Int >= 0 ->
             parse_args(Rest, put_flag(Acc, max_forma, Int));
         _ ->
             parse_args(Rest, add_error(Acc, io_lib:format("invalid --max-forma: ~s", [N])))
@@ -233,8 +238,7 @@ default_output_file(_) ->
     "wfcli.plan.yml".
 
 write_output(File, Results) ->
-    Good = [R || {ok, _, _, _} = R <- Results],
-    Content = plans_to_yaml(Good),
+    Content = plans_to_yaml(Results),
     case file:write_file(File, Content) of
         ok -> {ok, File};
         {error, Reason} -> {error, Reason}
@@ -244,14 +248,14 @@ write_output(File, Results) ->
 -spec plans_to_yaml([planner_result()]) -> iodata().
 plans_to_yaml(Results) ->
     Lines = [plan_to_yaml(R) || R <- Results],
-    lists:flatten(Lines).
+    lists:flatten(lists:join("---\n", Lines)).
 
 plan_to_yaml({ok, Config = #{file := File}, Plan, Cost}) ->
     SortedPlan = sort_plan(Plan),
     SlotMods = slot_mod_labels(Config, Plan),
     BuildArcanes = build_arcane_entries(Config),
     [
-      "config: ", File, "\n",
+      "config: ", yaml_string(File), "\n",
       "forma_cost: ", integer_to_list(Cost), "\n",
       "plan:\n",
       [iolist_to_binary(io_lib:format("  - slot: ~p~n    polarity: ~s~n",
@@ -306,8 +310,8 @@ slot_mod_entry(Slot, Mods) ->
     [
       "  - slot: ", io_lib:format("~p", [Slot]), "\n",
       "    mods:\n",
-      [[ "      - build: ", to_list(Build), "\n",
-         "        mod: ", to_list(Mod), "\n"]
+      [[ "      - build: ", yaml_string(Build), "\n",
+         "        mod: ", yaml_string(Mod), "\n"]
        || {Build, Mod} <- Mods]
     ].
 
@@ -319,7 +323,7 @@ build_arcane_yaml(BuildArcanes) ->
 
 build_arcane_entry(Build, Arcanes) ->
     [
-      "  - build: ", to_list(Build), "\n",
+      "  - build: ", yaml_string(Build), "\n",
       "    arcanes:\n",
       [arcane_yaml(Arcane) || Arcane <- Arcanes]
     ].
@@ -328,13 +332,15 @@ arcane_yaml(#{name := Name} = Arcane) ->
     Rank = maps:get(rank, Arcane, undefined),
     case Rank of
         undefined ->
-            ["      - name: ", to_list(Name), "\n"];
+            ["      - name: ", yaml_string(Name), "\n"];
         _ ->
-            ["      - name: ", to_list(Name), "\n",
+            ["      - name: ", yaml_string(Name), "\n",
              "        rank: ", io_lib:format("~p", [Rank]), "\n"]
     end;
 arcane_yaml(Arcane) ->
-    ["      - name: ", to_list(Arcane), "\n"].
+    ["      - name: ", yaml_string(Arcane), "\n"].
+
+yaml_string(Value) -> binary_to_list(jsone:encode(unicode:characters_to_binary(to_list(Value)))).
 
 maybe_visualize(none, _Out, _Results) -> ok;
 maybe_visualize(VizMode, VizOut, Results) ->
