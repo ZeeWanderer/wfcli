@@ -3,13 +3,16 @@
 %%%-------------------------------------------------------------------
 -module(wfcli_test_daemon).
 
--export([start/0, stop/0]).
+-export([start/0, start/1, stop/0]).
 
 start() ->
-    {ok, CallerCwd} = file:get_cwd(),
     TestRoot = filename:join(
                  "/tmp", "wfcli-test-" ++ os:getpid() ++ "-" ++
                      integer_to_list(erlang:unique_integer([positive]))),
+    start(TestRoot).
+
+start(TestRoot) ->
+    {ok, CallerCwd} = file:get_cwd(),
     application:set_env(wfdaemon, player_cache, filename:join(TestRoot, "player.term")),
     application:set_env(wfdaemon, game_metadata_cache,
                         filename:join(TestRoot, "game-metadata.term")),
