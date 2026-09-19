@@ -250,7 +250,7 @@ alerts_subcommand_lists_entries(_Config) ->
     {Cache, Bin} = sample_cache(),
     ok = file:write_file(Cache, Bin),
     Output = capture_output(fun() ->
-        wfcli_worldstate_cli:run(["alerts", "--cache", Cache, "--ttl", "999999999"])
+        wfcli_cli:main(["alerts", "--cache", Cache, "--ttl", "999999999"])
     end),
     ?assert(string:find(Output, "Entries for alert") =/= nomatch).
 
@@ -258,7 +258,7 @@ alerts_table_output(_Config) ->
     {Cache, Bin} = sample_cache(),
     ok = file:write_file(Cache, Bin),
     Output = capture_output(fun() ->
-        wfcli_worldstate_cli:run(["alerts", "--cache", Cache, "--ttl", "999999999", "--output-format", "table"])
+        wfcli_cli:main(["alerts", "--cache", Cache, "--ttl", "999999999", "--output-format", "table"])
     end),
     ?assert(string:find(Output, "Entries for alert") =/= nomatch).
 
@@ -266,7 +266,7 @@ prime_vault_inventory_table_columns(_Config) ->
     {Cache, Bin} = sample_cache(),
     ok = file:write_file(Cache, Bin),
     Output = capture_output(fun() ->
-        wfcli_worldstate_cli:run(["prime-vault", "--inventory", "--cache", Cache, "--ttl", "999999999",
+        wfcli_cli:main(["prime-vault", "--inventory", "--cache", Cache, "--ttl", "999999999",
                                   "--output-format", "table"])
     end),
     ?assert(string:find(Output, "Name") =/= nomatch),
@@ -274,7 +274,7 @@ prime_vault_inventory_table_columns(_Config) ->
 
 teshin_inventory_table_output(_Config) ->
     Output = capture_output(fun() ->
-        wfcli_worldstate_cli:run_command("teshin", ["--output-format", "table"])
+        wfcli_cli:main(["teshin","--output-format", "table"])
     end),
     ?assert(string:find(Output, "Teshin data source: calculated") =/= nomatch),
     ?assert(string:find(Output, "Inventory entries: 20") =/= nomatch),
@@ -287,7 +287,7 @@ fissures_table_output(_Config) ->
     {Cache, Bin} = sample_cache(),
     ok = file:write_file(Cache, Bin),
     Output = capture_output(fun() ->
-        wfcli_worldstate_cli:run(["fissures", "--cache", Cache, "--ttl", "999999999", "--output-format", "table"])
+        wfcli_cli:main(["fissures", "--cache", Cache, "--ttl", "999999999", "--output-format", "table"])
     end),
     ?assert(string:find(Output, "Entries for fissure") =/= nomatch).
 
@@ -295,7 +295,7 @@ invasions_table_output(_Config) ->
     {Cache, Bin} = sample_cache(),
     ok = file:write_file(Cache, Bin),
     Output = capture_output(fun() ->
-        wfcli_worldstate_cli:run(["invasions", "--cache", Cache, "--ttl", "999999999", "--output-format", "table"])
+        wfcli_cli:main(["invasions", "--cache", Cache, "--ttl", "999999999", "--output-format", "table"])
     end),
     ?assert(string:find(Output, "Node") =/= nomatch).
 
@@ -303,7 +303,7 @@ sorties_table_output(_Config) ->
     {Cache, Bin} = sample_cache(),
     ok = file:write_file(Cache, Bin),
     Output = capture_output(fun() ->
-        wfcli_worldstate_cli:run(["sorties", "--cache", Cache, "--ttl", "999999999", "--output-format", "table"])
+        wfcli_cli:main(["sorties", "--cache", Cache, "--ttl", "999999999", "--output-format", "table"])
     end),
     ?assert(string:find(Output, "Entries for sortie") =/= nomatch).
 
@@ -311,7 +311,7 @@ voidstorms_table_output(_Config) ->
     {Cache, Bin} = sample_cache(),
     ok = file:write_file(Cache, Bin),
     Output = capture_output(fun() ->
-        wfcli_worldstate_cli:run(["voidstorms", "--cache", Cache, "--ttl", "999999999", "--output-format", "table"])
+        wfcli_cli:main(["voidstorms", "--cache", Cache, "--ttl", "999999999", "--output-format", "table"])
     end),
     ?assert(string:find(Output, "Entries for void_storm") =/= nomatch).
 
@@ -319,7 +319,7 @@ events_table_output(_Config) ->
     {Cache, Bin} = sample_cache(),
     ok = file:write_file(Cache, Bin),
     Output = capture_output(fun() ->
-        wfcli_worldstate_cli:run(["events", "--cache", Cache, "--ttl", "999999999", "--output-format", "table"])
+        wfcli_cli:main(["events", "--cache", Cache, "--ttl", "999999999", "--output-format", "table"])
     end),
     ?assert(string:find(Output, "Entries for event") =/= nomatch).
 
@@ -327,7 +327,7 @@ calendar_subcommand_lists_entries(_Config) ->
     {Cache, Bin} = sample_cache(),
     ok = file:write_file(Cache, Bin),
     Output = capture_output(fun() ->
-        wfcli_worldstate_cli:run(["calendar", "--cache", Cache, "--ttl", "999999999"])
+        wfcli_cli:main(["calendar", "--cache", Cache, "--ttl", "999999999"])
     end),
     ?assert(string:find(Output, "Calendar:") =/= nomatch).
 
@@ -335,7 +335,7 @@ calendar_table_output(_Config) ->
     {Cache, Bin} = sample_cache(),
     ok = file:write_file(Cache, Bin),
     Output = capture_output(fun() ->
-        wfcli_worldstate_cli:run(["calendar", "--cache", Cache, "--ttl", "999999999", "--output-format", "table"])
+        wfcli_cli:main(["calendar", "--cache", Cache, "--ttl", "999999999", "--output-format", "table"])
     end),
     ?assert(string:find(Output, "Name") =/= nomatch),
     ?assert(string:find(Output, "Details") =/= nomatch).
@@ -344,7 +344,7 @@ calendar_day_filter(_Config) ->
     {Cache, Bin} = sample_cache(),
     ok = file:write_file(Cache, Bin),
     Output = capture_output(fun() ->
-        wfcli_worldstate_cli:run(["calendar", "--day", "194", "--cache", Cache, "--ttl", "999999999",
+        wfcli_cli:main(["calendar", "--day", "194", "--cache", Cache, "--ttl", "999999999",
                                   "--output-format", "block"])
     end),
     ?assert(string:find(Output, "day 194") =/= nomatch),
@@ -355,7 +355,7 @@ global_upgrades_table_output(_Config) ->
     {Cache, Bin} = sample_cache_with(#{<<"GlobalUpgrades">> => [sample_global_upgrade()]}),
     ok = file:write_file(Cache, Bin),
     Output = capture_output(fun() ->
-        wfcli_worldstate_cli:run(["global-upgrades", "--cache", Cache, "--ttl", "999999999", "--output-format", "table"])
+        wfcli_cli:main(["global-upgrades", "--cache", Cache, "--ttl", "999999999", "--output-format", "table"])
     end),
     ?assert(string:find(Output, "Name") =/= nomatch),
     ?assert(string:find(Output, "Window") =/= nomatch).
@@ -364,7 +364,7 @@ syndicate_missions_table_output(_Config) ->
     {Cache, Bin} = sample_cache(),
     ok = file:write_file(Cache, Bin),
     Output = capture_output(fun() ->
-        wfcli_worldstate_cli:run(["syndicate-missions", "--cache", Cache, "--ttl", "999999999", "--output-format", "table"])
+        wfcli_cli:main(["syndicate-missions", "--cache", Cache, "--ttl", "999999999", "--output-format", "table"])
     end),
     ?assert(string:find(Output, "Entries for syndicate_mission") =/= nomatch).
 
@@ -372,7 +372,7 @@ daily_deals_table_output(_Config) ->
     {Cache, Bin} = sample_cache(),
     ok = file:write_file(Cache, Bin),
     Output = capture_output(fun() ->
-        wfcli_worldstate_cli:run(["daily-deals", "--cache", Cache, "--ttl", "999999999", "--output-format", "table"])
+        wfcli_cli:main(["daily-deals", "--cache", Cache, "--ttl", "999999999", "--output-format", "table"])
     end),
     ?assert(string:find(Output, "Entries for daily_deal") =/= nomatch).
 
@@ -380,7 +380,7 @@ prime_vault_table_output(_Config) ->
     {Cache, Bin} = sample_cache(),
     ok = file:write_file(Cache, Bin),
     Output = capture_output(fun() ->
-        wfcli_worldstate_cli:run(["prime-vault", "--cache", Cache, "--ttl", "999999999", "--output-format", "table"])
+        wfcli_cli:main(["prime-vault", "--cache", Cache, "--ttl", "999999999", "--output-format", "table"])
     end),
     ?assert(string:find(Output, "Entries for prime_vault") =/= nomatch).
 
@@ -388,7 +388,7 @@ baro_table_output(_Config) ->
     {Cache, Bin} = sample_cache(),
     ok = file:write_file(Cache, Bin),
     Output = capture_output(fun() ->
-        wfcli_worldstate_cli:run(["baro", "--cache", Cache, "--ttl", "999999999", "--output-format", "table"])
+        wfcli_cli:main(["baro", "--cache", Cache, "--ttl", "999999999", "--output-format", "table"])
     end),
     ?assert(string:find(Output, "Entries for baro") =/= nomatch).
 
@@ -396,7 +396,7 @@ arbitration_table_output(_Config) ->
     {Cache, Bin} = sample_cache(),
     ok = file:write_file(Cache, Bin),
     Output = capture_output(fun() ->
-        wfcli_worldstate_cli:run(["arbitration", "--cache", Cache, "--ttl", "999999999", "--output-format", "table"])
+        wfcli_cli:main(["arbitration", "--cache", Cache, "--ttl", "999999999", "--output-format", "table"])
     end),
     ?assert(string:find(Output, "Entries for arbitration") =/= nomatch).
 
@@ -404,8 +404,7 @@ archimedea_command_output(_Config) ->
     {Cache, Bin} = sample_cache(),
     ok = file:write_file(Cache, Bin),
     Output = capture_output(fun() ->
-        wfcli_worldstate_cli:run_command(
-          "archimedea", ["--deep", "--cache", Cache, "--ttl", "999999999"])
+        wfcli_cli:main(["archimedea","--deep", "--cache", Cache, "--ttl", "999999999"])
     end),
     ?assert(string:find(Output, "Deep Archimedea") =/= nomatch),
     ?assert(string:find(Output, "Sealed Armor") =/= nomatch),
@@ -446,7 +445,7 @@ extra_subcommands_table_output(_Config) ->
     lists:foreach(
       fun(Sub) ->
           Output = capture_output(fun() ->
-              wfcli_worldstate_cli:run([Sub, "--cache", Cache, "--ttl", "999999999", "--output-format", "table"])
+              wfcli_cli:main([Sub, "--cache", Cache, "--ttl", "999999999", "--output-format", "table"])
           end),
           ?assert(string:find(Output, "Entries for") =/= nomatch)
       end,
@@ -457,7 +456,7 @@ watch_once_runs_specs(_Config) ->
     {Cache, Bin} = sample_cache(),
     ok = file:write_file(Cache, Bin),
     Output = capture_output(fun() ->
-        wfcli_worldstate_cli:run(["watch", "--once", "--no-clear",
+        wfcli_cli:main(["watch", "--once", "--no-clear",
                                   "--cache", Cache, "--ttl", "999999999",
                                   "--spec", "invasions", "--spec", "fissures:lith"])
     end),
@@ -469,7 +468,7 @@ format_alias_table_output(_Config) ->
     {Cache, Bin} = sample_cache(),
     ok = file:write_file(Cache, Bin),
     Output = capture_output(fun() ->
-        wfcli_worldstate_cli:run(["fissures", "--cache", Cache, "--ttl", "999999999", "--format", "table"])
+        wfcli_cli:main(["fissures", "--cache", Cache, "--ttl", "999999999", "--format", "table"])
     end),
     ?assert(string:find(Output, "Mission") =/= nomatch).
 
@@ -477,7 +476,7 @@ alerts_time_local_default(_Config) ->
     {Cache, Bin} = sample_cache(),
     ok = file:write_file(Cache, Bin),
     Output = capture_output(fun() ->
-        wfcli_worldstate_cli:run(["fissures", "--cache", Cache, "--ttl", "999999999", "--output-format", "block"])
+        wfcli_cli:main(["fissures", "--cache", Cache, "--ttl", "999999999", "--output-format", "block"])
     end),
     ?assert(re:run(Output, "T[0-9]{2}:[0-9]{2}:[0-9]{2}Z", []) =:= nomatch),
     ?assert(re:run(Output, "[+-][0-9]{2}:[0-9]{2}", []) =/= nomatch).
@@ -486,7 +485,7 @@ alerts_time_raw(_Config) ->
     {Cache, Bin} = sample_cache(),
     ok = file:write_file(Cache, Bin),
     Output = capture_output(fun() ->
-        wfcli_worldstate_cli:run(["fissures", "--raw", "--cache", Cache, "--ttl", "999999999", "--output-format", "block"])
+        wfcli_cli:main(["fissures", "--raw", "--cache", Cache, "--ttl", "999999999", "--output-format", "block"])
     end),
     ?assert(re:run(Output, "T[0-9]{2}:[0-9]{2}:[0-9]{2}Z", []) =/= nomatch).
 
@@ -494,7 +493,7 @@ watch_inline_default_colors_rows(_Config) ->
     {Cache, Bin} = sample_cache(),
     ok = file:write_file(Cache, Bin),
     Output = capture_output(fun() ->
-        wfcli_worldstate_cli:run(["watch", "--once", "--no-clear",
+        wfcli_cli:main(["watch", "--once", "--no-clear",
                                   "--cache", Cache, "--ttl", "999999999",
                                   "--spec", "fissures"])
     end),
@@ -505,7 +504,7 @@ watch_subcommand_diff_once(_Config) ->
     {Cache, Bin} = sample_cache(),
     ok = file:write_file(Cache, Bin),
     Output = capture_output(fun() ->
-        wfcli_worldstate_cli:run(["fissures", "--watch", "--diff", "--once",
+        wfcli_cli:main(["fissures", "--watch", "--diff", "--once",
                                   "--no-clear",
                                   "--cache", Cache, "--ttl", "999999999"])
     end),
@@ -668,7 +667,7 @@ calendar_raw_keeps_identifiers(_Config) ->
     {Cache, Bin} = sample_cache(),
     ok = file:write_file(Cache, Bin),
     Output = capture_output(fun() ->
-        wfcli_worldstate_cli:run(["calendar", "--raw", "--cache", Cache, "--ttl", "999999999"])
+        wfcli_cli:main(["calendar", "--raw", "--cache", Cache, "--ttl", "999999999"])
     end),
     Flat = re:replace(Output, "\\s+", "", [global, {return, list}]),
     ?assert(string:find(Flat, "CalendarKillTechrotEnemiesWithAbilitiesEasy") =/= nomatch).

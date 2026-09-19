@@ -1,52 +1,77 @@
-%%%-------------------------------------------------------------------
-%% EUnit tests for CLI argument helpers.
-%%%-------------------------------------------------------------------
 -module(wfcli_cli_args_eunit).
-
 -include_lib("eunit/include/eunit.hrl").
 
-expand_aliases_test() ->
-    Aliases = #{"-h" => "--help", "-f" => "--format"},
-    ?assertEqual(["--help", "mods", "--format"], wfcli_cli_args:expand_aliases(["-h", "mods", "-f"], Aliases)).
+typed_aliases_and_repeated_values_test() ->
+    Args = wfcli_test_cli:parse(["items", "-l7", "-o", "3", "-fjson",
+                                 "--name", "Braton", "--name", "Prime"]),
+    ?assertEqual(7, maps:get(limit, Args)),
+    ?assertEqual(3, maps:get(offset, Args)),
+    ?assertEqual(json, maps:get(output_format, Args)),
+    ?assertMatch([#{vals := ["Braton"]}, #{vals := ["Prime"]}], maps:get(filters, Args)).
 
-has_help_flag_test() ->
-    ?assertEqual(true, wfcli_cli_args:has_help_flag(["--help"])),
-    ?assertEqual(true, wfcli_cli_args:has_help_flag(["-h", "mods"])),
-    ?assertEqual(false, wfcli_cli_args:has_help_flag(["mods", "alerts"])).
+help_value_is_not_rewritten_test() ->
+    Args = wfcli_test_cli:parse(["mods", "--name", "help"]),
+    ?assertMatch([#{vals := ["help"]}], maps:get(filters, Args)),
+    ?assertEqual(["help"], maps:get(query_tokens, wfcli_test_cli:parse(["query", "--search", "help"]))).
 
-strip_help_flags_test() ->
-    ?assertEqual(["mods"], wfcli_cli_args:strip_help_flags(["-h", "mods"])),
-    ?assertEqual(["alerts"], wfcli_cli_args:strip_help_flags(["alerts", "--help"])).
+nested_help_test() ->
+    lists:foreach(fun(Ending) ->
+        ?assertEqual({help, ["baro", "inventory"]},
+                     wfcli_cli_args:parse(["baro", "inventory", Ending])),
+        ?assertEqual({help, ["daemon", "start"]},
+                     wfcli_cli_args:parse(["daemon", "start", Ending])),
+        ?assertEqual({help, ["forma-plan"]},
+                     wfcli_cli_args:parse(["forma-plan", Ending]))
+    end, ["help", "--help", "-h"]),
+    ?assertEqual({help, ["mods"]},
+                 wfcli_cli_args:parse(["mods", "--limit", "--help"])).
 
-help_path_tracks_nested_scope_test() ->
-    ?assertEqual(
-       {help, ["baro", "inventory"]},
-       wfcli_cli_args:help_path(["baro", "inventory", "help"])),
-    ?assertEqual(
-       {help, ["companion", "screenshot"]},
-       wfcli_cli_args:help_path(
-         ["companion", "screenshot", "--target", "screen", "--help"])),
-    ?assertEqual({help, []}, wfcli_cli_args:help_path(["help", "--help"])),
-    ?assertEqual(none, wfcli_cli_args:help_path(
-                         ["completion", "candidates", "--", "--help"])).
+literal_arguments_test() ->
+    Literal = ["--help", "-f", "--no-suggest-prompt", "help"],
+    lists:foreach(fun(Command) ->
+        Args = wfcli_test_cli:parse([Command, "--" | Literal]),
+        ?assertEqual(Literal, maps:get(query_tokens, Args)),
+        ?assertNot(maps:is_key(no_suggest_prompt, Args))
+    end, ["query", "market", "mods", "items", "codex", "enemies", "drops", "fissures"]),
+    Args = wfcli_test_cli:parse(["completion", "candidates", "--" | Literal]),
+    ?assertEqual(Literal, maps:get(words, Args)).
 
-prompt_enabled_test() ->
-    ?assertEqual(true, wfcli_cli_args:prompt_enabled(["--format", "table"])),
-    ?assertEqual(false, wfcli_cli_args:prompt_enabled(["--no-suggest-prompt", "--format", "table"])).
+query_order_survives_options_test() ->
+    Args = wfcli_test_cli:parse(["query", "first", "--search", "second term",
+                                 "--limit", "2", "third", "--", "--literal"]),
+    ?assertEqual(["first", "second term", "third", "--literal"], maps:get(query_tokens, Args)).
 
-strip_prompt_flag_test() ->
-    {Args, Enabled} = wfcli_cli_args:strip_prompt_flag(["--no-suggest-prompt", "--format", "table"]),
-    ?assertEqual(["--format", "table"], Args),
-    ?assertEqual(false, Enabled).
+global_prompt_flag_test() ->
+    lists:foreach(fun(Args) ->
+        ?assertEqual(true, maps:get(no_suggest_prompt, wfcli_test_cli:parse(Args)))
+    end, [["--no-suggest-prompt", "mods"], ["mods", "--no-suggest-prompt"]]).
 
-prompt_suggestions_disabled_test() ->
-    Args = wfcli_cli_args:prompt_suggestions(["--no-suggest-prompt", "--formatt", "table"], ["--format"]),
-    ?assertEqual(["--formatt", "table"], Args).
+flags_do_not_consume_boolean_query_values_test() ->
+    Args = wfcli_test_cli:parse(["mods", "--raw", "false"]),
+    ?assertEqual(true, maps:get(raw, Args)),
+    ?assertEqual(["false"], maps:get(query_tokens, Args)).
 
-literal_arguments_are_not_preprocessed_test() ->
-    Literal = ["--", "--help", "-f", "--no-suggest-prompt", "help"],
-    ?assertEqual(Literal, wfcli_cli_args:expand_aliases(Literal, #{"-f" => "--format"})),
-    ?assertNot(wfcli_cli_args:has_help_flag(Literal)),
-    ?assertEqual(none, wfcli_cli_args:help_path(["query" | Literal])),
-    ?assertEqual({Literal, true}, wfcli_cli_args:strip_prompt_flag(Literal)),
-    ?assertEqual(Literal, wfcli_cli_args:strip_help_flags(Literal)).
+help_option_values_test() ->
+    Help = unicode:characters_to_binary(wfcli_help:text(["mods"])),
+    ?assertNotEqual(nomatch, binary:match(Help, <<"--name <name>">>)),
+    ?assertNotEqual(nomatch, binary:match(Help, <<"maximum results (int >= 0), default: 50">>)).
+
+unknown_options_and_bad_values_test() ->
+    lists:foreach(fun(Args) -> ?assertMatch({error, _, _, _}, wfcli_cli_args:parse(Args)) end,
+                  [["items", "--polarity", "V"], ["fissures", "--deep"],
+                   ["update", "ignored-word"], ["daemon", "start", "--idle-timeout", "0"],
+                   ["mods", "--limit", "7x"], ["fissures", "--ttl", "59"],
+                   ["fissures", "--update-all"], ["mods", "--name"]]),
+    {error, _, Error, _} = wfcli_cli_args:parse(["query", "--formatt", "table"]),
+    ?assertNotEqual(nomatch, string:find(Error, "did you mean")).
+
+entire_tree_validates_and_has_help_test() ->
+    Tree = wfcli_cli:command(),
+    ?assertEqual("wfcli", argparse:validate(Tree, #{progname => "wfcli"})),
+    lists:foreach(fun(Path) ->
+        ?assert(byte_size(unicode:characters_to_binary(wfcli_help:text(Path))) > 20)
+    end, paths(Tree, [])).
+
+paths(Node, Path) ->
+    [Path | lists:append([paths(Child, Path ++ [Name])
+                         || {Name, Child} <- maps:to_list(maps:get(commands, Node, #{}))])].

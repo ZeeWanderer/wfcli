@@ -6,7 +6,7 @@
 -include_lib("eunit/include/eunit.hrl").
 
 companion_commands_include_lifecycle_setup_and_diagnostics_test() ->
-    Commands = wfcli_companion_cli:known_commands(),
+    Commands = maps:keys(maps:get(commands, wfcli_companion_cli:command())),
     ?assert(lists:all(
               fun(Command) -> lists:member(Command, Commands) end,
               ["start", "stop", "restart", "status", "install", "uninstall",
@@ -14,10 +14,11 @@ companion_commands_include_lifecycle_setup_and_diagnostics_test() ->
                "show", "hide", "hud"])).
 
 companion_help_explains_global_overlay_visibility_test() ->
-    Help = unicode:characters_to_binary(wfcli_help_text:companion_help()),
-    ?assertNotEqual(nomatch, binary:match(Help, <<"hide               disable the entire overlay">>)),
-    ?assertNotEqual(nomatch, binary:match(Help, <<"hud show|hide">>)),
-    ?assertNotEqual(nomatch, binary:match(Help, <<"suppresses automatic contextual overlays">>)).
+    Help = unicode:characters_to_binary(wfcli_help:text(["companion"])),
+    ?assertNotEqual(nomatch, binary:match(Help, <<"disable the entire overlay">>)),
+    ?assertNotEqual(nomatch, binary:match(Help, <<"control diagnostic HUD">>)),
+    Hud = unicode:characters_to_binary(wfcli_help:text(["companion", "hud"])),
+    ?assertNotEqual(nomatch, binary:match(Hud, <<"enable HUD">>)).
 
 companion_status_formats_negotiated_socket_contract_test() ->
     Status = iolist_to_binary(

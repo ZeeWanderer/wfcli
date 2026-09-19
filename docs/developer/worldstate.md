@@ -64,7 +64,7 @@ Translation logic is centralized in daemon module `wfcli_resolve`:
   `~/.cache/wfcli/worldstate.json` when XDG cache is unset.
 - Node/language maps and exports update under the per-user XDG cache. Bundled fallback copies
   live under `apps/wfdaemon/priv/`.
-- Refresh via CLI flags (`wfcli update --languages`, `--exports`, `--all`) or the inline `--update-*` flags on worldstate commands.
+- Refresh metadata with `wfcli update`; see [data sources](../data-sources.md).
 
 ## Calendar data
 

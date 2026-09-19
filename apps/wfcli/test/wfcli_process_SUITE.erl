@@ -3,14 +3,14 @@
 -export([all/0, cli_main/0, failed_plan_preserves_output/1, partial_plan_exits_nonzero/1,
          partial_query_prints_success/1, empty_json_arrays/1, literal_help/1,
          invalid_options_do_not_prompt/1, malformed_mcp_stays_alive/1,
-         circuit_commands/1, structured_extract/1]).
+         circuit_commands/1, structured_extract/1, contextual_help/1, help_option_value/1]).
 
 -include_lib("eunit/include/eunit.hrl").
 
 all() -> [failed_plan_preserves_output, partial_plan_exits_nonzero,
           partial_query_prints_success, empty_json_arrays, literal_help,
           invalid_options_do_not_prompt, malformed_mcp_stays_alive,
-          circuit_commands, structured_extract].
+          circuit_commands, structured_extract, contextual_help, help_option_value].
 
 failed_plan_preserves_output(Config) ->
     Output = filename:join(proplists:get_value(priv_dir, Config), "existing.plan.yml"),
@@ -57,11 +57,28 @@ literal_help(Config) ->
 
 invalid_options_do_not_prompt(Config) ->
     lists:foreach(fun(Args) ->
-        {1, Out, Err} = run(Args, Config),
+        {2, Out, Err} = run(Args, Config),
+        ?assertEqual(<<>>, Out),
+        contains(Err, <<"error:">>),
         ?assertEqual(nomatch, binary:match(<<Out/binary, Err/binary>>, <<"enter to accept">>))
     end, [["--no-suggest-prompt", "mods", "--limti", "1"],
           ["mods", "--limti", "1"], ["fissures", "--xyz-invalid-option"],
-          ["items", "--polarity", "V"], ["query", "dataset=mods", "--ttl", "60junk"]]).
+          ["items", "--polarity", "V"], ["query", "dataset=mods", "--ttl", "60junk"],
+          ["companion", "start", "unexpected"], ["daemon", "start", "--idle-timeout"]]).
+
+contextual_help(Config) ->
+    lists:foreach(fun(Args) ->
+        {0, Out, Err} = run(Args, Config),
+        contains(Out, <<"--idle-timeout">>),
+        ?assertEqual(<<>>, Err)
+    end, [["daemon", "start", Ending] || Ending <- ["help", "--help", "-h"]] ++
+         [["--no-suggest-prompt", "help", "daemon", "start"]]).
+
+help_option_value(Config) ->
+    {0, Out, Err} = run(["mods", "--exports-dir", fixture("exports"),
+                         "--format", "json", "--name", "help"], Config),
+    ?assertEqual([], maps:get(<<"results">>, jsone:decode(Out))),
+    ?assertEqual(<<>>, Err).
 
 malformed_mcp_stays_alive(Config) ->
     Input = <<"{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":null}\n"

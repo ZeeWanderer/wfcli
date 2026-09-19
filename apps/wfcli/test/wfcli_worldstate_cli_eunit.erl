@@ -43,69 +43,46 @@ merge_inline_entries_keeps_removed_order_test() ->
     Names = [maps:get(name, E, "") || E <- Merged],
     ?assertEqual(["A", "B", "C"], Names).
 
-parse_args_fuzz_test() ->
-    _ = rand:seed(exsplus, {12, 13, 14}),
-    lists:foreach(
-      fun(_Idx) ->
-          Args = random_args(),
-          Parsed = wfcli_worldstate_cli:parse_args(Args, wfcli_worldstate_cli:default_acc()),
-          ?assert(is_map(Parsed)),
-          ?assert(is_list(maps:get(errors, Parsed, [])))
-      end,
-      lists:seq(1, 50)).
-
-parse_args_near_miss_suggests_test() ->
-    Parsed = wfcli_worldstate_cli:parse_args(["--formatt", "table"], wfcli_worldstate_cli:default_acc()),
-    Errors = maps:get(errors, Parsed, []),
-    ?assert(lists:any(fun(E) -> string:find(E, "did you mean") =/= nomatch end, Errors)).
-
-parse_args_defers_bad_query_syntax_test() ->
-    Parsed = wfcli_worldstate_cli:parse_args(
-      ["alerts", "--search", "foo OR"], wfcli_worldstate_cli:default_acc()),
-    ?assertEqual([], maps:get(errors, Parsed, [])),
-    ?assertEqual("foo OR", maps:get(search, Parsed)).
-
-parse_args_defers_unknown_worldstate_field_test() ->
-    Parsed = wfcli_worldstate_cli:parse_args(
-      ["alerts", "--search", "faction=Corpus"], wfcli_worldstate_cli:default_acc()),
-    ?assertEqual([], maps:get(errors, Parsed, [])),
-    ?assertEqual("faction=Corpus", maps:get(search, Parsed)).
-
-parse_args_accepts_boolean_query_test() ->
-    Parsed = wfcli_worldstate_cli:parse_args(
-      ["alerts", "--search", "foo OR bar"], wfcli_worldstate_cli:default_acc()),
-    ?assertEqual([], maps:get(errors, Parsed, [])).
+opaque_queries_are_not_validated_by_cli_test() ->
+    lists:foreach(fun(Query) ->
+        {ok, Parsed} = wfcli_test_cli:worldstate(["alerts", "--search", Query]),
+        ?assertEqual(Query, maps:get(search, Parsed)),
+        ?assertNot(maps:get(watch, Parsed))
+    end, ["foo OR", "faction=Corpus", "foo OR bar"]).
 
 archimedea_selector_adds_semantic_filter_test() ->
-    Parsed = wfcli_worldstate_cli:parse_args(
-      ["archimedea", "--deep", "--search", "risk~shielded"],
-      wfcli_worldstate_cli:default_acc()),
+    {ok, Parsed} = wfcli_test_cli:worldstate(
+                     ["archimedea", "--deep", "--search", "risk~shielded"]),
     ?assertEqual(archimedea, maps:get(type_filter, Parsed)),
-    ?assertEqual("(risk~shielded) archimedea=deep", maps:get(search, Parsed)),
-    ?assertEqual([], maps:get(errors, Parsed, [])).
+    ?assertEqual("(risk~shielded) archimedea=deep", maps:get(search, Parsed)).
 
 scoped_commands_match_option_forms_test() ->
-    Baro = wfcli_worldstate_cli:parse_args(
-      ["baro", "inventory"], wfcli_worldstate_cli:default_acc()),
+    {ok, Baro} = wfcli_test_cli:worldstate(["baro", "inventory"]),
     ?assertEqual(baro, maps:get(type_filter, Baro)),
     ?assertEqual(true, maps:get(inventory, Baro)),
-    Temporal = wfcli_worldstate_cli:parse_args(
-      ["archimedea", "temporal"], wfcli_worldstate_cli:default_acc()),
-    ?assertEqual(archimedea, maps:get(type_filter, Temporal)),
+    ?assertNot(maps:get(watch, Baro)),
+    {ok, Temporal} = wfcli_test_cli:worldstate(["archimedea", "temporal"]),
     ?assertEqual("archimedea=temporal", maps:get(search, Temporal)).
 
 archimedea_selectors_are_exclusive_test() ->
-    Parsed = wfcli_worldstate_cli:parse_args(
-      ["archimedea", "--deep", "--temporal"], wfcli_worldstate_cli:default_acc()),
-    ?assert(lists:member("--deep and --temporal are mutually exclusive",
-                         maps:get(errors, Parsed, []))).
+    ?assertMatch({error, _}, wfcli_test_cli:worldstate(["archimedea", "--deep", "--temporal"])),
+    ?assertMatch({error, _}, wfcli_test_cli:worldstate(["archimedea", "deep", "--temporal"])).
 
 watch_spec_defers_bad_query_syntax_test() ->
-    Parsed = wfcli_worldstate_cli:parse_args(
-      ["watch", "--spec", "alerts:foo OR"], wfcli_worldstate_cli:default_acc()),
-    ?assertEqual([], maps:get(errors, Parsed, [])),
+    {ok, Parsed} = wfcli_test_cli:worldstate(["watch", "--spec", "alerts:foo OR"]),
     [Spec] = maps:get(watch_specs, Parsed),
     ?assertEqual("foo OR", maps:get(query, Spec)).
+
+watch_modes_and_order_test() ->
+    lists:foreach(fun(Flags) ->
+        {ok, Parsed} = wfcli_test_cli:worldstate(["fissures" | Flags]),
+        ?assert(maps:get(watch, Parsed))
+    end, [["--watch"], ["--diff"], ["--diff-style", "inline"], ["--always"]]),
+    {ok, Parsed} = wfcli_test_cli:worldstate(
+                     ["watch", "--spec", "alerts:endo", "--", "fissures:lith", "calendar"]),
+    ?assertEqual([alert, fissure, calendar],
+                 [maps:get(type_filter, S) || S <- lists:reverse(maps:get(watch_specs, Parsed))]),
+    ?assertMatch({error, _}, wfcli_test_cli:worldstate(["baro", "inventory", "--watch"])).
 
 watch_table_includes_extra_columns_test() ->
     RowMaps = [#{mission => "Capture", extra_fields => #{"Icon" => "icon.png"}}],
@@ -137,65 +114,12 @@ daemon_fetched_source_text_avoids_duplicate_origin_test() ->
     ?assertEqual("source: fetched, age: 0s",
                  wfcli_worldstate_output:daemon_source_text(Result)).
 
-baro_help_documents_inventory_workflow_test() ->
-    Text = lists:flatten(
-             wfcli_help_text:worldstate_subcommand(
-               "baro", baro, wfcli_worldstate_cli:command_description("baro"),
-               "/tmp/worldstate.json")),
-    ?assert(string:find(Text, "wfcli baro inventory") =/= nomatch),
-    ?assert(string:find(Text, "published Baro manifest") =/= nomatch),
-    ?assert(string:find(Text, "Inventory mode cannot be combined with --watch") =/= nomatch).
-
-teshin_help_documents_calculated_inventory_test() ->
-    Text = lists:flatten(
-             wfcli_help_text:worldstate_subcommand(
-               "teshin", teshin, wfcli_worldstate_cli:command_description("teshin"),
-               "/tmp/worldstate.json")),
-    ?assert(string:find(Text, "wfcli teshin riven") =/= nomatch),
-    ?assert(string:find(Text, "eight-week Steel Path rotation") =/= nomatch),
-    ?assertEqual(nomatch, string:find(Text, "--refresh")),
-    ?assertEqual(nomatch, string:find(Text, "--watch")),
-    ?assertEqual(nomatch, string:find(Text, "--inventory")),
-    ?assert(string:find(Text, "watch mode is not supported") =/= nomatch).
-
-archimedea_help_documents_scope_test() ->
-    Text = lists:flatten(
-             wfcli_help_text:worldstate_subcommand(
-               "archimedea", archimedea, wfcli_worldstate_cli:command_description("archimedea"),
-               "/tmp/worldstate.json")),
-    ?assert(string:find(Text, "default: block") =/= nomatch),
-    ?assert(string:find(Text, "--deep") =/= nomatch),
-    ?assert(string:find(Text, "additional Elite risks") =/= nomatch),
-    ?assert(string:find(Text, "cached player data") =/= nomatch),
-    ?assert(string:find(Text, "Archimedea screen observed") =/= nomatch).
-
-generic_data_help_hides_inventory_option_test() ->
-    Text = lists:flatten(
-             wfcli_help_text:worldstate_subcommand(
-               "alerts", alert, wfcli_worldstate_cli:command_description("alerts"),
-               "/tmp/worldstate.json")),
-    ?assertEqual(nomatch, string:find(Text, "--inventory")),
-    ?assert(string:find(Text, "--watch") =/= nomatch),
-    ?assert(string:find(Text, "--refresh") =/= nomatch).
-
-random_args() ->
-    Known = wfcli_worldstate_cli:known_args(),
-    Tokens = ["alerts", "lith", "foo", "bar"],
-    lists:append([
-        maybe_pick(Known),
-        maybe_pick(Known),
-        maybe_pick(Tokens),
-        maybe_unknown_flag()
-    ]).
-
-maybe_pick(List) ->
-    case rand:uniform(3) of
-        1 -> [lists:nth(rand:uniform(length(List)), List)];
-        _ -> []
-    end.
-
-maybe_unknown_flag() ->
-    case rand:uniform(2) of
-        1 -> ["--formatt"];
-        _ -> []
-    end.
+help_is_scoped_to_real_arguments_test() ->
+    ?assertEqual([], wfcli_test_cli:options(["teshin"]) --
+                     wfcli_test_cli:options(["query"])),
+    ?assertNot(lists:member("--refresh", wfcli_test_cli:options(["teshin"]))),
+    ?assertNot(lists:member("--inventory", wfcli_test_cli:options(["alerts"]))),
+    ?assert(lists:member("--watch", wfcli_test_cli:options(["alerts"]))),
+    ?assert(lists:member("--inventory", wfcli_test_cli:options(["baro"]))),
+    ?assert(lists:member("--day", wfcli_test_cli:options(["calendar"]))),
+    ?assertEqual(block, maps:get(output_format, wfcli_test_cli:parse(["archimedea"]))).

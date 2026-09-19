@@ -275,10 +275,10 @@ await_query(Ref) ->
     end.
 
 catalog_request(Command, Args) when Command =:= "mods"; Command =:= "items" ->
-    {ok, Query} = wfcli_exports_cli:parse_request(Command, Args),
+    Query = wfcli_test_cli:catalog(Command, Args),
     #{source => exports, command => Command, query => Query, cwd => filename:absname(".")};
 catalog_request(Command, Args) ->
-    {ok, Query} = wfcli_knowledge_cli:parse_request(Command, Args),
+    Query = wfcli_test_cli:catalog(Command, Args),
     #{source => exports, command => Command, query => Query, cwd => filename:absname(".")}.
 
 fixture_exports() ->

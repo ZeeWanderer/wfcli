@@ -35,7 +35,7 @@ query_combines_sources(_Config) ->
     ok = file:write_file(Cache, Bin),
     Dir = fixture_dir(),
     Output = capture_output(fun() ->
-        wfcli_query_cli:run([
+        wfcli_cli:main(["query",
             "--cache", Cache,
             "--ttl", "999999999",
             "--exports-dir", Dir,
@@ -50,7 +50,7 @@ query_combines_sources(_Config) ->
 
 query_selects_drops(_Config) ->
     Output = capture_output(fun() ->
-        wfcli_query_cli:run([
+        wfcli_cli:main(["query",
             "--knowledge-dir", fixture_knowledge_dir(),
             "dataset=drops|codex test mod"
         ])
@@ -66,7 +66,7 @@ query_format_alias(_Config) ->
     ok = file:write_file(Cache, Bin),
     Dir = fixture_dir(),
     Output = capture_output(fun() ->
-        wfcli_query_cli:run([
+        wfcli_cli:main(["query",
             "--cache", Cache,
             "--ttl", "999999999",
             "--exports-dir", Dir,
@@ -81,7 +81,7 @@ query_archimedea_semantic_fields(_Config) ->
     {Cache, Bin} = sample_cache(),
     ok = file:write_file(Cache, Bin),
     Output = capture_output(fun() ->
-        wfcli_query_cli:run([
+        wfcli_cli:main(["query",
             "--cache", Cache,
             "--ttl", "999999999",
             "--format", "block",
@@ -97,7 +97,7 @@ query_raw_worldstate_paths(_Config) ->
     {Cache, Bin} = sample_cache(),
     ok = file:write_file(Cache, Bin),
     Output = capture_output(fun() ->
-        wfcli_query_cli:run([
+        wfcli_cli:main(["query",
             "--cache", Cache,
             "--ttl", "999999999",
             "dataset=worldstate type=raw_worldstate data.Conquests.1.Type=CT_HEX "

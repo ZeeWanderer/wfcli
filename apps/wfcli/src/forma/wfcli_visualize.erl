@@ -1,37 +1,24 @@
-%%%-------------------------------------------------------------------
-%% CLI entry for visualizing forma-plan outputs.
-%%%-------------------------------------------------------------------
- -module(wfcli_visualize).
+-module(wfcli_visualize).
 
- -export([run/1, known_args/0]).
+-export([command/0, arguments/0, run/1]).
+-import(wfcli_cli_args, [option/4, flag/3]).
 
 -ifdef(TEST).
 -export([load_plan/1]).
 -endif.
 
-run(Args) ->
-    Args1 = wfcli_cli_args:prompt_suggestions(Args, known_args()),
-    case parse_args(Args1, #{plan => undefined, viz_mode => none, viz_output => undefined,
-                            viz_config => false, config => undefined, errors => [], help => false}) of
-        #{errors := []} = Parsed ->
-            maybe_show(Parsed);
-        #{errors := Errors} ->
-            lists:foreach(fun(E) -> io:format("error: ~s~n", [E]) end, Errors),
-            help(),
-             halt(1)
-     end.
+command() ->
+    #{help => "render forma-plan outputs", handler => {?MODULE, run},
+      arguments => [#{name => plan, required => true, help => "plan YAML file"},
+                    option(plan, "plan", string, "plan YAML file"),
+                    option(config, "config", string, "override source config")] ++ arguments()}.
 
-help() ->
-    io:put_chars(wfcli_help_text:visualize_help()).
+arguments() ->
+    [option(viz_mode, "viz", {atom, [html, image]}, "visualization format"),
+     option(viz_output, "viz-output", string, "visualization output file"),
+     flag(viz_config, "viz-config", "also visualize source configuration")].
 
-maybe_show(#{plan := undefined}) ->
-    io:format("error: --plan FILE is required~n"),
-    help(),
-    halt(1);
-maybe_show(#{help := true}) ->
-    help(),
-    halt(0);
-maybe_show(#{plan := File} = Parsed) ->
+run(#{plan := File} = Parsed) ->
     case file:read_file(File) of
         {ok, Bin} ->
              case load_plan(Bin) of
@@ -42,11 +29,11 @@ maybe_show(#{plan := File} = Parsed) ->
                      ConfigOverride = maps:get(config, Parsed, undefined),
                      lists:foreach(fun(E) -> show_entry(E, VizMode, VizOut, VizCfg, ConfigOverride) end, Entries);
                  {error, Reason} ->
-                     io:format("error: ~p~n", [Reason]),
+                     io:format(standard_error, "error: ~p~n", [Reason]),
                      halt(1)
              end;
          {error, Reason} ->
-             io:format("error: cannot read ~s: ~p~n", [File, Reason]),
+             io:format(standard_error, "error: cannot read ~s: ~p~n", [File, Reason]),
              halt(1)
      end.
 
@@ -108,37 +95,6 @@ do_config_viz(File, Plan, SlotMods, BuildArcanes, image, Out) ->
             io:format("config visualization svg failed: ~p~n", [Reason])
     end;
 do_config_viz(_, _, _, _, _, _) -> ok.
-
- parse_args([], Acc) -> Acc;
-parse_args(["--plan", File | Rest], Acc) ->
-    parse_args(Rest, Acc#{plan := File});
-parse_args(["-h" | Rest], Acc) ->
-    parse_args(Rest, Acc#{help := true});
-parse_args(["--help" | Rest], Acc) ->
-    parse_args(Rest, Acc#{help := true});
- parse_args(["--viz", Mode | Rest], Acc) ->
-     case string:lowercase(Mode) of
-         "html" -> parse_args(Rest, Acc#{viz_mode := html});
-         "image" -> parse_args(Rest, Acc#{viz_mode := image});
-         Other -> parse_args(Rest, Acc#{errors := [io_lib:format("invalid --viz: ~s", [Other]) | maps:get(errors, Acc)]})
-     end;
- parse_args(["--viz-output", File | Rest], Acc) ->
-     parse_args(Rest, Acc#{viz_output := File});
- parse_args(["--viz-config" | Rest], Acc) ->
-     parse_args(Rest, Acc#{viz_config := true});
- parse_args(["--config", File | Rest], Acc) ->
-     parse_args(Rest, Acc#{config := File});
- parse_args([Unknown | Rest], Acc = #{plan := undefined}) ->
-     %% Treat first bare argument as plan path for convenience.
-     parse_args(Rest, Acc#{plan := Unknown});
- parse_args([Unknown | Rest], Acc) ->
-     parse_args(Rest, Acc#{errors := [io_lib:format("unknown arg: ~s", [Unknown]) | maps:get(errors, Acc)]}).
-
--doc "Return argv tokens accepted by parser suggestions and shell completion.".
--spec known_args() -> [string()].
-known_args() ->
-    ["--plan", "--viz", "--viz-output", "--viz-config", "--config", "--help", "-h",
-     "--no-suggest-prompt"].
 
 load_plan(Bin) ->
     try yamerl_constr:string(Bin, [{map_node_format, map}, {str_node_as_binary, true}]) of

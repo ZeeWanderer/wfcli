@@ -1,46 +1,97 @@
-%%%-------------------------------------------------------------------
-%% CLI argument helpers.
-%%%-------------------------------------------------------------------
 -module(wfcli_cli_args).
 
--export([expand_aliases/2, has_help_flag/1, help_path/1, strip_help_flags/1,
-         prompt_enabled/1, prompt_suggestions/2, strip_prompt_flag/1, interactive/0]).
+-export([parse/1, parse/2, option/4, flag/3, query/0, format/2,
+         node/2, options/1, choices/1, interactive/0]).
 
-expand_aliases(Args, Aliases) ->
-    map_options(fun(Options) -> [maps:get(A, Aliases, A) || A <- Options] end, Args).
+parse(Args) -> parse(Args, wfcli_cli:command()).
 
-has_help_flag(Args) ->
-    lists:any(fun is_help_flag/1, option_args(Args)).
-
-help_path(["completion", "candidates" | _]) ->
-    none;
-help_path(["help" | Rest]) ->
-    {help, scope_path(strip_help(Rest))};
-help_path(Args) ->
-    case has_help_flag(Args) orelse
-         (not lists:member("--", Args) andalso trailing_help(Args)) of
-        true -> {help, scope_path(strip_help(Args))};
-        false -> none
+parse(Args0, Tree) ->
+    Args = help_alias(Args0, Tree),
+    case argparse:parse(Args, Tree, #{progname => "wfcli"}) of
+        {ok, Parsed, [_ | Path], Command} ->
+            Defaults = inherited_defaults(Path, Tree, #{}),
+            {ok, maps:merge(Defaults, Parsed), Path, Command};
+        {error, {[_ | Path], undefined, Flag, _}}
+          when Flag =:= "--help"; Flag =:= "-h" ->
+            {help, Path};
+        {error, {[_ | Path], Expected, Actual, _Detail} = Reason} ->
+            case Args =/= [] andalso lists:member(lists:last(Args), ["-h", "--help"])
+                 andalso not lists:member("--", Args) of
+                true -> {help, Path};
+                false ->
+                    Node = node(Path, Tree),
+                    Candidates = maps:keys(maps:get(commands, Node, #{})) ++ options(Node),
+                    Hint = case is_list(Actual) andalso Expected =:= undefined of
+                               true -> wfcli_cli_suggest:suggest(Actual, Candidates);
+                               false -> ""
+                           end,
+                    {error, Path, lists:flatten([argparse:format_error(Reason), Hint]),
+                     {Expected, Actual}}
+            end
     end.
 
-strip_help_flags(Args) ->
-    map_options(fun(Options) -> [A || A <- Options, not is_help_flag(A)] end, Args).
-
-prompt_enabled(Args) ->
-    not lists:member("--no-suggest-prompt", option_args(Args)).
-
-strip_prompt_flag(Args) ->
-    {map_options(fun(Options) -> [A || A <- Options, A =/= "--no-suggest-prompt"] end,
-                 Args), prompt_enabled(Args)}.
-
-prompt_suggestions(Args0, Candidates) ->
-    {Args, Prompt} = strip_prompt_flag(Args0),
-    case Prompt andalso application:get_env(wfcli, suggest_prompt, true)
-         andalso interactive() of
+help_alias(["--help" | Rest], _Tree) -> ["help" | Rest];
+help_alias(["-h" | Rest], _Tree) -> ["help" | Rest];
+help_alias([], _Tree) -> [];
+help_alias(Args, Tree) ->
+    case lists:last(Args) =:= "help" andalso not lists:member("--", Args) of
         false -> Args;
-        true -> map_options(fun(Options) -> [maybe_prompt_arg(A, Candidates) || A <- Options] end,
-                            Args)
+        true ->
+            Before = lists:droplast(Args),
+            case argparse:parse(Before, Tree, #{progname => "wfcli"}) of
+                {error, {_, Expected, undefined, <<"expected argument">>}}
+                  when is_map(Expected) -> Args;
+                _ -> Before ++ ["--help"]
+            end
     end.
+
+inherited_defaults([], Node, Acc) ->
+    maps:merge(Acc, maps:get(defaults, Node, #{}));
+inherited_defaults([Name | Rest], Node, Acc) ->
+    inherited_defaults(Rest, maps:get(Name, maps:get(commands, Node)),
+                       maps:merge(Acc, maps:get(defaults, Node, #{}))).
+
+option(Name, Long, Type, Help) ->
+    #{name => Name, long => "-" ++ Long, type => Type, help => Help}.
+
+flag(Name, Long, Help) ->
+    #{name => Name, long => "-" ++ Long, action => {store, true}, help => Help}.
+
+query() ->
+    [#{name => query_tokens, nargs => list, action => extend, required => false,
+       default => [], help => "query expressions"},
+     #{name => query_tokens, long => "-", nargs => all, action => extend, help => hidden},
+     (option(query_tokens, "search", string, "query expression"))#{
+         short => $q, action => append}].
+
+format(Choices, Default) ->
+    [(option(output_format, "format", {atom, Choices}, "output format"))#{
+         short => $f, default => Default},
+     (option(output_format, "output-format", {atom, Choices}, hidden))].
+
+node([], Node) -> Node;
+node([Name | Rest], #{commands := Children} = Parent) ->
+    Child = maps:get(Name, Children),
+    node(Rest, Child#{arguments => maps:get(arguments, Parent, []) ++
+                                   maps:get(arguments, Child, []),
+                      notes => maps:get(notes, Parent, "") ++ maps:get(notes, Child, "")}).
+
+options(Node) ->
+    lists:append([spelling(Arg) || Arg <- maps:get(arguments, Node, [])]).
+
+spelling(Arg) ->
+    Short = case maps:find(short, Arg) of {ok, C} -> [[$-, C]]; error -> [] end,
+    Long = case maps:find(long, Arg) of
+               {ok, "-"} -> [];
+               {ok, Name} -> ["-" ++ Name];
+               error -> []
+           end,
+    Short ++ Long.
+
+choices(#{completion := Values}) -> Values;
+choices(#{type := {atom, Values}}) -> [atom_to_list(V) || V <- Values];
+choices(#{type := {string, [First | _] = Values}}) when is_list(First) -> Values;
+choices(_) -> [].
 
 interactive() ->
     case io:getopts() of
@@ -49,61 +100,3 @@ interactive() ->
                 proplists:get_value(stdout, Options, false);
         _ -> false
     end.
-
-option_args(Args) -> lists:takewhile(fun(A) -> A =/= "--" end, Args).
-
-map_options(Fun, Args) ->
-    {Options, Rest} = lists:splitwith(fun(A) -> A =/= "--" end, Args),
-    Fun(Options) ++ Rest.
-
-maybe_prompt_arg(Arg, Candidates) ->
-    case is_flag(Arg) of
-        false -> Arg;
-        true ->
-            case lists:member(Arg, Candidates) of
-                true -> Arg;
-                false ->
-                    case wfcli_cli_suggest:suggest_match(Arg, Candidates) of
-                        {ok, Suggestion} -> maybe_accept_suggestion(Arg, Suggestion);
-                        none -> Arg
-                    end
-            end
-    end.
-
-maybe_accept_suggestion(Arg, Suggestion) ->
-    io:format("unknown arg: ~s. use ~s? [enter to accept] ", [Arg, Suggestion]),
-    case safe_get_line() of
-        accept -> Suggestion;
-        _ -> Arg
-    end.
-
-safe_get_line() ->
-    try io:get_line("") of
-        eof -> decline;
-        Line when is_list(Line) ->
-            case string:lowercase(string:trim(Line)) of
-                "" -> accept;
-                "y" -> accept;
-                _ -> decline
-            end;
-        _ -> decline
-    catch _:_ ->
-        decline
-    end.
-
-is_help_flag("-h") -> true;
-is_help_flag("--help") -> true;
-is_help_flag(_) -> false.
-
-trailing_help([]) -> false;
-trailing_help(Args) -> lists:last(Args) =:= "help".
-
-strip_help(Args) ->
-    [Arg || Arg <- Args, not is_help_flag(Arg) andalso Arg =/= "help"].
-
-scope_path([]) -> [];
-scope_path([[ $- | _ ] | _]) -> [];
-scope_path([Arg | Rest]) -> [Arg | scope_path(Rest)].
-
-is_flag([$- | _]) -> true;
-is_flag(_) -> false.

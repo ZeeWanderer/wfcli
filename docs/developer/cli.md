@@ -1,74 +1,56 @@
 # CLI Architecture
 
-## Dispatch
+## Commands
 
-- `wfcli_cli.erl` routes `wfcli <command>` to module handlers.
-- Worldstate commands (alerts, fissures, etc) are top-level. `wfcli_worldstate_cli.erl`
-  handles arguments and one-shot requests, `wfcli_worldstate_watch_cli.erl` owns daemon
-  subscriptions, and `wfcli_worldstate_output.erl` owns terminal rendering.
-- Export commands (mods, items) are top-level; `wfcli_exports_cli.erl` handles argv and help.
-- Knowledge commands (Codex, enemies, drops) are top-level; `wfcli_knowledge_cli.erl` handles argv and help.
-- Unified search is handled by `wfcli_query_cli.erl`.
-- Updates are centralized in `wfcli_update_cli.erl`.
-- Shared help text snippets live in `wfcli_help_text.erl`.
-- `wfcli_cli_args:help_path/1` resolves contextual `help`, `--help`, and `-h`.
-- `wfcli_completion.erl` derives Bash candidates from command registries and each
-  parser's `known_args/0` or command-specific `known_args/1`. Builds stage it under
-  `share/bash-completion/completions` for on-demand loading. The function uses Bash 5.3
-  `compgen -V`; shell startup and completion start no wfcli process.
+`wfcli_cli` assembles the command tree and owns top-level grouping. Each command module declares
+its OTP `argparse` specification beside its handler: arguments, types, defaults, subcommands,
+summary and optional notes. Handlers receive parsed maps, not argv.
+Enum types supply completion values; use argument `completion` hints for open-ended values.
 
-## Parsing
+- `wfcli_cli_args` supplies shared argument definitions and contextual help adaptation.
+- `wfcli_catalog_cli` handles focused export and knowledge queries.
+- `wfcli_query_cli` handles unified queries and the player view.
+- `wfcli_worldstate_cli` handles one-shot requests and watch-spec syntax;
+  `wfcli_worldstate_watch_cli` owns subscription lifetime.
+- `wfcli_update_cli` is the update entry point.
 
-- `parse_args/2` accumulates a map of options and validates combinations.
-- Use a subcommand when a token narrows the operation. Use an option when it
-  modifies and composes with the current operation. Support both forms only when
-  both improve direct shell use.
-- Put command-specific detail in subcommand help rather than expanding top-level help.
-- Use layered help: summaries at top level, command/topic-specific detail in `help <topic>` or `<command> --help`.
-- Preserve `--` through preprocessing; everything after it is literal. Correction prompts
-  require terminal stdin/stdout and respect the root `--no-suggest-prompt` option.
-- Keep accepted options, help, and completion command-specific. Test real process exit status
-  and stdout as well as parser return values.
-- Watch specs use `watch_type_filter/1`; update both parse and watch paths for new commands.
-- Inventory mode (`--inventory`) is only valid for baro/prime-vault.
-- Calendar supports `--day N` and validates it against the calendar subcommand.
-- Query sorting is expressed in the query language (`sort=field`, `sort=-field`) and applied after filtering.
-- Unified-query dataset selection is also query semantics:
-  `dataset=default|worldstate|mods|items|codex|enemies|drops|player|market|all`. Keep it opaque in the CLI;
-  the daemon extracts it before dataset dispatch.
-- Focused CLI modules convert explicit flags into request maps but preserve query tokens as text.
-  Daemon query services parse and compile both focused and unified requests.
-- CLI modules must not call another CLI module or reconstruct argv to reuse behavior. Focused and
-  unified commands submit through `wfcli_catalog_client`.
-  Do not add command-local matching, numeric comparison, boolean, sorting, or paging logic.
-- `sort=` and `dataset=` are controls, not match predicates. They are valid only as positive
-  top-level AND clauses, never inside OR or NOT.
+Add a subcommand when it narrows an operation; use options for composable modifiers.
+Define each argument once. Do not add separate option registries, hand-written argv parsers or
+copied help tables. Generated help and Bash completion consume the same tree.
+Keep domain validation, such as mutually exclusive scopes, in the owning handler.
+
+The query DSL reaches the daemon uncompiled. Focused flags become typed filters; free query text
+stays opaque. Preserve literal tails after `--`. Reuse behavior through typed functions or shared
+clients, never by rebuilding argv and invoking another parser. Matching, sorting, pagination and
+`dataset=` interpretation belong to daemon query services.
+
+## Help And Completion
+
+`help COMMAND`, `COMMAND help`, `COMMAND --help` and `COMMAND -h` resolve the same scope.
+Values named `help` remain values. Typo correction requires terminal stdin and stdout and respects
+`--no-suggest-prompt`.
+
+`wfcli_completion` generates static Bash maps and a builtin-only completion function. Builds stage
+them under `share/bash-completion/completions` for lazy loading. Keep Bash 5.3 `compgen -V`:
+neither shell initialization nor completion may start an Erlang VM. Tests execute the generated
+script with external commands unavailable.
 
 ## Output
 
-- Default output is table format; `--output-format block` uses block rows.
-- `--format` is an alias for `--output-format`.
-- Export and knowledge commands also accept `--output-format json` for machine-readable output.
-- Any command that accepts `--output-format` should also accept `--format` as an alias.
-- Prefer shared helpers in `wfcli_tty.erl` for terminal width, ANSI-aware column sizing, and `DT_*_COLOR` tag colorization so output stays consistent across commands.
-- Use `wfcli_table:render_lines/3` for table rendering, wrapping, and inline diff coloring.
-- Provide column specs (roles/optional) to `wfcli_table`; avoid per-command width/priority tuning.
-- Table output may add a small set of adaptive columns based on sparse `extra_fields` in entries.
-- Block output uses CLI-owned `wfcli_*_presentation` specs, then appends remaining `row_map` keys
-  and `extra_fields`.
-- Export-backed commands build entries via `wfcli_entity_exports.erl` to keep rendering/search consistent with worldstate.
-- Use `wfcli_text:to_list/1` for shared string coercion instead of re-implementing helpers in each module.
-- Use `wfcli_text:join_list/2` and `wfcli_text:join_parts/2` when formatting lists/parts across modules.
-- Use `wfcli_data_extract` for dot-path extraction across data sources.
-- All queryable entities use daemon-owned `wfcli_query_parse` plus `wfcli_entity_query`; add
-  syntax/evaluator behavior there and field metadata in the owning `wfcli_entity_*` module.
-- Catalog terminal output belongs to `wfcli_exports_format` and `wfcli_knowledge_format`, shared by
-  focused and unified commands.
-- Catalog JSON uses field types in `wfcli_catalog_json`; never infer strings from integer arrays
-  or empty lists. Nested source JSON retains its original types.
-- Table columns and labels are stable contracts in `wfcore` schema modules. Terminal block
-  ordering belongs in CLI presentation modules.
-- `print_entries/4` and `table_row_map/2` keep output consistent.
-- Any command or subcommand that resolves translated names by default must accept `--raw` to keep identifiers/UTC timestamps.
+Usage errors use stderr and exit 2; failed operations exit 1. Help and successful data use stdout.
+Batch commands retain successful results while returning failure if any job fails.
 
-Feature wiring checklist: [`adding_features.md`](adding_features.md).
+Use `wfcli_table` and `wfcli_tty` for terminal layout. Shared schema modules define columns;
+CLI presentation modules define block ordering. Focused and unified queries share
+`wfcli_exports_format` and `wfcli_knowledge_format`.
+
+Catalog JSON uses explicit field types in `wfcli_catalog_json`. Never infer strings from integer
+arrays or empty lists. Preserve nested source JSON types. Use `wfcli_data_extract` for dot paths
+and `wfcli_text` for shared string conversion.
+
+## Verification
+
+Test specifications and handlers, then actual child-process stdout, stderr, exit codes, literal
+arguments and partial failures. Keep help/completion coverage tree-driven so new commands join
+the same checks. Architecture boundaries and interface versioning are in
+[daemon.md](daemon.md); feature wiring is in [adding_features.md](adding_features.md).

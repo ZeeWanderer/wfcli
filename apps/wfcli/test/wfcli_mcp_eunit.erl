@@ -6,7 +6,7 @@
 -include_lib("eunit/include/eunit.hrl").
 
 mcp_help_describes_stdio_boundary_test() ->
-    Help = iolist_to_binary(wfcli_help_text:mcp_help()),
+    Help = unicode:characters_to_binary(wfcli_help:text(["mcp"])),
     ?assertNotEqual(nomatch, binary:match(Help, <<"wfcli mcp">>)),
     ?assertNotEqual(nomatch, binary:match(Help, <<"standard input and output">>)).
 

@@ -55,7 +55,7 @@ drop_boolean_not_test() ->
 typed_request_matches_focused_cli_test() ->
     with_local_backend(fun() ->
         Args = ["--exports-dir", fixture_exports(), "visible OR excluded"],
-        {ok, FocusedQuery} = wfcli_knowledge_cli:parse_request("codex", Args),
+        FocusedQuery = wfcli_test_cli:catalog("codex", Args),
         {ok, _FocusedPrepared, FocusedResults} =
             wfcli_knowledge_query:query("codex", FocusedQuery),
         {ok, Ast} = wfcli_query_parse:parse_arguments(["visible", "OR", "excluded"]),
@@ -65,7 +65,7 @@ typed_request_matches_focused_cli_test() ->
     end).
 
 query_command(Command, Args) ->
-    {ok, Query} = wfcli_knowledge_cli:parse_request(Command, Args),
+    Query = wfcli_test_cli:catalog(Command, Args),
     wfcli_knowledge_query:query(Command, Query).
 
 with_local_backend(Fun) ->

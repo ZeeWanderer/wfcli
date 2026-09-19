@@ -1,32 +1,14 @@
-%%%-------------------------------------------------------------------
-%% Daemon diagnostics command.
-%%%-------------------------------------------------------------------
 -module(wfcli_diagnostics_cli).
 
--export([run/1, help/0]).
+-export([command/0]).
 
--doc "Show current resolution failures.".
--spec run([string()]) -> ok | no_return().
-run(Args0) ->
-    Args = wfcli_cli_args:expand_aliases(Args0, #{"-h" => "--help"}),
-    case Args of
-        ["--help" | _] -> help();
-        ["unresolved"] -> show(table);
-        ["unresolved", "--json"] -> show(json);
-        ["unresolved", "json"] -> show(json);
-        [] -> help();
-        _ -> fail("usage: wfcli diagnostics unresolved [--json]")
-    end.
-
--doc "Print diagnostics command help.".
--spec help() -> ok.
-help() ->
-    io:put_chars(
-      "USAGE:\n"
-      "  wfcli diagnostics unresolved [--json]\n"
-      "\n"
-      "COMMANDS:\n"
-      "  unresolved  show current identity, metadata, and asset failures\n").
+command() ->
+    #{help => "inspect daemon resolution failures",
+      commands => #{"unresolved" => #{
+          help => "show current identity, metadata and asset failures",
+          handler => fun(Args) -> show(maps:get(output_format, Args, table)) end,
+          arguments => [(wfcli_cli_args:flag(output_format, "json", "print JSON"))#{
+              action => {store, json}}]}}}.
 
 show(Format) ->
     case wfcli_client:call(resolution_issues) of
@@ -36,5 +18,5 @@ show(Format) ->
     end.
 
 fail(Message) ->
-    io:format("error: ~ts~n", [Message]),
+    io:format(standard_error, "error: ~ts~n", [Message]),
     halt(1).

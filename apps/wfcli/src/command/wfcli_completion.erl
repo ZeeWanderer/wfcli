@@ -6,16 +6,14 @@
 -include_lib("kernel/include/file.hrl").
 
 -export([
-    run/1,
+    command/0,
     candidates/1,
     script/0,
     install/1,
     uninstall/1,
     installed/1,
     completion_dir/0,
-    bashrc_path/0,
-    help/0,
-    help/1
+    bashrc_path/0
 ]).
 
 -ifdef(TEST).
@@ -27,256 +25,181 @@
 
 -type path_result() :: {ok, file:filename_all()} | {error, term()}.
 
--spec run([string()]) -> ok | no_return().
-run(["bash"]) ->
-    io:put_chars(script());
-run(["candidates", "--" | Args]) ->
-    lists:foreach(fun(Candidate) -> io:format("~s~n", [Candidate]) end,
-                  candidates(Args));
-run(["install" | Args]) ->
-    edit_install(install, Args);
-run(["uninstall" | Args]) ->
-    edit_install(uninstall, Args);
-run(["status" | Args]) ->
-    with_directory(
-      Args,
-      fun(Dir) ->
-          case installed(Dir) of
-              {ok, Present} ->
-                  io:format("Bash completion~n  directory: ~s~n  current: ~s~n",
-                            [Dir, yes_no(Present)]);
-              {error, Reason} -> fail(Reason)
-          end
-      end);
-run(_) ->
-    help(),
-    halt(1).
+command() ->
+    #{help => "manage lazy Bash completion",
+      commands => #{
+        "bash" => #{help => "print completion script", handler => fun(_) -> io:put_chars(script()) end},
+        "candidates" => #{help => hidden,
+            arguments => [#{name => words, long => "-", nargs => all, required => true}],
+            handler => fun(#{words := Words}) ->
+                [io:format("~s~n", [Word]) || Word <- candidates(Words)], ok end},
+        "install" => directory_command(install),
+        "uninstall" => directory_command(uninstall),
+        "status" => directory_command(status)}}.
 
-edit_install(Action, Args) ->
-    with_directory(
-      Args,
-      fun(Dir) ->
-          Result = case Action of
-              install -> install(Dir);
-              uninstall -> uninstall(Dir)
-          end,
+directory_command(Action) ->
+    #{help => atom_to_list(Action) ++ " Bash completion",
+      arguments => [wfcli_cli_args:option(directory, "dir", string, "completion directory")],
+      handler => fun(Args) ->
+          Result = case maps:find(directory, Args) of
+                       {ok, Dir} -> {ok, filename:absname(Dir)};
+                       error -> completion_dir()
+                   end,
           case Result of
-              ok -> io:format("Bash completion ~s~n  directory: ~s~n",
-                              [action_text(Action), Dir]);
+              {ok, Directory} -> directory_action(Action, Directory);
               {error, Reason} -> fail(Reason)
           end
-      end).
+      end}.
+
+directory_action(status, Dir) ->
+    case installed(Dir) of
+        {ok, Present} ->
+            io:format("Bash completion~n  directory: ~s~n  current: ~s~n", [Dir, yes_no(Present)]);
+        {error, Reason} -> fail(Reason)
+    end;
+directory_action(Action, Dir) ->
+    Result = case Action of install -> install(Dir); uninstall -> uninstall(Dir) end,
+    case Result of
+        ok -> io:format("Bash completion ~s~n  directory: ~s~n", [action_text(Action), Dir]);
+        {error, Reason} -> fail(Reason)
+    end.
 
 action_text(install) -> "installed";
 action_text(uninstall) -> "uninstalled".
 
--spec help() -> ok.
-help() ->
-    help([]).
-
--spec help([string()]) -> ok.
-help([Command | _]) when Command =:= "install";
-                         Command =:= "uninstall";
-                         Command =:= "status" ->
-    io:format("USAGE:~n  wfcli completion ~s [--dir PATH]~n", [Command]);
-help(_) ->
-    io:put_chars(
-      "USAGE:\n"
-      "  wfcli completion bash\n"
-      "  wfcli completion install [--dir PATH]\n"
-      "  wfcli completion status [--dir PATH]\n"
-      "  wfcli completion uninstall [--dir PATH]\n"
-      "\n"
-      "BASH:\n"
-      "  Install writes lazy bash-completion files; no shell eval is needed.\n"
-      "  Temporary session: source <(wfcli completion bash)\n").
-
--doc "Return context-sensitive command and option candidates for one shell word.".
--spec candidates([string()]) -> [string()].
+candidates(["help" | Args]) -> candidates(Args);
+candidates([]) -> candidates([""]);
 candidates(Args) ->
-    {Before, Current} = split_current(Args),
-    Choices = completion_choices(Before),
+    Before = lists:droplast(Args),
+    Current = lists:last(Args),
+    Tree = wfcli_cli:command(),
+    Choices = case lists:member("--", Before) of
+        true -> [];
+        false ->
+            case argparse:parse(Before, Tree, #{progname => "wfcli"}) of
+                {ok, #{topic := Topic}, [_, "help"], _} ->
+                    candidates(Topic ++ [Current]);
+                {ok, Parsed, [_ | Path], _} ->
+                    current_choices(wfcli_cli_args:node(Path, Tree), Parsed, Current);
+                {error, {[_ | Path], Expected, undefined, Detail}} ->
+                    case is_map(Expected) andalso Detail =:= <<"expected argument">> of
+                        true -> wfcli_cli_args:choices(Expected);
+                        false -> current_choices(wfcli_cli_args:node(Path, Tree), #{}, Current)
+                    end;
+                _ -> []
+            end
+    end,
     lists:usort([Choice || Choice <- Choices, lists:prefix(Current, Choice)]).
 
-split_current([]) -> {[], ""};
-split_current(Args) ->
-    {lists:droplast(Args), lists:last(Args)}.
-
-completion_choices([]) ->
-    context_choices(root);
-completion_choices([Command | _] = Before) ->
-    case value_choices(Command, lists:last(Before)) of
-        {ok, Choices} -> Choices;
-        not_found -> closest_context(Before)
+current_choices(Node, Parsed, Current) ->
+    case string:split(Current, "=") of
+        ["--" ++ _ = Flag, _] ->
+            [Flag ++ "=" ++ Value || Arg <- maps:get(arguments, Node, []),
+              lists:member(Flag, wfcli_cli_args:options(#{arguments => [Arg]})),
+              Value <- wfcli_cli_args:choices(Arg)];
+        _ -> context_choices(Node, Parsed)
     end.
 
-closest_context([]) -> [];
-closest_context(Context) ->
-    case context_choices(Context) of
-        not_found when length(Context) > 1 ->
-            closest_context(lists:droplast(Context));
-        not_found -> [];
-        Choices -> Choices
-    end.
+context_choices(Node, Parsed) ->
+    Commands = [Name || {Name, Child} <- maps:to_list(maps:get(commands, Node, #{})),
+                        maps:get(help, Child, "") =/= hidden],
+    Positional = lists:append([wfcli_cli_args:choices(Arg)
+                              || #{name := Name} = Arg <- maps:get(arguments, Node, []),
+                                 not is_option(Arg), not maps:is_key(Name, Parsed)]),
+    Commands ++ Positional ++ wfcli_cli_args:options(Node) ++ ["help", "--help", "-h"].
 
-context_choices(Context) ->
-    case lists:keyfind(Context, 1, contexts()) of
-        {Context, Choices} -> Choices;
-        false -> not_found
-    end.
+positional_choices(Node) ->
+    [wfcli_cli_args:choices(Arg) || Arg <- maps:get(arguments, Node, []), not is_option(Arg)].
 
-value_choices(Command, Option) ->
-    Values = values(),
-    case lists:keyfind({Command, Option}, 1, Values) of
-        {{Command, Option}, Choices} -> {ok, Choices};
-        false ->
-            case lists:keyfind({"*", Option}, 1, Values) of
-                {{"*", Option}, Choices} -> {ok, Choices};
-                false -> not_found
-            end
-    end.
+is_option(Arg) -> maps:is_key(long, Arg) orelse maps:is_key(short, Arg).
 
-contexts() ->
-    [
-        {root, wfcli_cli:public_command_names()},
-        {["forma-plan"], options(wfcli_forma_plan:known_args())},
-        {["visualize"], options(wfcli_visualize:known_args())},
-        {["query"], options(wfcli_query_cli:known_args())},
-        {["player"], options(wfcli_query_cli:known_args())},
-        {["market"], options(wfcli_market_cli:known_args())},
-        {["notifications"], ["status", "off", "on", "persistent" | help_flags()]},
-        {["diagnostics"], ["unresolved" | help_flags()]},
-        {["diagnostics", "unresolved"], ["--json" | help_flags()]},
-        {["mods"], options(wfcli_exports_cli:known_args("mods"))},
-        {["items"], options(wfcli_exports_cli:known_args("items"))},
-        {["codex"], options(wfcli_knowledge_cli:known_args())},
-        {["enemies"], options(wfcli_knowledge_cli:known_args())},
-        {["drops"], options(wfcli_knowledge_cli:known_args())},
-        {["update"], options(wfcli_update_cli:known_args())},
-        {["daemon"], wfcli_daemon_cli:known_commands()},
-        {["daemon", "autostart"], ["status", "enable", "disable" | help_flags()]},
-        {["daemon", "start"], ["--idle-shutdown", "--idle-timeout" | help_flags()]},
-        {["daemon", "restart"], ["--idle-shutdown", "--idle-timeout" | help_flags()]},
-        {["daemon", "update"], ["--beam-dir", "--release" | help_flags()]},
-        {["companion"], wfcli_companion_cli:known_commands()},
-        {["companion", "hud"], ["show", "hide" | help_flags()]},
-        {["companion", "capture"], ["arm", "cancel" | help_flags()]},
-        {["companion", "capture", "arm"], ["relic-reward" | help_flags()]},
-        {["companion", "preview"], ["list", "image", "video" | help_flags()]},
-        {["companion", "preview", "list"], ["--animated" | help_flags()]},
-        {["companion", "preview", "image"], ["all" | help_flags()]},
-        {["companion", "preview", "video"], ["all" | help_flags()]},
-        {["companion", "screenshot"], help_flags()},
-        {["companion", "relic-ocr"], help_flags()},
-        {["companion", "install"], ["--dry-run" | help_flags()]},
-        {["companion", "uninstall"], ["--dry-run" | help_flags()]},
-        {["gui"], wfcli_gui_cli:known_commands()},
-        {["completion"], ["bash", "install", "status", "uninstall" | help_flags()]},
-        {["completion", "install"], ["--dir" | help_flags()]},
-        {["completion", "status"], ["--dir" | help_flags()]},
-        {["completion", "uninstall"], ["--dir" | help_flags()]},
-        {["paths"], ["--apps", "wfcli", "wfdaemon", "wfcompanion", "wfgui"
-                     | help_flags()]},
-        {["help"], help_choices()}
-    ] ++ worldstate_contexts().
+contexts() -> contexts(wfcli_cli:command(), [], []).
 
-worldstate_contexts() ->
-    [
-        {[Command], worldstate_scoped_choices(Command) ++
-                    options(wfcli_worldstate_cli:known_args(Command))}
-        || Command <- wfcli_worldstate_cli:command_names()
-    ].
+contexts(Node, Path, Inherited) ->
+    Args = Inherited ++ maps:get(arguments, Node, []),
+    [{context_key(Path), Node#{arguments => Args}} |
+     lists:append([contexts(Child, Path ++ [Name], Args)
+                   || {Name, Child} <- lists:sort(maps:to_list(maps:get(commands, Node, #{})))])].
 
-worldstate_scoped_choices("baro") -> ["inventory"];
-worldstate_scoped_choices("prime-vault") -> ["inventory"];
-worldstate_scoped_choices("archimedea") -> ["deep", "temporal"];
-worldstate_scoped_choices(Command) when Command =:= "circuit"; Command =:= "endless-xp" ->
-    ["normal", "steel-path"];
-worldstate_scoped_choices(_) -> [].
+context_key([]) -> "__root__";
+context_key(Path) -> string:join(Path, " ").
 
-values() ->
-    format_values(["forma-plan", "visualize"], ["html", "image"]) ++
-    format_values(["query", "player", "market" | wfcli_worldstate_cli:command_names()],
-                  ["table", "block"]) ++
-    format_values(["mods", "items", "codex", "enemies", "drops"],
-                  ["table", "block", "json"]) ++
-    [
-        {{"*", "--diff-style"}, ["inline", "list", "diff", "none"]},
-        {{"*", "--viz"}, ["html", "image"]},
-        {{"completion", "--dir"}, []},
-        {{"daemon", "--beam-dir"}, []}
-    ].
-
-format_values(Commands, Choices) ->
-    [
-        {{Command, Option}, Choices}
-        || Command <- Commands,
-           Option <- ["--output-format", "--format"]
-    ].
-
-options(Args) ->
-    ["help" | [Arg || [$- | _] = Arg <- Args]].
-
-help_choices() ->
-    ["commands", "data", "query", "player", "market", "notifications",
-     "diagnostics",
-     "companion", "gui", "mcp",
-     "watch", "format", "update", "daemon" | wfcli_cli:public_command_names()].
-
-help_flags() -> ["help", "--help", "-h"].
-
--doc "Generate Bash completion that performs no wfcli process launch while completing.".
--spec script() -> iodata().
 script() ->
-    [
-        bash_map("_WFCLI_COMPLETION_CONTEXTS", context_entries()),
-        bash_map("_WFCLI_COMPLETION_VALUES", value_entries()),
-        "_wfcli_complete() {\n",
-        "  local current=\"${COMP_WORDS[COMP_CWORD]}\"\n",
-        "  local command=\"${COMP_WORDS[1]-}\"\n",
-        "  local previous=\"${COMP_WORDS[COMP_CWORD-1]-}\"\n",
-        "  local value_key=\"$command $previous\"\n",
-        "  local generic_key=\"* $previous\"\n",
-        "  local key='__root__'\n",
-        "  local choices=''\n",
-        "  if [[ ${_WFCLI_COMPLETION_VALUES[$value_key]+set} ]]; then\n",
-        "    choices=\"${_WFCLI_COMPLETION_VALUES[$value_key]}\"\n",
-        "  elif [[ ${_WFCLI_COMPLETION_VALUES[$generic_key]+set} ]]; then\n",
-        "    choices=\"${_WFCLI_COMPLETION_VALUES[$generic_key]}\"\n",
-        "  else\n",
-        "    if (( COMP_CWORD > 1 )); then\n",
-        "      local before=(\"${COMP_WORDS[@]:1:COMP_CWORD-1}\")\n",
-        "      key=\"${before[*]}\"\n",
-        "    fi\n",
-        "    while [[ -n \"$key\" ]]; do\n",
-        "      if [[ ${_WFCLI_COMPLETION_CONTEXTS[$key]+set} ]]; then\n",
-        "        choices=\"${_WFCLI_COMPLETION_CONTEXTS[$key]}\"\n",
-        "        break\n",
-        "      elif [[ \"$key\" == *' '* ]]; then\n",
-        "        key=\"${key% *}\"\n",
-        "      else\n",
-        "        key=''\n",
-        "      fi\n",
-        "    done\n",
-        "  fi\n",
-        "  COMPREPLY=()\n",
-        "  compgen -V COMPREPLY -W \"$choices\" -- \"$current\" || true\n",
-        "  if ((${#COMPREPLY[@]} == 0)); then\n",
-        "    compopt -o default\n",
-        "  fi\n",
-        "}\n",
-        "complete -F _wfcli_complete wfcli wfclid\n"
-    ].
+    Contexts = contexts(),
+    Options = [{Key ++ " " ++ Spelling, Arg}
+               || {Key, Node} <- Contexts, Arg <- maps:get(arguments, Node, []),
+                  Spelling <- wfcli_cli_args:options(#{arguments => [Arg]})],
+    [bash_map("_WFCLI_COMPLETION_CONTEXTS",
+              [{Key, context_choices(Node,
+                        maps:from_list([{maps:get(name, A), present}
+                                        || A <- maps:get(arguments, Node, []), not is_option(A)]))}
+               || {Key, Node} <- Contexts]),
+     bash_map("_WFCLI_COMPLETION_POSITIONAL",
+              [{Key ++ " " ++ integer_to_list(Index), Choices}
+               || {Key, Node} <- Contexts,
+                  {Index, Choices} <- lists:enumerate(0, positional_choices(Node))]),
+     bash_map("_WFCLI_COMPLETION_ARITY", [{Key, [arity(Arg)]} || {Key, Arg} <- Options]),
+     bash_map("_WFCLI_COMPLETION_VALUES",
+              [{Key, wfcli_cli_args:choices(Arg)} || {Key, Arg} <- Options]),
+     bash_map("_WFCLI_COMPLETION_RAW",
+              [{Key, ["1"]} || {Key, Node} <- Contexts,
+                              lists:any(fun(Arg) -> not is_option(Arg) andalso
+                                            maps:get(nargs, Arg, one) =:= all end,
+                                        maps:get(arguments, Node, []))]),
+     bash_function()].
 
-context_entries() ->
-    [{context_key(Context), Choices} || {Context, Choices} <- contexts()].
+arity(#{nargs := all}) -> "all";
+arity(#{action := {store, _}}) -> "flag";
+arity(#{action := {append, _}}) -> "flag";
+arity(_) -> "value".
 
-context_key(root) -> "__root__";
-context_key(Context) -> string:join(Context, " ").
-
-value_entries() ->
-    [{Command ++ " " ++ Option, Choices}
-     || {{Command, Option}, Choices} <- values()].
+bash_function() ->
+    "_wfcli_complete() {\n"
+    "  local current=\"\${COMP_WORDS[COMP_CWORD]}\" key=__root__ pending='' literal=0 position=0\n"
+    "  local word child option choices='' prefix='' i\n"
+    "  for ((i=1; i<COMP_CWORD; i++)); do\n"
+    "    word=\"\${COMP_WORDS[i]}\"\n"
+    "    if [[ -n $pending ]]; then\n"
+    "      [[ $word == = ]] || pending=''\n"
+    "      continue\n"
+    "    fi\n"
+    "    if [[ $word == -- ]]; then literal=1; break; fi\n"
+    "    if [[ $key == __root__ && $word == help ]]; then continue; fi\n"
+    "    option=\"$key \${word%%=*}\"\n"
+    "    case \"\${_WFCLI_COMPLETION_ARITY[$option]-}\" in\n"
+    "      flag) continue ;;\n"
+    "      all) literal=1; break ;;\n"
+    "      value) [[ $word == *=* ]] || pending=$option; continue ;;\n"
+    "    esac\n"
+    "    if [[ $key == __root__ ]]; then child=$word; else child=\"$key $word\"; fi\n"
+    "    if ((position == 0)) && [[ \${_WFCLI_COMPLETION_CONTEXTS[$child]+set} ]]; then\n"
+    "      key=$child\n"
+    "    elif [[ \${_WFCLI_COMPLETION_RAW[$key]-} ]]; then\n"
+    "      literal=1; break\n"
+    "    else\n"
+    "      ((position+=1))\n"
+    "    fi\n"
+    "  done\n"
+    "  COMPREPLY=()\n"
+    "  if ((literal)); then compopt -o default; return; fi\n"
+    "  if [[ -n $pending ]]; then\n"
+    "    [[ $current != = ]] || current=''\n"
+    "    choices=\"\${_WFCLI_COMPLETION_VALUES[$pending]-}\"\n"
+    "  elif [[ $current == --*=* ]]; then\n"
+    "    option=\"$key \${current%%=*}\"\n"
+    "    prefix=\"\${current%%=*}=\"; current=\"\${current#*=}\"\n"
+    "    choices=\"\${_WFCLI_COMPLETION_VALUES[$option]-}\"\n"
+    "  else\n"
+    "    option=\"$key $position\"\n"
+    "    choices=\"\${_WFCLI_COMPLETION_CONTEXTS[$key]-} \${_WFCLI_COMPLETION_POSITIONAL[$option]-}\"\n"
+    "  fi\n"
+    "  compgen -V COMPREPLY -W \"$choices\" -- \"$current\" || true\n"
+    "  if [[ -n $prefix ]]; then\n"
+    "    for i in \"\${!COMPREPLY[@]}\"; do COMPREPLY[i]=\"$prefix\${COMPREPLY[i]}\"; done\n"
+    "  fi\n"
+    "  if ((\${#COMPREPLY[@]} == 0)); then compopt -o default; fi\n"
+    "}\n"
+    "complete -F _wfcli_complete wfcli wfclid\n".
 
 bash_map(Name, Entries) ->
     [
@@ -360,17 +283,6 @@ bashrc_path() ->
         "" -> {error, home_not_set};
         Home -> {ok, filename:join(Home, ".bashrc")}
     end.
-
-with_directory(Args, Fun) ->
-    case parse_directory(Args) of
-        {ok, Dir} -> Fun(Dir);
-        {error, Reason} -> fail(Reason)
-    end.
-
-parse_directory([]) -> completion_dir();
-parse_directory(["--dir", Dir]) -> {ok, filename:absname(Dir)};
-parse_directory(["--dir"]) -> {error, completion_directory_missing};
-parse_directory(Args) -> {error, {invalid_completion_args, Args}}.
 
 first_env_path(Name) ->
     case os:getenv(Name) of
@@ -501,5 +413,5 @@ yes_no(true) -> "yes";
 yes_no(false) -> "no".
 
 fail(Reason) ->
-    io:format("error: completion: ~p~n", [Reason]),
+    io:format(standard_error, "error: completion: ~p~n", [Reason]),
     halt(1).

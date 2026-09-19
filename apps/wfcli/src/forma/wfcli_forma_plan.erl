@@ -4,53 +4,30 @@
 -module(wfcli_forma_plan).
 
 -export([run/1, plans_to_yaml/1, to_list/1, slot_mod_labels/1, slot_mod_labels/2,
-         build_arcane_entries/1, known_args/0]).
+         build_arcane_entries/1, command/0]).
 
--type cli_args() :: [string()].
 -type config() :: map().
 -type plan() :: map().
 -type planner_result() :: {ok, config(), plan(), non_neg_integer()}.
 -type slot_mod_labels() :: [{term(), [{term(), term()}]}].
 -type build_arcanes() :: [{term(), [term()]}].
 
--doc "Run the `forma-plan` CLI command with already-tokenized arguments.".
--spec run(cli_args()) -> ok | no_return().
-run(Args) ->
-    Args1 = wfcli_cli_args:prompt_suggestions(Args, known_args()),
-    case lists:member("--help", Args1) orelse lists:member("-h", Args1) of
-        true ->
-            help();
-        false ->
-            dispatch_args(Args1)
-    end.
+-import(wfcli_cli_args, [option/4, flag/3]).
 
-help() ->
-    io:put_chars(wfcli_help_text:forma_plan_help()).
+command() ->
+    #{help => "compute Forma/polarity plan across builds", handler => {?MODULE, run},
+      arguments => [(option(configs, "config", string, "config YAML file (repeatable)"))#{
+                        required => true, action => append},
+                    option(output, "output", string, "plan output file"),
+                    flag(allow_omni, "allow-omni", "allow Omnia polarity"),
+                    flag(prefer_omni, "prefer-omni", "prefer Omnia polarity"),
+                    flag(allow_umbral_forma, "allow-umbral-forma", "allow Umbral Forma"),
+                    option(max_forma, "max-forma", {integer, [{min, 0}]}, "maximum Forma"),
+                    flag(visualize, "visualize", "open plan visualization")] ++
+                   wfcli_visualize:arguments()}.
 
-dispatch_args(Args) ->
-    case parse_args(Args, #{configs => [], flags => #{}, errors => [], viz_mode => none, viz_output => undefined, viz_config => false, visualize => false}) of
-        #{errors := []} = Parsed ->
-            maybe_run(Parsed);
-        #{errors := Errors} ->
-            lists:foreach(fun(E) -> io:format("error: ~s~n", [E]) end, Errors),
-            help(),
-            halt(1)
-    end.
-
--doc "Return argv tokens accepted by parser suggestions and shell completion.".
--spec known_args() -> [string()].
-known_args() ->
-    [
-        "--config", "--allow-omni", "--allow-umbral-forma", "--prefer-omni", "--max-forma",
-        "--output", "--visualize", "--viz", "--viz-output", "--viz-config",
-        "--help", "-h", "--no-suggest-prompt"
-    ].
-
-maybe_run(#{configs := []}) ->
-    io:format("error: at least one --config FILE.yml is required~n"),
-    help(),
-    halt(1);
-maybe_run(#{configs := Files, flags := Flags} = Parsed) ->
+run(#{configs := Files} = Parsed) ->
+    Flags = maps:with([allow_omni, prefer_omni, allow_umbral_forma, max_forma, visualize], Parsed),
     Output = maps:get(output, Parsed, undefined),
     Visualize = maps:get(visualize, Flags, false),
     VizOut = maps:get(viz_output, Parsed, undefined),
@@ -61,16 +38,16 @@ maybe_run(#{configs := Files, flags := Flags} = Parsed) ->
                   Other -> Other
               end,
     Request = #{source => forma,
-                configs => [filename:absname(File) || File <- lists:reverse(Files)],
+                configs => [filename:absname(File) || File <- Files],
                 flags => Flags},
     case wfcli_client:one_shot(Request) of
         {ok, #{results := Results}} ->
             render_results(Results, Output, VizMode, VizOut, VizCfg);
         {error, {config_errors, Errors}} ->
-            lists:foreach(fun(Error) -> io:format("error: ~ts~n", [Error]) end, Errors),
+            lists:foreach(fun(Error) -> io:format(standard_error, "error: ~ts~n", [Error]) end, Errors),
             halt(1);
         {error, Reason} ->
-            io:format("planner daemon error: ~ts~n", [wfcli_client:format_error(Reason)]),
+            io:format(standard_error, "planner daemon error: ~ts~n", [wfcli_client:format_error(Reason)]),
             halt(1)
     end.
 
@@ -175,52 +152,6 @@ max_label_width([], Width) -> Width;
 max_label_width([Label | Rest], Width) ->
     max_label_width(Rest, max(Width, length(Label))).
 
-
-parse_args([], Acc) ->
-    Acc;
-parse_args(["--config", File | Rest], Acc) ->
-    Updated = Acc#{configs := [File | maps:get(configs, Acc)]},
-    parse_args(Rest, Updated);
-parse_args(["-h" | Rest], Acc) ->
-    parse_args(Rest, add_error(Acc#{help => true}, "help requested"));
-parse_args(["--help" | Rest], Acc) ->
-    parse_args(Rest, add_error(Acc#{help => true}, "help requested"));
-parse_args(["--output", File | Rest], Acc) ->
-    parse_args(Rest, Acc#{output => File});
-parse_args(["--allow-omni" | Rest], Acc) ->
-    parse_args(Rest, put_flag(Acc, allow_omni, true));
-parse_args(["--prefer-omni" | Rest], Acc) ->
-    parse_args(Rest, put_flag(Acc, prefer_omni, true));
-parse_args(["--allow-umbral-forma" | Rest], Acc) ->
-    parse_args(Rest, put_flag(Acc, allow_umbral_forma, true));
-parse_args(["--max-forma", N | Rest], Acc) ->
-    case string:to_integer(N) of
-        {Int, ""} when Int >= 0 ->
-            parse_args(Rest, put_flag(Acc, max_forma, Int));
-        _ ->
-            parse_args(Rest, add_error(Acc, io_lib:format("invalid --max-forma: ~s", [N])))
-    end;
-parse_args(["--visualize" | Rest], Acc) ->
-    parse_args(Rest, put_flag(Acc, visualize, true));
-parse_args(["--viz-config" | Rest], Acc) ->
-    parse_args(Rest, Acc#{viz_config := true});
-parse_args(["--viz", Mode | Rest], Acc) ->
-    case string:lowercase(Mode) of
-        "html" -> parse_args(Rest, Acc#{viz_mode := html});
-        "image" -> parse_args(Rest, Acc#{viz_mode := image});
-        Other -> parse_args(Rest, add_error(Acc, io_lib:format("invalid --viz: ~s", [Other])))
-    end;
-parse_args(["--viz-output", File | Rest], Acc) ->
-    parse_args(Rest, Acc#{viz_output := File});
-parse_args([Unknown | Rest], Acc) ->
-    parse_args(Rest, add_error(Acc, io_lib:format("unknown option: ~s", [Unknown]))).
-
-put_flag(Acc, Key, Value) ->
-    Acc#{flags := maps:put(Key, Value, maps:get(flags, Acc))}.
-
-add_error(Acc, MsgIOList) ->
-    Msg = lists:flatten(MsgIOList),
-    Acc#{errors := [Msg | maps:get(errors, Acc)]}.
 
 ensure_output_path(undefined, Configs) ->
     default_output_path(Configs);

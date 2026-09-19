@@ -1,52 +1,40 @@
-%%%-------------------------------------------------------------------
-%% Unified query across indexed knowledge sources.
-%%%-------------------------------------------------------------------
 -module(wfcli_query_cli).
 
--export([run/1, help/0, known_args/0]).
--ifdef(TEST).
--export([parse_args/2, default_opts/0]).
--endif.
+-export([command/0, player_command/0, run/1]).
+-import(wfcli_cli_args, [option/4, flag/3]).
 
--type cli_args() :: [string()].
+command() ->
+    #{help => "search the indexed knowledge base", handler => {?MODULE, run},
+      defaults => #{refresh => false, raw => false},
+      arguments => [flag(refresh, "refresh", "refresh cached data"),
+                    (option(ttl, "ttl", {integer, [{min, 60}]}, "cache freshness in seconds"))#{
+                        default => 60},
+                    option(cache, "cache", string, "worldstate cache file"),
+                    option(event_lang, "lang", string, "event language"),
+                    option(exports_dir, "exports-dir", string, "official export directory"),
+                    option(knowledge_dir, "knowledge-dir", string, "WFCD cache directory"),
+                    option(limit, "limit", {integer, [{min, 0}]}, "maximum results"),
+                    (option(offset, "offset", {integer, [{min, 0}]}, "skip results"))#{
+                        default => 0},
+                    flag(raw, "raw", "include raw identifiers")] ++
+                   wfcli_cli_args:format([table, block], table) ++ wfcli_cli_args:query()}.
 
--spec run(cli_args()) -> ok | no_return().
-run(Args) ->
-    Aliases = #{"-h" => "--help", "-f" => "--format"},
-    Args1 = wfcli_cli_args:expand_aliases(Args, Aliases),
-    Args2 = wfcli_cli_args:prompt_suggestions(Args1, known_args()),
-    case wfcli_cli_args:has_help_flag(Args2) of
-        true ->
-            help(),
-            halt(0);
-        false ->
-            Parsed = parse_args(Args2, default_opts()),
-            case maps:get(errors, Parsed, []) of
-                [] when map_get(query_tokens, Parsed) =:= [] ->
-                    help(),
-                    halt(1);
-                [] -> run_query(Parsed);
-                Errors ->
-                    lists:foreach(fun(E) -> io:format("error: ~s~n", [E]) end, Errors),
-                    help(),
-                    halt(1)
-            end
-    end.
+player_command() ->
+    (command())#{help => "inspect or query local player data",
+                 defaults => #{dataset => player, refresh => false, raw => false}}.
 
--spec help() -> ok.
-help() ->
-    io:put_chars(wfcli_help_text:query_command_help()).
-
--spec default_opts() -> map().
-default_opts() ->
-    #{refresh => false, ttl => 60, cache => undefined,
-      event_lang => undefined, raw => false,
-      output_format => table,
-      exports_dir => undefined, knowledge_dir => undefined, offset => 0,
-      query_tokens => [], errors => []}.
+run(#{dataset := player, query_tokens := []}) ->
+    case wfcli_client:call(player_snapshot) of
+        {ok, Snapshot} when is_map(Snapshot) -> wfcli_player_format:print_snapshot(Snapshot);
+        {error, Reason} -> fail([wfcli_client:format_error(Reason)])
+    end;
+run(#{dataset := player, query_tokens := Tokens} = Parsed) ->
+    run_query(Parsed#{query_tokens := ["dataset=player" | Tokens]});
+run(#{query_tokens := []}) -> wfcli_cli:fail("query requires an expression");
+run(Parsed) -> run_query(Parsed).
 
 run_query(Parsed) ->
-    Request = maps:remove(errors, Parsed#{source => query, cwd => filename:absname(".")}),
+    Request = maps:without([dataset], Parsed#{source => query, cwd => filename:absname(".")}),
     case wfcli_client:one_shot(Request) of
         {ok, #{datasets := Datasets, query_tokens := Tokens}} ->
             Query = string:join(Tokens, " "),
@@ -123,14 +111,14 @@ dataset_title(market) -> "Market";
 dataset_title(diagnostics) -> "Diagnostics".
 
 fail(Errors) ->
-    lists:foreach(fun(Error) -> io:format("error: ~ts~n", [Error]) end, Errors),
+    lists:foreach(fun(Error) -> io:format(standard_error, "error: ~ts~n", [Error]) end, Errors),
     halt(1).
 
 print_worldstate_query_errors(ParsedQuery) ->
     case maps:get(errors, ParsedQuery, []) of
         [] -> ok;
         Errors ->
-            lists:foreach(fun(Error) -> io:format("error: ~ts~n", [Error]) end, Errors),
+            lists:foreach(fun(Error) -> io:format(standard_error, "error: ~ts~n", [Error]) end, Errors),
             error
     end.
 
@@ -151,101 +139,3 @@ worldstate_columns(table) ->
     wfcli_worldstate_schema:default_table_columns();
 worldstate_columns(_Format) ->
     [].
-
-parse_args([], Acc) -> Acc;
-parse_args(["--" | Rest], Acc) ->
-    Tokens = maps:get(query_tokens, Acc, []),
-    Acc#{query_tokens := Tokens ++ Rest};
-parse_args(["--refresh" | Rest], Acc) ->
-    parse_args(Rest, Acc#{refresh := true});
-parse_args(["--ttl"], Acc) ->
-    parse_args([], add_error(Acc, "--ttl requires a value"));
-parse_args(["--ttl", Val | Rest], Acc) ->
-    parse_args(Rest, set_ttl(Val, Acc));
-parse_args(["--cache"], Acc) ->
-    parse_args([], add_error(Acc, "--cache requires a value"));
-parse_args(["--cache", Val | Rest], Acc) ->
-    parse_args(Rest, Acc#{cache := Val});
-parse_args(["--lang"], Acc) ->
-    parse_args([], add_error(Acc, "--lang requires a code"));
-parse_args(["--lang", Val | Rest], Acc) ->
-    parse_args(Rest, Acc#{event_lang := Val});
-parse_args(["--exports-dir"], Acc) ->
-    parse_args([], add_error(Acc, "--exports-dir requires a value"));
-parse_args(["--exports-dir", Val | Rest], Acc) ->
-    parse_args(Rest, Acc#{exports_dir := Val});
-parse_args(["--knowledge-dir"], Acc) ->
-    parse_args([], add_error(Acc, "--knowledge-dir requires a value"));
-parse_args(["--knowledge-dir", Val | Rest], Acc) ->
-    parse_args(Rest, Acc#{knowledge_dir := Val});
-parse_args(["--limit"], Acc) ->
-    parse_args([], add_error(Acc, "--limit requires a value"));
-parse_args(["--limit", Val | Rest], Acc) ->
-    parse_args(Rest, set_int(limit, Val, Acc));
-parse_args(["--offset"], Acc) ->
-    parse_args([], add_error(Acc, "--offset requires a value"));
-parse_args(["--offset", Val | Rest], Acc) ->
-    parse_args(Rest, set_int(offset, Val, Acc));
-parse_args(["--output-format"], Acc) ->
-    parse_args([], add_error(Acc, "--output-format requires a value"));
-parse_args(["--format"], Acc) ->
-    parse_args([], add_error(Acc, "--format requires a value"));
-parse_args(["--output-format", Val | Rest], Acc) ->
-    parse_args(Rest, set_output_format(Val, Acc));
-parse_args(["--format", Val | Rest], Acc) ->
-    parse_args(Rest, set_output_format(Val, Acc));
-parse_args(["--raw" | Rest], Acc) ->
-    parse_args(Rest, Acc#{raw := true});
-parse_args(["--search"], Acc) ->
-    parse_args([], add_error(Acc, "--search requires a query"));
-parse_args(["--search", Val | Rest], Acc) ->
-    Tokens = maps:get(query_tokens, Acc, []),
-    parse_args(Rest, Acc#{query_tokens := Tokens ++ string:tokens(Val, " ")});
-parse_args([Arg | Rest], Acc) ->
-    case is_unknown_flag(Arg) of
-        true ->
-            Suggest = wfcli_cli_suggest:suggest(Arg, known_args()),
-            parse_args(Rest, add_error(Acc, io_lib:format("unknown arg: ~s~s", [Arg, Suggest])));
-        false ->
-            Tokens = maps:get(query_tokens, Acc, []),
-            parse_args(Rest, Acc#{query_tokens := Tokens ++ [Arg]})
-    end.
-
-is_unknown_flag([$- | _]) -> true;
-is_unknown_flag(_) -> false.
-
--doc "Return argv tokens accepted by parser suggestions and shell completion.".
--spec known_args() -> [string()].
-known_args() ->
-    [
-        "--refresh", "--ttl", "--cache", "--lang", "--raw", "--output-format", "--format",
-        "--exports-dir", "--knowledge-dir", "--limit", "--offset", "--search", "--help", "-h",
-        "--no-suggest-prompt"
-    ].
-
-set_int(Key, Val, Acc) ->
-    case string:to_integer(Val) of
-        {Int, ""} when Int >= 0 -> Acc#{Key => Int};
-        _ -> add_error(Acc, io_lib:format("invalid ~s", [to_list(Key)]))
-    end.
-
-set_ttl(Val, Acc) ->
-    case string:to_integer(Val) of
-        {Int, ""} when Int >= 60 -> Acc#{ttl := Int};
-        {Int, ""} when Int >= 0 -> add_error(Acc, "--ttl must be >= 60");
-        _ -> add_error(Acc, "invalid --ttl")
-    end.
-
-set_output_format(Val0, Acc) ->
-    Val = string:lowercase(to_list(Val0)),
-    case Val of
-        "table" -> Acc#{output_format := table};
-        "block" -> Acc#{output_format := block};
-        _ -> add_error(Acc, "invalid --output-format (use block or table)")
-    end.
-
-add_error(Acc, Msg) ->
-    Acc#{errors := [lists:flatten(Msg) | maps:get(errors, Acc, [])]}.
-
-to_list(Key) when is_atom(Key) -> atom_to_list(Key);
-to_list(Val) -> wfcli_text:to_list(Val).

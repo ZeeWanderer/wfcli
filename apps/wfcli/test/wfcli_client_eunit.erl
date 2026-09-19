@@ -62,7 +62,7 @@ homebrew_stop_keeps_login_registration_test() ->
                  wfcli_homebrew_service:stop_args()).
 
 daemon_cli_known_commands_test() ->
-    Known = wfcli_daemon_cli:known_commands(),
+    Known = maps:keys(maps:get(commands, wfcli_daemon_cli:command())),
     ?assert(lists:member("status", Known)),
     ?assert(lists:member("start", Known)),
     ?assert(lists:member("stop", Known)),

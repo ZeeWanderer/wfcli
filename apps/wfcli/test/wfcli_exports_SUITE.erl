@@ -61,7 +61,7 @@ end_per_suite(_Config) ->
 mods_query_filters(_Config) ->
     Dir = fixture_dir(),
     Output = capture_output(fun() ->
-        wfcli_exports_cli:run([
+        wfcli_cli:main([
             "mods",
             "--exports-dir", Dir,
             "type:MELEE",
@@ -76,7 +76,7 @@ mods_query_filters(_Config) ->
 mods_query_negation(_Config) ->
     Dir = fixture_dir(),
     Output = capture_output(fun() ->
-        wfcli_exports_cli:run([
+        wfcli_cli:main([
             "mods",
             "--exports-dir", Dir,
             "polarity!=V",
@@ -89,7 +89,7 @@ mods_query_negation(_Config) ->
 mods_query_range(_Config) ->
     Dir = fixture_dir(),
     Output = capture_output(fun() ->
-        wfcli_exports_cli:run([
+        wfcli_cli:main([
             "mods",
             "--exports-dir", Dir,
             "basedrain>=6",
@@ -102,7 +102,7 @@ mods_query_range(_Config) ->
 mods_boolean_query(_Config) ->
     Dir = fixture_dir(),
     Output = capture_output(fun() ->
-        wfcli_exports_cli:run([
+        wfcli_cli:main([
             "mods",
             "--exports-dir", Dir,
             "(name~Venom OR name~Frost)",
@@ -116,7 +116,7 @@ mods_boolean_query(_Config) ->
 mods_effects_output(_Config) ->
     Dir = fixture_dir(),
     Output0 = capture_output(fun() ->
-        wfcli_exports_cli:run([
+        wfcli_cli:main([
             "mods",
             "--exports-dir", Dir,
             "name=Venom Strike",
@@ -130,7 +130,7 @@ mods_effects_output(_Config) ->
 mods_colorization(_Config) ->
     Dir = fixture_dir(),
     Output = capture_output(fun() ->
-        wfcli_exports_cli:run([
+        wfcli_cli:main([
             "mods",
             "--exports-dir", Dir,
             "name=Venom Strike",
@@ -142,7 +142,7 @@ mods_colorization(_Config) ->
 mods_raw_table(_Config) ->
     Dir = fixture_dir(),
     Output = capture_output(fun() ->
-        wfcli_exports_cli:run([
+        wfcli_cli:main([
             "mods",
             "--exports-dir", Dir,
             "name=Venom Strike",
@@ -156,7 +156,7 @@ mods_raw_table(_Config) ->
 mods_format_alias(_Config) ->
     Dir = fixture_dir(),
     Output = capture_output(fun() ->
-        wfcli_exports_cli:run([
+        wfcli_cli:main([
             "mods",
             "--exports-dir", Dir,
             "name=Venom Strike",
@@ -168,7 +168,7 @@ mods_format_alias(_Config) ->
 mods_header_order(_Config) ->
     Dir = fixture_dir(),
     Output = capture_output(fun() ->
-        wfcli_exports_cli:run([
+        wfcli_cli:main([
             "mods",
             "--exports-dir", Dir,
             "name=Venom Strike",
@@ -185,7 +185,7 @@ mods_header_order(_Config) ->
 items_query_filters(_Config) ->
     Dir = fixture_dir(),
     Output = capture_output(fun() ->
-        wfcli_exports_cli:run([
+        wfcli_cli:main([
             "items",
             "--exports-dir", Dir,
             "--file", "ExportWeapons_en.json",
@@ -199,7 +199,7 @@ items_query_filters(_Config) ->
 items_query_or(_Config) ->
     Dir = fixture_dir(),
     Output = capture_output(fun() ->
-        wfcli_exports_cli:run([
+        wfcli_cli:main([
             "items",
             "--exports-dir", Dir,
             "file=ExportWeapons_en.json|ExportResources_en.json",
@@ -212,7 +212,7 @@ items_query_or(_Config) ->
 items_query_range(_Config) ->
     Dir = fixture_dir(),
     Output = capture_output(fun() ->
-        wfcli_exports_cli:run([
+        wfcli_cli:main([
             "items",
             "--exports-dir", Dir,
             "masteryreq>=5",
@@ -225,7 +225,7 @@ items_query_range(_Config) ->
 items_query_abilities(_Config) ->
     Dir = fixture_dir(),
     Output = capture_output(fun() ->
-        wfcli_exports_cli:run([
+        wfcli_cli:main([
             "items",
             "--exports-dir", Dir,
             "file=ExportWarframes_en.json",
@@ -238,7 +238,7 @@ items_query_abilities(_Config) ->
 items_format_alias(_Config) ->
     Dir = fixture_dir(),
     Output = capture_output(fun() ->
-        wfcli_exports_cli:run([
+        wfcli_cli:main([
             "items",
             "--exports-dir", Dir,
             "--file", "ExportWeapons_en.json",
@@ -251,7 +251,7 @@ items_format_alias(_Config) ->
 items_json_output(_Config) ->
     Dir = fixture_dir(),
     Output = capture_output(fun() ->
-        wfcli_exports_cli:run([
+        wfcli_cli:main([
             "items",
             "--exports-dir", Dir,
             "--file", "ExportWeapons_en.json",
@@ -308,7 +308,7 @@ items_large_offset_empty(_Config) ->
     ?assertEqual([], maps:get(slice, Results)).
 
 query_command(Command, Args) ->
-    {ok, Query} = wfcli_exports_cli:parse_request(Command, Args),
+    Query = wfcli_test_cli:catalog(Command, Args),
     wfcli_exports_query:query(Command, Query).
 
 fixture_dir() ->

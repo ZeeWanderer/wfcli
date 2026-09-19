@@ -1,94 +1,43 @@
-%%%-------------------------------------------------------------------
-%% CLI surface for persistent daemon control.
-%%%-------------------------------------------------------------------
 -module(wfcli_daemon_cli).
 
--export([run/1, help/0, help/1, known_commands/0]).
+-export([command/0]).
+-import(wfcli_cli_args, [option/4, flag/3]).
 
--type cli_args() :: [string()].
+command() ->
+    #{help => "control persistent wfdaemon process",
+      commands => #{
+        "status" => #{help => "show daemon state without starting it",
+                      handler => fun(_) -> status() end},
+        "ensure" => #{help => "start if absent; preserve a running idle policy",
+                      handler => fun(_) -> ensure() end},
+        "paths" => #{help => "show daemon XDG directories",
+                     handler => fun(_) -> wfcli_path_cli:run(#{owner => wfdaemon}) end},
+        "start" => #{help => "start or pin daemon until explicit stop",
+                     handler => fun start/1, arguments => idle_arguments()},
+        "stop" => #{help => "stop daemon", handler => fun(_) -> stop() end},
+        "restart" => #{help => "restart daemon; persistent by default",
+                       handler => fun restart/1, arguments => idle_arguments()},
+        "autostart" => #{help => "manage login startup", handler => fun(_) -> autostart_status() end,
+                          commands => #{
+                            "status" => #{help => "show user-service state",
+                                          handler => fun(_) -> autostart_status() end},
+                            "enable" => #{help => "start now and at login",
+                                          handler => fun(_) -> autostart_enable() end},
+                            "disable" => #{help => "disable login startup; leave daemon running",
+                                           handler => fun(_) -> autostart_disable() end}}},
+        "update" => #{help => "hot-load current installation or apply an OTP release",
+                      handler => fun update/1,
+                      arguments => [option(beam_dir, "beam-dir", string, "explicit ebin directory"),
+                                    option(release, "release", string, "OTP release package")]}}}.
 
--doc "Run `wfcli daemon ...` control command.".
--spec run(cli_args()) -> ok | no_return().
-run(Args) ->
-    Aliases = #{"-h" => "--help"},
-    Args1 = wfcli_cli_args:expand_aliases(Args, Aliases),
-    case Args1 of
-        ["--help" | _] ->
-            help(),
-            halt(0);
-        ["status"] ->
-            status();
-        ["ensure"] ->
-            ensure();
-        ["paths"] ->
-            wfcli_path_cli:run(["wfdaemon"]);
-        ["start" | StartArgs] ->
-            start(StartArgs);
-        ["stop"] ->
-            stop();
-        ["restart" | RestartArgs] ->
-            restart(RestartArgs);
-        ["autostart"] ->
-            autostart_status();
-        ["autostart", "status"] ->
-            autostart_status();
-        ["autostart", "enable"] ->
-            autostart_enable();
-        ["autostart", "disable"] ->
-            autostart_disable();
-        ["autostart" | _] ->
-            fail("daemon autostart accepts enable, disable, or status");
-        ["update"] ->
-            hot_update(auto);
-        ["update", "--beam-dir", BeamDir] ->
-            hot_update(BeamDir);
-        ["update", "--release", ReleaseName] ->
-            release_update(ReleaseName);
-        ["update", ReleaseName] ->
-            release_update(ReleaseName);
-        ["update" | _] ->
-            fail("daemon update accepts [--beam-dir DIR] or --release RELEASE_NAME");
-        [] ->
-            help(),
-            halt(1);
-        [Cmd | _] ->
-            Suggest = wfcli_cli_suggest:suggest(Cmd, known_commands()),
-            fail(io_lib:format("unknown daemon command: ~s~s", [Cmd, Suggest]))
-    end.
+idle_arguments() ->
+    [flag(idle_shutdown, "idle-shutdown", "enable idle shutdown"),
+     option(idle_timeout, "idle-timeout", {integer, [{min, 1}]}, "idle timeout in seconds")].
 
--doc "Print daemon command help.".
--spec help() -> ok.
-help() ->
-    io:put_chars(wfcli_help_text:daemon_help()).
-
--spec help([string()]) -> ok.
-help([]) -> help();
-help(["start" | _]) ->
-    io:put_chars(
-      "USAGE:\n"
-      "  wfcli daemon start [--idle-shutdown] [--idle-timeout SECONDS]\n");
-help(["restart" | _]) ->
-    io:put_chars(
-      "USAGE:\n"
-      "  wfcli daemon restart [--idle-shutdown] [--idle-timeout SECONDS]\n");
-help(["autostart" | _]) ->
-    io:put_chars("USAGE:\n  wfcli daemon autostart status|enable|disable\n");
-help(["update" | _]) ->
-    io:put_chars(
-      "USAGE:\n"
-      "  wfcli daemon update [--beam-dir DIR]\n"
-      "  wfcli daemon update --release RELEASE\n");
-help([Command | _]) ->
-    case lists:member(Command, known_commands()) of
-        true -> io:format("USAGE:~n  wfcli daemon ~s~n", [Command]);
-        false -> help()
-    end.
-
--doc "Known daemon subcommands for suggestions and tests.".
--spec known_commands() -> [string()].
-known_commands() ->
-    ["status", "ensure", "start", "stop", "restart", "autostart", "update", "paths",
-     "help", "--help", "-h"].
+update(#{beam_dir := _, release := _}) -> fail("--beam-dir and --release are mutually exclusive");
+update(#{beam_dir := Dir}) -> hot_update(Dir);
+update(#{release := Name}) -> release_update(Name);
+update(_) -> hot_update(auto).
 
 status() ->
     case wfcli_client:status() of
@@ -127,7 +76,7 @@ ensure() ->
     end.
 
 start(Args) ->
-    Policy = parse_idle_policy(Args),
+    Policy = idle_policy(Args),
     case wfcli_client:start(Policy) of
         {ok, already_running, Node} ->
             io:format("wfdaemon already running~n  node: ~s~n", [atom_to_list(Node)]),
@@ -148,7 +97,7 @@ stop() ->
     end.
 
 restart(Args) ->
-    Policy = parse_idle_policy(Args),
+    Policy = idle_policy(Args),
     case wfcli_client:restart(Policy) of
         {ok, restarted, Node} ->
             io:format("wfdaemon restarted~n  node: ~s~n", [atom_to_list(Node)]),
@@ -278,23 +227,9 @@ print_market_status(Market) when is_map(Market) ->
     end;
 print_market_status(_Market) -> ok.
 
-parse_idle_policy(Args) ->
-    parse_idle_policy(Args, false, undefined).
-
-parse_idle_policy([], false, _TimeoutMs) -> persistent;
-parse_idle_policy([], true, undefined) -> idle;
-parse_idle_policy([], true, TimeoutMs) -> {idle, TimeoutMs};
-parse_idle_policy(["--idle-shutdown" | Rest], _Enabled, TimeoutMs) ->
-    parse_idle_policy(Rest, true, TimeoutMs);
-parse_idle_policy(["--idle-timeout", Seconds | Rest], _Enabled, _TimeoutMs) ->
-    case string:to_integer(Seconds) of
-        {Value, ""} when Value > 0 -> parse_idle_policy(Rest, true, Value * 1000);
-        _ -> fail("--idle-timeout needs positive integer SECONDS")
-    end;
-parse_idle_policy(["--idle-timeout"], _Enabled, _TimeoutMs) ->
-    fail("--idle-timeout needs positive integer SECONDS");
-parse_idle_policy([Arg | _Rest], _Enabled, _TimeoutMs) ->
-    fail(io_lib:format("unknown daemon start option: ~s", [Arg])).
+idle_policy(#{idle_timeout := Seconds}) -> {idle, Seconds * 1000};
+idle_policy(#{idle_shutdown := true}) -> idle;
+idle_policy(_) -> persistent.
 
 print_idle_policy(persistent) ->
     io:format("  idle shutdown: disabled~n");
@@ -315,5 +250,5 @@ print_loaded_modules(Modules) ->
     io:format("  modules: ~s~n", [string:join(Names, ", ")]).
 
 fail(IoData) ->
-    io:format("error: ~s~n", [lists:flatten(IoData)]),
+    io:format(standard_error, "error: ~s~n", [lists:flatten(IoData)]),
     halt(1).

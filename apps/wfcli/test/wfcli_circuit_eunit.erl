@@ -25,18 +25,14 @@ active_week_is_selected_at_query_time_test() ->
 category_query_and_alias_test() ->
     ?assertEqual(circuit, wfcli_worldstate_schema:type_from_label("Circuit")),
     ?assertEqual(circuit, wfcli_worldstate_schema:type_from_label("Endless XP")),
-    ?assert(lists:member("circuit", wfcli_worldstate_cli:command_help_names())),
-    ?assertNot(lists:member("endless-xp", wfcli_worldstate_cli:command_help_names())),
+    ?assert(lists:member("circuit", wfcli_cli:public_command_names())),
+    ?assertNot(lists:member("endless-xp", wfcli_cli:public_command_names())),
     lists:foreach(fun(Command) ->
-        Parsed = wfcli_worldstate_cli:parse_args(
-                   [Command, "steel-path"], wfcli_worldstate_cli:default_acc()),
-        ?assertEqual([], maps:get(errors, Parsed)),
+        {ok, Parsed} = wfcli_test_cli:worldstate([Command, "steel-path"]),
         ?assertEqual(circuit, maps:get(type_filter, Parsed)),
         ?assertEqual("data.Category=EXC_HARD", maps:get(search, Parsed))
     end, ["circuit", "endless-xp"]),
-    Conflict = wfcli_worldstate_cli:parse_args(
-                 ["circuit", "normal", "steel-path"], wfcli_worldstate_cli:default_acc()),
-    ?assertMatch([_ | _], maps:get(errors, Conflict)).
+    ?assertMatch({error, _}, wfcli_test_cli:worldstate(["circuit", "normal", "steel-path"])).
 
 entries_at(Ws, Now) ->
     wfcli_worldstate_results:entries(Ws#ws{opts = (Ws#ws.opts)#{now_fun => fun() -> Now end}},

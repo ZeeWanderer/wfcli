@@ -1,9 +1,7 @@
-%%%-------------------------------------------------------------------
-%% Diagnostic control surface for standalone native companion.
-%%%-------------------------------------------------------------------
 -module(wfcli_companion_cli).
 
--export([run/1, help/0, help/1, known_commands/0]).
+-export([command/0]).
+-import(wfcli_cli_args, [flag/3]).
 
 -define(COMPANION_RECONNECT_RETRIES, 30).
 -define(COMPANION_RECONNECT_DELAY_MS, 100).
@@ -13,76 +11,66 @@
          retry_companion_command/3]).
 -endif.
 
--doc "Manage companion lifecycle, setup, and diagnostics.".
--spec run([string()]) -> ok | no_return().
-run(Args) ->
-    Aliases = #{"-h" => "--help"},
-    case wfcli_cli_args:expand_aliases(Args, Aliases) of
-        ["--help" | _] -> help(), halt(0);
-        ["status"] -> status();
-        ["start"] -> start();
-        ["stop"] -> stop();
-        ["restart"] -> restart();
-        ["show"] -> set_visibility(<<"overlay">>, "overlay", true);
-        ["hide"] -> set_visibility(<<"overlay">>, "overlay", false);
-        ["hud", "show"] -> set_visibility(<<"hud">>, "HUD", true);
-        ["hud", "hide"] -> set_visibility(<<"hud">>, "HUD", false);
-        ["probe"] -> diagnostic(["probe"]);
-        ["paths"] -> wfcli_path_cli:run(["wfcompanion"]);
-        ["screenshot" | Rest] -> screenshot(Rest);
-        ["capture" | Rest] -> capture(Rest);
-        ["relic-ocr" | Rest] -> diagnostic(["relic-ocr" | Rest]);
-        ["preview" | Rest] -> preview(Rest);
-        ["logs"] -> diagnostic(["logs"]);
-        ["install" | Rest] -> install(Rest);
-        ["uninstall" | Rest] -> uninstall(Rest);
-        [] -> help(), halt(1);
-        [Command | _] ->
-            Suggest = wfcli_cli_suggest:suggest(Command, known_commands()),
-            fail(io_lib:format("unknown companion command: ~s~s", [Command, Suggest]))
-    end.
+command() ->
+    #{help => "manage native game companion",
+      commands => #{
+        "status" => #{help => "show service and connection state", handler => fun(_) -> status() end},
+        "start" => #{help => "start companion service", handler => fun(_) -> start() end},
+        "stop" => #{help => "stop companion service", handler => fun(_) -> stop() end},
+        "restart" => #{help => "restart companion service", handler => fun(_) -> restart() end},
+        "show" => visibility("overlay", <<"overlay">>, true),
+        "hide" => visibility("overlay", <<"overlay">>, false),
+        "hud" => #{help => "control diagnostic HUD",
+                   commands => #{"show" => visibility("HUD", <<"hud">>, true),
+                                 "hide" => visibility("HUD", <<"hud">>, false)}},
+        "probe" => #{help => "probe capture and OCR dependencies",
+                     handler => fun(_) -> diagnostic(["probe"]) end},
+        "paths" => #{help => "show companion XDG directories",
+                     handler => fun(_) -> wfcli_path_cli:run(#{owner => wfcompanion}) end},
+        "screenshot" => #{help => "capture Warframe", handler => fun screenshot/1,
+                          arguments => [#{name => path, required => false, help => "output PNG"}]},
+        "relic-ocr" => #{help => "test relic OCR", handler => fun(Args) ->
+                            diagnostic(["relic-ocr" | maps:get(native_args, Args, [])]) end,
+                         arguments => [#{name => native_args, nargs => all, required => false,
+                                         help => "native relic-ocr arguments"}]},
+        "capture" => #{help => "capture event-triggered memory evidence",
+                       commands => #{
+                         "arm" => #{help => "arm a capture", commands => #{
+                            "relic-reward" => #{help => "capture the next relic reward screen",
+                                handler => fun arm_capture/1,
+                                arguments => [#{name => directory, required => false,
+                                                help => "evidence directory"}]}}},
+                         "cancel" => #{help => "cancel pending capture", handler => fun(_) ->
+                             send_capture_command(
+                               #{<<"command">> => <<"capture">>, <<"action">> => <<"cancel">>,
+                                 <<"target">> => <<"relic_reward">>},
+                               "relic-reward evidence capture cancelled") end}}},
+        "preview" => #{help => "render overlay previews",
+                       commands => #{
+                         "list" => #{help => "list preview types",
+                                      arguments => [flag(animated, "animated", "list animated types")],
+                                      handler => fun(Args) ->
+                                          Extra = case maps:get(animated, Args, false) of
+                                                      true -> ["--animated"]; false -> []
+                                                  end,
+                                          diagnostic(["preview", "list" | Extra]) end},
+                         "image" => preview_command("image"),
+                         "video" => preview_command("video")}},
+        "logs" => #{help => "show incident log", handler => fun(_) -> diagnostic(["logs"]) end},
+        "install" => #{help => "configure Steam launch options", handler => fun install/1,
+                       arguments => [flag(dry_run, "dry-run", "show planned changes")]},
+        "uninstall" => #{help => "restore Steam launch options", handler => fun uninstall/1,
+                         arguments => [flag(dry_run, "dry-run", "show planned changes")]}}}.
 
--doc "Print companion diagnostic command help.".
--spec help() -> ok.
-help() -> io:put_chars(wfcli_help_text:companion_help()).
+visibility(Label, Name, Visible) ->
+    Verb = case Visible of true -> "enable "; false -> "disable " end,
+    Target = case Name of <<"overlay">> -> "the entire overlay"; _ -> Label end,
+    #{help => Verb ++ Target, handler => fun(_) -> set_visibility(Name, Label, Visible) end}.
 
--spec help([string()]) -> ok.
-help([]) -> help();
-help(["preview" | _]) ->
-    io:put_chars(
-      "USAGE:\n"
-      "  wfcli companion preview list [--animated]\n"
-      "  wfcli companion preview image TYPE|all [PATH]\n"
-      "  wfcli companion preview video TYPE|all [PATH]\n");
-help(["screenshot" | _]) ->
-    io:put_chars(
-      "USAGE:\n"
-      "  wfcli companion screenshot [FILE]\n");
-help(["capture" | _]) ->
-    io:put_chars(
-      "USAGE:\n"
-      "  wfcli companion capture arm relic-reward [DIRECTORY]\n"
-      "  wfcli companion capture cancel\n");
-help(["relic-ocr" | _]) ->
-    io:put_chars(
-      "USAGE:\n"
-      "  wfcli companion relic-ocr [IMAGE]\n");
-help(["hud" | _]) ->
-    io:put_chars("USAGE:\n  wfcli companion hud show|hide\n");
-help([Command | _]) when Command =:= "install"; Command =:= "uninstall" ->
-    io:format("USAGE:~n  wfcli companion ~s [--dry-run]~n", [Command]);
-help([Command | _]) ->
-    case lists:member(Command, known_commands()) of
-        true -> io:format("USAGE:~n  wfcli companion ~s~n", [Command]);
-        false -> help()
-    end.
-
--doc "Known companion diagnostic subcommands.".
--spec known_commands() -> [string()].
-known_commands() ->
-    ["status", "start", "stop", "restart", "show", "hide", "hud", "probe",
-     "screenshot", "capture", "relic-ocr", "preview", "logs", "paths", "install", "uninstall",
-     "help", "--help", "-h"].
+preview_command(Mode) ->
+    #{help => "render " ++ Mode ++ " previews", handler => fun(Args) -> preview(Mode, Args) end,
+      arguments => [#{name => target, help => "preview type or all", completion => ["all"]},
+                    #{name => path, required => false, help => "output path"}]}.
 
 status() ->
     Managed = wfcli_companion_process:unit_active(),
@@ -219,38 +207,19 @@ connected_companions() ->
     end.
 
 screenshot(Args) ->
-    case Args of
-        [] ->
-            Output = wfcli_paths:cache_file("companion-screenshot.png"),
-            ok = filelib:ensure_dir(Output),
-            diagnostic(["screenshot", Output]);
-        [[ $- | _ ] = Option | _] ->
-            fail(io_lib:format("unknown screenshot option: ~s", [Option]));
-        [_Path] ->
-            diagnostic(["screenshot" | Args]);
-        _ ->
-            fail("screenshot accepts one output path")
-    end.
+    Path = maps:get(path, Args, wfcli_paths:cache_file("companion-screenshot.png")),
+    ok = filelib:ensure_dir(Path),
+    diagnostic(["screenshot", Path]).
 
-capture(["arm", "relic-reward"]) ->
-    capture(["arm", "relic-reward", capture_directory(erlang:system_time(millisecond))]);
-capture(["arm", "relic-reward", Directory]) ->
+arm_capture(Args) ->
+    Directory = maps:get(directory, Args, capture_directory(erlang:system_time(millisecond))),
     Output = filename:absname(Directory),
     send_capture_command(
-      #{<<"command">> => <<"capture">>,
-        <<"action">> => <<"arm">>,
+      #{<<"command">> => <<"capture">>, <<"action">> => <<"arm">>,
         <<"target">> => <<"relic_reward">>,
         <<"directory">> => unicode:characters_to_binary(Output),
         <<"timeout_ms">> => 30 * 60 * 1000},
-      io_lib:format("relic-reward evidence capture requested~n  output: ~s", [Output]));
-capture(["cancel"]) ->
-    send_capture_command(
-      #{<<"command">> => <<"capture">>,
-        <<"action">> => <<"cancel">>,
-        <<"target">> => <<"relic_reward">>},
-      "relic-reward evidence capture cancelled");
-capture(_Args) ->
-    fail("capture requires arm relic-reward [DIRECTORY] or cancel").
+      io_lib:format("relic-reward evidence capture requested~n  output: ~s", [Output])).
 
 capture_directory(Timestamp) ->
     wfcli_paths:cache_file(
@@ -276,21 +245,13 @@ retry_companion_command(Call, Attempts, Delay) ->
         Result -> Result
     end.
 
-preview(["list"]) -> diagnostic(["preview", "list"]);
-preview(["list", "--animated"]) -> diagnostic(["preview", "list", "--animated"]);
-preview(["image", "all"]) -> preview(["image", "all", default_preview_directory()]);
-preview(["image", "all", Directory]) -> diagnostic(["preview", "image", "all", Directory]);
-preview(["image", Type]) ->
-    preview(["image", Type, filename:join(default_preview_directory(), Type ++ ".png")]);
-preview(["image", Type, Path]) -> diagnostic(["preview", "image", Type, Path]);
-preview(["video", "all"]) -> preview(["video", "all", default_preview_directory()]);
-preview(["video", "all", Directory]) -> diagnostic(["preview", "video", "all", Directory]);
-preview(["video", Type]) ->
-    preview(["video", Type, filename:join(default_preview_directory(), Type ++ ".webm")]);
-preview(["video", Type, Path]) -> diagnostic(["preview", "video", Type, Path]);
-preview(_Args) ->
-    fail("preview requires list [--animated], image TYPE|all [PATH], "
-         "or video TYPE|all [PATH]").
+preview(Mode, #{target := Target} = Args) ->
+    Extension = case Mode of "image" -> ".png"; "video" -> ".webm" end,
+    Default = case Target of
+                  "all" -> default_preview_directory();
+                  _ -> filename:join(default_preview_directory(), Target ++ Extension)
+              end,
+    diagnostic(["preview", Mode, Target, maps:get(path, Args, Default)]).
 
 default_preview_directory() ->
     case wfcli_companion_process:binary() of
@@ -315,27 +276,15 @@ diagnostic(Args) ->
     end.
 
 install(Args) ->
-    case dry_run(Args) of
-        {ok, DryRun} ->
-            case wfcli_companion_process:binary() of
-                {ok, Companion} ->
-                    print_steam_result(
-                      wfcli_companion_steam:install(Companion, DryRun), install);
-                {error, Reason} -> fail(format_process_error(Reason))
-            end;
-        error -> fail("install accepts only --dry-run")
+    case wfcli_companion_process:binary() of
+        {ok, Companion} ->
+            print_steam_result(
+              wfcli_companion_steam:install(Companion, maps:get(dry_run, Args, false)), install);
+        {error, Reason} -> fail(format_process_error(Reason))
     end.
 
 uninstall(Args) ->
-    case dry_run(Args) of
-        {ok, DryRun} ->
-            print_steam_result(wfcli_companion_steam:uninstall(DryRun), uninstall);
-        error -> fail("uninstall accepts only --dry-run")
-    end.
-
-dry_run([]) -> {ok, false};
-dry_run(["--dry-run"]) -> {ok, true};
-dry_run(_Args) -> error.
+    print_steam_result(wfcli_companion_steam:uninstall(maps:get(dry_run, Args, false)), uninstall).
 
 print_steam_result({ok, Result}, install) ->
     Action = case maps:get(dry_run, Result) of true -> "would install"; false -> "installed" end,
@@ -378,5 +327,5 @@ print_command_output(Output) ->
     case binary:last(Output) of $\n -> ok; _ -> io:put_chars("\n") end.
 
 fail(Message) ->
-    io:format("error: ~ts~n", [Message]),
+    io:format(standard_error, "error: ~ts~n", [Message]),
     halt(1).

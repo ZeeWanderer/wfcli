@@ -5,7 +5,7 @@
 
 -include_lib("kernel/include/file.hrl").
 
--export([run/1, help/0]).
+-export([command/0, run/1]).
 -ifdef(TEST).
 -export([describe/1, app_paths/1, decode_owner_report/2, report_tree/1,
          filesystem_tree/1, links_in_scope/3]).
@@ -13,44 +13,16 @@
 
 -define(MAX_SYMLINKS, 40).
 
--spec run([string()]) -> ok | no_return().
-run([]) ->
-    print_merged(owner_reports());
-run(["--apps"]) ->
-    print_reports(owner_reports());
-run(["wfcli"]) ->
-    print_reports([owner_report(wfcli)]);
-run(["wfdaemon"]) ->
-    print_reports([owner_report(wfdaemon)]);
-run(["wfcompanion"]) ->
-    print_reports([owner_report(wfcompanion)]);
-run(["wfgui"]) ->
-    print_reports([owner_report(wfgui)]);
-run(["-h"]) ->
-    help();
-run(["--help"]) ->
-    help();
-run(["help"]) ->
-    help();
-run([App | _]) ->
-    io:format("error: unknown application: ~s~n", [App]),
-    help(),
-    halt(1).
+command() ->
+    #{help => "show managed XDG directory tree", handler => {?MODULE, run},
+      arguments => [wfcli_cli_args:flag(apps, "apps", "group by owning application"),
+                    #{name => owner, required => false,
+                      type => {atom, [wfcli, wfdaemon, wfcompanion, wfgui]},
+                      help => "report one application"}]}.
 
--spec help() -> ok.
-help() ->
-    io:put_chars(
-      "USAGE:\n"
-      "  wfcli paths\n"
-      "  wfcli paths --apps\n"
-      "  wfcli paths <wfcli|wfdaemon|wfcompanion|wfgui>\n"
-      "\n"
-      "DESCRIPTION:\n"
-      "  Merge per-user directories into one filesystem tree without creating\n"
-      "  them. Symlink nodes show their target and retain logical children.\n"
-      "\n"
-      "OPTIONS:\n"
-      "  --apps   group directories by owning application\n").
+run(#{owner := Owner}) -> print_reports([owner_report(Owner)]);
+run(#{apps := true}) -> print_reports(owner_reports());
+run(_) -> print_merged(owner_reports()).
 
 owner_reports() ->
     [owner_report(wfcli), owner_report(wfdaemon),

@@ -1,225 +1,98 @@
-%%%-------------------------------------------------------------------
-%% Entry point for wfcli escript. Dispatches subcommands.
-%%%-------------------------------------------------------------------
 -module(wfcli_cli).
 
--export([main/1, command_names/0, public_command_names/0, usage/0]).
-
--ifdef(TEST).
--export([command_groups/0]).
--endif.
+-export([main/1, command/0, command_names/0, public_command_names/0,
+         command_groups/0, usage/0, fail/1]).
 
 main(Args) ->
-    ensure_started(),
-    ok = application:set_env(wfcli, use_daemon, true),
-    Prompt = wfcli_cli_args:prompt_enabled(Args),
-    ok = application:set_env(wfcli, suggest_prompt, Prompt),
-    dispatch(Args, Prompt).
-
-ensure_started() ->
     case application:ensure_all_started(wfcli) of
-        {ok, _} ->
-            ok;
-        {error, Reason} ->
-            io:format("failed to start wfcli: ~p~n", [Reason]),
-            halt(1)
-    end.
+        {ok, _} -> ok;
+        {error, Reason} -> fail(io_lib:format("failed to start wfcli: ~p", [Reason]))
+    end,
+    ok = application:set_env(wfcli, use_daemon, true),
+    dispatch(Args).
 
-dispatch(Args, Prompt) ->
-    {Args1, _} = wfcli_cli_args:strip_prompt_flag(Args),
-    case wfcli_cli_args:help_path(Args1) of
-        {help, Path} ->
-            wfcli_help:run(Path),
-            halt(0);
-        none ->
-            dispatch_args(Args1, Prompt)
-    end.
-
-dispatch_args(["forma-plan" | Rest], _Prompt) ->
-    wfcli_forma_plan:run(Rest);
-dispatch_args(["visualize" | Rest], _Prompt) ->
-    wfcli_visualize:run(Rest);
-dispatch_args(["query" | Rest], _Prompt) ->
-    wfcli_query_cli:run(Rest);
-dispatch_args(["player" | Rest], _Prompt) ->
-    wfcli_player_cli:run(Rest);
-dispatch_args(["market" | Rest], _Prompt) ->
-    wfcli_market_cli:run(Rest);
-dispatch_args(["notifications" | Rest], _Prompt) ->
-    wfcli_notification_cli:run(Rest);
-dispatch_args(["diagnostics" | Rest], _Prompt) ->
-    wfcli_diagnostics_cli:run(Rest);
-dispatch_args(["companion" | Rest], _Prompt) ->
-    wfcli_companion_cli:run(Rest);
-dispatch_args(["gui" | Rest], _Prompt) ->
-    wfcli_gui_cli:run(Rest);
-dispatch_args(["mcp" | Rest], _Prompt) ->
-    wfcli_mcp_cli:main(Rest);
-dispatch_args(["completion" | Rest], _Prompt) ->
-    wfcli_completion:run(Rest);
-dispatch_args(["paths" | Rest], _Prompt) ->
-    wfcli_path_cli:run(Rest);
-dispatch_args(["daemon" | Rest], _Prompt) ->
-    wfcli_daemon_cli:run(Rest);
-dispatch_args(["update" | Rest], _Prompt) ->
-    wfcli_update_cli:run(Rest);
-dispatch_args(["help" | Rest], _Prompt) ->
-    wfcli_help:run(Rest);
-dispatch_args(["-h" | _], _Prompt) ->
-    usage(),
-    halt(0);
-dispatch_args(["--help" | _], _Prompt) ->
-    usage(),
-    halt(0);
-dispatch_args([], _Prompt) ->
-    usage(),
-    halt(1);
-dispatch_args([Cmd | Rest], Prompt) ->
-    case command_handler(Cmd) of
-        {ok, Module} -> Module:run_command(Cmd, Rest);
-        error -> handle_unknown_command(Cmd, Rest, Prompt)
-    end.
-
-command_handler(Cmd) ->
-    case is_worldstate_command(Cmd) of
-        true -> {ok, wfcli_worldstate_cli};
-        false ->
-            case is_exports_command(Cmd) of
-                true -> {ok, wfcli_exports_cli};
-                false ->
-                    case is_knowledge_command(Cmd) of
-                        true -> {ok, wfcli_knowledge_cli};
-                        false -> error
-                    end
+dispatch(Args) ->
+    case wfcli_cli_args:parse(Args) of
+        {help, Path} -> wfcli_help:run(Path);
+        {ok, Parsed, _Path, #{handler := Handler}} -> invoke(Handler, Parsed);
+        {error, Path, Message, Detail} ->
+            case suggest(Args, Path, Detail) of
+                {ok, Corrected} -> dispatch(Corrected);
+                none ->
+                    io:format(standard_error, "error: ~ts~n", [Message]),
+                    io:put_chars(standard_error, wfcli_help:text(Path)),
+                    halt(2)
             end
     end.
 
-handle_unknown_command(Cmd, Rest, Prompt) ->
-    case maybe_prompt_command(Cmd, Rest, Prompt andalso wfcli_cli_args:interactive()) of
-        {ok, NewArgs} -> dispatch_args(NewArgs, Prompt);
-        error ->
-            Suggest = wfcli_cli_suggest:suggest(Cmd, command_names()),
-            io:format("unknown command: ~s~s~n", [Cmd, Suggest]),
-            usage(),
-            halt(1)
-    end.
+invoke({Module, Function}, Parsed) -> Module:Function(Parsed);
+invoke(Function, Parsed) -> Function(Parsed).
 
-maybe_prompt_command(Cmd, Rest, true) ->
-    case wfcli_cli_suggest:suggest_match(Cmd, command_names()) of
-        {ok, Suggestion} ->
-            io:format("unknown command: ~s. use ~s? [enter to accept] ", [Cmd, Suggestion]),
-            case safe_get_line() of
-                accept -> {ok, [Suggestion | Rest]};
-                _ -> error
-            end;
-        none -> error
-    end;
-maybe_prompt_command(_Cmd, _Rest, false) ->
-    error.
+command() ->
+    #{commands => maps:from_list(lists:append([Commands || {_, Commands} <- groups()])),
+      arguments => [wfcli_cli_args:flag(no_suggest_prompt, "no-suggest-prompt",
+                                       "do not prompt to correct spelling")]}.
 
-safe_get_line() ->
-    try io:get_line("") of
-        eof -> decline;
-        Line when is_list(Line) ->
-            case string:lowercase(string:trim(Line)) of
-                "" -> accept;
-                "y" -> accept;
-                _ -> decline
-            end;
-        _ -> decline
-    catch _:_ ->
-        decline
-    end.
-
-usage() ->
-    Groups = command_groups(),
-    Rows = lists:append([GroupRows || {_Label, GroupRows} <- Groups]),
-    Width = max_cmd_width(Rows, 0),
-    Lines =
-        ["USAGE:",
-         "  wfcli <command> [options]",
-         "",
-         "COMMANDS:"]
-        ++ format_usage_groups(Groups, Width),
-    io:format("~ts~n", [string:join(Lines, "\n")]).
+groups() ->
+    [{"Tools", [{"forma-plan", wfcli_forma_plan:command()},
+                {"visualize", wfcli_visualize:command()},
+                {"notifications", wfcli_notification_cli:command()},
+                {"watch", wfcli_worldstate_cli:watch_command()}]},
+     {"Data", [{"query", wfcli_query_cli:command()},
+               {"player", wfcli_query_cli:player_command()},
+               {"market", wfcli_market_cli:command()}] ++ wfcli_catalog_cli:commands()},
+     {"Worldstate", wfcli_worldstate_cli:commands()},
+     {"Applications", [{"daemon", wfcli_daemon_cli:command()},
+                       {"companion", wfcli_companion_cli:command()},
+                       {"gui", wfcli_gui_cli:command()},
+                       {"mcp", wfcli_mcp_cli:command()}]},
+     {"Utility", [{"diagnostics", wfcli_diagnostics_cli:command()},
+                  {"update", wfcli_update_cli:command()},
+                  {"completion", wfcli_completion:command()},
+                  {"paths", wfcli_path_cli:command()},
+                  {"help", wfcli_help:command()}]}].
 
 command_groups() ->
-    Tools = [
-        {"forma-plan", "compute Forma/polarity plan across builds"},
-        {"visualize", "render forma-plan outputs"},
-        {"notifications", "configure fissure notifications"},
-        {"watch", "watch command specs (multi-source)"}
-    ],
-    Data = [
-        {"query", "search the indexed knowledge base"},
-        {"player", "inspect or query local player data"},
-        {"market", "look up Warframe Market top-order prices"},
-        {"mods", "query mod exports"},
-        {"items", "query export item names"},
-        {"codex", "query official Codex knowledge"},
-        {"enemies", "query WFCD enemy knowledge"},
-        {"drops", "find WFCD enemy drops by item or enemy"}
-    ],
-    Worldstate = [{Cmd, wfcli_worldstate_cli:command_description(Cmd)}
-                  || Cmd <- wfcli_worldstate_cli:command_help_names(), Cmd =/= "watch"],
-    Applications = [
-        {"daemon", "control persistent wfdaemon process"},
-        {"companion", "inspect native game companion"},
-        {"gui", "install the desktop launcher"},
-        {"mcp", "serve MCP over standard input/output"}
-    ],
-    Utility = [
-        {"diagnostics", "inspect daemon resolution failures"},
-        {"update", "update cached knowledge base data"},
-        {"completion", "generate shell completion"},
-        {"paths", "show managed XDG directory tree"},
-        {"help", "show help topics"},
-        {"-h, --help", "show this help"}
-    ],
-    [{"Tools", Tools}, {"Data", Data}, {"Worldstate", Worldstate},
-     {"Applications", Applications}, {"Utility", Utility}].
+    [{Name, [{Cmd, maps:get(help, Node, "")} || {Cmd, Node} <- Commands,
+                                              maps:get(help, Node, "") =/= hidden]}
+     || {Name, Commands} <- groups()].
 
-max_cmd_width([], Width) -> Width;
-max_cmd_width([{Cmd, _} | Rest], Width) ->
-    max_cmd_width(Rest, max(Width, wfcli_tty:display_width(Cmd))).
-
-format_usage_rows(Rows, Width, Indent) ->
-    Prefix = lists:duplicate(Indent, $ ),
-    [
-        Prefix ++ wfcli_tty:pad_right(Cmd, Width) ++ "  " ++ Desc
-        || {Cmd, Desc} <- Rows
-    ].
-
-format_usage_groups([], _Width) -> [];
-format_usage_groups([{Label, Rows}], Width) ->
-    ["  " ++ Label ++ ":"] ++ format_usage_rows(Rows, Width, 4);
-format_usage_groups([{Label, Rows} | Rest], Width) ->
-    ["  " ++ Label ++ ":"] ++ format_usage_rows(Rows, Width, 4) ++
-        [""] ++ format_usage_groups(Rest, Width).
-
-is_worldstate_command(Cmd) ->
-    lists:member(Cmd, wfcli_worldstate_cli:command_names()).
-
-is_exports_command(Cmd) ->
-    lists:member(Cmd, wfcli_exports_cli:command_names()).
-
-is_knowledge_command(Cmd) ->
-    lists:member(Cmd, wfcli_knowledge_cli:command_names()).
-
-command_names() ->
-    ["forma-plan", "visualize", "query", "player", "market", "notifications",
-     "diagnostics",
-     "companion", "gui", "mcp",
-     "daemon", "update", "completion", "paths", "help"]
-    ++ wfcli_exports_cli:command_names()
-    ++ wfcli_knowledge_cli:command_names()
-    ++ wfcli_worldstate_cli:command_names().
-
+command_names() -> maps:keys(maps:get(commands, command())).
 public_command_names() ->
-    ["forma-plan", "visualize", "query", "player", "market", "notifications",
-     "diagnostics",
-     "companion", "gui", "mcp",
-     "daemon", "update", "completion", "paths", "help"]
-    ++ wfcli_exports_cli:command_names()
-    ++ wfcli_knowledge_cli:command_names()
-    ++ wfcli_worldstate_cli:command_help_names().
+    [Name || {_, Rows} <- command_groups(), {Name, _} <- Rows].
+
+usage() -> io:put_chars(wfcli_help:text([])).
+
+fail(Message) ->
+    io:format(standard_error, "error: ~ts~n", [Message]),
+    halt(1).
+
+suggest(Args, Path, {undefined, Unknown}) when is_list(Unknown) ->
+    case lists:member("--no-suggest-prompt", lists:takewhile(fun(A) -> A =/= "--" end, Args))
+         orelse not wfcli_cli_args:interactive() of
+        true -> none;
+        false ->
+            Node = wfcli_cli_args:node(Path, command()),
+            Candidates = maps:keys(maps:get(commands, Node, #{})) ++
+                         wfcli_cli_args:options(Node),
+            suggest_unknown(Args, Unknown, Candidates)
+    end;
+suggest(_Args, _Path, _Detail) -> none.
+
+suggest_unknown(Args, Unknown, Candidates) ->
+    case {length([A || A <- Args, A =:= Unknown]),
+          wfcli_cli_suggest:suggest_match(Unknown, Candidates)} of
+        {1, {ok, Replacement}} when Replacement =/= Unknown ->
+            io:format(standard_error, "unknown argument: ~s. use ~s? [enter to accept] ",
+                      [Unknown, Replacement]),
+            case io:get_line("") of
+                Line when is_list(Line) ->
+                    case string:lowercase(string:trim(Line)) of
+                        Answer when Answer =:= ""; Answer =:= "y"; Answer =:= "yes" ->
+                            {ok, [case A of Unknown -> Replacement; _ -> A end || A <- Args]};
+                        _ -> none
+                    end;
+                _ -> none
+            end;
+        _ -> none
+    end.

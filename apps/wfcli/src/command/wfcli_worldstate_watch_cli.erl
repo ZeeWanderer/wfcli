@@ -9,13 +9,6 @@
 -spec run(map()) -> ok | no_return().
 
 run(Parsed) ->
-    Interval = maps:get(interval, Parsed, 60),
-    case Interval >= 60 of
-        true -> ok;
-        false ->
-            io:format("error: --interval must be >= 60 seconds~n", []),
-            halt(1)
-    end,
     Specs0 = lists:reverse(maps:get(watch_specs, Parsed, [])),
     Specs1 = case Specs0 of
         [] -> wfcli_worldstate_output:default_watch_specs(Parsed);
@@ -23,9 +16,7 @@ run(Parsed) ->
     end,
     case Specs1 of
         [] ->
-            io:format("error: watch requires at least one spec~n", []),
-            wfcli_worldstate_cli:help([]),
-            halt(1);
+            wfcli_cli:fail("watch requires at least one spec");
         _ -> ok
     end,
     Once = maps:get(once, Parsed, false),
@@ -43,7 +34,7 @@ daemon_watch(Parsed, Specs, Once) ->
     case wfcli_client:subscribe(Request) of
         {ok, Handle} -> daemon_watch_loop(Handle, Parsed, Once, #{});
         {error, Reason} ->
-            io:format("worldstate daemon error: ~ts~n",
+            io:format(standard_error, "worldstate daemon error: ~ts~n",
                       [wfcli_client:format_error(Reason)]),
             halt(1)
     end.
@@ -72,7 +63,7 @@ daemon_watch_loop(Handle, Parsed, Once, Previous) ->
             end;
         {error, Reason} ->
             _ = wfcli_client:unsubscribe(Handle),
-            io:format("worldstate daemon error: ~ts~n",
+            io:format(standard_error, "worldstate daemon error: ~ts~n",
                       [wfcli_client:format_error(Reason)]),
             halt(1)
     end.

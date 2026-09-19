@@ -214,7 +214,7 @@ default_plan_output_path(CtConfig) ->
     Expected = filename:absname(filename:join(Priv, "simple_capacity.plan.yml")),
     Output = with_cwd(Cwd, fun() ->
         capture_output(fun() ->
-            wfcli_forma_plan:run(["--config", ConfigPath])
+            wfcli_cli:main(["forma-plan","--config", ConfigPath])
         end)
     end),
     ?assert(filelib:is_file(Expected)),

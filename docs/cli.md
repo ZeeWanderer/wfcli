@@ -43,6 +43,7 @@ Advanced operations have dedicated guides:
 - [`mcp`](mcp.md): structured stdio integration
 
 Run `wfcli help commands` for every focused worldstate command.
+`wfcli COMMAND --help` is the complete option reference.
 
 ## Help
 
@@ -57,6 +58,7 @@ wfcli daemon autostart -h
 
 For query commands, arguments after `--` are literal text. Correction prompts require an
 interactive terminal; `--no-suggest-prompt` disables them.
+Invalid arguments return exit status 2; failed operations return 1. Diagnostics use stderr.
 
 Commands narrow an operation. Options modify it. Where both forms improve shell use, both are
 accepted:
@@ -115,11 +117,4 @@ wfcli notifications persistent
 `on` watches while at least one `wfgui` connection is open. `persistent` watches whenever
 `wfdaemon` is running. The setting is shared with the desktop GUI and persists across restarts.
 
-## Related Guides
-
-- [Data sources and updates](data-sources.md)
-- [Query language and watches](query.md)
-- [Daemon control](daemon.md)
-- [Linux/Proton companion](companion.md)
-- [Forma planner](forma-plan.md)
-- [MCP server](mcp.md)
+See [Data sources and updates](data-sources.md) for cache refresh commands.

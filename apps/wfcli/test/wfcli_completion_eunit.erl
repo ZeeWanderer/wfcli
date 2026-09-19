@@ -69,10 +69,59 @@ option_value_completion_test() ->
 
 generated_bash_completes_without_wfcli_process_test() ->
     Script = iolist_to_binary(wfcli_completion:script()),
-    ?assertEqual(nomatch, binary:match(Script, <<"completion candidates">>)),
+    ?assertEqual(nomatch, binary:match(Script, <<"$(wfcli">>)),
     ?assertNotEqual(nomatch, binary:match(Script, <<"compgen -V COMPREPLY">>)),
     ?assertEqual(nomatch, binary:match(Script, <<"mapfile">>)),
     ?assertNotEqual(nomatch, binary:match(Script, <<"complete -F _wfcli_complete wfcli wfclid">>)).
+
+generated_bash_matches_cli_completion_test() ->
+    File = temp_path("script"),
+    Cases = [["da"], ["daemon", "autostart", "en"], ["items", "--pol"],
+             ["mods", "--name", "daemon", "--format", "j"],
+             ["--no-suggest-prompt", "daemon", "sta"],
+             ["daemon", "--no-suggest-prompt", "start", "--idle-"],
+             ["help", "daemon", "autostart", "en"],
+             ["--no-suggest-prompt", "help", "daemon", "autostart", "en"],
+             ["mods", "--format=j"], ["companion", "preview", "image", "a"],
+             ["query", "--", "--h"], ["paths", "w"], ["paths", "wfcli", "w"]],
+    try
+        ok = file:write_file(File, script_binary()),
+        lists:foreach(fun(Args) ->
+            ?assertEqual(wfcli_completion:candidates(Args), bash_candidates(File, Args))
+        end, Cases),
+        ?assertEqual(["json"], bash_candidates(File, ["mods", "--format", "=", "j"])),
+        ?assertEqual(["block", "json", "table"],
+                     bash_candidates(File, ["mods", "--format", "="]))
+    after
+        _ = file:delete(File)
+    end.
+
+script_binary() -> iolist_to_binary(wfcli_completion:script()).
+
+bash_candidates(File, Args) ->
+    Command = "set -euo pipefail\n"
+              "source \"$1\"\nshift\n"
+              "PATH=/no-external-commands\n"
+              "compopt() { :; }\n"
+              "COMP_WORDS=(wfcli \"$@\")\n"
+              "COMP_CWORD=$((${#COMP_WORDS[@]} - 1))\n"
+              "_wfcli_complete\n"
+              "printf '%s\\n' \"${COMPREPLY[@]}\"\n",
+    Port = open_port({spawn_executable, os:find_executable("bash")},
+                     [binary, exit_status, stderr_to_stdout,
+                      {args, ["--noprofile", "--norc", "-c", Command, "test", File | Args]}]),
+    {Status, Output} = shell_output(Port, []),
+    ?assertEqual({0, Output}, {Status, Output}),
+    lists:usort(string:lexemes(binary_to_list(Output), "\n")).
+
+shell_output(Port, Acc) ->
+    receive
+        {Port, {data, Data}} -> shell_output(Port, [Data | Acc]);
+        {Port, {exit_status, Status}} -> {Status, iolist_to_binary(lists:reverse(Acc))}
+    after 5000 ->
+        port_close(Port),
+        error(completion_timeout)
+    end.
 
 managed_completion_lifecycle_test() ->
     Dir = temp_path("lifecycle_dir"),

@@ -1,16 +1,13 @@
-%%%-------------------------------------------------------------------
-%% stdio entry point for the wfdaemon MCP adapter.
-%%%-------------------------------------------------------------------
 -module(wfcli_mcp_cli).
 
--export([main/1]).
+-export([command/0, main/1]).
 
--spec main([string()]) -> ok | no_return().
-main(["--help"]) ->
-    wfcli_help:run(["mcp"]);
-main(["-h"]) ->
-    wfcli_help:run(["mcp"]);
-main([]) ->
+command() ->
+    #{help => "serve MCP over standard input and output", handler => {?MODULE, main},
+      notes => "\nNewline-delimited JSON-RPC. Diagnostics use standard error.\n"
+               "Closing the connection cancels its outstanding daemon requests.\n"}.
+
+main(_Args) ->
     ok = io:setopts(standard_io, [binary, {encoding, unicode}]),
     ok = io:setopts(standard_error, [{encoding, unicode}]),
     case wfcli_mcp_server:run() of
@@ -18,7 +15,4 @@ main([]) ->
         {error, Reason} ->
             io:format(standard_error, "wfcli mcp failed: ~p~n", [Reason]),
             halt(1)
-    end;
-main(_Args) ->
-    io:format(standard_error, "wfcli mcp accepts no arguments~n", []),
-    halt(2).
+    end.

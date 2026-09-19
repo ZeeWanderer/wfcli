@@ -16,11 +16,9 @@ Use this checklist after choosing the owning application in [`structure.md`](str
 
 ## CLI features
 
-- Keep parsing centralized in `wfcli_worldstate_cli.erl`.
-- Use subcommands for scope and options for composable behavior.
-- If help is getting long, add subcommand help.
-- Reuse shared help text helpers in `wfcli_help_text.erl` where possible.
-- Update command registries, `known_args/0`, contextual help, and completion tests.
+- Add the command's `argparse` specification beside its handler; root grouping belongs to
+  `wfcli_cli`. Help and completion derive from that specification.
+- Follow [CLI parsing and output rules](cli.md); test both parsing and real process behavior.
 
 ## New data sources
 
