@@ -9,6 +9,7 @@ links are `wfinspectd` (development) and `wfinspect` (production).
 ```bash
 wfinspect doctor
 wfinspect game adapter --list
+wfinspect game inventory
 wfinspect game memory --help
 mkdir -p ~/.local/share/bash-completion/completions
 wfinspect completion bash > ~/.local/share/bash-completion/completions/wfinspect
@@ -16,6 +17,9 @@ wfinspect completion bash > ~/.local/share/bash-completion/completions/wfinspect
 
 Every command has `--help`. Addresses accept decimal or `0x` hexadecimal.
 Use `--` before literal arguments beginning with a dash or named `help`.
+
+`game inventory` reads current resource stacks, blueprints and foundry jobs,
+including their inventory sync ID, directly from the running game.
 
 ## Memory and UI
 

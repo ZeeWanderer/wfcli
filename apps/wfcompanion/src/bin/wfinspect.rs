@@ -120,6 +120,7 @@ mod tests {
     fn command_tree_and_leaf_help_are_consistent() {
         Cli::command().debug_assert();
         for command in [
+            vec!["game", "inventory", "--help"],
             vec!["game", "cache", "paths", "/nonexistent", "Font", "--help"],
             vec!["game", "ui", "objects", "--help"],
             vec!["game", "memory", "path", "--help"],

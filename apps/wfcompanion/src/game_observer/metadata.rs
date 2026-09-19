@@ -452,7 +452,7 @@ fn instances_with_descriptor(memory: &ProcessMemory, descriptor: u64) -> Result<
     Ok(instances)
 }
 
-fn global_object(
+pub(super) fn global_object(
     memory: &ProcessMemory,
     base: u64,
     layout: MetadataLayout,
@@ -487,7 +487,7 @@ fn manifest_shape(
     (count <= maximum && readable_range(memory, entries, byte_length)).then_some((entries, count))
 }
 
-fn resource_name(
+pub(super) fn resource_name(
     memory: &ProcessMemory,
     base: u64,
     layout: MetadataLayout,

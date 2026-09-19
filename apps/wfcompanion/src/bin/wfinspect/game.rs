@@ -18,6 +18,8 @@ pub enum Game {
         #[arg(long)]
         output: Option<PathBuf>,
     },
+    /// Read current resource stacks, blueprints and foundry jobs from memory.
+    Inventory,
     /// Read, search, follow pointers and capture selected memory.
     #[command(subcommand)]
     Memory(Memory),
@@ -198,6 +200,9 @@ impl Game {
             Self::Adapter { list: true } => print_json(&game_observer::adapter::list()),
             Self::Adapter { list: false } => adapter(),
             Self::Metadata { output } => metadata(output),
+            Self::Inventory => {
+                print_json(&game_observer::inventory::Reader::open(game_pid()?)?.read()?)
+            }
             Self::Memory(command) => command.run(),
             Self::Ui(command) => command.run(),
             Self::Cache(command) => command.run(),

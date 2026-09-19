@@ -9,6 +9,7 @@ pub(crate) struct GameAdapter {
     pub(crate) id: &'static str,
     pub(crate) sha256: &'static str,
     pub(crate) metadata: MetadataLayout,
+    pub(crate) inventory: InventoryLayout,
     pub(crate) scaleform: ScaleformLayout,
     pub(crate) luau: LuauLayout,
 }
@@ -41,6 +42,15 @@ pub(crate) struct MetadataLayout {
 }
 
 #[derive(Clone, Copy, Debug)]
+pub(crate) struct InventoryLayout {
+    pub(crate) profile_hash: u32,
+    pub(crate) sync_offset: u64,
+    pub(crate) misc_offset: u64,
+    pub(crate) recipes_offset: u64,
+    pub(crate) pending_offset: u64,
+}
+
+#[derive(Clone, Copy, Debug)]
 pub(crate) struct ScaleformLayout {
     pub(crate) registry_vector_rva: u64,
     pub(crate) flash_instance_type_rva: u64,
@@ -64,6 +74,13 @@ const CURRENT: GameAdapter = GameAdapter {
         game_time_rva: 0x28e13e8,
         game_rules_hash: 0x27816687,
         store_manifest_offsets: &STORE_MANIFEST_OFFSETS,
+    },
+    inventory: InventoryLayout {
+        profile_hash: 0xf05f9824,
+        sync_offset: 0xfdc0,
+        misc_offset: 0xd6a0,
+        recipes_offset: 0xd6b0,
+        pending_offset: 0x11ac8,
     },
     scaleform: ScaleformLayout {
         registry_vector_rva: 0x028a_5410,

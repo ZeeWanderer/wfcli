@@ -1,6 +1,7 @@
 pub mod adapter;
 pub mod debug_output;
 pub mod gep;
+pub mod inventory;
 pub(crate) mod memory;
 pub mod metadata;
 pub mod ui;

@@ -18,6 +18,8 @@ const ACCOUNT_POLL_INTERVAL: Duration = Duration::from_secs(1);
 const INVENTORY_MARKER: &[u8] = b"LastInventorySync";
 const SCHEMA_VERSION: u32 = 2;
 
+mod refresh;
+
 #[derive(Debug)]
 pub(crate) enum Event {
     Inventory {
@@ -122,6 +124,9 @@ fn scan_native(
     let mut poll_state = gep::PollState::default();
     let mut account_seed = None;
     let mut next_account_poll = Instant::now();
+    let refresh = refresh::Refresh::start(game_pid, Arc::clone(&stopping));
+    let mut inventory = refresh::InventoryState::default();
+    let mut next_refresh_warning = Instant::now() + Duration::from_secs(30);
     let (queue, item_base, body, alternate) = sources.response_offsets();
     crate::incident::info(
         "inventory.native_gep_ready",
@@ -147,61 +152,86 @@ fn scan_native(
             next_account_poll = Instant::now() + ACCOUNT_POLL_INTERVAL;
         }
         for (source, payload) in sources.persistent_payloads(&mem, &mut poll_state) {
-            if publish_payload(
+            match decode_new_payload(
                 &payload,
-                source,
                 game_pid,
                 &prefix,
                 &mut player_name,
                 &mut seen_payloads,
-                &events,
-            )
-            .is_err()
-            {
-                return;
+            ) {
+                Ok(Some((data, snapshot))) => {
+                    crate::incident::info(
+                        "inventory.native_payload_accepted",
+                        format!(
+                            "source={source} bytes={} snapshot={snapshot:016x}",
+                            payload.len()
+                        ),
+                    );
+                    inventory.replace(data, Instant::now());
+                    if publish_inventory(
+                        inventory.data.as_ref().unwrap(),
+                        game_pid,
+                        "native_http_buffer",
+                        &events,
+                    )
+                    .is_err()
+                    {
+                        return;
+                    }
+                }
+                Ok(None) => {}
+                Err(error) => crate::incident::warn(
+                    "inventory.native_payload_rejected",
+                    format!("source={source} bytes={} error={error}", payload.len()),
+                ),
+            }
+        }
+        for (started, result) in refresh.receiver.try_iter() {
+            match result {
+                Ok(snapshot) => {
+                    let changed = inventory.refresh(snapshot, started);
+                    if !changed.is_empty() {
+                        crate::incident::info(
+                            "inventory.native_state_refreshed",
+                            format!("game_pid={game_pid} fields={}", changed.join(",")),
+                        );
+                        if publish_inventory(
+                            inventory.data.as_ref().unwrap(),
+                            game_pid,
+                            "native_inventory",
+                            &events,
+                        )
+                        .is_err()
+                        {
+                            return;
+                        }
+                    }
+                }
+                Err(error) if Instant::now() >= next_refresh_warning => {
+                    crate::incident::warn("inventory.native_refresh_failed", error);
+                    next_refresh_warning = Instant::now() + Duration::from_secs(60);
+                }
+                Err(_) => {}
             }
         }
         thread::sleep(POINTER_POLL_INTERVAL);
     }
 }
 
-fn publish_payload(
-    payload: &[u8],
-    source: &'static str,
+fn publish_inventory(
+    data: &Value,
     game_pid: u32,
-    prefix: &Path,
-    player_name: &mut Option<String>,
-    seen_payloads: &mut HashSet<u64>,
+    collector: &'static str,
     events: &mpsc::Sender<Event>,
-) -> Result<bool, ()> {
-    let (data, snapshot) =
-        match decode_new_payload(payload, game_pid, prefix, player_name, seen_payloads) {
-            Ok(Some(parsed)) => parsed,
-            Ok(None) => return Ok(false),
-            Err(error) => {
-                crate::incident::warn(
-                    "inventory.native_payload_rejected",
-                    format!("source={source} bytes={} error={error}", payload.len()),
-                );
-                return Ok(false);
-            }
-        };
-    crate::incident::info(
-        "inventory.native_payload_accepted",
-        format!(
-            "source={source} bytes={} snapshot={snapshot:016x}",
-            payload.len()
-        ),
-    );
+) -> Result<(), ()> {
     events
         .send(Event::Inventory {
             game_pid,
-            collector: "native_http_buffer",
+            collector,
             process_pid: game_pid,
-            data,
+            data: data.clone(),
         })
-        .map_err(|_| ())?;
-    Ok(true)
+        .map_err(|_| ())
 }
 
 fn decode_new_payload(
@@ -482,42 +512,21 @@ mod tests {
         let mut player_name = None;
         let prefix = Path::new("/nonexistent");
         let (sender, receiver) = mpsc::channel();
-        assert_eq!(
-            publish_payload(
-                SAMPLE.as_bytes(),
-                "test",
-                42,
-                prefix,
-                &mut player_name,
-                &mut seen,
-                &sender,
-            ),
-            Ok(true)
+        let (first, _) =
+            decode_new_payload(SAMPLE.as_bytes(), 42, prefix, &mut player_name, &mut seen)
+                .unwrap()
+                .unwrap();
+        assert!(
+            decode_new_payload(SAMPLE.as_bytes(), 42, prefix, &mut player_name, &mut seen,)
+                .unwrap()
+                .is_none()
         );
-        assert_eq!(
-            publish_payload(
-                SAMPLE.as_bytes(),
-                "test",
-                42,
-                prefix,
-                &mut player_name,
-                &mut seen,
-                &sender,
-            ),
-            Ok(false)
-        );
-        assert_eq!(
-            publish_payload(
-                changed.as_bytes(),
-                "test",
-                42,
-                prefix,
-                &mut player_name,
-                &mut seen,
-                &sender,
-            ),
-            Ok(true)
-        );
+        let (second, _) =
+            decode_new_payload(changed.as_bytes(), 42, prefix, &mut player_name, &mut seen)
+                .unwrap()
+                .unwrap();
+        publish_inventory(&first, 42, "test", &sender).unwrap();
+        publish_inventory(&second, 42, "test", &sender).unwrap();
 
         let Event::Inventory { data: first, .. } = receiver.recv().unwrap() else {
             panic!("expected first inventory event");
