@@ -197,21 +197,17 @@ impl Sources {
         };
         let mut payloads = Vec::with_capacity(3);
         if let Ok(body) = self.primary_body(mem, manager) {
-            let Some(payload) = changed_c_string(mem, body, &mut state.direct, &mut state.scratch)
-            else {
-                return payloads;
-            };
-            payloads.push(("direct", payload));
+            if let Some(payload) =
+                changed_c_string(mem, body, &mut state.direct, &mut state.scratch)
+            {
+                payloads.push(("direct", payload));
+            }
             if let Ok(indirect) = read_u64(mem, body).and_then(non_null)
                 && let Some(payload) =
                     changed_c_string(mem, indirect, &mut state.indirect, &mut state.scratch)
             {
                 payloads.push(("indirect", payload));
-            } else {
-                return payloads;
             }
-        } else {
-            return payloads;
         }
         if let Ok((data, length)) = self.alternate_response(mem, manager)
             && let Some(payload) = changed_buffer(mem, data, length, &mut state.alternate)
@@ -538,8 +534,17 @@ fn read_c_string(mem: &File, address: u64, scratch: &mut [u8]) -> io::Result<Vec
         let chunk_address = address
             .checked_add(offset as u64)
             .ok_or_else(|| invalid_pointer("Warframe HTTP response"))?;
-        read_exact_at(mem, chunk_address, &mut scratch[offset..end])?;
-        if let Some(relative_end) = memchr(0, &scratch[offset..end]) {
+        let read = match mem.read_at(&mut scratch[offset..end], chunk_address) {
+            Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
+            result => result?,
+        };
+        if read == 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::UnexpectedEof,
+                "Warframe HTTP response",
+            ));
+        }
+        if let Some(relative_end) = memchr(0, &scratch[offset..offset + read]) {
             let payload_end = offset + relative_end;
             if payload_end == 0 {
                 return Err(io::Error::new(
@@ -549,7 +554,7 @@ fn read_c_string(mem: &File, address: u64, scratch: &mut [u8]) -> io::Result<Vec
             }
             return Ok(scratch[..payload_end].to_vec());
         }
-        offset = end;
+        offset += read;
     }
     Err(io::Error::new(
         io::ErrorKind::InvalidData,
@@ -712,6 +717,109 @@ mod tests {
         assert_eq!(payloads[0].1, b"{\"LastInventorySync\":\"live\"}");
         assert!(sources.persistent_payloads(&mem, &mut state).is_empty());
         fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn response_paths_change_independently() {
+        for primary in [false, true] {
+            let mut bytes = vec![0_u8; 0x1000];
+            put_u64(&mut bytes, 0x20, 0x100);
+            if primary {
+                put_u64(&mut bytes, 0x198, 0x300);
+                put_u64(&mut bytes, 0x300, 0x400);
+                put_u64(&mut bytes, 0x400, 0x500);
+                put_u64(&mut bytes, 0x550, 0x700);
+                put_u64(&mut bytes, 0x700, 0x801);
+            }
+            put_u64(&mut bytes, 0x138, 0x200);
+            put_u64(&mut bytes, 0x210, 0x600);
+            put_u64(&mut bytes, 0x600, 0x900);
+            let payload = b"{\"LastInventorySync\":\"live\",\"XP\":1}\0";
+            bytes[0x608..0x60a].copy_from_slice(&((payload.len() - 1) as u16).to_le_bytes());
+            bytes[0x801..0x801 + payload.len()].copy_from_slice(payload);
+            bytes[0x900..0x900 + payload.len()].copy_from_slice(payload);
+            let path = temp_file(&bytes);
+            let mem = OpenOptions::new()
+                .read(true)
+                .write(true)
+                .open(&path)
+                .unwrap();
+            fs::remove_file(path).unwrap();
+            let sources = Sources {
+                manager_global: 0x20,
+                profile_manager_global: None,
+                response: ResponsePath {
+                    queue_table: 0x98,
+                    item_base: 0x18,
+                    body: 0x38,
+                    alternate: 0,
+                },
+            };
+            let mut state = PollState {
+                scratch: vec![0; 128],
+                ..PollState::default()
+            };
+            let initial = sources.persistent_payloads(&mem, &mut state);
+            assert!(initial.iter().any(|(source, _)| *source == "alternate"));
+            if primary {
+                assert!(initial.iter().any(|(source, data)| {
+                    *source == "indirect" && data == &payload[..payload.len() - 1]
+                }));
+                mem.write_all_at(b"2", 0x801 + payload.len() as u64 - 3)
+                    .unwrap();
+                let updates = sources.persistent_payloads(&mem, &mut state);
+                assert!(
+                    updates.iter().any(|(source, data)| {
+                        *source == "indirect" && data.ends_with(b"\"XP\":2}")
+                    }),
+                    "lost indirect update: {updates:?}"
+                );
+            }
+            mem.write_all_at(b"3", 0x900 + payload.len() as u64 - 3)
+                .unwrap();
+            assert_eq!(
+                sources.persistent_payloads(&mem, &mut state),
+                vec![(
+                    "alternate",
+                    b"{\"LastInventorySync\":\"live\",\"XP\":3}".to_vec()
+                )]
+            );
+            assert!(sources.persistent_payloads(&mem, &mut state).is_empty());
+        }
+    }
+
+    #[test]
+    fn reads_terminated_response_at_readable_boundary() {
+        let path = temp_file(b"{\"XP\":1}\0");
+        let mem = File::open(&path).unwrap();
+        fs::remove_file(path).unwrap();
+        let mut scratch = vec![0; RESPONSE_READ_SIZE];
+        assert_eq!(read_c_string(&mem, 0, &mut scratch).unwrap(), b"{\"XP\":1}");
+        assert!(read_c_string(&mem, 0, &mut scratch[..5]).is_err());
+    }
+
+    #[test]
+    #[ignore = "manual GEP read-volume benchmark"]
+    fn benchmark_unchanged_response() {
+        for size in [64 * 1024, 1024 * 1024, MAX_PAYLOAD_SIZE] {
+            let mut payload = vec![b'a'; size];
+            payload.push(0);
+            let path = temp_file(&payload);
+            let mem = File::open(&path).unwrap();
+            fs::remove_file(path).unwrap();
+            let mut state = ChangeState::default();
+            let mut scratch = vec![0; RESPONSE_READ_SIZE];
+            assert!(changed_c_string(&mem, 0, &mut state, &mut scratch).is_some());
+            let start = std::time::Instant::now();
+            for _ in 0..1000 {
+                assert!(changed_c_string(&mem, 0, &mut state, &mut scratch).is_none());
+            }
+            eprintln!(
+                "unchanged_response bytes_per_poll={} mean_us={:.1}",
+                size + 1,
+                start.elapsed().as_secs_f64() * 1000.0
+            );
+        }
     }
 
     #[test]
