@@ -1,20 +1,22 @@
 use std::collections::{BTreeMap, VecDeque};
 use std::io;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Command as ProcessCommand, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, mpsc as std_mpsc};
 use std::thread;
 use std::time::{Duration, Instant};
 
+use futures_util::StreamExt;
 use serde::Serialize;
 use serde_json::Value;
-use tokio::io::{
-    AsyncBufRead, AsyncBufReadExt, AsyncRead, AsyncWrite, AsyncWriteExt, BufReader, Lines,
-};
+#[cfg(test)]
+use tokio::io::{AsyncBufReadExt, BufReader};
+use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt};
 use tokio::net::UnixStream;
 use tokio::sync::mpsc;
 use tokio::time::{self, MissedTickBehavior};
+use tokio_util::codec::FramedRead;
 
 use crate::relic::{CaptureArm, Trigger as RelicTrigger};
 use crate::{UiEvent, incident};
@@ -33,6 +35,10 @@ const WRITE_TIMEOUT: Duration = Duration::from_secs(5);
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 const RELIC_SUGGESTION_LIMIT: u64 = 32;
 const STOP_CHECK_INTERVAL: Duration = Duration::from_secs(1);
+const START_TIMEOUT: Duration = Duration::from_secs(30);
+
+mod framing;
+use framing::ServerFrames;
 
 pub(crate) type OutboundSender = mpsc::UnboundedSender<Outbound>;
 type OutboundReceiver = mpsc::UnboundedReceiver<Outbound>;
@@ -299,7 +305,7 @@ async fn connection_loop(
                     incident::warn("daemon.disconnected", error.to_string());
                     let _ = events.ui.send(UiEvent::Disconnected(error.to_string()));
                     if daemon_outdated {
-                        ensure_daemon();
+                        ensure_daemon(&stopping).await;
                     }
                 }
             }
@@ -314,7 +320,7 @@ async fn connection_loop(
                 )));
                 if !start_attempted {
                     start_attempted = true;
-                    ensure_daemon();
+                    ensure_daemon(&stopping).await;
                 }
             }
         }
@@ -362,7 +368,7 @@ async fn connection_session(
     mode: &'static str,
 ) -> io::Result<()> {
     let (reader, mut writer) = stream.split();
-    let mut reader = BufReader::new(reader).lines();
+    let mut reader = FramedRead::new(reader, ServerFrames::new());
     let interfaces = companion_interfaces();
     let features = ["companion.command", "diagnostics.report"];
     let hello = time::timeout(HANDSHAKE_TIMEOUT, async {
@@ -450,7 +456,7 @@ async fn connection_session(
 
 struct ActiveSession<'a, R, W> {
     writer: &'a mut W,
-    reader: &'a mut Lines<BufReader<R>>,
+    reader: &'a mut FramedRead<R, ServerFrames>,
     outbound: &'a mut OutboundReceiver,
     latest: &'a mut BTreeMap<PublicationKey, Value>,
     events: &'a ServerEvents,
@@ -495,8 +501,8 @@ where
                 }
                 None => return Ok(()),
             },
-            line = reader.next_line() => match line? {
-                Some(line) => handle_server_message(&line, events, pending),
+            message = reader.next() => match message {
+                Some(message) => handle_server_message(message?, events, pending),
                 None => {
                     return Err(io::Error::new(
                         io::ErrorKind::ConnectionReset,
@@ -769,17 +775,16 @@ fn daemon_contract_outdated(message: &Value) -> bool {
     mismatch
 }
 
-async fn read_message<R>(reader: &mut Lines<R>) -> io::Result<Value>
+async fn read_message<R>(reader: &mut FramedRead<R, ServerFrames>) -> io::Result<Value>
 where
-    R: AsyncBufRead + Unpin,
+    R: AsyncRead + Unpin,
 {
-    match reader.next_line().await? {
+    match reader.next().await {
         None => Err(io::Error::new(
             io::ErrorKind::ConnectionReset,
             "daemon closed during handshake",
         )),
-        Some(line) => serde_json::from_str(&line)
-            .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error)),
+        Some(message) => message,
     }
 }
 
@@ -817,13 +822,10 @@ where
 }
 
 fn handle_server_message(
-    line: &str,
+    message: Value,
     events: &ServerEvents,
     pending: &mut BTreeMap<u64, RequestReply>,
 ) {
-    let Ok(message) = serde_json::from_str::<Value>(line) else {
-        return;
-    };
     if message.get("event").and_then(Value::as_str) == Some("command") {
         let data = message.get("data");
         let command = data
@@ -929,18 +931,17 @@ fn send_snapshot(message: &Value, ui: &std_mpsc::Sender<UiEvent>) {
     });
 }
 
-fn ensure_daemon() {
+async fn ensure_daemon(stopping: &AtomicBool) {
     let command = wfcli_command();
     let invocation = format!("{} daemon ensure", command.display());
     let mut process = ProcessCommand::new(&command);
     process.args(["daemon", "ensure"]);
     sanitize_native_child(&mut process);
-    match process
+    process
         .stdin(Stdio::null())
         .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
-    {
+        .stderr(Stdio::null());
+    match run_helper(process, stopping, START_TIMEOUT).await {
         Ok(status) if status.success() => {
             incident::info("daemon.ensure", format!("command={invocation}"));
         }
@@ -953,6 +954,39 @@ fn ensure_daemon() {
             format!("command={invocation} error={error}"),
         ),
     }
+}
+
+async fn run_helper(
+    process: ProcessCommand,
+    stopping: &AtomicBool,
+    timeout: Duration,
+) -> io::Result<std::process::ExitStatus> {
+    if stopping.load(Ordering::Relaxed) {
+        return Err(io::Error::new(
+            io::ErrorKind::Interrupted,
+            "companion stopping",
+        ));
+    }
+    let mut child = tokio::process::Command::from(process)
+        .kill_on_drop(true)
+        .spawn()?;
+    let deadline = time::sleep(timeout);
+    tokio::pin!(deadline);
+    let mut stop_check = time::interval(STOP_CHECK_INTERVAL);
+    stop_check.set_missed_tick_behavior(MissedTickBehavior::Skip);
+    let error = loop {
+        tokio::select! {
+            result = child.wait() => return result,
+            _ = &mut deadline => break io::Error::new(io::ErrorKind::TimedOut, "daemon ensure timed out"),
+            _ = stop_check.tick() => {
+                if stopping.load(Ordering::Relaxed) {
+                    break io::Error::new(io::ErrorKind::Interrupted, "companion stopping");
+                }
+            }
+        }
+    };
+    child.kill().await?;
+    Err(error)
 }
 
 fn sanitize_native_child(process: &mut ProcessCommand) {
@@ -970,18 +1004,25 @@ fn wfcli_command() -> PathBuf {
     if let Some(path) = std::env::var_os("WFCLI_COMMAND") {
         return PathBuf::from(path);
     }
-    if let Ok(current) = std::env::current_dir() {
-        let candidate = current.join("wfcli");
-        if candidate.is_file() {
-            return candidate;
-        }
-    }
-    if let Some(executable) = wfcompanion::executable_path() {
+    find_wfcli(
+        wfcompanion::executable_path(),
+        std::env::current_dir().ok().as_deref(),
+    )
+}
+
+fn find_wfcli(executable: Option<&Path>, current: Option<&Path>) -> PathBuf {
+    if let Some(executable) = executable {
         for ancestor in executable.ancestors() {
             let candidate = ancestor.join("wfcli");
             if candidate.is_file() {
                 return candidate;
             }
+        }
+    }
+    if let Some(current) = current {
+        let candidate = current.join("wfcli");
+        if candidate.is_file() {
+            return candidate;
         }
     }
     PathBuf::from("wfcli")
@@ -994,6 +1035,152 @@ pub(crate) fn daemon_socket_path() -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn broken_frames_fail_pending_requests_and_next_session_recovers() {
+        for response in [
+            b"{invalid}\n".as_slice(),
+            b"{\"id\":10}",
+            b"{\"id\":10,\"ok\":true}\n",
+        ] {
+            let (client, mut server) = UnixStream::pair().unwrap();
+            let (sender, mut outbound) = mpsc::unbounded_channel();
+            let (reply, result) = std_mpsc::channel();
+            let mut queued = VecDeque::from([Outbound::DatasetGet {
+                dataset: "player",
+                reply: RequestReply::new(reply),
+            }]);
+            let mut latest = BTreeMap::new();
+            let (events, _, _) = server_events();
+            let stopping = AtomicBool::new(false);
+            let session = connection_session(
+                client,
+                &mut outbound,
+                &mut latest,
+                &mut queued,
+                &events,
+                &stopping,
+                "standalone",
+            );
+            let serve = async {
+                let (read, mut write) = server.split();
+                let mut frames = FramedRead::new(read, ServerFrames::new());
+                assert_eq!(frames.next().await.unwrap().unwrap()["op"], "hello");
+                let mut hello = serde_json::to_vec(&serde_json::json!({
+                    "id": 1, "ok": true, "compatible": true, "envelope": ENVELOPE_VERSION,
+                    "interfaces": companion_interfaces()
+                }))
+                .unwrap();
+                hello.push(b'\n');
+                write.write_all(&hello).await.unwrap();
+                for id in [2, 3, 10] {
+                    assert_eq!(frames.next().await.unwrap().unwrap()["id"], id);
+                }
+                write.write_all(response).await.unwrap();
+                write.shutdown().await.unwrap();
+            };
+            let (session_result, ()) = time::timeout(Duration::from_secs(2), async {
+                tokio::join!(session, serve)
+            })
+            .await
+            .unwrap();
+            assert!(session_result.is_err());
+            assert!(queued.is_empty());
+            let reply = result.try_recv().unwrap();
+            if response == b"{\"id\":10,\"ok\":true}\n" {
+                assert_eq!(reply.unwrap()["id"], 10);
+            } else {
+                assert_eq!(reply, Err("daemon connection closed".to_owned()));
+            }
+            drop(sender);
+        }
+    }
+
+    #[tokio::test]
+    async fn partial_frame_does_not_block_shutdown() {
+        let (mut client, mut server) = UnixStream::pair().unwrap();
+        let (read, mut write) = client.split();
+        let mut reader = FramedRead::new(read, ServerFrames::new());
+        server.write_all(b"{\"id\":").await.unwrap();
+        let (_sender, mut outbound) = mpsc::unbounded_channel();
+        let (events, _, _) = server_events();
+        let stopping = AtomicBool::new(true);
+        let mut latest = BTreeMap::new();
+        let mut pending = BTreeMap::new();
+        time::timeout(
+            Duration::from_secs(2),
+            active_session(ActiveSession {
+                reader: &mut reader,
+                writer: &mut write,
+                outbound: &mut outbound,
+                latest: &mut latest,
+                pending: &mut pending,
+                events: &events,
+                stopping: &stopping,
+                next_id: 10,
+                diagnostics_report: false,
+            }),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn helper_timeout_and_stop_leave_async_runtime_responsive() {
+        let stopping = AtomicBool::new(false);
+        let mut command = ProcessCommand::new("sleep");
+        command.arg("60");
+        let helper = run_helper(command, &stopping, Duration::from_millis(30));
+        let (result, ()) = tokio::join!(helper, async {
+            time::sleep(Duration::from_millis(1)).await;
+        });
+        assert_eq!(result.unwrap_err().kind(), io::ErrorKind::TimedOut);
+        let mut command = ProcessCommand::new("sleep");
+        command.arg("60");
+        let (result, ()) = time::timeout(Duration::from_secs(3), async {
+            tokio::join!(
+                run_helper(command, &stopping, Duration::from_secs(30)),
+                async {
+                    time::sleep(Duration::from_millis(1)).await;
+                    stopping.store(true, Ordering::Relaxed);
+                }
+            )
+        })
+        .await
+        .unwrap();
+        assert_eq!(result.unwrap_err().kind(), io::ErrorKind::Interrupted);
+    }
+
+    #[test]
+    fn daemon_start_uses_companions_install_prefix() {
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let root =
+            std::env::temp_dir().join(format!("wfcompanion-cli-{}-{unique}", std::process::id()));
+        for directory in ["", "dev/bin", "prod/bin"] {
+            std::fs::create_dir_all(root.join(directory)).unwrap();
+            std::fs::write(root.join(directory).join("wfcli"), b"").unwrap();
+        }
+        let selected: Vec<_> = ["dev", "prod"]
+            .into_iter()
+            .map(|mode| {
+                let bin = root.join(mode).join("bin");
+                (
+                    find_wfcli(Some(&bin.join("wfcompanion")), Some(&root)),
+                    bin.join("wfcli"),
+                )
+            })
+            .collect();
+        assert_eq!(find_wfcli(None, Some(&root)), root.join("wfcli"));
+        assert_eq!(find_wfcli(None, None), PathBuf::from("wfcli"));
+        std::fs::remove_dir_all(root).unwrap();
+        for (actual, expected) in selected {
+            assert_eq!(actual, expected);
+        }
+    }
 
     fn server_events() -> (
         ServerEvents,
@@ -1093,7 +1280,7 @@ mod tests {
         runtime.block_on(async {
             let (mut client, server) = UnixStream::pair().unwrap();
             let (reader, mut writer) = client.split();
-            let mut reader = BufReader::new(reader).lines();
+            let mut reader = FramedRead::new(reader, ServerFrames::new());
             let mut server = BufReader::new(server).lines();
             let (sender, mut outbound) = mpsc::unbounded_channel();
             let (events, _ui_events, _relic_events) = server_events();
@@ -1184,7 +1371,7 @@ mod tests {
 
             let (events, _ui_events, _relic_events) = server_events();
             handle_server_message(
-                r#"{"id":10,"ok":true,"data":{"data":{"schema":2}}}"#,
+                serde_json::json!({"id":10,"ok":true,"data":{"data":{"schema":2}}}),
                 &events,
                 &mut pending,
             );
@@ -1311,7 +1498,7 @@ mod tests {
         let (reply, result) = std_mpsc::channel();
         let mut pending = BTreeMap::from([(17, RequestReply::new(reply))]);
         handle_server_message(
-            r#"{"id":17,"ok":true,"data":{"matches":[]}}"#,
+            serde_json::json!({"id":17,"ok":true,"data":{"matches":[]}}),
             &events,
             &mut pending,
         );
@@ -1325,7 +1512,7 @@ mod tests {
         let mut pending = BTreeMap::new();
 
         handle_server_message(
-            r#"{"event":"command","data":{"command":"overlay","visible":false}}"#,
+            serde_json::json!({"event":"command","data":{"command":"overlay","visible":false}}),
             &events,
             &mut pending,
         );
@@ -1335,7 +1522,7 @@ mod tests {
         ));
 
         handle_server_message(
-            r#"{"event":"command","data":{"command":"hud","visible":true}}"#,
+            serde_json::json!({"event":"command","data":{"command":"hud","visible":true}}),
             &events,
             &mut pending,
         );
@@ -1351,7 +1538,7 @@ mod tests {
         let mut pending = BTreeMap::new();
 
         handle_server_message(
-            r#"{"event":"asset","data":{"source":"market","image_name":"item.webp","path":"/cache/item.webp","digest":"new"}}"#,
+            serde_json::json!({"event":"asset","data":{"source":"market","image_name":"item.webp","path":"/cache/item.webp","digest":"new"}}),
             &events,
             &mut pending,
         );
@@ -1370,7 +1557,7 @@ mod tests {
         let mut pending = BTreeMap::new();
 
         handle_server_message(
-            r#"{"event":"command","data":{"command":"capture","action":"arm","target":"relic_reward","directory":"/tmp/reward","timeout_ms":9000}}"#,
+            serde_json::json!({"event":"command","data":{"command":"capture","action":"arm","target":"relic_reward","directory":"/tmp/reward","timeout_ms":9000}}),
             &events,
             &mut pending,
         );

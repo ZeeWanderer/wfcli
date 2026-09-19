@@ -8,6 +8,7 @@ description = "Linux/Proton Warframe observer and overlay companion for wfdaemon
 build = "build.rs"
 
 [dependencies]
+bytes = "1"
 clap = { version = "4.6", features = ["derive"] }
 clap_complete = "4.6"
 ashpd = { version = "0.13.13", default-features = false, features = ["global_shortcuts", "tokio"] }
@@ -24,7 +25,8 @@ sha2 = "0.10"
 smithay-client-toolkit = { version = "0.20", default-features = false, features = ["calloop"] }
 steamlocate = "2.1"
 taffy = { version = "0.12.2", default-features = false, features = ["std", "taffy_tree", "flexbox", "grid"] }
-tokio = { version = "1", features = ["io-util", "macros", "net", "rt", "sync", "time"] }
+tokio = { version = "1", features = ["io-util", "macros", "net", "process", "rt", "sync", "time"] }
+tokio-util = { version = "0.7.19", features = ["codec"] }
 wayland-client = "0.31"
 x11rb = "0.13"
 zbus = { version = "5.18.0", default-features = false, features = ["blocking-api", "tokio"] }
