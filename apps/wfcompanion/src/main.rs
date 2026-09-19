@@ -78,10 +78,11 @@ pub(crate) enum UiEvent {
     OverlayVisible(bool),
     HudVisible(bool),
     RelicScene {
+        context: relic::Context,
         scene: relic::Scene,
         deadline: Option<Instant>,
     },
-    RelicSuggestionStart,
+    RelicStart(relic::Context),
     RelicDismiss,
     InteractionToggle,
     Shutdown,
@@ -223,8 +224,9 @@ fn run_overlay(
     let (relic_tx, relic_rx) = mpsc::channel();
     let outbound = daemon::spawn(ui_tx.clone(), relic_tx.clone(), Arc::clone(&stopping), mode);
     let observer = observer::spawn(outbound.clone(), relic_tx.clone(), Arc::clone(&stopping));
-    relic::spawn(
+    let relic_worker = relic::spawn(
         relic_rx,
+        relic_tx.clone(),
         outbound.clone(),
         ui_tx.clone(),
         Arc::clone(&stopping),
@@ -241,6 +243,9 @@ fn run_overlay(
     stopping.store(true, Ordering::Relaxed);
     if observer.join().is_err() {
         incident::warn("observer.shutdown_failed", "observer thread panicked");
+    }
+    if relic_worker.join().is_err() {
+        incident::warn("relic.shutdown_failed", "relic thread panicked");
     }
     incident::info("process.stop", format!("mode={mode}"));
     result.map_err(|error| error.to_string())

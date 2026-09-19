@@ -1,3 +1,4 @@
+mod assets;
 mod renderer;
 mod runtime;
 mod scene;

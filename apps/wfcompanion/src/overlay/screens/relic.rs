@@ -1,19 +1,15 @@
 use std::collections::BTreeMap;
-use std::fs;
+use std::sync::Arc;
 use std::time::Duration;
 
-use fontdue::Font;
-use serde_json::{Value, json};
-
-use crate::incident;
+use crate::overlay::assets::SceneAssets;
 use crate::painter::{Painter, RasterImage, load_icon};
 use crate::ui::ScreenOutput;
+use fontdue::Font;
 
 mod fixture;
 mod reward;
 mod suggestion;
-
-const MAX_DECODED_ASSETS: usize = 128;
 
 struct SuggestionIcons {
     trace: RasterImage,
@@ -36,8 +32,7 @@ pub(super) struct Assets {
     ducat_icon: RasterImage,
     icons: SuggestionIcons,
     permanent_images: BTreeMap<String, RasterImage>,
-    scene_images: BTreeMap<String, RasterImage>,
-    asset_issues: BTreeMap<String, Value>,
+    pub(super) scene_assets: SceneAssets,
 }
 
 impl Assets {
@@ -47,70 +42,15 @@ impl Assets {
             ducat_icon: load_icon(include_bytes!("../../../assets/ducats.png"))?,
             icons: SuggestionIcons::load()?,
             permanent_images: permanent_images()?,
-            scene_images: BTreeMap::new(),
-            asset_issues: BTreeMap::new(),
+            scene_assets: SceneAssets::default(),
         })
     }
 
-    pub(super) fn cache_scene(&mut self, scene: &crate::relic::Scene) -> Vec<Value> {
-        let crate::relic::Scene::Rewards(rewards) = scene else {
-            self.scene_images.clear();
-            self.asset_issues.clear();
-            return Vec::new();
-        };
-
-        let requested = rewards
-            .items
-            .iter()
-            .flat_map(|reward| {
-                reward
-                    .asset
-                    .iter()
-                    .chain(reward.parts.iter().filter_map(|part| part.asset.as_ref()))
-            })
-            .map(|asset| (asset.digest.clone(), asset))
-            .collect::<BTreeMap<_, _>>();
-        self.scene_images
-            .retain(|digest, _| requested.contains_key(digest));
-        self.asset_issues
-            .retain(|id, _| requested.values().any(|asset| asset.id == *id));
-
-        for (digest, asset) in requested.into_iter().take(MAX_DECODED_ASSETS) {
-            if self.permanent_images.contains_key(&digest)
-                || self.scene_images.contains_key(&digest)
-            {
-                self.asset_issues.remove(&asset.id);
-                continue;
-            }
-            let image = fs::read(&asset.path)
-                .map_err(|error| format!("{}: {error}", asset.path))
-                .and_then(|bytes| load_icon(&bytes).map_err(|error| error.to_string()));
-            match image {
-                Ok(image) => {
-                    self.scene_images.insert(digest, image);
-                    self.asset_issues.remove(&asset.id);
-                }
-                Err(error) => {
-                    incident::warn(
-                        "overlay.asset_decode_failed",
-                        format!("id={} error={error}", asset.id),
-                    );
-                    self.asset_issues.insert(
-                        asset.id.clone(),
-                        json!({
-                            "kind": "asset_decode",
-                            "identity": asset.id,
-                            "reason": error,
-                            "fallback": asset.image_name,
-                            "class": "companion"
-                        }),
-                    );
-                }
-            }
-        }
-        self.asset_issues.values().cloned().collect()
+    #[cfg(test)]
+    fn cache_scene(&mut self, scene: &crate::relic::Scene) -> Vec<serde_json::Value> {
+        self.scene_assets.prepare(scene, || true);
+        self.scene_assets.issues.clone()
     }
-
     fn resources<'a>(&'a self, font: &'a Font) -> Resources<'a> {
         Resources {
             font,
@@ -118,7 +58,7 @@ impl Assets {
             ducat_icon: &self.ducat_icon,
             icons: &self.icons,
             permanent_images: &self.permanent_images,
-            scene_images: &self.scene_images,
+            scene_images: &self.scene_assets.images,
         }
     }
 }
@@ -129,14 +69,14 @@ struct Resources<'a> {
     ducat_icon: &'a RasterImage,
     icons: &'a SuggestionIcons,
     permanent_images: &'a BTreeMap<String, RasterImage>,
-    scene_images: &'a BTreeMap<String, RasterImage>,
+    scene_images: &'a BTreeMap<String, Arc<RasterImage>>,
 }
 
 impl Resources<'_> {
     fn asset_image(&self, digest: &str) -> Option<&RasterImage> {
         self.permanent_images
             .get(digest)
-            .or_else(|| self.scene_images.get(digest))
+            .or_else(|| self.scene_images.get(digest).map(Arc::as_ref))
     }
 }
 
@@ -255,7 +195,7 @@ mod tests {
             "Systems",
         ] {
             let asset = fixture::part_asset(name).unwrap();
-            assert!(assets.scene_images.contains_key(&asset.digest));
+            assert!(assets.scene_assets.images.contains_key(&asset.digest));
         }
     }
 

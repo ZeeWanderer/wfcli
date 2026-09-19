@@ -3,8 +3,8 @@ mod status;
 
 use std::time::Duration;
 
+use super::assets::SceneAssets;
 use fontdue::Font;
-use serde_json::Value;
 
 use super::scene::Scene;
 use crate::painter::Painter;
@@ -25,8 +25,8 @@ impl Assets {
         })
     }
 
-    pub(super) fn cache_relic_scene(&mut self, scene: &crate::relic::Scene) -> Vec<Value> {
-        self.relic.cache_scene(scene)
+    pub(super) fn set_relic_assets(&mut self, assets: SceneAssets) {
+        self.relic.scene_assets = assets;
     }
 }
 

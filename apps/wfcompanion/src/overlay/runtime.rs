@@ -98,6 +98,7 @@ pub(crate) fn run(
         interactive_input_region,
         themed_pointer: None,
         renderer,
+        asset_loader: super::assets::Loader::spawn(),
         pool,
         buffers: Vec::new(),
         width: STATUS_SURFACE_WIDTH,
@@ -116,6 +117,7 @@ pub(crate) fn run(
         snapshots: BTreeMap::new(),
         connection_error: None,
         relic_scene: None,
+        relic_context: None,
         suggestion_dismissed: false,
         last_loading_frame: Instant::now() - LOADING_FRAME_INTERVAL,
         frame_pending: false,
@@ -164,6 +166,7 @@ struct Overlay {
     interactive_input_region: Region,
     themed_pointer: Option<ThemedPointer>,
     renderer: Renderer,
+    asset_loader: super::assets::Loader,
     pool: SlotPool,
     buffers: Vec<SurfaceBuffer>,
     width: u32,
@@ -182,6 +185,7 @@ struct Overlay {
     snapshots: BTreeMap<String, Value>,
     connection_error: Option<String>,
     relic_scene: Option<(crate::relic::Scene, Option<Instant>, Instant)>,
+    relic_context: Option<crate::relic::Context>,
     suggestion_dismissed: bool,
     last_loading_frame: Instant,
     frame_pending: bool,
@@ -216,6 +220,18 @@ impl Overlay {
     fn report_asset_issues(&mut self, issues: Vec<Value>) {
         if self.reported_asset_issues.as_ref() == Some(&issues) {
             return;
+        }
+        for issue in &issues {
+            if self
+                .reported_asset_issues
+                .as_ref()
+                .is_none_or(|previous| !previous.contains(issue))
+            {
+                incident::warn(
+                    "overlay.asset_decode_failed",
+                    format!("id={} error={}", issue["identity"], issue["reason"]),
+                );
+            }
         }
         crate::daemon::report_diagnostics(&self.daemon, issues.clone());
         self.reported_asset_issues = Some(issues);
@@ -252,6 +268,14 @@ impl Overlay {
     fn tick(&mut self, queue_handle: &QueueHandle<Self>) {
         self.apply_events();
         self.expire_scene();
+        if let Some(assets) = self.asset_loader.poll() {
+            self.report_asset_issues(assets.issues.clone());
+            self.renderer.install_scene_assets(assets);
+            for buffer in &mut self.buffers {
+                buffer.frame_key = None;
+            }
+            self.request_full_redraw();
+        }
         self.update_focus();
         self.sync_shortcut_scope();
         self.animate_loading();
@@ -293,8 +317,7 @@ impl Overlay {
                         Some(changed) => {
                             if changed {
                                 let scene = &self.relic_scene.as_ref().unwrap().0;
-                                let issues = self.renderer.cache_scene_assets(scene);
-                                self.report_asset_issues(issues);
+                                self.asset_loader.request(scene.clone());
                                 self.request_full_redraw();
                             }
                         }
@@ -317,9 +340,18 @@ impl Overlay {
                     self.request_full_redraw();
                 }
                 UiEvent::RelicScene {
+                    context,
                     mut scene,
                     deadline,
                 } => {
+                    if !context.is_current()
+                        || self
+                            .relic_context
+                            .as_ref()
+                            .is_none_or(|current| current.generation != context.generation)
+                    {
+                        continue;
+                    }
                     if self.suggestion_dismissed
                         && matches!(scene, crate::relic::Scene::Suggestions(_))
                     {
@@ -365,8 +397,7 @@ impl Overlay {
                     );
                     self.pending_asset_refreshes
                         .retain(|_, refresh| scene.apply_asset_refresh(refresh).is_none());
-                    let issues = self.renderer.cache_scene_assets(&scene);
-                    self.report_asset_issues(issues);
+                    self.asset_loader.request(scene.clone());
                     if matches!(scene, crate::relic::Scene::Suggestions(_))
                         && !updates_current_suggestions
                     {
@@ -375,16 +406,26 @@ impl Overlay {
                     self.relic_scene = Some((scene, deadline, started));
                     self.request_full_redraw();
                 }
-                UiEvent::RelicSuggestionStart => {
+                UiEvent::RelicStart(context) => {
+                    if !context.is_current() {
+                        continue;
+                    }
+                    self.relic_context = Some(context);
+                    self.relic_scene = None;
+                    self.asset_loader.request(crate::relic::Scene::Reading);
                     self.suggestion_dismissed = false;
+                    self.request_full_redraw();
                 }
                 UiEvent::RelicDismiss => {
-                    self.suggestion_dismissed = false;
-                    if self.relic_scene.as_ref().is_some_and(|(scene, _, _)| {
-                        matches!(scene, crate::relic::Scene::Suggestions(_))
-                    }) {
+                    if self
+                        .relic_context
+                        .as_ref()
+                        .is_none_or(|context| !context.is_current())
+                    {
                         incident::info("overlay.scene", "kind=dismissed");
                         self.relic_scene = None;
+                        self.relic_context = None;
+                        self.asset_loader.request(crate::relic::Scene::Reading);
                         self.request_full_redraw();
                     }
                 }
@@ -406,9 +447,15 @@ impl Overlay {
             .relic_scene
             .as_ref()
             .is_some_and(|(_, expires, _)| expires.is_some_and(|expires| Instant::now() >= expires))
+            || (self.relic_scene.is_some()
+                && self
+                    .relic_context
+                    .as_ref()
+                    .is_some_and(|context| !context.is_current()))
         {
             incident::info("overlay.scene_expired", "relic");
             self.relic_scene = None;
+            self.asset_loader.request(crate::relic::Scene::Reading);
             self.request_full_redraw();
         }
     }
@@ -497,7 +544,7 @@ impl Overlay {
     fn hit_target(&self, target: HitTarget, position: (f64, f64)) -> bool {
         self.renderer
             .frame()
-            .is_some_and(|frame| frame.output.contains(target, position))
+            .is_some_and(|frame| frame.contains_surface_point(target, position))
     }
 
     fn scroll_suggestions(&mut self, delta: f64) {
@@ -522,7 +569,12 @@ impl Overlay {
         {
             incident::info("overlay.scene", "kind=closed");
             self.suggestion_dismissed = true;
-            let _ = self.relic.send(crate::relic::Trigger::DismissSuggestions);
+            if let Some(context) = &self.relic_context {
+                context.cancel();
+                let _ = self.relic.send(crate::relic::Trigger::DismissSuggestions {
+                    generation: context.generation,
+                });
+            }
             self.relic_scene = None;
             self.set_interaction(false);
             self.request_full_redraw();

@@ -16,10 +16,14 @@ pub(super) fn capture_trigger(trigger: &Trigger) -> Result<DynamicImage, String>
         }
         Trigger::Suggestions { .. }
         | Trigger::CloseSuggestions
-        | Trigger::DismissSuggestions
+        | Trigger::DismissSuggestions { .. }
         | Trigger::ArmCapture(_)
         | Trigger::CancelCapture
-        | Trigger::GameStopped => Err("trigger does not contain a reward capture".to_owned()),
+        | Trigger::GameStopped
+        | Trigger::SuggestionReady { .. }
+        | Trigger::WorkFinished { .. } => {
+            Err("trigger does not contain a reward capture".to_owned())
+        }
     }
 }
 

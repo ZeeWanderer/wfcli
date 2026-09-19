@@ -17,11 +17,22 @@ pub(crate) enum Trigger {
         observed_at: Instant,
     },
     CloseSuggestions,
-    DismissSuggestions,
+    DismissSuggestions {
+        generation: u64,
+    },
     Screenshot(PathBuf),
     ArmCapture(CaptureArm),
     CancelCapture,
     GameStopped,
+    SuggestionReady {
+        generation: u64,
+        era: String,
+    },
+    WorkFinished {
+        generation: u64,
+        era: Option<String>,
+        failed: bool,
+    },
 }
 
 #[derive(Clone, Debug)]

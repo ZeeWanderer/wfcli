@@ -32,6 +32,18 @@ pub(super) struct Frame {
     pub(super) output: ScreenOutput,
 }
 
+impl Frame {
+    pub(super) fn contains_surface_point(
+        &self,
+        target: crate::ui::HitTarget,
+        position: (f64, f64),
+    ) -> bool {
+        let scale = f64::from(self.key.scale);
+        self.output
+            .contains(target, (position.0 * scale, position.1 * scale))
+    }
+}
+
 impl Renderer {
     pub(super) fn load() -> Result<Self, Box<dyn std::error::Error>> {
         Ok(Self {
@@ -45,7 +57,16 @@ impl Renderer {
         &mut self,
         scene: &crate::relic::Scene,
     ) -> Vec<serde_json::Value> {
-        self.assets.cache_relic_scene(scene)
+        let mut assets = super::assets::SceneAssets::default();
+        assets.prepare(scene, || true);
+        let issues = assets.issues.clone();
+        self.install_scene_assets(assets);
+        issues
+    }
+
+    pub(super) fn install_scene_assets(&mut self, assets: super::assets::SceneAssets) {
+        self.assets.set_relic_assets(assets);
+        self.frame = None;
     }
 
     pub(super) fn prepare_frame(&mut self, key: FrameKey) -> Result<bool, String> {
@@ -374,6 +395,43 @@ mod tests {
         assert!(output.contains(crate::ui::HitTarget::Close, (2503.0, 30.0)));
         assert!(output.contains(crate::ui::HitTarget::Scroll, (2062.0, 66.0)));
         assert!(!output.contains(crate::ui::HitTarget::Content, (2059.0, 20.0)));
+    }
+
+    #[test]
+    fn scaled_suggestion_frame_accepts_surface_coordinates() {
+        let mut renderer = Renderer::load().unwrap();
+        for scale in [1, 2] {
+            renderer
+                .prepare_frame(FrameKey {
+                    width: 1280 * scale,
+                    height: 720 * scale,
+                    scale,
+                    scene: Scene::Relic {
+                        content: crate::relic::suggestion_fixture().unwrap(),
+                        view: RelicView {
+                            suggestion_offset: 0,
+                            interaction_active: true,
+                            close_hovered: false,
+                        },
+                    },
+                })
+                .unwrap();
+            let frame = renderer.frame().unwrap();
+            for region in &frame.output.hit_regions {
+                let bounds = region.bounds;
+                let divisor = f64::from(scale);
+                let center = (
+                    (f64::from(bounds.x) + f64::from(bounds.width) / 2.0) / divisor,
+                    (f64::from(bounds.y) + f64::from(bounds.height) / 2.0) / divisor,
+                );
+                assert!(
+                    frame.contains_surface_point(region.target, center),
+                    "scale={scale}"
+                );
+                let outside = (f64::from(bounds.x + bounds.width) / divisor, center.1);
+                assert!(!frame.contains_surface_point(region.target, outside));
+            }
+        }
     }
 
     #[test]

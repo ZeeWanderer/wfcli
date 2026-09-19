@@ -293,10 +293,36 @@ impl<'a> Painter<'a> {
     }
 }
 
+#[derive(Debug)]
 pub(crate) struct RasterImage {
     pixels: Vec<u8>,
     width: u32,
     height: u32,
+}
+
+impl RasterImage {
+    pub(crate) fn byte_len(&self) -> usize {
+        self.pixels.len()
+    }
+
+    fn from_rgba(image: image::RgbaImage) -> Self {
+        let (width, height) = image.dimensions();
+        let mut pixels = image.into_raw();
+        for pixel in pixels.chunks_exact_mut(4) {
+            let [red, green, blue, alpha] = [pixel[0], pixel[1], pixel[2], pixel[3]];
+            pixel.copy_from_slice(&[
+                premultiply(blue, alpha),
+                premultiply(green, alpha),
+                premultiply(red, alpha),
+                alpha,
+            ]);
+        }
+        Self {
+            pixels,
+            width,
+            height,
+        }
+    }
 }
 
 pub(crate) fn fit_text_size(
@@ -320,22 +346,28 @@ pub(crate) fn text_width(font: &Font, text: &str, size: f32) -> f32 {
 }
 
 pub(crate) fn load_icon(bytes: &[u8]) -> Result<RasterImage, Box<dyn std::error::Error>> {
-    let image = image::load_from_memory(bytes)?.into_rgba8();
-    let mut pixels = Vec::with_capacity(image.len());
-    for pixel in image.pixels() {
-        let [red, green, blue, alpha] = pixel.0;
-        pixels.extend_from_slice(&[
-            premultiply(blue, alpha),
-            premultiply(green, alpha),
-            premultiply(red, alpha),
-            alpha,
-        ]);
+    Ok(RasterImage::from_rgba(
+        image::load_from_memory(bytes)?.into_rgba8(),
+    ))
+}
+
+pub(crate) fn load_scene_icon(
+    path: &str,
+    budget: usize,
+) -> Result<RasterImage, Box<dyn std::error::Error>> {
+    use image::ImageDecoder;
+    let mut reader = image::ImageReader::open(path)?.with_guessed_format()?;
+    let mut limits = image::Limits::default();
+    limits.max_alloc = Some(64 * 1024 * 1024);
+    reader.limits(limits);
+    let decoder = reader.into_decoder()?;
+    let (width, height) = decoder.dimensions();
+    if u64::from(width) * u64::from(height) * 4 > budget as u64 {
+        return Err("image exceeds decoded asset budget".into());
     }
-    Ok(RasterImage {
-        pixels,
-        width: image.width(),
-        height: image.height(),
-    })
+    Ok(RasterImage::from_rgba(
+        image::DynamicImage::from_decoder(decoder)?.into_rgba8(),
+    ))
 }
 
 pub(crate) fn load_overlay_font() -> Result<Font, Box<dyn std::error::Error>> {

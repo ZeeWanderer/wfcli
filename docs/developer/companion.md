@@ -17,15 +17,18 @@ Overlay state stays native. Canonical player state stays in the daemon.
 - `game_observer/`: process identity, scoped memory reads, explicit movie diagnostics,
   and caller-driven UI transition tracking.
 - `observer.rs`, `debug_output.rs`: bridge lifecycle and observation policy.
-- `inventory.rs`: read-only account-buffer discovery, tolerant parsing, and
-  typed indexes.
+- `inventory.rs`: account-buffer parsing and inventory publication.
+- `game_observer/inventory.rs`, `inventory/refresh.rs`: native foundry reads and
+  reconciliation with the full inventory snapshot.
 - `daemon.rs`: local JSON-lines client, reconnect, replay, and request routing.
 - `capture.rs`, `relic.rs`: KWin window capture, crop detection, OCR, and relic
   scene construction.
+- `relic/lifecycle.rs`: context cancellation and bounded scene workers.
 - `focus.rs`: exact Warframe window and process gate.
 - `overlay/runtime.rs`: layer shell, SHM buffers, frame callbacks, input, focus,
   and damage.
 - `overlay/renderer.rs`: fonts, static frame cache, dispatch, and previews.
+- `overlay/assets.rs`: background image preparation and decoded-image budget.
 - `overlay/scene.rs`: top-level scene and presentation state.
 - `overlay/screens/`: complete screen painting and hit regions.
 - `ui/layout.rs`: named Taffy tree and resolved geometry.
@@ -35,6 +38,13 @@ Overlay state stays native. Canonical player state stays in the daemon.
 
 Observer work runs off the UI thread. New collectors publish a separate source
 namespace instead of extending one untyped payload.
+
+Resource stacks (`MiscItems`), blueprint stacks (`Recipes`) and foundry jobs
+(`PendingRecipes`) refresh from native state once per second on a separate worker.
+Reads are bounded, executable-keyed and checked for concurrent mutation. A refresh
+must match the full inventory's `LastInventorySync` and start after its receipt.
+These collections use absolute replacement, preserving unknown per-item fields;
+HTTP `InventoryChanges` deltas are never summed. Only changed state is published.
 
 `TransitionTracker` has no timer. A future bounded registry watch feeds it at a
 profiled cadence; production must not run exploratory heap scans or add periodic
@@ -83,16 +93,30 @@ New, resized, or invalidated buffers receive one full static-frame copy.
 `wl_buffer.release` controls buffer reuse; frame callbacks control submission
 timing; damage controls compositor repainting.
 
+One background worker reads and decodes scene assets, sharing immutable pixels
+by digest. Each prepared scene is limited to 64 MiB, each image to 16 MiB.
+The prior scene can remain resident while its replacement loads. Apply only the
+latest asset revision, then invalidate both the static frame and every surface
+buffer's cache key. File reads and image decoding must not run on Wayland's thread.
+
 Blend2D remains synchronous because icons and fontdue glyph masks are borrowed
 for each draw call. Its asynchronous multithreaded context requires owned
 source lifetimes through `Painter::finish` and is not useful for the current
 cached workload.
 
-Passive mode has no pointer region. Interactive mode enables only screen
-reported hit regions. Layer-shell margins remain zero so a persistent pointer
-position cannot fall into an uncapturable compositor gap.
+Passive mode has no pointer region. Interactive mode captures the surface;
+screen hit regions route actions. Hit rectangles use buffer pixels; convert
+Wayland surface-local pointer positions with the rendered frame's scale before
+testing them. Layer-shell margins remain zero so a persistent pointer position
+cannot fall into an uncapturable compositor gap.
 
 ## Relic Pipeline
+
+The trigger owner handles close, dismissal and game-stop without waiting for
+capture, OCR or daemon requests. At most two scene workers run, with one latest
+pending job. Every result carries a cancellable context through UI acceptance;
+workers also check cancellation between stages. Reward expiry is measured from
+the original event, not completion of a delayed request.
 
 Reward flow:
 
@@ -149,8 +173,10 @@ Events:
 - `command`: overlay diagnostic command
 - `asset`: refreshed asset descriptor
 
-Messages are capped at 8 MiB. Socket parent mode is `0700`; socket mode is
-`0600`. Same-user clients are trusted. Player data does not enter Erlang
+Daemon input frames are capped at 8 MiB; companion receive frames at 64 MiB.
+Partial frames survive cancelled reads. Malformed JSON, oversized frames and
+EOF before a newline close the connection and fail pending requests.
+Socket parent mode is `0700`; socket mode is `0600`. Same-user clients are trusted. Player data does not enter Erlang
 distribution or terminal formatting contracts.
 
 `companion.command` and `diagnostics.report` are optional negotiated features.
@@ -163,8 +189,8 @@ wire adapters.
 Launch mode keeps companion tied to the Steam child and gives the inventory
 collector ptrace ancestry. Standalone mode is managed by the CLI.
 
-Shutdown joins the observer, releases its DBWIN helper/subscriber and reader,
-then waits for memory collectors. Resource-owning workers must not be detached
+Shutdown joins asset and relic workers and the observer, releasing its DBWIN
+helper/subscriber and reader before waiting for memory collectors. Resource-owning workers must not be detached
 from application lifetime.
 
 Capture the executable path at startup and use `wfcompanion::executable_path()` for sibling
@@ -172,7 +198,9 @@ tools. Prefix activation can move the running executable's `/proc/self/exe` path
 lookup must continue using the installed prefix.
 
 Companion starts or reconnects to the daemon without passing Proton loader
-variables into BEAM. Reconnect replays latest observations for every owned
+variables into BEAM. The startup helper runs asynchronously with a 30-second
+deadline and is killed and reaped on timeout or shutdown.
+Reconnect replays latest observations for every owned
 namespace. An active companion connection keeps an implicitly started daemon
 alive.
 
