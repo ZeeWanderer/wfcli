@@ -198,6 +198,7 @@ terminate(_Reason, _State) ->
 -doc "OTP hot-upgrade hook. Real state migration belongs here once appup/relup exists.".
 -spec code_change(term(), state(), term()) -> {ok, state()}.
 code_change(_OldVsn, State, _Extra) ->
+    wfcli_incident_log:install(),
     Update = case maps:get(artifact_update, State, false) of
         #{artifact_id := _, monitor := _, pid := _} = Active -> Active;
         _ -> false

@@ -195,7 +195,7 @@ complete_job(#{reply := {client, Client, Ref, Monitor}}, Result, State) ->
     erlang:demonitor(Monitor, [flush]),
     wfcli_worldstate_service:activity_end(),
     State#{client_monitors => maps:remove(Monitor, maps:get(client_monitors, State))};
-complete_job(#{reply := none}, {ok, #{success := true}}, State) ->
+complete_job(#{reply := none}, {ok, _}, State) ->
     State;
 complete_job(#{reply := none}, Result, State) ->
     logger:warning("automatic knowledge refresh failed: ~p", [Result]),
@@ -311,10 +311,19 @@ unique([Value | Rest], Acc) ->
     end.
 
 run_update(Action) ->
-    case daemon_env(source_update_fun, undefined) of
-        Fun when is_function(Fun, 1) -> Fun(Action);
-        _ -> run_real_update(Action)
-    end.
+    Result = try
+        case daemon_env(source_update_fun, undefined) of
+            Fun when is_function(Fun, 1) -> Fun(Action);
+            _ -> run_real_update(Action)
+        end
+    catch Class:Reason:Stack -> {error, {source_update_crash, Class, Reason, Stack}}
+    end,
+    case Result of
+        ok -> ok;
+        {error, Failure} ->
+            logger:warning(#{event => knowledge_refresh_failed, source => Action, reason => Failure})
+    end,
+    Result.
 
 run_real_update(nodes) -> wfcli_worldstate:update_nodes();
 run_real_update(languages) -> wfcli_worldstate:update_languages();
@@ -326,7 +335,7 @@ run_real_update(upgrades) -> wfcli_worldstate:update_export("ExportUpgrades_en.j
 run_real_update(weapons) -> wfcli_worldstate:update_export("ExportWeapons_en.json");
 run_real_update(warframes) -> wfcli_worldstate:update_export("ExportWarframes_en.json");
 run_real_update(resources) -> wfcli_worldstate:update_export("ExportResources_en.json");
-run_real_update(wfcd) -> update_wfcd_sources();
+run_real_update(wfcd) -> wfcli_wfcd:update();
 run_real_update(star_chart) -> wfcli_star_chart:update();
 run_real_update(Action) -> {error, {unknown_source_update, Action}}.
 
@@ -396,12 +405,6 @@ stale_wfcd(Path, MaxAge, Now) ->
             catch _:_ -> true
             end;
         {error, _} -> true
-    end.
-
-update_wfcd_sources() ->
-    case wfcli_knowledge:update_wfcd() of
-        ok -> wfcli_item_catalog:update();
-        {error, _Reason} = Error -> Error
     end.
 
 initial_refresh_delay(Interval) when is_integer(Interval), Interval > 0 ->

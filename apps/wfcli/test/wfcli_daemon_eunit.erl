@@ -136,8 +136,19 @@ artifact_worker_down_clears_update_state_test() ->
 
 legacy_artifact_update_state_is_cleared_test() ->
     State = #{started_at => 0, artifact_id => <<"old">>, artifact_update => true},
-    {ok, Updated} = wfcli_daemon:code_change(undefined, State, undefined),
-    ?assertEqual(false, maps:get(artifact_update, Updated)).
+    Path = filename:join("/tmp", "wfcli-hot-log-" ++
+                         integer_to_list(erlang:unique_integer([positive]))),
+    Previous = logger:get_handler_config(wfdaemon_incidents),
+    application:set_env(wfdaemon, incident_log_file, Path),
+    try
+        {ok, Updated} = wfcli_daemon:code_change(undefined, State, undefined),
+        ?assertEqual(false, maps:get(artifact_update, Updated)),
+        ?assertMatch({ok, _}, logger:get_handler_config(wfdaemon_incidents))
+    after
+        application:unset_env(wfdaemon, incident_log_file),
+        case Previous of {error, _} -> logger:remove_handler(wfdaemon_incidents); _ -> ok end,
+        file:delete(Path)
+    end.
 
 setup_daemon() ->
     case whereis(wfcli_daemon) of

@@ -1,6 +1,9 @@
 -module(wfcli_update_cli).
 
 -export([command/0, run/1, metadata_selections/1]).
+-ifdef(TEST).
+-export([format_error/1]).
+-endif.
 -import(wfcli_cli_args, [option/4, flag/3]).
 
 command() ->
@@ -49,7 +52,73 @@ refresh_metadata(Selections) ->
 print_source_result(#{source := Source, result := ok}) ->
     io:format("updated ~s~n", [source_label(Source)]);
 print_source_result(#{source := Source, result := {error, Reason}}) ->
-    io:format(standard_error, "failed: ~s -> ~p~n", [source_label(Source), Reason]).
+    io:format(standard_error, "failed: ~s: ~ts~n", [source_label(Source), format_error(Reason)]).
+
+format_error({wfcd_version_failed, Reason}) ->
+    ["could not discover the latest WFCD version; existing caches kept.\n  ", format_error(Reason)];
+format_error({wfcd_sources_failed, Version, Errors}) ->
+    ["could not load WFCD ", Version, "; existing caches kept.",
+     [["\n  ", atom_to_list(Mirror), ": ", format_error(Reason)] || {Mirror, Reason} <- Errors]];
+format_error({http_status, Url, Status}) ->
+    io_lib:format("HTTP ~B: ~ts (~ts)", [Status, http_hint(Status), Url]);
+format_error({http_failed, Url, Reason}) ->
+    io_lib:format("~ts (~p; ~ts)", [network_hint(Reason), Reason, Url]);
+format_error({invalid_data, Url, Reason}) ->
+    io_lib:format("~ts (~ts)", [data_hint(Reason), Url]);
+format_error({file_integrity_mismatch, Url}) ->
+    ["checksum mismatch; mirror content differs from its manifest (", Url, ")"];
+format_error({file_size_mismatch, Url, Expected, Actual}) ->
+    io_lib:format("incomplete or inconsistent download: expected ~B bytes, got ~B (~ts)",
+                  [Expected, Actual, Url]);
+format_error({download_size_limit, Url}) ->
+    ["response exceeds the declared size or download safety limit (", Url, ")"];
+format_error({http_error, Url, Status, _Body}) -> format_error({http_status, Url, Status});
+format_error({http_error, Status, _Body}) -> io_lib:format("HTTP ~B: ~ts", [Status, http_hint(Status)]);
+format_error({failed_connect, _} = Reason) ->
+    io_lib:format("~ts (~p)", [network_hint(Reason), Reason]);
+format_error(timeout) -> network_hint(timeout);
+format_error({Action, Path, Reason}) when Action =:= write_failed; Action =:= mkdir_failed ->
+    io_lib:format("could not save cache: ~ts (~ts)", [file:format_error(Reason), Path]);
+format_error({not_in_index, File}) ->
+    ["file missing from PublicExport index: ", File, "; possible upstream layout change"];
+format_error(Reason) -> wfcli_client:format_error(Reason).
+
+http_hint(404) -> "file or release not found; mirror publication may be delayed or the upstream path changed";
+http_hint(410) -> "upstream removed this resource";
+http_hint(429) -> "rate limited; retry later";
+http_hint(Status) when Status =:= 401; Status =:= 403 -> "access denied; check proxy or network restrictions";
+http_hint(Status) when Status >= 500 -> "upstream service failure; retry later";
+http_hint(_) -> "unexpected upstream response".
+
+network_hint({failed_connect, Details}) ->
+    case [Reason || {_, _, Reason} <- Details] of
+        [Reason | _] -> network_hint(Reason);
+        [] -> "connection failed"
+    end;
+network_hint(nxdomain) -> "DNS lookup failed; check DNS and connectivity";
+network_hint(timeout) -> "request timed out; check connectivity or retry later";
+network_hint(connect_timeout) -> network_hint(timeout);
+network_hint(econnrefused) -> "connection refused";
+network_hint(enetunreach) -> "network unreachable";
+network_hint(ehostunreach) -> "host unreachable";
+network_hint({tls_alert, _}) -> "TLS verification or handshake failed; check system clock, certificates and proxy";
+network_hint(_) -> "network request failed".
+
+data_hint(invalid_json) -> "response is not valid JSON; possible error page, truncated data or format change";
+data_hint(catalog_size_limit) -> "catalog exceeds the download safety limit";
+data_hint(catalog_file_limit) -> "catalog exceeds the file-count safety limit";
+data_hint(duplicate_catalog_file) -> "manifest contains duplicate file paths";
+data_hint({incomplete_catalog, Missing}) ->
+    io_lib:format("required categories missing (~p); possible upstream layout change", [Missing]);
+data_hint({unresolved_component, Id}) ->
+    ["component reference has no matching item: ", Id, "; incomplete dataset or upstream layout change"];
+data_hint({invalid_catalog_item, Id}) ->
+    io_lib:format("item ~p lacks a valid name or identity; possible upstream schema change", [Id]);
+data_hint(Reason) when Reason =:= package_identity_mismatch; Reason =:= invalid_package_identity;
+                       Reason =:= invalid_package_version; Reason =:= invalid_file_manifest ->
+    io_lib:format("unexpected package identity, version or manifest (~p); possible stale mirror or schema change", [Reason]);
+data_hint(Reason) ->
+    io_lib:format("unexpected data layout (~p); upstream may require an adapter update", [Reason]).
 
 source_label(nodes) -> "solNodes.json";
 source_label(languages) -> "languages.json";
@@ -60,7 +129,7 @@ source_label(upgrades) -> "ExportUpgrades_en.json";
 source_label(weapons) -> "ExportWeapons_en.json";
 source_label(warframes) -> "ExportWarframes_en.json";
 source_label(resources) -> "ExportResources_en.json";
-source_label(wfcd) -> "WFCD enemy knowledge";
+source_label(wfcd) -> "WFCD item and enemy catalogs";
 source_label(star_chart) -> "Star Chart mastery metadata";
 source_label(Source) -> atom_to_list(Source).
 

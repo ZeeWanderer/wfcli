@@ -20,6 +20,7 @@ start(_StartType, _StartArgs) ->
     end.
 
 start_supervisor(PreviousDir) ->
+    wfcli_incident_log:install(),
     case wfcli_sup:start_link() of
         {ok, Pid} -> {ok, Pid, PreviousDir};
         Error ->
@@ -28,5 +29,6 @@ start_supervisor(PreviousDir) ->
     end.
 
 stop(PreviousDir) ->
+    _ = logger:remove_handler(wfdaemon_incidents),
     _ = file:set_cwd(PreviousDir),
     ok.

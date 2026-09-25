@@ -27,6 +27,7 @@ start(TestRoot) ->
                         filename:join(TestRoot, "market-presence.json")),
     application:set_env(wfdaemon, build_store_file, filename:join(TestRoot, "builds.term")),
     application:set_env(wfdaemon, build_cache_file, filename:join(TestRoot, "builds.cache")),
+    application:set_env(wfdaemon, incident_log_file, filename:join(TestRoot, "wfdaemon.log")),
     persistent_term:put({?MODULE, test_root}, TestRoot),
     application:set_env(wfcli, test_local_daemon, true),
     application:set_env(wfdaemon, daemon_enabled, true),
@@ -54,6 +55,7 @@ stop() ->
     application:unset_env(wfdaemon, market_presence_file),
     application:unset_env(wfdaemon, build_store_file),
     application:unset_env(wfdaemon, build_cache_file),
+    application:unset_env(wfdaemon, incident_log_file),
     ok.
 
 cleanup_test_root(undefined) -> ok;

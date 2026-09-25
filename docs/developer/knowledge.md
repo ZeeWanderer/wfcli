@@ -17,9 +17,17 @@ File selection and update ownership are documented in [Export files](exports.md)
 compact projection used by player views for names, components, mastery metadata, relic drops, and
 image identities. Missing managed data is fetched on demand; `wfcli update --wfcd` forces refresh.
 
-The original contract was audited against `WFCD/warframe-items` commit
-`f2150533934a067d493caef38c733a01d4935e28`. Recheck upstream build inputs before expanding a
-schema because fields may combine official exports, community data, and wiki enrichment.
+Each refresh resolves npm's latest `@wfcd/items` version, discovers its English JSON files from
+UNPKG, and verifies their checksums. jsDelivr is the fallback for that same version. New releases
+and categories require no application update; incompatible schemas fail validation. Component
+references resolve within the fetched snapshot. Invalid downloads leave existing caches intact.
+Each cache records the source, content hash, package version and fetch time.
+
+The daemon checks source age hourly and refreshes data older than 24 hours. Refresh failures and
+mirror failures are recorded in the [daemon incident log](../daemon.md#logs).
+
+Recheck [upstream schemas](https://github.com/WFCD/warframe-items) before expanding a projection:
+fields combine official exports, community data and wiki enrichment.
 
 Loaders collapse display-identical enemy and drop rows. Entries with different stats,
 descriptions, resistances, or drop tables remain separate.

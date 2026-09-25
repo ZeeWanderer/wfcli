@@ -77,6 +77,13 @@ Fissure notification policy is persisted by the daemon. Session mode runs while 
 connected; persistent mode runs for the daemon lifetime. A new watch records its first snapshot,
 then notifies about matching fissures added later.
 
+## Logs
+
+Warnings and errors are saved to `$XDG_STATE_HOME/wfcli/wfdaemon.log`, normally
+`~/.local/state/wfcli/wfdaemon.log`. The log rotates at 1 MiB and keeps two archives.
+Knowledge refresh incidents include the source, failing URL and reason, including mirror failures
+that recover through a fallback.
+
 Crash dumps are written to `$XDG_STATE_HOME/wfcli/erl_crash.dump`, normally
 `~/.local/state/wfcli/erl_crash.dump`. Use `wfcli daemon paths` for all daemon directories.
 

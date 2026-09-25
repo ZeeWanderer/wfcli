@@ -5,11 +5,9 @@
 
 -export([load_codex/1, codex_sources/1,
          load_enemies/1, load_drops/1, wfcd_source/1,
-         update_wfcd/0, default_wfcd_cache/0]).
+         store_wfcd/2, default_wfcd_cache/0]).
 
 -define(WFCD_FILE, "WFCDEnemy.json").
--define(WFCD_URL,
-        "https://raw.githubusercontent.com/WFCD/warframe-items/master/data/json/Enemy.json").
 
 -type source_meta() :: #{source := string(), version := string(), fetched_at := integer()}.
 
@@ -67,35 +65,11 @@ default_wfcd_cache() ->
         [] -> filename:join(["apps", "wfdaemon", "priv", ?WFCD_FILE])
     end.
 
--doc "Refresh WFCD enemy data and persist source URL, fetch time, and content SHA-256.".
--spec update_wfcd() -> ok | {error, term()}.
-update_wfcd() ->
-    application:ensure_all_started(inets),
-    application:ensure_all_started(ssl),
-    Headers = [{"user-agent", "wfcli/0.1"}],
-    case httpc:request(get, {?WFCD_URL, Headers}, [{timeout, 30000}], [{body_format, binary}]) of
-        {ok, {{_, 200, _}, _ResponseHeaders, Body}} ->
-            persist_wfcd(Body);
-        {ok, {{_, Code, _}, _ResponseHeaders, Body}} ->
-            {error, {http_error, Code, Body}};
-        {error, Reason} ->
-            {error, Reason}
-    end.
-
-persist_wfcd(Body) ->
-    try jsone:decode(Body, [{object_format, map}]) of
-        Entries when is_list(Entries) ->
-            Version = content_version(Body),
-            Wrapper = #{<<"source">> => list_to_binary(?WFCD_URL),
-                        <<"version">> => list_to_binary(Version),
-                        <<"fetchedAt">> => erlang:system_time(second),
-                        <<"entries">> => Entries},
-            wfcli_worldstate:write_metadata_file(?WFCD_FILE, jsone:encode(Wrapper));
-        _ ->
-            {error, bad_wfcd_payload}
-    catch
-        _:_ -> {error, bad_wfcd_json}
-    end.
+-doc "Store validated WFCD enemy records with their snapshot provenance.".
+-spec store_wfcd([map()], map()) -> ok | {error, term()}.
+store_wfcd(Entries, Meta) ->
+    Wrapper = Meta#{<<"entries">> => Entries},
+    wfcli_worldstate:write_metadata_file(?WFCD_FILE, jsone:encode(Wrapper)).
 
 content_version(Body) ->
     application:ensure_all_started(crypto),
