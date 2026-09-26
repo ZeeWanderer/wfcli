@@ -1,0 +1,438 @@
+{
+  "schema": 1,
+  "id": "d01b5cb5cff5",
+  "executable_sha256": "d01b5cb5cff51afc5ffb7d3af051674aafa84000bee764780ff71d9d073cad93",
+  "bytecode_version": 9,
+  "type_version": 3,
+  "boolean_bytes": 4,
+  "status": "reviewed",
+  "mapping": [
+    {
+      "raw": 1,
+      "canonical": 13,
+      "name": "GETTABLE",
+      "has_aux": false
+    },
+    {
+      "raw": 2,
+      "canonical": 8,
+      "name": "SETGLOBAL",
+      "has_aux": true
+    },
+    {
+      "raw": 4,
+      "canonical": 3,
+      "name": "LOADB",
+      "has_aux": false
+    },
+    {
+      "raw": 6,
+      "canonical": 71,
+      "name": "SUBRK",
+      "has_aux": false
+    },
+    {
+      "raw": 7,
+      "canonical": 34,
+      "name": "SUB",
+      "has_aux": false
+    },
+    {
+      "raw": 9,
+      "canonical": 41,
+      "name": "MULK",
+      "has_aux": false
+    },
+    {
+      "raw": 10,
+      "canonical": 57,
+      "name": "FORNLOOP",
+      "has_aux": false
+    },
+    {
+      "raw": 11,
+      "canonical": 76,
+      "name": "FORGPREP",
+      "has_aux": false
+    },
+    {
+      "raw": 12,
+      "canonical": 75,
+      "name": "FASTCALL2K",
+      "has_aux": true
+    },
+    {
+      "raw": 13,
+      "canonical": 2,
+      "name": "LOADNIL",
+      "has_aux": false
+    },
+    {
+      "raw": 14,
+      "canonical": 51,
+      "name": "MINUS",
+      "has_aux": false
+    },
+    {
+      "raw": 16,
+      "canonical": 68,
+      "name": "FASTCALL",
+      "has_aux": false
+    },
+    {
+      "raw": 17,
+      "canonical": 65,
+      "name": "PREPVARARGS",
+      "has_aux": false
+    },
+    {
+      "raw": 18,
+      "canonical": 4,
+      "name": "LOADN",
+      "has_aux": false
+    },
+    {
+      "raw": 19,
+      "canonical": 9,
+      "name": "GETUPVAL",
+      "has_aux": false
+    },
+    {
+      "raw": 20,
+      "canonical": 6,
+      "name": "MOVE",
+      "has_aux": false
+    },
+    {
+      "raw": 21,
+      "canonical": 16,
+      "name": "SETTABLEKS",
+      "has_aux": true
+    },
+    {
+      "raw": 22,
+      "canonical": 19,
+      "name": "NEWCLOSURE",
+      "has_aux": false
+    },
+    {
+      "raw": 23,
+      "canonical": 7,
+      "name": "GETGLOBAL",
+      "has_aux": true
+    },
+    {
+      "raw": 24,
+      "canonical": 26,
+      "name": "JUMPIFNOT",
+      "has_aux": false
+    },
+    {
+      "raw": 25,
+      "canonical": 73,
+      "name": "FASTCALL1",
+      "has_aux": false
+    },
+    {
+      "raw": 26,
+      "canonical": 36,
+      "name": "DIV",
+      "has_aux": false
+    },
+    {
+      "raw": 27,
+      "canonical": 59,
+      "name": "FORGPREP_INEXT",
+      "has_aux": false
+    },
+    {
+      "raw": 28,
+      "canonical": 32,
+      "name": "JUMPIFNOTLT",
+      "has_aux": true
+    },
+    {
+      "raw": 30,
+      "canonical": 58,
+      "name": "FORGLOOP",
+      "has_aux": true
+    },
+    {
+      "raw": 32,
+      "canonical": 79,
+      "name": "JUMPXEQKN",
+      "has_aux": true
+    },
+    {
+      "raw": 33,
+      "canonical": 29,
+      "name": "JUMPIFLT",
+      "has_aux": true
+    },
+    {
+      "raw": 34,
+      "canonical": 35,
+      "name": "MUL",
+      "has_aux": false
+    },
+    {
+      "raw": 35,
+      "canonical": 28,
+      "name": "JUMPIFLE",
+      "has_aux": true
+    },
+    {
+      "raw": 37,
+      "canonical": 24,
+      "name": "JUMPBACK",
+      "has_aux": false
+    },
+    {
+      "raw": 38,
+      "canonical": 74,
+      "name": "FASTCALL2",
+      "has_aux": true
+    },
+    {
+      "raw": 39,
+      "canonical": 30,
+      "name": "JUMPIFNOTEQ",
+      "has_aux": true
+    },
+    {
+      "raw": 40,
+      "canonical": 49,
+      "name": "CONCAT",
+      "has_aux": false
+    },
+    {
+      "raw": 41,
+      "canonical": 22,
+      "name": "RETURN",
+      "has_aux": false
+    },
+    {
+      "raw": 42,
+      "canonical": 14,
+      "name": "SETTABLE",
+      "has_aux": false
+    },
+    {
+      "raw": 43,
+      "canonical": 46,
+      "name": "OR",
+      "has_aux": false
+    },
+    {
+      "raw": 44,
+      "canonical": 53,
+      "name": "NEWTABLE",
+      "has_aux": true
+    },
+    {
+      "raw": 45,
+      "canonical": 20,
+      "name": "NAMECALL",
+      "has_aux": true
+    },
+    {
+      "raw": 46,
+      "canonical": 18,
+      "name": "SETTABLEN",
+      "has_aux": false
+    },
+    {
+      "raw": 47,
+      "canonical": 45,
+      "name": "AND",
+      "has_aux": false
+    },
+    {
+      "raw": 48,
+      "canonical": 61,
+      "name": "FORGPREP_NEXT",
+      "has_aux": false
+    },
+    {
+      "raw": 50,
+      "canonical": 42,
+      "name": "DIVK",
+      "has_aux": false
+    },
+    {
+      "raw": 51,
+      "canonical": 31,
+      "name": "JUMPIFNOTLE",
+      "has_aux": true
+    },
+    {
+      "raw": 52,
+      "canonical": 78,
+      "name": "JUMPXEQKB",
+      "has_aux": true
+    },
+    {
+      "raw": 53,
+      "canonical": 70,
+      "name": "CAPTURE",
+      "has_aux": false
+    },
+    {
+      "raw": 55,
+      "canonical": 27,
+      "name": "JUMPIFEQ",
+      "has_aux": true
+    },
+    {
+      "raw": 56,
+      "canonical": 39,
+      "name": "ADDK",
+      "has_aux": false
+    },
+    {
+      "raw": 57,
+      "canonical": 11,
+      "name": "CLOSEUPVALS",
+      "has_aux": false
+    },
+    {
+      "raw": 58,
+      "canonical": 77,
+      "name": "JUMPXEQKNIL",
+      "has_aux": true
+    },
+    {
+      "raw": 59,
+      "canonical": 72,
+      "name": "DIVRK",
+      "has_aux": false
+    },
+    {
+      "raw": 60,
+      "canonical": 43,
+      "name": "MODK",
+      "has_aux": false
+    },
+    {
+      "raw": 61,
+      "canonical": 15,
+      "name": "GETTABLEKS",
+      "has_aux": true
+    },
+    {
+      "raw": 62,
+      "canonical": 40,
+      "name": "SUBK",
+      "has_aux": false
+    },
+    {
+      "raw": 63,
+      "canonical": 55,
+      "name": "SETLIST",
+      "has_aux": true
+    },
+    {
+      "raw": 64,
+      "canonical": 23,
+      "name": "JUMP",
+      "has_aux": false
+    },
+    {
+      "raw": 65,
+      "canonical": 80,
+      "name": "JUMPXEQKS",
+      "has_aux": true
+    },
+    {
+      "raw": 66,
+      "canonical": 64,
+      "name": "DUPCLOSURE",
+      "has_aux": false
+    },
+    {
+      "raw": 68,
+      "canonical": 17,
+      "name": "GETTABLEN",
+      "has_aux": false
+    },
+    {
+      "raw": 70,
+      "canonical": 12,
+      "name": "GETIMPORT",
+      "has_aux": true
+    },
+    {
+      "raw": 71,
+      "canonical": 56,
+      "name": "FORNPREP",
+      "has_aux": false
+    },
+    {
+      "raw": 73,
+      "canonical": 33,
+      "name": "ADD",
+      "has_aux": false
+    },
+    {
+      "raw": 74,
+      "canonical": 60,
+      "name": "FASTCALL3",
+      "has_aux": true
+    },
+    {
+      "raw": 75,
+      "canonical": 25,
+      "name": "JUMPIF",
+      "has_aux": false
+    },
+    {
+      "raw": 76,
+      "canonical": 63,
+      "name": "GETVARARGS",
+      "has_aux": false
+    },
+    {
+      "raw": 77,
+      "canonical": 52,
+      "name": "LENGTH",
+      "has_aux": false
+    },
+    {
+      "raw": 78,
+      "canonical": 5,
+      "name": "LOADK",
+      "has_aux": false
+    },
+    {
+      "raw": 79,
+      "canonical": 54,
+      "name": "DUPTABLE",
+      "has_aux": false
+    },
+    {
+      "raw": 80,
+      "canonical": 50,
+      "name": "NOT",
+      "has_aux": false
+    },
+    {
+      "raw": 81,
+      "canonical": 48,
+      "name": "ORK",
+      "has_aux": false
+    },
+    {
+      "raw": 83,
+      "canonical": 10,
+      "name": "SETUPVAL",
+      "has_aux": false
+    },
+    {
+      "raw": 84,
+      "canonical": 21,
+      "name": "CALL",
+      "has_aux": false
+    }
+  ],
+  "symbols": {}
+}

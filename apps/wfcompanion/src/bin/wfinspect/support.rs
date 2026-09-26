@@ -3,9 +3,11 @@ use serde_json::json;
 use std::io::{self, Read, Write};
 use std::path::PathBuf;
 use wfcompanion::game_observer;
+use wfcompanion::inspect::luau::{corpus, profile::Profile};
 pub(super) const BROKEN_PIPE: &str = "__wfinspect_broken_pipe__";
 
 pub(super) enum ScriptAction {
+    Read,
     Info,
     Normalize,
     Disassemble,
@@ -14,6 +16,11 @@ pub(super) enum ScriptAction {
 pub(super) enum ScriptInput {
     Stdin,
     File(PathBuf),
+    Snapshot {
+        workspace: PathBuf,
+        name: String,
+        resource: String,
+    },
     Cache {
         directory: PathBuf,
         package: String,
@@ -44,15 +51,35 @@ pub(super) fn script(
     action: ScriptAction,
     input: ScriptInput,
     adapter: Option<String>,
+    profile_path: Option<PathBuf>,
 ) -> Result<(), String> {
-    let (bytecode, source) = read_script(input)?;
-    let adapter = match adapter {
-        Some(adapter) => adapter,
-        None => game_observer::current_process_identity()?
-            .map(|identity| identity.executable.sha256)
-            .ok_or_else(|| "--adapter is required when Warframe is not running".to_owned())?,
+    let (bytecode, source, stored_profile) = read_script(input)?;
+    if matches!(action, ScriptAction::Read) {
+        return write_bytes(&bytecode);
+    }
+    let adapter = match profile_path {
+        Some(path) => {
+            let profile = Profile::load(&path)?;
+            if let Some(stored) = stored_profile {
+                profile.require_executable(&stored.executable_sha256)?;
+            }
+            profile
+        }
+        None if stored_profile.is_some() => stored_profile.unwrap(),
+        None => {
+            let key = match adapter {
+                Some(key) => key,
+                None => game_observer::current_process_identity()?
+                    .map(|identity| identity.executable.sha256)
+                    .ok_or_else(|| {
+                        "--adapter or --profile is required when Warframe is not running".to_owned()
+                    })?,
+            };
+            wfcompanion::inspect::luau::profile::Profile::builtin(&key)?
+        }
     };
     match action {
+        ScriptAction::Read => unreachable!(),
         ScriptAction::Info => print_json(&json!({
             "source": source,
             "script": wfcompanion::inspect::luau::info(&bytecode, &adapter)?,
@@ -77,19 +104,34 @@ pub(super) fn write_bytes(bytes: &[u8]) -> Result<(), String> {
     }
 }
 
-pub(super) fn read_script(input: ScriptInput) -> Result<(Vec<u8>, serde_json::Value), String> {
+type ScriptSource = (Vec<u8>, serde_json::Value, Option<Profile>);
+
+pub(super) fn read_script(input: ScriptInput) -> Result<ScriptSource, String> {
     match input {
         ScriptInput::Stdin => {
             let mut bytes = Vec::new();
             io::stdin()
                 .read_to_end(&mut bytes)
                 .map_err(|error| format!("could not read standard input: {error}"))?;
-            Ok((bytes, json!({"kind": "stdin"})))
+            Ok((bytes, json!({"kind": "stdin"}), None))
         }
         ScriptInput::File(path) => {
             let bytes = std::fs::read(&path)
                 .map_err(|error| format!("could not read {}: {error}", path.display()))?;
-            Ok((bytes, json!({"kind": "file", "path": path})))
+            Ok((bytes, json!({"kind": "file", "path": path}), None))
+        }
+        ScriptInput::Snapshot {
+            workspace,
+            name,
+            resource,
+        } => {
+            let snapshot = corpus::load(&workspace, &name)?;
+            let bytes = corpus::read_script(&workspace, &snapshot, &resource)?;
+            Ok((
+                bytes,
+                json!({"kind": "snapshot", "workspace": workspace, "name": name, "resource": resource}),
+                Some(snapshot.profile),
+            ))
         }
         ScriptInput::Cache {
             directory,
@@ -108,6 +150,7 @@ pub(super) fn read_script(input: ScriptInput) -> Result<(Vec<u8>, serde_json::Va
                     "path": body.path,
                     "split": body.split,
                 }),
+                None,
             ))
         }
     }

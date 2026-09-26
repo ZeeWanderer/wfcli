@@ -160,55 +160,6 @@ impl Search {
 }
 
 #[derive(Subcommand)]
-pub enum Script {
-    /// Inspect raw prototypes/constants even when opcode mapping is incomplete.
-    Info(Input),
-    /// Write normalized bytecode for wf-luau-decompiler to stdout.
-    Normalize(Input),
-    /// Disassemble mapped instructions.
-    Disassemble(Input),
-    /// Reconstruct source using the installed wf-luau-decompiler helper.
-    Decompile(Input),
-}
-
-#[derive(Args)]
-pub struct Input {
-    /// Bytecode file, or - for standard input.
-    #[arg(required_unless_present = "cache", conflicts_with = "cache")]
-    input: Option<PathBuf>,
-    /// Read the B split directly from a cache resource.
-    #[arg(long, num_args = 3, value_names = ["DIRECTORY", "PACKAGE", "RESOURCE"])]
-    cache: Vec<String>,
-    /// Build ID or executable SHA-256; see game adapter --list.
-    #[arg(long)]
-    adapter: Option<String>,
-}
-
-impl Script {
-    pub fn run(self) -> Result<(), String> {
-        let (action, input) = match self {
-            Self::Info(input) => (ScriptAction::Info, input),
-            Self::Normalize(input) => (ScriptAction::Normalize, input),
-            Self::Disassemble(input) => (ScriptAction::Disassemble, input),
-            Self::Decompile(input) => (ScriptAction::Decompile, input),
-        };
-        let source = match input.cache.as_slice() {
-            [directory, package, resource] => ScriptInput::Cache {
-                directory: directory.into(),
-                package: package.clone(),
-                resource: resource.clone(),
-            },
-            _ => match input.input {
-                Some(path) if path.as_os_str() == "-" => ScriptInput::Stdin,
-                Some(path) => ScriptInput::File(path),
-                None => return Err("script input is required".into()),
-            },
-        };
-        script(action, source, input.adapter)
-    }
-}
-
-#[derive(Subcommand)]
 pub enum Report {
     /// Validate report schema and executable identity.
     Verify(ReportFile),

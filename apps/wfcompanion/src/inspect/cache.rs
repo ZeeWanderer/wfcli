@@ -95,6 +95,34 @@ pub fn paths(cache_dir: &Path, package: &str) -> Result<Vec<CachePath>, String> 
         .collect())
 }
 
+pub fn visit_resources(
+    cache_dir: &Path,
+    package: &str,
+    select: impl Fn(&CachePath) -> bool,
+    max_bytes: usize,
+    mut visit: impl FnMut(CachePath, Result<Vec<u8>, String>) -> Result<(), String>,
+) -> Result<(), String> {
+    let mut decoder = Decoder::default();
+    for entry in entries(cache_dir, package)? {
+        let resource = CachePath {
+            split: entry.split,
+            path: entry.path.clone(),
+            compressed_size: entry.compressed_size,
+            size: entry.size,
+        };
+        if !select(&resource) {
+            continue;
+        }
+        let data = if entry.size > max_bytes {
+            Err(format!("resource exceeds {max_bytes} byte limit"))
+        } else {
+            decoder.read(&entry)
+        };
+        visit(resource, data)?;
+    }
+    Ok(())
+}
+
 pub fn extract(
     cache_dir: &Path,
     package: &str,

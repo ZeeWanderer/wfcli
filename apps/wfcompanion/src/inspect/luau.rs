@@ -5,22 +5,25 @@ use std::process::{Command, Stdio};
 
 use serde::{Deserialize, Serialize};
 
-use crate::game_observer::adapter::{self, GameAdapter, LuauLayout, LuauOpcode};
+mod analysis;
+pub mod corpus;
+pub mod infer;
+pub mod profile;
+pub mod tracking;
+use profile::{Layout as LuauLayout, Opcode as LuauOpcode, Profile};
 
-const CANONICAL_VERSION: u8 = 8;
 const DECOMPILER_PROTOCOL: u8 = 1;
 
 #[derive(Clone, Copy)]
 enum TranscodeFormat {
-    Standard,
     Warframe,
     Inspect,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct ScriptInfo {
-    pub adapter: &'static str,
-    pub executable_sha256: &'static str,
+    pub adapter: String,
+    pub executable_sha256: String,
     pub bytecode_version: u8,
     pub type_version: u8,
     pub byte_count: usize,
@@ -31,14 +34,14 @@ pub struct ScriptInfo {
     pub main_prototype: u64,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct StringInfo {
     pub index: usize,
     pub text: Option<String>,
     pub bytes: Vec<u8>,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct PrototypeInfo {
     pub index: usize,
     pub code_offset: usize,
@@ -56,15 +59,15 @@ pub struct PrototypeInfo {
     pub debug_name: u64,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct OpcodeCoverage {
     pub raw: u8,
     pub canonical: u8,
-    pub name: &'static str,
+    pub name: String,
     pub instructions: usize,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct AtomCoverage {
     pub value: u32,
     pub hex: String,
@@ -96,13 +99,11 @@ struct DecompilerDiagnostic {
     error: Option<String>,
 }
 
-pub fn info(bytecode: &[u8], adapter_key: &str) -> Result<ScriptInfo, String> {
-    let adapter = adapter::resolve_key(adapter_key)
-        .ok_or_else(|| format!("unknown Warframe adapter: {adapter_key}"))?;
-    let transcoded = transcode(bytecode, adapter.luau, TranscodeFormat::Inspect)?;
+pub fn info(bytecode: &[u8], adapter: &Profile) -> Result<ScriptInfo, String> {
+    let transcoded = transcode(bytecode, adapter.layout(), TranscodeFormat::Inspect)?;
     Ok(ScriptInfo {
-        adapter: adapter.id,
-        executable_sha256: adapter.sha256,
+        adapter: adapter.id.clone(),
+        executable_sha256: adapter.executable_sha256.clone(),
         bytecode_version: transcoded.version,
         type_version: transcoded.type_version,
         byte_count: bytecode.len(),
@@ -123,30 +124,67 @@ pub fn info(bytecode: &[u8], adapter_key: &str) -> Result<ScriptInfo, String> {
     })
 }
 
-pub fn disassemble(bytecode: &[u8], adapter_key: &str) -> Result<String, String> {
-    let (adapter, transcoded) = prepare(bytecode, adapter_key)?;
-    let body = luau_core::disassemble_with_opmap(&transcoded.bytes, None)
-        .map_err(|error| format!("could not disassemble canonical Luau: {error}"))?;
-    Ok(format!(
-        "{}{}",
-        diagnostic_header(";", adapter, &transcoded),
-        body
-    ))
+pub fn disassemble(bytecode: &[u8], adapter: &Profile) -> Result<String, String> {
+    use std::fmt::Write;
+    let script = info(bytecode, adapter)?;
+    let mut out = format!(
+        "; Warframe Luau v{} profile {} ({})\n; Instruction fields: A B C, signed D; AUX retained separately\n",
+        script.bytecode_version, adapter.id, adapter.status
+    );
+    for proto in &script.prototypes {
+        writeln!(
+            out,
+            "\nprototype {}: params={} upvalues={} stack={} children={:?}",
+            proto.index, proto.parameters, proto.upvalues, proto.max_stack_size, proto.children
+        )
+        .unwrap();
+        for (index, constant) in analysis::constants(proto, &script, false)?
+            .iter()
+            .enumerate()
+        {
+            write!(out, "  K{index}: {constant}").unwrap();
+            if let Some(atom) = analysis::atom(&proto.constants[index]) {
+                write!(out, " ; __wf_atom_{atom:08x}").unwrap();
+                if let Some(name) = adapter.symbols.get(&atom) {
+                    write!(out, " = {name}").unwrap();
+                }
+            }
+            out.push('\n');
+        }
+        for (pc, op) in analysis::instructions(proto, adapter)? {
+            let word = proto.words[pc];
+            write!(
+                out,
+                "  {pc:04} {:16} A={} B={} C={} D={} ; raw=0x{word:08x}",
+                op.name,
+                (word >> 8) as u8,
+                (word >> 16) as u8,
+                (word >> 24) as u8,
+                (word >> 16) as i16
+            )
+            .unwrap();
+            if op.has_aux {
+                write!(out, " AUX=0x{:08x}", proto.words[pc + 1]).unwrap();
+            }
+            out.push('\n');
+        }
+    }
+    Ok(out)
 }
 
-pub fn normalize(bytecode: &[u8], adapter_key: &str) -> Result<Vec<u8>, String> {
-    let adapter = adapter::resolve_key(adapter_key)
-        .ok_or_else(|| format!("unknown Warframe adapter: {adapter_key}"))?;
-    let transcoded = transcode(bytecode, adapter.luau, TranscodeFormat::Warframe)?;
+pub fn normalize(bytecode: &[u8], adapter: &Profile) -> Result<Vec<u8>, String> {
+    let transcoded = transcode(bytecode, adapter.layout(), TranscodeFormat::Warframe)?;
     Ok(transcoded.bytes)
 }
 
-pub fn decompile(bytecode: &[u8], adapter_key: &str) -> Result<String, String> {
-    let adapter = adapter::resolve_key(adapter_key)
-        .ok_or_else(|| format!("unknown Warframe adapter: {adapter_key}"))?;
-    let transcoded = transcode(bytecode, adapter.luau, TranscodeFormat::Warframe)?;
+pub fn decompile(bytecode: &[u8], adapter: &Profile) -> Result<String, String> {
+    let transcoded = transcode(bytecode, adapter.layout(), TranscodeFormat::Warframe)?;
     let helper = resolve_decompiler()?;
-    let mut child = Command::new(&helper)
+    let mut command = Command::new(&helper);
+    for (hash, name) in &adapter.symbols {
+        command.args(["--symbol", &format!("{hash:08x}={name}")]);
+    }
+    let mut child = command
         .arg("-")
         .args(["--diagnostics", "json"])
         .stdin(Stdio::piped())
@@ -183,10 +221,15 @@ pub fn decompile(bytecode: &[u8], adapter_key: &str) -> Result<String, String> {
         "-- Warframe Luau v{} adapter {}\n",
         transcoded.version, adapter.id
     );
-    if !transcoded.atoms.is_empty() {
+    let unresolved = transcoded
+        .atoms
+        .iter()
+        .filter(|a| !adapter.symbols.contains_key(&a.value))
+        .count();
+    if unresolved > 0 {
         header.push_str(&format!(
             "-- {} unresolved atom identifier(s) preserved as __wf_atom_XXXXXXXX\n",
-            transcoded.atoms.len()
+            unresolved
         ));
     }
     Ok(format!("{}{}", header, body))
@@ -294,30 +337,6 @@ fn resolve_decompiler() -> Result<PathBuf, String> {
     ))
 }
 
-fn diagnostic_header(prefix: &str, adapter: &GameAdapter, transcoded: &Transcoded) -> String {
-    let mut header = format!(
-        "{prefix} Warframe Luau v{} adapter {}\n",
-        transcoded.version, adapter.id
-    );
-    if !transcoded.atoms.is_empty() {
-        header.push_str(&format!(
-            "{prefix} {} non-boolean tag-1 atom value(s) emitted as exact numbers\n",
-            transcoded.atoms.len()
-        ));
-    }
-    header
-}
-
-fn prepare(
-    bytecode: &[u8],
-    adapter_key: &str,
-) -> Result<(&'static GameAdapter, Transcoded), String> {
-    let adapter = adapter::resolve_key(adapter_key)
-        .ok_or_else(|| format!("unknown Warframe adapter: {adapter_key}"))?;
-    let transcoded = transcode(bytecode, adapter.luau, TranscodeFormat::Standard)?;
-    Ok((adapter, transcoded))
-}
-
 struct Transcoded {
     version: u8,
     type_version: u8,
@@ -331,7 +350,7 @@ struct Transcoded {
 
 fn transcode(
     bytecode: &[u8],
-    dialect: LuauLayout,
+    dialect: LuauLayout<'_>,
     format: TranscodeFormat,
 ) -> Result<Transcoded, String> {
     let mut reader = Reader::new(bytecode);
@@ -344,10 +363,7 @@ fn transcode(
             dialect.bytecode_version, version
         ));
     }
-    output.push(match format {
-        TranscodeFormat::Standard => CANONICAL_VERSION,
-        TranscodeFormat::Warframe | TranscodeFormat::Inspect => version,
-    });
+    output.push(version);
 
     let type_version = reader.byte("type version")?;
     if type_version != dialect.type_version {
@@ -396,7 +412,7 @@ fn transcode(
             OpcodeCoverage {
                 raw,
                 canonical: opcode.canonical,
-                name: opcode.name,
+                name: opcode.name.clone(),
                 instructions,
             }
         })
@@ -425,7 +441,7 @@ fn transcode(
 fn transcode_proto(
     reader: &mut Reader<'_>,
     output: &mut Vec<u8>,
-    dialect: LuauLayout,
+    dialect: LuauLayout<'_>,
     format: TranscodeFormat,
     proto: usize,
     coverage: &mut BTreeMap<u8, usize>,
@@ -478,7 +494,6 @@ fn transcode_proto(
             reader,
             output,
             dialect.boolean_bytes,
-            format,
             proto,
             constant,
             atoms,
@@ -519,7 +534,7 @@ fn transcode_proto(
 
 fn transcode_code(
     words: &mut [u32],
-    opcodes: &'static [LuauOpcode],
+    opcodes: &[LuauOpcode],
     proto: usize,
     coverage: &mut BTreeMap<u8, usize>,
 ) -> Result<(), String> {
@@ -552,7 +567,6 @@ fn transcode_constant(
     reader: &mut Reader<'_>,
     output: &mut Vec<u8>,
     boolean_bytes: usize,
-    format: TranscodeFormat,
     proto: usize,
     constant: usize,
     atoms: &mut BTreeMap<u32, usize>,
@@ -572,16 +586,7 @@ fn transcode_constant(
                     ));
                 }
             };
-            match format {
-                TranscodeFormat::Warframe | TranscodeFormat::Inspect => {
-                    output.extend_from_slice(bytes)
-                }
-                TranscodeFormat::Standard if value <= 1 => output.push(value as u8),
-                TranscodeFormat::Standard => {
-                    *output.last_mut().expect("constant tag") = 2;
-                    output.extend_from_slice(&f64::from(value).to_le_bytes());
-                }
-            }
+            output.extend_from_slice(bytes);
             if value > 1 {
                 *atoms.entry(value).or_default() += 1;
             }
@@ -729,7 +734,7 @@ fn write_varint(output: &mut Vec<u8>, mut value: u64) {
     }
 }
 
-fn opcode(opcodes: &'static [LuauOpcode], raw: u8) -> Option<&'static LuauOpcode> {
+fn opcode(opcodes: &[LuauOpcode], raw: u8) -> Option<&LuauOpcode> {
     opcodes.iter().find(|opcode| opcode.raw == raw)
 }
 
@@ -810,7 +815,7 @@ mod tests {
 
     const ADAPTER: &str = "d01b5cb5cff5";
 
-    fn fixture(raw_opcode: u8, constant: u32) -> Vec<u8> {
+    pub(super) fn fixture(raw_opcode: u8, constant: u32) -> Vec<u8> {
         vec![
             9,
             3, // bytecode and type versions
@@ -845,7 +850,7 @@ mod tests {
 
     #[test]
     fn transcodes_warframe_boolean_and_opcode() {
-        let report = info(&fixture(0x29, 1), ADAPTER).unwrap();
+        let report = info(&fixture(0x29, 1), &Profile::builtin(ADAPTER).unwrap()).unwrap();
         assert_eq!(report.bytecode_version, 9);
         assert_eq!(report.prototypes.len(), 1);
         assert_eq!(report.opcode_coverage[0].name, "RETURN");
@@ -854,7 +859,7 @@ mod tests {
 
     #[test]
     fn transcodes_setup_operations_without_rewriting_aux_words() {
-        let adapter = adapter::resolve_key(ADAPTER).unwrap();
+        let adapter = Profile::builtin(ADAPTER).unwrap();
         for (raw, canonical, name, aux) in [
             (0x09, 41, "MULK", false),
             (0x0c, 75, "FASTCALL2K", true),
@@ -874,54 +879,53 @@ mod tests {
             }
             words.push(0x0002_0129);
             let mut coverage = BTreeMap::new();
-            transcode_code(&mut words, adapter.luau.opcodes, 0, &mut coverage).unwrap();
+            transcode_code(&mut words, &adapter.mapping, 0, &mut coverage).unwrap();
             assert_eq!(words[0], 0x0302_0100 | canonical, "{name}");
             if aux {
                 assert_eq!(words[1], 0xfedc_bafe, "{name}");
                 assert!(
-                    transcode_code(&mut [raw], adapter.luau.opcodes, 0, &mut coverage)
+                    transcode_code(&mut [raw], &adapter.mapping, 0, &mut coverage)
                         .unwrap_err()
                         .contains("missing its AUX word")
                 );
             }
             assert_eq!(*words.last().unwrap(), 0x0002_0116);
-            assert_eq!(opcode(adapter.luau.opcodes, raw as u8).unwrap().name, name);
+            assert_eq!(opcode(&adapter.mapping, raw as u8).unwrap().name, name);
         }
     }
 
     #[test]
     fn unknown_opcode_fails_with_location() {
-        let report = info(&fixture(0xfe, 1), ADAPTER).unwrap();
+        let report = info(&fixture(0xfe, 1), &Profile::builtin(ADAPTER).unwrap()).unwrap();
         assert_eq!(report.prototypes[0].uncertain_from_pc, Some(0));
         assert_eq!(report.prototypes[0].words[0] as u8, 0xfe);
         assert_eq!(report.prototypes[0].constants.len(), 1);
-        let error = normalize(&fixture(0xfe, 1), ADAPTER).unwrap_err();
+        let error = normalize(&fixture(0xfe, 1), &Profile::builtin(ADAPTER).unwrap()).unwrap_err();
         assert!(error.contains("opcode 0xfe"));
         assert!(error.contains("prototype 0 at pc 0"));
     }
 
     #[test]
-    fn preserves_non_boolean_tag_one_payload_as_number() {
-        let adapter = adapter::resolve_key(ADAPTER).unwrap();
-        let transcoded = transcode(
-            &fixture(0x29, 0x1234_5678),
-            adapter.luau,
-            TranscodeFormat::Standard,
-        )
-        .unwrap();
-        let chunk = luau_core::parser::parse(&transcoded.bytes).unwrap();
-        assert!(matches!(
-            chunk.protos[0].constants[0],
-            luau_core::parser::types::Constant::Number(value)
-                if value == f64::from(0x1234_5678u32)
-        ));
-        assert_eq!(transcoded.atoms[0].value, 0x1234_5678);
+    fn disassembly_preserves_atoms_and_uses_exact_opcode_profile() {
+        let adapter = Profile::builtin(ADAPTER).unwrap();
+        let out = disassemble(&fixture(0x29, 0x1234_5678), &adapter).unwrap();
+        assert!(out.contains("__wf_atom_12345678"));
+        assert!(out.contains("RETURN"));
+        let forprep = adapter
+            .mapping
+            .iter()
+            .find(|op| op.name == "FORGPREP")
+            .unwrap()
+            .raw;
+        let out = disassemble(&fixture(forprep, 0), &adapter).unwrap();
+        assert!(out.contains("FORGPREP"));
+        assert!(!out.contains("IDIV"));
     }
 
     #[test]
     fn normalized_stream_preserves_warframe_atoms() {
         let raw = fixture(0x29, 0x1234_5678);
-        let normalized = normalize(&raw, ADAPTER).unwrap();
+        let normalized = normalize(&raw, &Profile::builtin(ADAPTER).unwrap()).unwrap();
         assert_eq!(normalized.len(), raw.len());
         assert_eq!(normalized[0], 9);
         assert_eq!(&normalized[18..22], &0x1234_5678u32.to_le_bytes());

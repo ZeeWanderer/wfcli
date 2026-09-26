@@ -1,4 +1,4 @@
-use super::{args, files, support::*};
+use super::{args, files, scripts, support::*};
 use clap::Subcommand;
 use serde_json::json;
 use std::path::PathBuf;
@@ -35,9 +35,9 @@ pub enum Game {
     /// Discover, extract and search game cache resources.
     #[command(subcommand)]
     Cache(files::Cache),
-    /// Inspect or decompile Warframe Luau bytecode.
+    /// Decode, retain and compare Warframe scripts across game updates.
     #[command(subcommand)]
-    Script(files::Script),
+    Script(scripts::Script),
     /// Read build-keyed Ghidra reports.
     #[command(subcommand)]
     Report(files::Report),

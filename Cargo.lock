@@ -65,12 +65,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "anyhow"
-version = "1.0.104"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "330a5ed07fa54e4702c9d6c4174f74427fc0ef6e214bbd677ae50a5099946470"
-
-[[package]]
 name = "arrayvec"
 version = "0.7.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -710,18 +704,6 @@ name = "log"
 version = "0.4.33"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0ceec5bc11778974d1bcb055b18002eba7f4b3518b6a0081b3af5f21666da9ad"
-
-[[package]]
-name = "luau-core"
-version = "0.2.0"
-source = "git+https://github.com/PumbaaDev/luau-decompiler?rev=adbedee75a5e6837fba333c419527b769f89ce11#adbedee75a5e6837fba333c419527b769f89ce11"
-dependencies = [
- "anyhow",
- "log",
- "serde",
- "serde_json",
- "thiserror",
-]
 
 [[package]]
 name = "memchr"
@@ -1513,7 +1495,6 @@ dependencies = [
  "iced-x86",
  "image",
  "libloading",
- "luau-core",
  "memchr",
  "serde",
  "serde_json",

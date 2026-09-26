@@ -91,6 +91,51 @@ Script `info` preserves raw instructions/constants and marks uncertain opcode
 boundaries. `normalize`, `disassemble`, and `decompile` require complete opcode
 mapping. Decompilation uses the bundled `wf-luau-decompiler` helper.
 
+## Track Game Updates
+
+Retain a baseline before updating the game, then take another snapshot afterward:
+
+```bash
+wfinspect game script snapshot research/scripts before --executable /path/to/Warframe.x64.exe
+wfinspect game script snapshot research/scripts after --executable /path/to/Warframe.x64.exe
+wfinspect game script infer research/scripts before after --output-profile candidate.json > inference.json
+wfinspect game script compare research/scripts before after --profile reviewed.json > changes.json
+```
+
+Snapshots contain all `.lua` B splits, deduplicated by content hash. Names are
+immutable; extraction failures are recorded and exit nonzero. Unknown bytecode
+is retained for later analysis. `--package` and `--path` permit smaller captures.
+Keep extracted resources in an ignored research workspace, outside Git.
+Snapshot reads use the captured profile; `--profile` rechecks unchanged raw
+bytes with a newer profile for the same executable.
+
+Inference proposes mappings from unique matching bodies. It retains anchors,
+ambiguities and conflicts; it does not certify native handler equivalence.
+Review candidates before marking a profile `reviewed`. Comparison distinguishes
+encoding changes, atom rebinding, metadata changes and changed code/constants.
+Missing/undecodable dependencies and changed executable-native dependencies need
+review. `--check` makes that result usable as a failing update check.
+The example uses `reviewed.json` for the completed, verified candidate profile.
+
+```bash
+wfinspect game script snapshots research/scripts
+wfinspect game script show research/scripts after --path Archimedea
+wfinspect game script coverage research/scripts after --profile reviewed.json > coverage.json
+wfinspect game script decompile --snapshot research/scripts after /Lotus/Scripts/Libs/ConquestLib.lua --profile reviewed.json
+wfinspect game script features > features.json
+wfinspect game script profiles BUILD > profile.json
+```
+
+`compare --features FILE` selects a feature manifest. Script dependencies include
+possible literal module references, not a complete dynamic call graph. Native
+behavior and external data remain explicit coverage gaps, not proven unchanged.
+Profiles can supply atom names in `symbols` (decimal hash keys); raw IDs remain
+in `info` and comparison. `script import` accepts `{ "profile": {...}, "scripts":
+{ "/resource.lua": "bytecode-file" } }`; file paths are relative to the manifest.
+`coverage` indexes opcode/atom usage and incomplete prototypes, with example
+resource paths. Opcode counts stop at unknown boundaries; AUX bytes are not
+guessed to be instructions.
+
 ## Runtime Evidence
 
 ```bash

@@ -8,6 +8,8 @@ mod args;
 mod files;
 #[path = "wfinspect/game.rs"]
 mod game;
+#[path = "wfinspect/scripts.rs"]
+mod scripts;
 #[path = "wfinspect/support.rs"]
 mod support;
 use support::*;
@@ -124,11 +126,79 @@ mod tests {
             vec!["game", "cache", "paths", "/nonexistent", "Font", "--help"],
             vec!["game", "ui", "objects", "--help"],
             vec!["game", "memory", "path", "--help"],
+            vec!["game", "script", "snapshot", "--help"],
+            vec!["game", "script", "compare", "--help"],
         ] {
             let error = Cli::try_parse_from(std::iter::once("wfinspect").chain(command))
                 .err()
                 .unwrap();
             assert_eq!(error.kind(), clap::error::ErrorKind::DisplayHelp);
+        }
+    }
+
+    #[test]
+    fn script_snapshot_inputs_are_explicit_and_composable() {
+        for args in [
+            vec!["snapshot", "work", "build", "--executable", "Warframe.exe"],
+            vec![
+                "compare",
+                "work",
+                "old",
+                "new",
+                "--profile",
+                "reviewed.json",
+                "--check",
+            ],
+            vec![
+                "infer",
+                "work",
+                "old",
+                "new",
+                "--output-profile",
+                "candidate.json",
+            ],
+            vec!["info", "--snapshot", "work", "build", "/test.lua"],
+            vec![
+                "decompile",
+                "--snapshot",
+                "work",
+                "build",
+                "/test.lua",
+                "--profile",
+                "reviewed.json",
+            ],
+        ] {
+            assert!(
+                Cli::try_parse_from(["wfinspect", "game", "script"].into_iter().chain(args))
+                    .is_ok()
+            );
+        }
+        for args in [
+            vec!["info", "raw.bc", "--snapshot", "work", "build", "/test.lua"],
+            vec![
+                "info",
+                "--cache",
+                "dir",
+                "Font",
+                "/test.lua",
+                "--snapshot",
+                "work",
+                "build",
+                "/test.lua",
+            ],
+            vec![
+                "info",
+                "raw.bc",
+                "--adapter",
+                "build",
+                "--profile",
+                "map.json",
+            ],
+        ] {
+            assert!(
+                Cli::try_parse_from(["wfinspect", "game", "script"].into_iter().chain(args))
+                    .is_err()
+            );
         }
     }
 

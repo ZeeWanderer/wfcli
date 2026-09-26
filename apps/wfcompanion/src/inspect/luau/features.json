@@ -1,0 +1,24 @@
+{
+  "schema": 1,
+  "features": {
+    "archimedea.weekly-loadout": {
+      "scripts": [
+        "/Lotus/Interface/Libs/DeepArchimedeaMissionGenerator.lua",
+        "/Lotus/Interface/Libs/LabConquestMissionGenerator.lua",
+        "/Lotus/Interface/Libs/HexConquestMissionGenerator.lua",
+        "/Lotus/Scripts/Libs/ConquestLib.lua",
+        "/Lotus/Interface/ConquestSetup.lua"
+      ],
+      "native": [
+        "Luau VM handler semantics",
+        "math.random / math.randomseed PCG implementation",
+        "profile six-hex-character seed derivation",
+        "native equipment catalog ordering and type inheritance"
+      ],
+      "data": [
+        "worldstate weekly seed and forced loadout",
+        "Packages.bin active equipment definitions and variants"
+      ]
+    }
+  }
+}
