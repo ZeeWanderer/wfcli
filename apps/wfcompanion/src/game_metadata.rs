@@ -135,7 +135,8 @@ fn cached_payload(response: &Value, executable_sha256: &str) -> Option<Value> {
     };
     let hash = data.pointer("/executable/sha256").and_then(Value::as_str);
     let schema = data.get("schema").and_then(Value::as_u64);
-    let usable = data.get("archimedea").is_some_and(Value::is_object);
+    let usable =
+        data.get("archimedea").is_some_and(Value::is_object) && data.get("capture_error").is_none();
     (schema == Some(METADATA_SCHEMA) && hash == Some(executable_sha256) && usable).then_some(data)
 }
 
@@ -182,5 +183,9 @@ mod tests {
             }}
         });
         assert!(cached_payload(&obsolete, "current").is_none());
+        let mut failed = response;
+        failed["data"]["data"]["capture_error"] =
+            serde_json::json!({"reason": "unsupported_executable"});
+        assert!(cached_payload(&failed, "current").is_none());
     }
 }

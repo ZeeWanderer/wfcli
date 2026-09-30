@@ -2,26 +2,14 @@ use serde::Serialize;
 
 use super::ProcessIdentity;
 
-const STORE_MANIFEST_OFFSETS: [u64; 3] = [0x4e0, 0xbd0, 0xf78];
-
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct GameAdapter {
     pub(crate) id: &'static str,
     pub(crate) sha256: &'static str,
-    pub(crate) metadata: MetadataLayout,
-    pub(crate) inventory: InventoryLayout,
-    pub(crate) scaleform: ScaleformLayout,
-}
-
-#[derive(Clone, Copy, Debug)]
-pub(crate) struct MetadataLayout {
     pub(crate) global_registry_rva: u64,
     pub(crate) string_blocks_rva: u64,
-    pub(crate) variant_manifest_descriptor_rva: u64,
-    pub(crate) weapon_descriptor_rva: u64,
-    pub(crate) game_time_rva: u64,
-    pub(crate) game_rules_hash: u32,
-    pub(crate) store_manifest_offsets: &'static [u64],
+    pub(crate) inventory: InventoryLayout,
+    pub(crate) scaleform: ScaleformLayout,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -49,15 +37,8 @@ pub(crate) struct ScaleformLayout {
 const CURRENT: GameAdapter = GameAdapter {
     id: "d01b5cb5cff5",
     sha256: "d01b5cb5cff51afc5ffb7d3af051674aafa84000bee764780ff71d9d073cad93",
-    metadata: MetadataLayout {
-        global_registry_rva: 0x2734d20,
-        string_blocks_rva: 0x28a39a0,
-        variant_manifest_descriptor_rva: 0x29f3d50,
-        weapon_descriptor_rva: 0x297c620,
-        game_time_rva: 0x28e13e8,
-        game_rules_hash: 0x27816687,
-        store_manifest_offsets: &STORE_MANIFEST_OFFSETS,
-    },
+    global_registry_rva: 0x2734d20,
+    string_blocks_rva: 0x28a39a0,
     inventory: InventoryLayout {
         profile_hash: 0xf05f9824,
         sync_offset: 0xfdc0,
@@ -81,7 +62,7 @@ const CURRENT: GameAdapter = GameAdapter {
 pub fn list() -> serde_json::Value {
     serde_json::json!([{
         "id": CURRENT.id, "executable_sha256": CURRENT.sha256,
-        "domains": ["scaleform", "metadata", "inventory"],
+        "domains": ["scaleform", "inventory"],
     }])
 }
 
@@ -119,7 +100,7 @@ pub fn support(identity: Option<&ProcessIdentity>) -> AdapterSupport {
         Some(identity) => match resolve(&identity.executable.sha256) {
             Some(adapter) => AdapterSupport::Supported {
                 id: adapter.id,
-                capabilities: &["game_metadata_v2", "scaleform_ui_v1"],
+                capabilities: &["native_inventory_v1", "scaleform_ui_v1"],
             },
             None => AdapterSupport::Unsupported {
                 reason: format!(

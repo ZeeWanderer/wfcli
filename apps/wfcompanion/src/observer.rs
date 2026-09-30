@@ -267,7 +267,10 @@ fn handle_metadata_event(
 }
 
 fn unsupported_game_metadata(reason: &str) -> Option<serde_json::Value> {
-    let sha256 = reason.strip_prefix("unsupported Warframe executable ")?;
+    let sha256 = reason
+        .strip_prefix("unsupported Warframe executable ")?
+        .split_whitespace()
+        .next()?;
     (sha256.len() == 64 && sha256.bytes().all(|byte| byte.is_ascii_hexdigit())).then(|| {
         json!({
             "schema": 2,

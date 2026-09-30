@@ -88,7 +88,7 @@ impl Reader {
         let holder = metadata::global_object(
             &self.memory,
             self.base,
-            self.adapter.metadata,
+            self.adapter.global_registry_rva,
             self.adapter.inventory.profile_hash,
         )?;
         let profile = u64::from_le_bytes(read(&self.memory, holder)?);
@@ -106,8 +106,12 @@ impl Reader {
         if let Some(name) = self.names.get(&descriptor) {
             return Ok(name.clone());
         }
-        let name =
-            metadata::resource_name(&self.memory, self.base, self.adapter.metadata, descriptor)?;
+        let name = metadata::resource_name(
+            &self.memory,
+            self.base,
+            self.adapter.string_blocks_rva,
+            descriptor,
+        )?;
         if !name.starts_with("/Lotus/") || name.len() > 2048 {
             return Err("invalid inventory item type".into());
         }
@@ -299,7 +303,7 @@ mod tests {
 
     fn fixture() -> (GameAdapter, Vec<u8>) {
         let mut adapter = *adapter::resolve_key("d01b5cb5cff5").unwrap();
-        adapter.metadata.global_registry_rva = 0x100;
+        adapter.global_registry_rva = 0x100;
         adapter.inventory.sync_offset = 0x140;
         adapter.inventory.misc_offset = 0x100;
         adapter.inventory.recipes_offset = 0x110;

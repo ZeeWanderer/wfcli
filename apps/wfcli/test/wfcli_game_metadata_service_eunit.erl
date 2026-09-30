@@ -14,7 +14,9 @@ game_metadata_service_test_() ->
          fun unchanged_publish_keeps_revision/0,
          fun rejects_obsolete_schema/0,
          fun rejects_invalid_executable_identity/0,
-         fun unsupported_executable_replaces_stale_metadata/0,
+         fun failed_capture_retains_catalog_across_restart/0,
+         fun successful_capture_clears_warning/0,
+         fun failed_capture_without_catalog_stays_unavailable/0,
          fun clear_removes_metadata/0
      ] end}.
 
@@ -60,13 +62,44 @@ rejects_invalid_executable_identity() ->
     ?assertEqual({error, invalid_game_metadata_executable},
                  wfcli_game_metadata_service:publish(Invalid)).
 
-unsupported_executable_replaces_stale_metadata() ->
-    Hash = <<"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef">>,
-    Unavailable = #{<<"schema">> => 2,
-                    <<"executable">> => #{<<"sha256">> => Hash},
-                    <<"unavailable">> => #{<<"reason">> => <<"unsupported_executable">>}},
-    {ok, Snapshot} = wfcli_game_metadata_service:publish(Unavailable),
-    ?assertEqual(Unavailable, maps:get(data, Snapshot)).
+failed_capture_retains_catalog_across_restart() ->
+    {ok, Original} = wfcli_game_metadata_service:publish(metadata()),
+    Failed = unavailable(),
+    {ok, Snapshot} = wfcli_game_metadata_service:publish(Failed),
+    Expected = (metadata())#{
+                 <<"capture_error">> =>
+                     #{<<"executable">> => maps:get(<<"executable">>, Failed),
+                       <<"reason">> => <<"unsupported_executable">>}},
+    ?assertEqual(Expected, maps:get(data, Snapshot)),
+    ?assertEqual(maps:get(revision, Original) + 1, maps:get(revision, Snapshot)),
+    {ok, Repeated} = wfcli_game_metadata_service:publish(Failed),
+    ?assertEqual(Snapshot, Repeated),
+    ok = gen_server:stop(wfcli_game_metadata_service),
+    {ok, _Pid} = wfcli_game_metadata_service:start_link(),
+    Reloaded = wfcli_game_metadata_service:snapshot(),
+    ?assertEqual(Snapshot, Reloaded),
+    ?assertMatch(#{available := true, pools := #{<<"suits">> := 0},
+                   capture_error := #{<<"reason">> := <<"unsupported_executable">>}},
+                 wfcli_game_metadata_service:status()),
+    ?assertMatch({ok, _, _, unverified_game_metadata},
+                 wfcli_archimedea_loadout:metadata(Reloaded)).
+
+successful_capture_clears_warning() ->
+    Fresh = (metadata())#{<<"executable">> => maps:get(<<"executable">>, unavailable())},
+    {ok, Snapshot} = wfcli_game_metadata_service:publish(Fresh),
+    ?assertEqual(Fresh, maps:get(data, Snapshot)),
+    ?assertMatch(#{available := true, capture_error := undefined}, wfcli_game_metadata_service:status()),
+    ?assertMatch({ok, _, _, none}, wfcli_archimedea_loadout:metadata(Snapshot)).
+
+failed_capture_without_catalog_stays_unavailable() ->
+    ok = wfcli_game_metadata_service:clear(),
+    {ok, Snapshot} = wfcli_game_metadata_service:publish(unavailable()),
+    ?assertEqual(unavailable(), maps:get(data, Snapshot)),
+    ?assertMatch(#{available := false, pools := #{},
+                   capture_error := #{<<"reason">> := <<"unsupported_executable">>}},
+                 wfcli_game_metadata_service:status()),
+    ?assertEqual({error, unsupported_game_build},
+                 wfcli_archimedea_loadout:metadata(Snapshot)).
 
 clear_removes_metadata() ->
     ok = wfcli_game_metadata_service:clear(),
@@ -75,4 +108,13 @@ clear_removes_metadata() ->
 metadata() ->
     #{<<"schema">> => 2,
       <<"executable">> => #{<<"sha256">> => binary:copy(<<"a">>, 64)},
-      <<"archimedea">> => #{<<"catalog">> => #{}}}.
+      <<"archimedea">> =>
+          #{<<"catalog">> => #{<<"suits">> => [], <<"primaries">> => [],
+                                <<"secondaries">> => [], <<"melees">> => []},
+            <<"owned_suit_items">> => [], <<"owned_weapon_items">> => [],
+            <<"suit_aliases">> => [], <<"weapon_aliases">> => []}}.
+
+unavailable() ->
+    #{<<"schema">> => 2,
+      <<"executable">> => #{<<"sha256">> => binary:copy(<<"b">>, 64)},
+      <<"unavailable">> => #{<<"reason">> => <<"unsupported_executable">>}}.

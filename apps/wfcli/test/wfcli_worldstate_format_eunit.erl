@@ -59,12 +59,26 @@ archimedea_projection_and_semantic_query_test() ->
     ?assert(string:find(maps:get(elite_risks, Row), "Commanding Culverins") =/= nomatch),
     ?assert(string:find(maps:get(modifier_details, Row), "Lose 2 Health") =/= nomatch),
     ?assertEqual("ready", maps:get(loadout_status, Row)),
+    ?assertEqual("", maps:get(loadout_warning, Row)),
     ?assert(string:find(maps:get(loadouts, Row), "Owned Frame [owned]") =/= nomatch),
     Parsed = wfcli_worldstate_query:parse(
                "archimedea=deep deviation~sealed elite-risk~culverin seed=157125 "
                "warframe~owned loadout-status=ready"),
     ?assertEqual([], maps:get(errors, Parsed)),
     ?assert(wfcli_worldstate_query:match(Entry, Parsed)).
+
+archimedea_unverified_loadouts_include_warning_test() ->
+    Data = #{<<"Type">> => <<"CT_LAB">>, <<"RandomSeed">> => 157125},
+    Context = (loadout_context())#{warning => unverified_game_metadata},
+    Entry = wfcli_entity_worldstate:build(
+              archimedea, "deep", "Deep Archimedea", Data,
+              #{resolve_items => true, archimedea_loadout => Context}),
+    Row = maps:get(row_map, Entry),
+    ?assertEqual("ready", maps:get(loadout_status, Row)),
+    ?assert(string:find(maps:get(loadout_warning, Row), "unverified") =/= nomatch),
+    ?assert(string:find(maps:get(loadouts, Row), "Owned Frame [owned]") =/= nomatch),
+    #{fields := Fields} = wfcli_worldstate_presentation:block_spec(archimedea),
+    ?assert(lists:member({"Warning", loadout_warning}, Fields)).
 
 archimedea_owned_marker_uses_ownership_flag_test() ->
     Owned = <<"catalog-owned">>,

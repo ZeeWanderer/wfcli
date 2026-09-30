@@ -159,6 +159,7 @@ loadout_fields(#{status := ready} = Loadout) ->
              "Secondary: " ++ Secondaries,
              "Melee: " ++ Melees],
     #{loadout_status => "ready",
+      loadout_warning => warning_text(maps:get(warning, Loadout, none)),
       loadout_seed => maps:get(effective_seed, Loadout),
       suits => Suits,
       primaries => Primaries,
@@ -167,6 +168,7 @@ loadout_fields(#{status := ready} = Loadout) ->
       loadouts => join(Lines, "\n  ")};
 loadout_fields(#{reason := Reason}) ->
     #{loadout_status => atom_to_list(Reason),
+      loadout_warning => "",
       loadout_seed => undefined,
       suits => "", primaries => "", secondaries => "", melees => "",
       loadouts => unavailable_text(Reason)}.
@@ -177,6 +179,10 @@ category_text(Items) ->
 item_text(#{name := Name, owned := true}) -> Name ++ " [owned]";
 item_text(#{name := Name}) -> Name.
 
+warning_text(none) -> "";
+warning_text(unverified_game_metadata) ->
+    "Using cached equipment pools; loadouts are unverified for the current Warframe build".
+
 unavailable_text(missing_account_seed) ->
     "Unavailable: launch Warframe through wfcompanion once to cache the account seed";
 unavailable_text(missing_player_inventory) ->
@@ -185,10 +191,8 @@ unavailable_text(missing_game_metadata) ->
     "Unavailable: open an Archimedea screen while wfcompanion is running once";
 unavailable_text(invalid_game_metadata) ->
     "Unavailable: cached game metadata is invalid";
-unavailable_text(stale_game_metadata) ->
-    "Unavailable: cached game metadata belongs to an older Warframe build";
 unavailable_text(unsupported_game_build) ->
-    "Unavailable: this Warframe build is not supported yet";
+    "Unavailable: no cached equipment pools; capture is not supported for this Warframe build";
 unavailable_text(game_metadata_unavailable) ->
     "Unavailable: game metadata could not be captured";
 unavailable_text(missing_equipment_exports) ->

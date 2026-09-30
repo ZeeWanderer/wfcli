@@ -1,17 +1,21 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
+use std::path::Path;
 
 use memchr::memmem;
 use serde::Serialize;
 
 use super::ProcessIdentity;
-use super::adapter::{self, MetadataLayout};
 use super::memory::{ExecutableIdentity, ProcessMemory, Region, identify_process};
+use layout::MetadataLayout;
+
+mod layout;
 
 const STORE_ENTRY_SIZE: u64 = 16;
 const VARIANT_ENTRY_SIZE: u64 = 0x68;
 const MAX_STORE_ENTRIES: usize = 100_000;
 const MAX_VARIANT_ENTRIES: usize = 50_000;
 const SCAN_CHUNK_SIZE: usize = 8 * 1024 * 1024;
+const GAME_RULES_PREFIX: usize = 0x2000;
 const PLAYER_POWER_SUIT: &str = "/Lotus/Types/Game/PowerSuits/PlayerPowerSuit";
 
 #[derive(Debug, Serialize)]
@@ -66,11 +70,19 @@ pub fn capture(pid: u32) -> Result<GameMetadata, String> {
     capture_for_identity(pid, identity)
 }
 
+pub fn inspect_executable(path: &Path) -> Result<serde_json::Value, String> {
+    let (hash, bindings) = layout::read(path)?;
+    Ok(serde_json::json!({"executable_sha256": hash, "metadata_bindings": bindings}))
+}
+
 pub fn capture_for_identity(pid: u32, identity: ProcessIdentity) -> Result<GameMetadata, String> {
     if identity.pid != pid {
         return Err("Warframe process identity PID mismatch".to_owned());
     }
-    let layout = adapter::require(&identity)?.metadata;
+    let (hash, layout) = layout::read(&identity.executable.path)?;
+    if hash != identity.executable.sha256 {
+        return Err("Warframe executable changed during metadata discovery".to_owned());
+    }
     let memory = ProcessMemory::open(pid)?;
     let base = memory
         .image_base()
@@ -126,6 +138,17 @@ fn build_archimedea(
             _ => {}
         }
     }
+    if [
+        &catalog.suits,
+        &catalog.primaries,
+        &catalog.secondaries,
+        &catalog.melees,
+    ]
+    .iter()
+    .any(|items| items.len() < 3 || items.iter().any(|name| !name.starts_with("/Lotus/")))
+    {
+        return Err("invalid Archimedea equipment pools".to_owned());
+    }
     Ok(ArchimedeaMetadata {
         catalog,
         owned_suit_items,
@@ -170,31 +193,18 @@ fn read_store_entries(
     if !game_time.is_finite() {
         return Err("invalid Warframe game time".to_owned());
     }
-    let holder = global_object(memory, base, layout, layout.game_rules_hash)?;
+    let holder = global_object(
+        memory,
+        base,
+        layout.global_registry_rva,
+        layout.game_rules_hash,
+    )?;
     let game_rules = non_null(read_u64(memory, holder)?, "gGameRules")?;
-    let mut candidates = BTreeMap::new();
-    for &offset in layout.store_manifest_offsets {
-        let mut candidate = read_u64(memory, game_rules + offset)?;
-        for _depth in 0..=2 {
-            if candidate == 0 {
-                break;
-            }
-            if let Some(shape) =
-                manifest_shape(memory, candidate, STORE_ENTRY_SIZE, MAX_STORE_ENTRIES)
-            {
-                candidates.insert(candidate, shape);
-            }
-            candidate = match read_u64(memory, candidate) {
-                Ok(next) => next,
-                Err(_) => break,
-            };
-        }
-    }
-    let candidates = candidates.into_iter().collect::<Vec<_>>();
-    if candidates.len() != 1 {
-        return Err("expected one StoreManifest candidate".to_owned());
-    }
-    let (_manifest, (entries, count)) = candidates[0];
+    let (entries, count) = store_manifest(
+        memory,
+        game_rules,
+        base + layout.store_manifest_descriptor_rva,
+    )?;
     let mut result = Vec::new();
     for index in 0..count {
         let holder = read_u64(memory, entries + index as u64 * STORE_ENTRY_SIZE)?;
@@ -213,7 +223,7 @@ fn read_store_entries(
         let flags = read_u32(memory, item + 0x15c)?;
         result.push(StoreEntry {
             category,
-            path: resource_name(memory, base, layout, resource)?,
+            path: resource_name(memory, base, layout.string_blocks_rva, resource)?,
             descriptor: resource,
             icon: read_u32(memory, item + 0xfc)?,
             excluded: flags & 0x100 != 0,
@@ -226,6 +236,68 @@ fn read_store_entries(
         });
     }
     Ok(result)
+}
+
+fn store_manifest(
+    memory: &ProcessMemory,
+    game_rules: u64,
+    descriptor: u64,
+) -> Result<(u64, usize), String> {
+    let mut fields = [0; GAME_RULES_PREFIX];
+    memory
+        .read_exact_at(&mut fields, game_rules)
+        .map_err(|error| format!("could not read gGameRules fields: {error}"))?;
+    let mut candidates = BTreeMap::new();
+    for field in fields.chunks_exact(8) {
+        let mut candidate = u64::from_le_bytes(field.try_into().unwrap());
+        for _depth in 0..=2 {
+            if candidate == 0
+                || !candidate.is_multiple_of(8)
+                || !readable_range(memory, candidate, 0x48)
+            {
+                break;
+            }
+            if read_u64(memory, candidate + 8)
+                .ok()
+                .is_some_and(|actual| descriptor_inherits(memory, actual, descriptor))
+                && let Some(shape) =
+                    manifest_shape(memory, candidate, STORE_ENTRY_SIZE, MAX_STORE_ENTRIES)
+            {
+                candidates.insert(candidate, shape);
+            }
+            candidate = match read_u64(memory, candidate) {
+                Ok(next) if next != candidate => next,
+                _ => break,
+            };
+        }
+    }
+    let candidates = candidates.into_iter().collect::<Vec<_>>();
+    if candidates.len() != 1 {
+        return Err(format!(
+            "expected one StoreManifest candidate, found {}",
+            candidates.len()
+        ));
+    }
+    Ok(candidates[0].1)
+}
+
+fn descriptor_inherits(memory: &ProcessMemory, mut actual: u64, expected: u64) -> bool {
+    for _ in 0..32 {
+        if actual == expected {
+            return true;
+        }
+        if actual == 0 || !readable_range(memory, actual, 0x20) {
+            return false;
+        }
+        let Ok(parent) = read_u64(memory, actual + 0x18) else {
+            return false;
+        };
+        if parent == actual {
+            return false;
+        }
+        actual = parent;
+    }
+    false
 }
 
 fn suit_aliases(
@@ -243,7 +315,7 @@ fn suit_aliases(
             if parent == 0 {
                 break;
             }
-            if resource_name(memory, base, layout, parent)? == PLAYER_POWER_SUIT {
+            if resource_name(memory, base, layout.string_blocks_rva, parent)? == PLAYER_POWER_SUIT {
                 groups.push((entry.path.clone(), descriptor));
                 break;
             }
@@ -327,7 +399,7 @@ fn normalized_weapon(
     else {
         return Ok(None);
     };
-    resource_name(memory, base, layout, target).map(Some)
+    resource_name(memory, base, layout.string_blocks_rva, target).map(Some)
 }
 
 fn descriptor_chain(
@@ -343,7 +415,7 @@ fn descriptor_chain(
         let parent = read_u64(memory, current + 0x18)?;
         chain.push(DescriptorNode {
             address: current,
-            name: resource_name(memory, base, layout, current)?,
+            name: resource_name(memory, base, layout.string_blocks_rva, current)?,
             parent,
         });
         if parent == 0 || parent == current {
@@ -400,13 +472,14 @@ fn variant_score(
             return Ok(0);
         }
         previous = key;
-        if resource_name(memory, base, layout, key)?.starts_with("/Lotus/") {
+        if resource_name(memory, base, layout.string_blocks_rva, key)?.starts_with("/Lotus/") {
             decoded += 1;
         }
         if read_u32(memory, entry + 0x10)? != 0 {
             let holder = non_null(read_u64(memory, entry + 0x08)?, "variant holder")?;
             let target = non_null(read_u64(memory, holder)?, "variant target")?;
-            if resource_name(memory, base, layout, target)?.starts_with("/Lotus/") {
+            if resource_name(memory, base, layout.string_blocks_rva, target)?.starts_with("/Lotus/")
+            {
                 mapped += 1;
             }
         }
@@ -455,10 +528,10 @@ fn instances_with_descriptor(memory: &ProcessMemory, descriptor: u64) -> Result<
 pub(super) fn global_object(
     memory: &ProcessMemory,
     base: u64,
-    layout: MetadataLayout,
+    registry_rva: u64,
     key: u32,
 ) -> Result<u64, String> {
-    let registry = base + layout.global_registry_rva;
+    let registry = base + registry_rva;
     let entries = read_u64(memory, registry + 0x138)?;
     let byte_length = read_u32(memory, registry + 0x140)? as u64;
     if byte_length > 0x10000 || !byte_length.is_multiple_of(16) {
@@ -490,10 +563,10 @@ fn manifest_shape(
 pub(super) fn resource_name(
     memory: &ProcessMemory,
     base: u64,
-    layout: MetadataLayout,
+    string_blocks_rva: u64,
     resource: u64,
 ) -> Result<String, String> {
-    let blocks = read_u64(memory, base + layout.string_blocks_rva)?;
+    let blocks = read_u64(memory, base + string_blocks_rva)?;
     let first_pointer = read_u64(memory, resource + 0x10)?;
     let first = if first_pointer == 0 {
         0
@@ -594,6 +667,93 @@ fn read_u64(memory: &ProcessMemory, address: u64) -> Result<u64, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn put64(bytes: &mut [u8], offset: usize, value: u64) {
+        bytes[offset..offset + 8].copy_from_slice(&value.to_le_bytes());
+    }
+
+    fn manifest_fixture() -> Vec<u8> {
+        let mut bytes = vec![0; 0x5000];
+        put64(&mut bytes, 0x3000, 0x3100);
+        put64(&mut bytes, 0x3100, 0x3200);
+        put64(&mut bytes, 0x3208, 0x4000);
+        put64(&mut bytes, 0x3238, 0x4100);
+        put64(&mut bytes, 0x3240, 32);
+        bytes
+    }
+
+    fn memory(bytes: &[u8]) -> ProcessMemory {
+        ProcessMemory::from_test_bytes(
+            bytes,
+            vec![Region {
+                start: 0,
+                end: bytes.len() as u64,
+                permissions: "rw-p".into(),
+                path: String::new(),
+            }],
+        )
+    }
+
+    #[test]
+    fn store_manifest_follows_type_not_game_rules_field_offset() {
+        for offset in [0x4e0, 0xbd0, 0xbe0, 0xf98, 0x1800] {
+            for pointer in [0x3000, 0x3100, 0x3200] {
+                let mut bytes = manifest_fixture();
+                put64(&mut bytes, 0x100 + offset, pointer);
+                assert_eq!(
+                    store_manifest(&memory(&bytes), 0x100, 0x4000),
+                    Ok((0x4100, 2))
+                );
+                put64(&mut bytes, 0x108, 0x3200);
+                assert_eq!(
+                    store_manifest(&memory(&bytes), 0x100, 0x4000),
+                    Ok((0x4100, 2))
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn store_manifest_rejects_wrong_types_bad_vectors_and_ambiguous_instances() {
+        let mut bytes = manifest_fixture();
+        put64(&mut bytes, 0x100, 0x3200);
+        assert!(store_manifest(&memory(&bytes), 0x100, 0x4008).is_err());
+        put64(&mut bytes, 0x3240, 31);
+        assert!(store_manifest(&memory(&bytes), 0x100, 0x4000).is_err());
+        put64(&mut bytes, 0x3240, 0x10000);
+        assert!(store_manifest(&memory(&bytes), 0x100, 0x4000).is_err());
+        put64(&mut bytes, 0x3240, 32);
+        bytes.copy_within(0x3200..0x3248, 0x3300);
+        put64(&mut bytes, 0x108, 0x3300);
+        assert!(store_manifest(&memory(&bytes), 0x100, 0x4000).is_err());
+    }
+
+    #[test]
+    fn store_manifest_accepts_derived_resources() {
+        let mut bytes = manifest_fixture();
+        put64(&mut bytes, 0x100, 0x3100);
+        put64(&mut bytes, 0x3208, 0x3800);
+        put64(&mut bytes, 0x3818, 0x3900);
+        put64(&mut bytes, 0x3918, 0x4000);
+        assert_eq!(
+            store_manifest(&memory(&bytes), 0x100, 0x4000),
+            Ok((0x4100, 2))
+        );
+        put64(&mut bytes, 0x3918, 0x3800);
+        assert!(store_manifest(&memory(&bytes), 0x100, 0x4000).is_err());
+        put64(&mut bytes, 0x3918, u64::MAX);
+        assert!(store_manifest(&memory(&bytes), 0x100, 0x4000).is_err());
+    }
+
+    #[test]
+    fn store_manifest_pointer_walk_is_bounded() {
+        let mut bytes = manifest_fixture();
+        put64(&mut bytes, 0x100, 0x2800);
+        put64(&mut bytes, 0x2800, 0x3000);
+        assert!(store_manifest(&memory(&bytes), 0x100, 0x4000).is_err());
+        put64(&mut bytes, 0x3000, 0x2800);
+        assert!(store_manifest(&memory(&bytes), 0x100, 0x4000).is_err());
+    }
 
     #[test]
     fn catalog_and_owned_filters_match_archimedea_scripts() {

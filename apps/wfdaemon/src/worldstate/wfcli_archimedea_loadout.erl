@@ -7,7 +7,7 @@
 
 -export([context/0, resolve/2, select/3]).
 -ifdef(TEST).
--export([pools/2]).
+-export([pools/2, metadata/1]).
 -endif.
 
 -define(MASK32, 16#ffffffff).
@@ -53,7 +53,8 @@ select(WorldSeed, Forced, Context) ->
                                    maps:get(Category, Forced, []), Names)}
                   || Category <- Categories]),
     Selected#{effective_seed => Seed,
-              catalog_source => maps:get(catalog_source, Context, public_export)}.
+              catalog_source => maps:get(catalog_source, Context, public_export),
+              warning => maps:get(warning, Context, none)}.
 
 luau_seed(Value) ->
     Narrowed = Value band ?MASK32,
@@ -76,7 +77,7 @@ context_from_snapshots(Player, Metadata) ->
     case {maps:get(<<"archimedea_seed">>, Account, undefined),
           maps:get(<<"raw">>, Inventory, undefined),
           metadata(Metadata)} of
-        {Seed, Raw, {ok, Archimedea, MetadataKey}}
+        {Seed, Raw, {ok, Archimedea, MetadataKey, Warning}}
           when is_integer(Seed), is_map(Raw) ->
             case names() of
                 {ok, Names, NamesSignature} ->
@@ -86,7 +87,7 @@ context_from_snapshots(Player, Metadata) ->
                               {Seed, owned_key(Pools), MetadataKey, NamesSignature})),
                     #{status => ready, key => Key, account_seed => Seed,
                       pools => Pools, names => Names,
-                      catalog_source => game_metadata};
+                      catalog_source => game_metadata, warning => Warning};
                 {error, Reason} -> (unavailable(Reason))#{key => {names, Reason}}
             end;
         {Seed, _Raw, _Metadata} when not is_integer(Seed) ->
@@ -100,18 +101,23 @@ context_from_snapshots(Player, Metadata) ->
 
 metadata(#{revision := 0}) -> {error, missing_game_metadata};
 metadata(#{data := #{<<"schema">> := 2,
-                     <<"unavailable">> := #{<<"reason">> := Reason}}}) ->
-    {error, unavailable_reason(Reason)};
-metadata(#{data := #{<<"schema">> := 2,
                      <<"executable">> := Executable = #{<<"sha256">> := Hash},
-                     <<"archimedea">> := Archimedea},
+                     <<"archimedea">> := Archimedea} = Data,
            revision := Revision})
   when is_binary(Hash), is_map(Archimedea) ->
-    case {valid_archimedea(Archimedea), executable_current(Executable)} of
-        {true, true} -> {ok, Archimedea, {Revision, Hash}};
-        {true, false} -> {error, stale_game_metadata};
-        {false, _Current} -> {error, invalid_game_metadata}
+    case valid_archimedea(Archimedea) of
+        true ->
+            Warning = case not maps:is_key(<<"capture_error">>, Data) andalso
+                           executable_current(Executable) of
+                          true -> none;
+                          false -> unverified_game_metadata
+                      end,
+            {ok, Archimedea, {Revision, Hash, Warning}, Warning};
+        false -> {error, invalid_game_metadata}
     end;
+metadata(#{data := #{<<"schema">> := 2,
+                     <<"unavailable">> := #{<<"reason">> := Reason}}}) ->
+    {error, unavailable_reason(Reason)};
 metadata(_Metadata) -> {error, invalid_game_metadata}.
 
 unavailable_reason(<<"unsupported_executable">>) -> unsupported_game_build;

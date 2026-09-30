@@ -8,10 +8,12 @@ use wfcompanion::{game_observer, inspect};
 pub enum Game {
     /// Show the running process and executable identity.
     Process,
-    /// Probe the active adapter, or list supported builds offline.
+    /// Probe live adapters, inspect an executable offline, or list fixed layouts.
     Adapter {
         #[arg(long)]
         list: bool,
+        #[arg(long, conflicts_with = "list", value_name = "PATH")]
+        exe: Option<PathBuf>,
     },
     /// Capture game item metadata.
     Metadata {
@@ -197,8 +199,11 @@ impl Game {
     pub fn run(self) -> Result<(), String> {
         match self {
             Self::Process => process(),
-            Self::Adapter { list: true } => print_json(&game_observer::adapter::list()),
-            Self::Adapter { list: false } => adapter(),
+            Self::Adapter { list: true, .. } => print_json(&game_observer::adapter::list()),
+            Self::Adapter {
+                exe: Some(path), ..
+            } => print_json(&game_observer::metadata::inspect_executable(&path)?),
+            Self::Adapter { .. } => adapter(),
             Self::Metadata { output } => metadata(output),
             Self::Inventory => {
                 print_json(&game_observer::inventory::Reader::open(game_pid()?)?.read()?)

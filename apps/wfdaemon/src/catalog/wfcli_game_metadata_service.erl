@@ -27,7 +27,7 @@ start_link() ->
 snapshot() ->
     gen_server:call(?SERVER, snapshot).
 
--doc "Replace metadata captured from one Warframe executable build.".
+-doc "Store a capture, retaining the last successful catalog when capture fails.".
 -spec publish(map()) -> {ok, snapshot()} | {error, term()}.
 publish(Data) ->
     gen_server:call(?SERVER, {publish, Data}).
@@ -63,9 +63,18 @@ handle_call(status, _From, State) ->
     Snapshot = maps:get(snapshot, State),
     Data = maps:get(data, Snapshot),
     Executable = maps:get(<<"executable">>, Data, #{}),
+    Pools = case Data of
+        #{<<"archimedea">> := #{<<"catalog">> := Catalog}} when is_map(Catalog) ->
+            maps:from_list([{Kind, length(Items)} || {Kind, Items} <- maps:to_list(Catalog), is_list(Items)]);
+        _ -> #{}
+    end,
     {reply, #{revision => maps:get(revision, Snapshot),
               updated_at => maps:get(updated_at, Snapshot),
               executable_sha256 => maps:get(<<"sha256">>, Executable, undefined),
+              available => map_size(Pools) > 0,
+              pools => Pools,
+              capture_error => maps:get(<<"capture_error">>, Data,
+                                        maps:get(<<"unavailable">>, Data, undefined)),
               cache_path => maps:get(cache_path, State)}, State};
 handle_call(Request, _From, State) ->
     {reply, {error, {unknown_request, Request}}, State}.
@@ -84,12 +93,22 @@ terminate(_Reason, _State) -> ok.
 -spec code_change(term(), state(), term()) -> {ok, state()}.
 code_change(_OldVsn, State, _Extra) -> {ok, State}.
 
-publish_data(Data, State) ->
+publish_data(Capture, State) ->
     Snapshot = maps:get(snapshot, State),
-    case maps:get(data, Snapshot) =:= Data of
+    Previous = maps:get(data, Snapshot),
+    Data = retain_catalog(Capture, Previous),
+    case Previous =:= Data of
         true -> {reply, {ok, Snapshot}, State};
         false -> replace(Data, State, snapshot)
     end.
+
+retain_catalog(#{<<"unavailable">> := #{<<"reason">> := Reason},
+                 <<"executable">> := Executable} = Capture,
+               #{<<"archimedea">> := Archimedea} = Previous)
+  when is_map(Archimedea), not is_map_key(<<"archimedea">>, Capture) ->
+    Previous#{<<"capture_error">> => #{<<"reason">> => Reason,
+                                      <<"executable">> => Executable}};
+retain_catalog(Capture, _Previous) -> Capture.
 
 replace(Data, State, Reply) ->
     Old = maps:get(snapshot, State),

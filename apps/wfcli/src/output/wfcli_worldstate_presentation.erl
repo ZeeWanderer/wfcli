@@ -77,7 +77,7 @@ block_spec(Type) ->
             #{title => "{summary}",
               fields => [{"Window", window}, {"Missions", mission_details},
                          {"Personal modifiers", modifier_details}, {"Random seed", seed},
-                         {"Loadouts", loadouts}],
+                         {"Warning", loadout_warning}, {"Loadouts", loadouts}],
               skip_fields => [window_start, window_end, id, name, type, summary,
                               archimedea, missions, deviations, risks, elite_risks,
                               personal_modifiers, randomseed, loadout_status, loadout_seed,

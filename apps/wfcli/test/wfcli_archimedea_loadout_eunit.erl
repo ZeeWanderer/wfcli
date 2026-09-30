@@ -1,6 +1,44 @@
 -module(wfcli_archimedea_loadout_eunit).
 
 -include_lib("eunit/include/eunit.hrl").
+-include_lib("kernel/include/file.hrl").
+
+game_update_warns_without_disabling_selection_test() ->
+    Path = filename:join("/tmp", "wfcli-archimedea-executable-" ++
+                         integer_to_list(erlang:unique_integer([positive]))),
+    try
+        ok = file:write_file(Path, <<"old build">>),
+        {ok, #file_info{size = Size, mtime = Modified}} =
+            file:read_file_info(Path, [{time, posix}]),
+        Archimedea = empty_metadata(#{}, #{}),
+        Snapshot = #{revision => 1,
+                     data => #{<<"schema">> => 2,
+                               <<"executable">> =>
+                                   #{<<"path">> => list_to_binary(Path),
+                                     <<"size">> => Size,
+                                     <<"modified_unix_ms">> => Modified * 1000,
+                                     <<"sha256">> => binary:copy(<<"a">>, 64)},
+                               <<"archimedea">> => Archimedea}},
+        {ok, Archimedea, OldKey, none} = wfcli_archimedea_loadout:metadata(Snapshot),
+        ok = file:write_file(Path, <<"new game build">>),
+        {ok, Archimedea, NewKey, Warning} = wfcli_archimedea_loadout:metadata(Snapshot),
+        ?assertEqual(unverified_game_metadata, Warning),
+        ?assertNotEqual(OldKey, NewKey),
+        Data = #{<<"RandomSeed">> => 100},
+        Expected = wfcli_archimedea_loadout:resolve(Data, context(23)),
+        Actual = wfcli_archimedea_loadout:resolve(Data, (context(23))#{warning => Warning}),
+        ?assertEqual(Expected#{warning => Warning}, Actual)
+    after
+        file:delete(Path)
+    end.
+
+invalid_catalog_is_not_used_as_a_fallback_test() ->
+    Snapshot = #{revision => 1,
+                 data => #{<<"schema">> => 2,
+                           <<"executable">> => #{<<"sha256">> => binary:copy(<<"a">>, 64)},
+                           <<"archimedea">> => #{<<"catalog">> => #{}},
+                           <<"capture_error">> => #{<<"reason">> => <<"unsupported_executable">>}}},
+    ?assertEqual({error, invalid_game_metadata}, wfcli_archimedea_loadout:metadata(Snapshot)).
 
 owned_then_catalog_selection_test() ->
     Result = wfcli_archimedea_loadout:select(100, #{}, context(23)),

@@ -9,6 +9,7 @@ links are `wfinspectd` (development) and `wfinspect` (production).
 ```bash
 wfinspect doctor
 wfinspect game adapter --list
+wfinspect game adapter --exe /path/to/Warframe.x64.exe
 wfinspect game inventory
 wfinspect game memory --help
 mkdir -p ~/.local/share/bash-completion/completions
@@ -20,6 +21,10 @@ Use `--` before literal arguments beginning with a dash or named `help`.
 
 `game inventory` reads current resource stacks, blueprints and foundry jobs,
 including their inventory sync ID, directly from the running game.
+
+`game adapter --exe PATH` checks metadata bindings without launching Warframe.
+Metadata uses validated code signatures; fixed UI and inventory layouts remain
+listed separately by `--list`.
 
 ## Memory and UI
 
