@@ -41,7 +41,7 @@ tool_definitions_expose_headless_surface_test() ->
 
 json_normalizes_erlang_service_terms_test() ->
     Value = #{status => running, 1 => "slot", tuple => {ok, 2}, numbers => [1, 2]},
-    {ok, Decoded} = wfcli_mcp_json:decode(wfcli_mcp_json:encode(Value)),
+    {ok, Decoded} = wfcli_json:decode(wfcli_json:encode(Value)),
     ?assertEqual(<<"running">>, maps:get(<<"status">>, Decoded)),
     ?assertEqual(<<"slot">>, maps:get(<<"1">>, Decoded)),
     ?assertEqual([<<"ok">>, 2], maps:get(<<"tuple">>, Decoded)),
@@ -49,18 +49,20 @@ json_normalizes_erlang_service_terms_test() ->
 
 dataset_resource_uses_protocol_contract_test() ->
     {ok, <<"application/json">>, Text} = wfcli_mcp_resources:read(<<"wfcli://datasets">>),
-    {ok, Data} = wfcli_mcp_json:decode(Text),
+    {ok, Data} = wfcli_json:decode(Text),
     ?assertEqual([<<"worldstate">>, <<"mods">>, <<"items">>, <<"codex">>,
                   <<"enemies">>, <<"drops">>],
                  maps:get(<<"default">>, Data)),
     All = maps:get(<<"all">>, Data),
-    ?assertEqual(9, length(All)),
-    ?assert(lists:member(<<"diagnostics">>, All)).
+    ?assertEqual(11, length(All)),
+    ?assert(lists:member(<<"diagnostics">>, All)),
+    ?assert(lists:member(<<"incidents">>, All)),
+    ?assert(lists:member(<<"captures">>, All)).
 
 worldstate_schema_resource_is_packaged_test() ->
     {ok, <<"application/json">>, Text} =
         wfcli_mcp_resources:read(<<"wfcli://schema/worldstate">>),
-    {ok, Data} = wfcli_mcp_json:decode(Text),
+    {ok, Data} = wfcli_json:decode(Text),
     ?assert(length(maps:get(<<"columns">>, Data)) > 10),
     ?assert(maps:is_key(<<"fissure">>, maps:get(<<"types">>, Data))).
 

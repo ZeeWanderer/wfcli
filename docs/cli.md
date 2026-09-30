@@ -32,7 +32,13 @@ wfcli drops serration
 wfcli market 'saryn prime set'
 wfcli player
 wfcli diagnostics unresolved
+wfcli diagnostics logs
+wfcli diagnostics logs companion --lines 20 --json
 ```
+
+`diagnostics logs` reads recent daemon and companion incidents, including when daemon is stopped.
+Select `daemon` or `companion` to narrow the output. [Companion diagnostics](companion.md#diagnostics)
+cover collector health and capture status.
 
 Advanced operations have dedicated guides:
 
@@ -69,6 +75,24 @@ wfcli baro --inventory
 wfcli archimedea deep
 wfcli archimedea --deep
 ```
+
+Archimedea predictions use cached player inventory and ordered game equipment pools.
+After game updates, the last captured pools remain usable with an unverified-loadout warning.
+
+## Output
+
+`--json` and `--utc` work before or after any command. Human timestamps use local time
+with a UTC offset; `--utc` selects RFC 3339 UTC. JSON uses UTC and preserves raw epoch
+fields in their original units. Watches emit one JSON object per update.
+
+```bash
+wfcli daemon status --json
+wfcli --utc companion status
+wfcli query --json 'dataset=incidents timestamp>=now-1h'
+```
+
+`--format table|block|json` selects presentation on query commands. The last format
+option wins. See [query syntax](query.md) for filtering and time comparisons.
 
 ## Bash Completion
 

@@ -47,12 +47,20 @@ daemon_watch_loop(Handle, Parsed, Once, Previous) ->
             Always = maps:get(watch_always, Parsed, false),
             case Always orelse AnyChanged of
                 true ->
+                    wfcli_output:emit(
+                      #{timestamp => {timestamp, erlang:system_time(millisecond)},
+                        source => maps:get(source, Update, undefined),
+                        stale => maps:get(stale, Update, false),
+                        specs => [wfcli_worldstate_output:json_result(
+                                    maps:with([label, type_filter, changed, entries, parsed_query], Data))
+                                  || Data <- SpecData, Always orelse maps:get(changed, Data)]}, fun() ->
                     maybe_clear_screen(Parsed),
                     io:format("Worldstate watch @ ~s (~ts)~n",
                               [timestamp(Parsed), wfcli_worldstate_output:daemon_source_text(Update)]),
                     wfcli_worldstate_output:maybe_print_stale(Update),
                     io:format("~n", []),
-                    lists:foreach(fun(Data) -> maybe_print_watch_spec(Data, Parsed, Always) end, SpecData);
+                    lists:foreach(fun(Data) -> maybe_print_watch_spec(Data, Parsed, Always) end, SpecData)
+                    end);
                 false -> ok
             end,
             case Once of
@@ -69,7 +77,7 @@ daemon_watch_loop(Handle, Parsed, Once, Previous) ->
     end.
 
 decorate_daemon_watch(Update, Parsed, Previous) ->
-    Format = maps:get(output_format, Parsed, block),
+    Format = case maps:get(output_format, Parsed, block) of json -> block; Other -> Other end,
     lists:foldl(
       fun(Data0, {DataAcc, SnapshotAcc}) ->
           Label = maps:get(label, Data0),
@@ -111,5 +119,4 @@ maybe_clear_screen(Parsed) ->
     end.
 
 timestamp(Parsed) ->
-    Raw = maps:get(raw, Parsed, false),
-    wfcli_time:format_millis(erlang:system_time(millisecond), #{raw => Raw}).
+    wfcli_time:format_millis(erlang:system_time(millisecond), Parsed).

@@ -11,7 +11,7 @@ print_snapshot(Snapshot) ->
     Data = maps:get(data, Snapshot, #{}),
     io:format("Player dataset~n"),
     io:format("  revision: ~p~n", [maps:get(revision, Snapshot, 0)]),
-    io:format("  updated_at_ms: ~s~n", [value(maps:get(updated_at, Snapshot, undefined))]),
+    io:format("  updated: ~s~n", [wfcli_output:timestamp(maps:get(updated_at, Snapshot, undefined))]),
     io:format("  sources: ~s~n", [source_list(maps:keys(Data))]),
     print_game(maps:get(<<"game">>, Data, undefined)),
     print_collector(maps:get(<<"collector">>, Data, undefined)),
@@ -46,14 +46,14 @@ print_collector(Collector) ->
                 maps:get(<<"inventory_active">>, Collector, undefined)),
     print_field("inventory updates",
                 maps:get(<<"inventory_updates_observed">>, Collector, undefined)),
-    print_field("last observed ms", maps:get(<<"last_observed_at">>, Collector, undefined)).
+    print_field("last observed", wfcli_output:timestamp(maps:get(<<"last_observed_at">>, Collector, undefined))).
 
 print_inventory(undefined, _Summary) -> ok;
 print_inventory(Inventory, Summary) when map_size(Summary) > 0 ->
     io:format("~nInventory~n"),
     print_field("observation schema", maps:get(<<"schema">>, Inventory, undefined)),
     print_field("projection schema", maps:get(schema, Summary, undefined)),
-    print_field("collected_at_ms", maps:get(<<"collected_at">>, Inventory, undefined)),
+    print_field("collected", wfcli_output:timestamp(maps:get(<<"collected_at">>, Inventory, undefined))),
     print_field("equipment", maps:get(equipment, Summary, 0)),
     print_field("items", maps:get(items, Summary, 0)),
     print_field("stacks", maps:get(stacks, Summary, 0)),
@@ -67,7 +67,7 @@ print_inventory(Inventory, _Summary) ->
     Index = maps:get(<<"index">>, Inventory, #{}),
     io:format("~nInventory~n"),
     print_field("schema", maps:get(<<"schema">>, Inventory, undefined)),
-    print_field("collected_at_ms", maps:get(<<"collected_at">>, Inventory, undefined)),
+    print_field("collected", wfcli_output:timestamp(maps:get(<<"collected_at">>, Inventory, undefined))),
     print_field("equipment", list_size(maps:get(<<"equipment">>, Index, []))),
     print_field("stacks", list_size(maps:get(<<"stacks">>, Index, []))),
     print_field("mastery records", list_size(maps:get(<<"mastery">>, Index, []))),

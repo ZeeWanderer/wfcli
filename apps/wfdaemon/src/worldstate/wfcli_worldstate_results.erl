@@ -173,7 +173,11 @@ sort_value_for(Entry, Key0, Opts) ->
                     wfcli_text:to_list(maps:get(name, Entry, ""));
                 AtomKey ->
                     RowMap = wfcli_worldstate_projector:table_row_map(Entry, Opts),
-                    wfcli_text:to_list(maps:get(AtomKey, RowMap, ""))
+                    Value = maps:get(AtomKey, RowMap, ""),
+                    case wfcli_worldstate_schema:query_column_spec(AtomKey) of
+                        {ok, #{kind := time_point}} -> wfcli_time:format_millis(Value, #{utc => true});
+                        _ -> wfcli_text:to_list(Value)
+                    end
             end
     end.
 

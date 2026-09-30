@@ -72,7 +72,7 @@ default_datasets() -> [worldstate, mods, items, codex, enemies, drops].
 
 -doc "Every supported query dataset, including local player and market state.".
 -spec all_datasets() -> [atom()].
-all_datasets() -> default_datasets() ++ [player, market, diagnostics].
+all_datasets() -> default_datasets() ++ [player, market, diagnostics, incidents, captures].
 
 -doc "Return daemon process that owns one request source.".
 -spec owner(map()) -> atom() | undefined.

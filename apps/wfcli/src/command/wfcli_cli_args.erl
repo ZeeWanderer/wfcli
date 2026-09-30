@@ -64,7 +64,8 @@ query() ->
      (option(query_tokens, "search", string, "query expression"))#{
          short => $q, action => append}].
 
-format(Choices, Default) ->
+format(Choices0, Default) ->
+    Choices = lists:usort([json | Choices0]),
     [(option(output_format, "format", {atom, Choices}, "output format"))#{
          short => $f, default => Default},
      (option(output_format, "output-format", {atom, Choices}, hidden))].

@@ -72,6 +72,22 @@ memory_reuse_reports_delivery_and_origin_test() ->
         cleanup_service(Started)
     end.
 
+local_and_utc_use_separate_projection_caches_test() ->
+    Started = setup_service(),
+    try
+        Base = base_request(),
+        Opts = (maps:get(opts, Base))#{raw => false, utc => false},
+        Request = Base#{opts := Opts, type_filter => fissure, query => undefined},
+        Local = submit_result(Request),
+        Utc = submit_result(Request#{opts := Opts#{utc := true}}),
+        [First | _] = maps:get(entries, Utc),
+        Expiry = maps:get(expiry, maps:get(row_map, First)),
+        ?assert(lists:suffix("Z", Expiry)),
+        [LocalFirst | _] = maps:get(entries, Local),
+        ?assertNot(lists:suffix("Z", maps:get(expiry, maps:get(row_map, LocalFirst)))),
+        ?assertEqual(maps:get(entries, Local), maps:get(entries, submit_result(Request)))
+    after cleanup_service(Started) end.
+
 archimedea_context_change_reindexes_cached_snapshot_test() ->
     ensure_service_stopped(),
     application:set_env(wfdaemon, daemon_idle_shutdown, false),

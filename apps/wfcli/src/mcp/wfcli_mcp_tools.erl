@@ -29,7 +29,7 @@ call_tool(<<"query">>, Args) ->
         _ -> ["dataset=" ++ string:join(Datasets, "|") , binary_to_list(Query)]
     end,
     Cwd = cwd(Args),
-    Request0 = #{source => query, query_tokens => Tokens, cwd => Cwd},
+    Request0 = #{source => query, query_tokens => Tokens, cwd => Cwd, utc => true},
     Request1 = optional_boolean(<<"refresh">>, refresh, Args, Request0),
     Request2 = optional_boolean(<<"raw">>, raw, Args, Request1),
     Request3 = optional_integer(<<"ttl">>, ttl, 60, Args, Request2),
@@ -208,6 +208,8 @@ dataset_name(<<"drops">>) -> "drops";
 dataset_name(<<"player">>) -> "player";
 dataset_name(<<"market">>) -> "market";
 dataset_name(<<"diagnostics">>) -> "diagnostics";
+dataset_name(<<"incidents">>) -> "incidents";
+dataset_name(<<"captures">>) -> "captures";
 dataset_name(<<"all">>) -> "all";
 dataset_name(Value) -> invalid(<<"datasets">>, {unknown_dataset, Value}).
 
@@ -232,7 +234,7 @@ update_selection(Value) -> invalid(<<"selections">>, {unknown_selection, Value})
 dataset_names() ->
     [<<"default">>, <<"worldstate">>, <<"mods">>, <<"items">>, <<"codex">>,
      <<"enemies">>, <<"drops">>, <<"player">>, <<"market">>,
-     <<"diagnostics">>, <<"all">>].
+     <<"diagnostics">>, <<"incidents">>, <<"captures">>, <<"all">>].
 
 update_names() ->
     [<<"default">>, <<"all">>, <<"nodes">>, <<"languages">>, <<"manifest">>,

@@ -12,7 +12,7 @@
 -doc "Resolve raw query fields and values against one entity schema.".
 -spec compile(ast(), schema(), kind()) -> {ok, ast()} | {error, [string()]}.
 compile(Ast, Schema, Kind) ->
-    case compile_ast(Ast, Schema, Kind) of
+    case compile_ast(Ast, Schema, Kind, erlang:system_time(millisecond)) of
         {ok, Compiled} -> {ok, Compiled};
         {error, Error} -> {error, [Error]}
     end.
@@ -49,16 +49,16 @@ execute(Entries, Ast, Sorts, Schema, Kind, Offset, Limit) ->
     #{kind => Kind, slice => Slice,
       total => length(Sorted), shown => length(Slice)}.
 
-compile_ast(match_all, _Schema, _Kind) -> {ok, match_all};
-compile_ast({term, Text}, _Schema, _Kind) ->
+compile_ast(match_all, _Schema, _Kind, _Now) -> {ok, match_all};
+compile_ast({term, Text}, _Schema, _Kind, _Now) ->
     {ok, {term, string:lowercase(Text)}};
-compile_ast({filter, Key0, Op0, Values0}, Schema, Kind) ->
+compile_ast({filter, Key0, Op0, Values0}, Schema, Kind, Now) ->
     case Schema:query_field(Kind, Key0) of
         {ok, Spec} ->
             Op = case Op0 of default -> maps:get(default_op, Spec, eq); _ -> Op0 end,
             case validate_operator(Op, maps:get(kind, Spec, string)) of
                 ok ->
-                    case compile_values(Values0, maps:get(kind, Spec, string)) of
+                    case compile_values(Values0, maps:get(kind, Spec, string), Now) of
                         {ok, Values} -> {ok, {filter, Spec, Op, Values}};
                         {error, Error} -> {error, field_error(Key0, Error)}
                     end;
@@ -67,21 +67,18 @@ compile_ast({filter, Key0, Op0, Values0}, Schema, Kind) ->
         error ->
             {error, lists:flatten(io_lib:format("unknown query field for ~p: ~s", [Kind, key_text(Key0)]))}
     end;
-compile_ast({'not', Ast}, Schema, Kind) ->
-    map_compiled(fun(Compiled) -> {'not', Compiled} end, compile_ast(Ast, Schema, Kind));
-compile_ast({'and', Asts}, Schema, Kind) ->
-    compile_children('and', Asts, Schema, Kind);
-compile_ast({'or', Asts}, Schema, Kind) ->
-    compile_children('or', Asts, Schema, Kind).
+compile_ast({'not', Ast}, Schema, Kind, Now) ->
+    map_compiled(fun(Compiled) -> {'not', Compiled} end, compile_ast(Ast, Schema, Kind, Now));
+compile_ast({'and', Asts}, Schema, Kind, Now) ->
+    compile_children('and', Asts, Schema, Kind, Now, []);
+compile_ast({'or', Asts}, Schema, Kind, Now) ->
+    compile_children('or', Asts, Schema, Kind, Now, []).
 
-compile_children(Tag, Asts, Schema, Kind) ->
-    compile_children(Tag, Asts, Schema, Kind, []).
-
-compile_children(Tag, [], _Schema, _Kind, Acc) ->
+compile_children(Tag, [], _Schema, _Kind, _Now, Acc) ->
     {ok, {Tag, lists:reverse(Acc)}};
-compile_children(Tag, [Ast | Rest], Schema, Kind, Acc) ->
-    case compile_ast(Ast, Schema, Kind) of
-        {ok, Compiled} -> compile_children(Tag, Rest, Schema, Kind, [Compiled | Acc]);
+compile_children(Tag, [Ast | Rest], Schema, Kind, Now, Acc) ->
+    case compile_ast(Ast, Schema, Kind, Now) of
+        {ok, Compiled} -> compile_children(Tag, Rest, Schema, Kind, Now, [Compiled | Acc]);
         Error -> Error
     end.
 
@@ -101,16 +98,28 @@ compile_sorts([Sort | Rest], Schema, Kind, Acc) ->
 
 validate_operator(Op, number) when Op =:= eq; Op =:= neq; Op =:= gt; Op =:= gte;
                                    Op =:= lt; Op =:= lte -> ok;
+validate_operator(Op, number) -> operator_error(Op, number);
+validate_operator(Op, time_point) -> validate_operator(Op, number);
 validate_operator(Op, dynamic) when Op =:= eq; Op =:= neq; Op =:= contains; Op =:= gt;
                                     Op =:= gte; Op =:= lt; Op =:= lte -> ok;
 validate_operator(Op, _Kind) when Op =:= eq; Op =:= neq; Op =:= contains -> ok;
-validate_operator(Op, Kind) ->
+validate_operator(Op, Kind) -> operator_error(Op, Kind).
+
+operator_error(Op, Kind) ->
     {error, lists:flatten(io_lib:format("operator ~p is not valid for ~p values", [Op, Kind]))}.
 
-compile_values(Values, number) ->
+compile_values(Values, number, _Now) ->
     compile_numbers(Values, []);
-compile_values(Values, _Kind) ->
+compile_values(Values, time_point, Now) -> compile_times(Values, Now, []);
+compile_values(Values, _Kind, _Now) ->
     {ok, [string:lowercase(wfcli_text:to_list(Value)) || Value <- Values]}.
+
+compile_times([], _Now, Acc) -> {ok, lists:reverse(Acc)};
+compile_times([Value | Rest], Now, Acc) ->
+    case wfcli_time:parse(Value, Now) of
+        {ok, Millis} -> compile_times(Rest, Now, [Millis | Acc]);
+        error -> {error, lists:flatten(io_lib:format("invalid timestamp: ~ts (use RFC 3339, epoch milliseconds or now-1h)", [Value]))}
+    end.
 
 compile_numbers([], Acc) -> {ok, lists:reverse(Acc)};
 compile_numbers([Value | Rest], Acc) ->
@@ -154,6 +163,8 @@ field_values(Entry, Key) ->
 present_values(Values) ->
     [Value || Value <- Values, Value =/= undefined, Value =/= null, Value =/= "", Value =/= <<>>].
 
+match_values(time_point, Op, Expected, Actual) ->
+    match_values(number, Op, Expected, [parse_time(Value) || Value <- Actual]);
 match_values(number, neq, Expected, Actual) ->
     not lists:any(fun(A) -> lists:any(fun(E) -> numbers_equal(A, E) end, Expected) end, Actual);
 match_values(number, Op, Expected, Actual) ->
@@ -181,6 +192,7 @@ contains(A, B) ->
                 string:lowercase(wfcli_text:to_list(B))) =/= nomatch.
 
 parse_number(Value) when is_integer(Value); is_float(Value) -> Value;
+parse_number(undefined) -> undefined;
 parse_number(Value) ->
     Text = string:trim(wfcli_text:to_list(Value)),
     case string:to_integer(Text) of
@@ -191,6 +203,9 @@ parse_number(Value) ->
                 _ -> undefined
             end
     end.
+
+parse_time(Value) ->
+    case wfcli_time:parse(Value) of {ok, Millis} -> Millis; error -> undefined end.
 
 compare_number(_Op, undefined, _B) -> false;
 compare_number(_Op, _A, undefined) -> false;
@@ -231,6 +246,7 @@ sort_value(Entry, Field) ->
         [Value | _] ->
             case maps:get(kind, Field, string) of
                 number -> case parse_number(Value) of undefined -> missing; N -> {number, N} end;
+                time_point -> case parse_time(Value) of undefined -> missing; N -> {number, N} end;
                 _ -> {string, string:lowercase(wfcli_text:to_list(Value))}
             end
     end.

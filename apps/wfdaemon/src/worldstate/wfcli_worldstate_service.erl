@@ -476,7 +476,7 @@ ensure_variant(Opts, Dataset) ->
     end.
 
 same_variant_family({StoredStatic, _Context}, Static)
-  when is_tuple(StoredStatic), tuple_size(StoredStatic) =:= 4 ->
+  when is_tuple(StoredStatic) ->
     StoredStatic =:= Static;
 same_variant_family(StoredStatic, Static) -> StoredStatic =:= Static.
 
@@ -484,12 +484,14 @@ variant_key(Opts) ->
     {maps:get(resolve_items, Opts, true),
      maps:get(raw, Opts, false),
      maps:get(search_raw, Opts, maps:get(raw, Opts, false)),
+     maps:get(utc, Opts, false),
      maps:get(event_lang, Opts, undefined)}.
 
 variant_opts(Opts) ->
     #{resolve_items => maps:get(resolve_items, Opts, true),
       raw => maps:get(raw, Opts, false),
       search_raw => maps:get(search_raw, Opts, maps:get(raw, Opts, false)),
+      utc => maps:get(utc, Opts, false),
       event_lang => maps:get(event_lang, Opts, undefined)}.
 
 evaluate_due_watches(Key, Delivery, State) ->

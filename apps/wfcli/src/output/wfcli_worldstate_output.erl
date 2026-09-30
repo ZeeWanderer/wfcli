@@ -3,7 +3,7 @@
 %%%-------------------------------------------------------------------
 -module(wfcli_worldstate_output).
 
--export([print_daemon_result/2, print_entries/4, print_query_extracts/2, print_daemon_source/1,
+-export([print_daemon_result/2, json_result/1, print_entries/4, print_query_extracts/2, print_daemon_source/1,
          daemon_source_text/1, maybe_print_stale/1, load_opts/1,
          default_watch_specs/1, print_watch_results/2, resolve_columns/2,
          columns_with_extras/3, maybe_sort_watch_entries/3]).
@@ -19,6 +19,8 @@
 
 -doc "Render a complete daemon worldstate response using parsed CLI options.".
 -spec print_daemon_result(map(), map()) -> ok.
+print_daemon_result(Result, #{output_format := json}) ->
+    wfcli_output:json(json_result(Result));
 print_daemon_result(Result, Parsed) ->
     print_daemon_source(Result),
     Format = maps:get(output_format, Parsed, block),
@@ -96,12 +98,29 @@ load_opts(Parsed) ->
               ttl => maps:get(ttl, Parsed, 60),
               resolve_items => Resolve,
               raw => maps:get(raw, Parsed, false),
+              utc => maps:get(utc, Parsed, false) orelse maps:get(output_format, Parsed, table) =:= json,
               search_raw => maps:get(raw, Parsed, false),
               event_lang => maps:get(event_lang, Parsed, undefined)},
     case maps:get(cache, Parsed, undefined) of
         undefined -> Opts0;
         C -> Opts0#{cache => filename:absname(C)}
     end.
+
+json_result(Result) ->
+    Clean = maps:without([opts, parsed_query], Result),
+    case maps:find(entries, Clean) of
+        {ok, Entries} ->
+            Extracts = maps:get(extracts, maps:get(parsed_query, Result, #{}), []),
+            Clean#{entries := [json_entry(E, Extracts) || E <- Entries]};
+        error -> Clean
+    end.
+
+json_entry(Entry, []) -> wfcli_output:entity(Entry);
+json_entry(Entry, Extracts) ->
+    #{id => maps:get(id, Entry, undefined), name => maps:get(name, Entry, undefined),
+      extracts => maps:from_list([{Path, {json, wfcli_data_extract:extract_values(
+                                                  maps:get(data, Entry, #{}), Path)}}
+                                 || Path <- Extracts])}.
 
 -spec print_entries([entry()], opts(), output_format(), columns()) -> ok.
 print_entries([], _Opts, _Format, _Columns) ->

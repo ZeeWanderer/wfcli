@@ -23,6 +23,13 @@ player_command() ->
     (command())#{help => "inspect or query local player data",
                  defaults => #{dataset => player, refresh => false, raw => false}}.
 
+run(#{dataset := player, query_tokens := [], output_format := json}) ->
+    case wfcli_client:call(player_snapshot) of
+        {ok, Snapshot} ->
+            wfcli_output:json(Snapshot#{updated_at := {timestamp, maps:get(updated_at, Snapshot)},
+                                       data := {json, maps:get(data, Snapshot)}});
+        {error, Reason} -> fail([wfcli_client:format_error(Reason)])
+    end;
 run(#{dataset := player, query_tokens := []}) ->
     case wfcli_client:call(player_snapshot) of
         {ok, Snapshot} when is_map(Snapshot) -> wfcli_player_format:print_snapshot(Snapshot);
@@ -37,13 +44,26 @@ run_query(Parsed) ->
     Request = maps:without([dataset], Parsed#{source => query, cwd => filename:absname(".")}),
     case wfcli_client:one_shot(Request) of
         {ok, #{datasets := Datasets, query_tokens := Tokens}} ->
-            Query = string:join(Tokens, " "),
-            Outcomes = [print_dataset(Result, Query, Parsed) || Result <- Datasets],
-            Success = lists:all(fun(Succeeded) -> Succeeded end, Outcomes),
+            Success = case maps:get(output_format, Parsed, table) of
+                json ->
+                    wfcli_output:json(#{datasets => [json_dataset(Result) || Result <- Datasets]}),
+                    lists:all(fun(#{reply := Reply}) -> element(1, Reply) =:= ok end, Datasets);
+                _ ->
+                    Query = string:join(Tokens, " "),
+                    lists:all(fun(Succeeded) -> Succeeded end,
+                              [print_dataset(Result, Query, Parsed) || Result <- Datasets])
+            end,
             case Success of true -> ok; false -> halt(1) end;
         {error, {query_errors, Errors}} -> fail(Errors);
         {error, Reason} -> fail([wfcli_client:format_error(Reason)])
     end.
+
+json_dataset(#{dataset := Dataset, reply := {error, Reason}}) ->
+    #{dataset => Dataset, error => wfcli_client:format_error(Reason)};
+json_dataset(#{dataset := Dataset, reply := {ok, #{results := Results}}}) ->
+    #{dataset => Dataset, results => wfcli_output:results(Results)};
+json_dataset(#{dataset := Dataset, reply := {ok, Result}}) ->
+    (wfcli_worldstate_output:json_result(Result))#{dataset => Dataset}.
 
 print_dataset(#{dataset := Dataset, reply := {error, Reason}}, _Query, _Parsed) ->
     io:format("== ~s ==~nerror: ~ts~n", [dataset_title(Dataset),
@@ -61,8 +81,9 @@ print_dataset(#{dataset := market, reply := {ok, Result}}, _Query, _Parsed) ->
     io:format("== Market ==~n"),
     wfcli_market_format:print(maps:get(query, Result), maps:get(results, Result), #{}, #{}),
     true;
-print_dataset(#{dataset := diagnostics, reply := {ok, Result}}, _Query, _Parsed) ->
-    io:format("== Diagnostics ==~n"),
+print_dataset(#{dataset := Dataset, reply := {ok, Result}}, _Query, _Parsed)
+  when Dataset =:= diagnostics; Dataset =:= incidents; Dataset =:= captures ->
+    io:format("== ~s ==~n", [dataset_title(Dataset)]),
     wfcli_diagnostics_format:print_query(maps:get(query, Result),
                                          maps:get(results, Result)),
     true;
@@ -108,7 +129,9 @@ dataset_title(enemies) -> "Enemies";
 dataset_title(drops) -> "Drops";
 dataset_title(player) -> "Player";
 dataset_title(market) -> "Market";
-dataset_title(diagnostics) -> "Diagnostics".
+dataset_title(diagnostics) -> "Diagnostics";
+dataset_title(incidents) -> "Incidents";
+dataset_title(captures) -> "Captures".
 
 fail(Errors) ->
     lists:foreach(fun(Error) -> io:format(standard_error, "error: ~ts~n", [Error]) end, Errors),
@@ -128,6 +151,7 @@ worldstate_opts(Parsed) ->
               ttl => maps:get(ttl, Parsed, 60),
               resolve_items => not Raw,
               raw => Raw,
+              utc => maps:get(utc, Parsed, false),
               search_raw => Raw,
               event_lang => maps:get(event_lang, Parsed, undefined)},
     case maps:get(cache, Parsed, undefined) of

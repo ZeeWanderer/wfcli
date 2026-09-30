@@ -12,8 +12,8 @@ wfcli query [options] <query...>
 
 By default, `query` searches every public dataset: `worldstate`, `mods`,
 `items`, `codex`, `enemies`, and `drops`. Select one or more inside the query;
-`all` also includes local companion-provided player data, Warframe Market
-metadata, and daemon diagnostics:
+`all` also includes local player data, Warframe Market metadata, diagnostics,
+incidents, and capture reports:
 
 ```bash
 wfcli query 'dataset=worldstate fissure'
@@ -21,6 +21,8 @@ wfcli query 'dataset=codex|drops serration'
 wfcli query 'dataset=player source=game data.phase=game'
 wfcli query 'dataset=market tag=prime lowest_sell<50'
 wfcli query 'dataset=diagnostics kind=asset'
+wfcli query 'dataset=incidents application=companion timestamp>=now-1h'
+wfcli query 'dataset=captures source=capture_result'
 ```
 
 The daemon manages and periodically refreshes `enemies` and `drops` data.
@@ -33,11 +35,17 @@ Unified query never expands a broad catalog match into thousands of price reques
 daemon, GUI, and companion. Use
 `wfcli diagnostics unresolved` for its focused table.
 
+`incidents` reads retained daemon and companion logs, bounded to the last 1 MiB per
+file; results report truncation. `captures` exposes collector health, the latest
+capture request/result, and the game metadata cache. `current=true` selects reports
+from the connected session, not historical reports from a disconnected companion.
+
 Useful options:
 
 - `--limit N` and `--offset N` page each dataset. Without `--limit`, all matches are returned.
-- `--output-format table|block` selects rendering.
-- `--raw` preserves identifiers and UTC timestamps.
+- `--format table|block|json` selects rendering. [Global output options](cli.md#output)
+  also apply.
+- `--raw` preserves identifiers.
 - `--refresh`, `--ttl`, `--cache`, and `--lang` control worldstate fetching.
 - `--exports-dir` and `--knowledge-dir` override catalog locations.
 
@@ -81,6 +89,19 @@ wfcli mods 'baseDrain>=4 type=MELEE|PRIMARY'
 wfcli codex '"critical chance" OR category=Warframes'
 wfcli drops 'enemy~corrupted rarity=Rare'
 ```
+
+Time fields accept RFC 3339 with an offset, epoch milliseconds, `now`, or relative
+values such as `now-1h`. Units: `ms`, `s`, `m`, `h`, `d`, `w`. Comparisons use the
+same instant regardless of offset:
+
+```bash
+wfcli query 'dataset=incidents timestamp>=2026-09-30T09:00:00Z timestamp<2026-09-30T12:00:00Z'
+wfcli query 'dataset=diagnostics last_seen>=now-1d'
+wfcli query 'dataset=worldstate type=fissure expiry<now+30m'
+```
+
+Time fields include incident/capture `timestamp`, diagnostic `first_seen`/`last_seen`,
+market `quoted_at`, and worldstate `expiry`, `window_start`, and `window_end`.
 
 Worldstate fields include `name`, `id`, `type`, projected column names, and raw
 `data.<path>` fields relative to each normalized record. Parsers add semantic fields; they

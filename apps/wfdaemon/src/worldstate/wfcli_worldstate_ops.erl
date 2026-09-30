@@ -132,7 +132,8 @@ evaluate_spec(Ws, Request, Spec, PrevSnapshot) ->
     end,
     Opts = Opts0#{type_filter => Type, mode => Mode, watch_table => true},
     Ws1 = Ws#ws{opts = Opts},
-    Parsed = maps:get(parsed_query, Spec),
+    %% Resolve relative time bounds once per update, not once per subscription.
+    {ok, #{parsed_query := Parsed}} = prepare_spec(Spec),
     Entries = wfcli_worldstate_results:query_parsed(Ws1, Parsed, DayFilter),
     Extracts = maps:get(extracts, Parsed, []),
     Snapshot = canonical_snapshot(Entries, Extracts),

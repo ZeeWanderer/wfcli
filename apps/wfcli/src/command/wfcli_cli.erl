@@ -14,7 +14,8 @@ main(Args) ->
 dispatch(Args) ->
     case wfcli_cli_args:parse(Args) of
         {help, Path} -> wfcli_help:run(Path);
-        {ok, Parsed, _Path, #{handler := Handler}} -> invoke(Handler, Parsed);
+        {ok, Parsed, _Path, #{handler := Handler}} ->
+            wfcli_output:with(Parsed, fun() -> invoke(Handler, Parsed) end);
         {error, Path, Message, Detail} ->
             case suggest(Args, Path, Detail) of
                 {ok, Corrected} -> dispatch(Corrected);
@@ -30,7 +31,10 @@ invoke(Function, Parsed) -> Function(Parsed).
 
 command() ->
     #{commands => maps:from_list(lists:append([Commands || {_, Commands} <- groups()])),
-      arguments => [wfcli_cli_args:flag(no_suggest_prompt, "no-suggest-prompt",
+      arguments => [(wfcli_cli_args:flag(output_format, "json", "print JSON (UTC timestamps)"))#{
+                        action => {store, json}},
+                    wfcli_cli_args:flag(utc, "utc", "display timestamps in UTC"),
+                    wfcli_cli_args:flag(no_suggest_prompt, "no-suggest-prompt",
                                        "do not prompt to correct spelling")]}.
 
 groups() ->

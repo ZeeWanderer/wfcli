@@ -42,7 +42,7 @@ dataset_selector_is_removed_from_quoted_query_test() ->
 dataset_selector_accepts_all_test() ->
     {ok, [], Datasets, true} = wfcli_query_service:select_datasets(["dataset:all"]),
     ?assertEqual([worldstate, mods, items, codex, enemies, drops, player, market,
-                  diagnostics], Datasets).
+                  diagnostics, incidents, captures], Datasets).
 
 dataset_selector_accepts_player_test() ->
     {ok, [], [player], true} = wfcli_query_service:select_datasets(["dataset=player"]).

@@ -7,6 +7,8 @@
 
 -doc "Render market query results without owning fetch or price semantics.".
 -spec print(map(), map(), map(), map()) -> ok.
+print(#{output_format := json}, Results, Context, Errors) ->
+    wfcli_output:json(#{results => wfcli_output:results(Results), context => Context, errors => Errors});
 print(Query, Results, _Context, Errors) ->
     Entries = maps:get(slice, Results, []),
     io:format("Market: PC, cross-play, English; ~p match(es), showing ~p~n~n",

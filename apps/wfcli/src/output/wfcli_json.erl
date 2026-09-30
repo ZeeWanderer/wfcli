@@ -1,7 +1,7 @@
 %%%-------------------------------------------------------------------
-%% JSON conversion at the MCP boundary.
+%% JSON conversion for CLI and MCP output.
 %%%-------------------------------------------------------------------
--module(wfcli_mcp_json).
+-module(wfcli_json).
 
 -export([decode/1, encode/1, normalize/1]).
 
@@ -19,6 +19,10 @@ encode(Value) ->
 
 -doc "Convert Erlang service terms into JSON-safe values without creating atoms.".
 -spec normalize(term()) -> term().
+normalize({json, Value}) -> raw(Value);
+normalize({timestamp, Value}) when is_integer(Value) ->
+    list_to_binary(wfcli_time:format_millis(Value, #{utc => true, precision => millisecond}));
+normalize({timestamp, _}) -> null;
 normalize(Value) when is_map(Value) ->
     maps:from_list([{normalize_key(Key), normalize(Item)}
                     || {Key, Item} <- maps:to_list(Value)]);
@@ -40,6 +44,11 @@ normalize(Value) when is_pid(Value); is_reference(Value); is_port(Value); is_fun
     iolist_to_binary(io_lib:format("~p", [Value]));
 normalize(Value) ->
     iolist_to_binary(io_lib:format("~p", [Value])).
+
+raw(Value) when is_map(Value) ->
+    maps:from_list([{normalize_key(Key), raw(Item)} || {Key, Item} <- maps:to_list(Value)]);
+raw(Value) when is_list(Value) -> [raw(Item) || Item <- Value];
+raw(Value) -> normalize(Value).
 
 normalize_key(Key) when is_binary(Key) -> Key;
 normalize_key(Key) when is_atom(Key) -> atom_to_binary(Key, utf8);

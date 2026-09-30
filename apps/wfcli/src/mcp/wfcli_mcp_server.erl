@@ -85,7 +85,7 @@ loop(State) ->
     end.
 
 handle_line(Line, State) ->
-    case wfcli_mcp_json:decode(Line) of
+    case wfcli_json:decode(Line) of
         {ok, Message} when is_map(Message) -> dispatch(Message, State);
         {ok, _Other} ->
             send_error(null, -32600, <<"Invalid Request">>, invalid_request),
@@ -190,17 +190,17 @@ cancel_all(State) ->
     ok.
 
 tool_result({ok, Value}, Protocol) ->
-    structured_result(#{<<"result">> => wfcli_mcp_json:normalize(Value)}, false, Protocol);
+    structured_result(#{<<"result">> => wfcli_json:normalize(Value)}, false, Protocol);
 tool_result({error, Reason}, Protocol) ->
-    structured_result(#{<<"error">> => wfcli_mcp_json:normalize(Reason)}, true, Protocol).
+    structured_result(#{<<"error">> => wfcli_json:normalize(Reason)}, true, Protocol).
 
 structured_result(Structured, IsError, <<"2024-11-05">>) ->
     #{<<"content">> => [#{<<"type">> => <<"text">>,
-                           <<"text">> => wfcli_mcp_json:encode(Structured)}],
+                           <<"text">> => wfcli_json:encode(Structured)}],
       <<"isError">> => IsError};
 structured_result(Structured, IsError, _Protocol) ->
     Text = case IsError of
-        true -> wfcli_mcp_json:encode(Structured);
+        true -> wfcli_json:encode(Structured);
         false -> <<"Structured result attached.">>
     end,
     #{<<"content">> => [#{<<"type">> => <<"text">>, <<"text">> => Text}],
@@ -212,11 +212,11 @@ send_result(Id, Result) ->
 
 send_error(Id, Code, Message, Data) ->
     Error = #{<<"code">> => Code, <<"message">> => Message,
-              <<"data">> => wfcli_mcp_json:normalize(Data)},
+              <<"data">> => wfcli_json:normalize(Data)},
     send_json(#{<<"jsonrpc">> => <<"2.0">>, <<"id">> => Id, <<"error">> => Error}).
 
 send_json(Message) ->
-    io:put_chars(standard_io, [wfcli_mcp_json:encode(Message), $\n]).
+    io:put_chars(standard_io, [wfcli_json:encode(Message), $\n]).
 
 read_loop(Parent) ->
     case io:get_line(standard_io, "") of

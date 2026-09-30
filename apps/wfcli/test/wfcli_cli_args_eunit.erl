@@ -41,6 +41,20 @@ query_order_survives_options_test() ->
                                  "--limit", "2", "third", "--", "--literal"]),
     ?assertEqual(["first", "second term", "third", "--literal"], maps:get(query_tokens, Args)).
 
+global_output_flags_test() ->
+    lists:foreach(fun(Args) ->
+        ?assertMatch(#{output_format := json, utc := true}, wfcli_test_cli:parse(Args))
+    end, [["--json", "--utc", "daemon", "status"],
+          ["daemon", "--json", "status", "--utc"],
+          ["query", "--utc", "dataset=captures", "--json"],
+          ["--json", "items", "--utc"]]),
+    ?assertMatch(#{output_format := table},
+                 wfcli_test_cli:parse(["--json", "items", "--format", "table"])),
+    ?assertMatch(#{output_format := json},
+                 wfcli_test_cli:parse(["items", "--format", "table", "--json"])),
+    ?assertMatch(#{output_format := table, query_tokens := ["--json", "--utc"]},
+                 wfcli_test_cli:parse(["query", "--", "--json", "--utc"])).
+
 global_prompt_flag_test() ->
     lists:foreach(fun(Args) ->
         ?assertEqual(true, maps:get(no_suggest_prompt, wfcli_test_cli:parse(Args)))

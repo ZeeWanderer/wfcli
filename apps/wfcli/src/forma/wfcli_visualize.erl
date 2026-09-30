@@ -1,6 +1,6 @@
 -module(wfcli_visualize).
 
--export([command/0, arguments/0, run/1]).
+-export([command/0, arguments/0, run/1, render/2, print_results/1]).
 -import(wfcli_cli_args, [option/4, flag/3]).
 
 -ifdef(TEST).
@@ -23,11 +23,9 @@ run(#{plan := File} = Parsed) ->
         {ok, Bin} ->
              case load_plan(Bin) of
                  {ok, Entries} ->
-                     VizMode = resolve_mode(maps:get(viz_mode, Parsed, none)),
-                     VizOut = maps:get(viz_output, Parsed, undefined),
-                     VizCfg = maps:get(viz_config, Parsed, false),
-                     ConfigOverride = maps:get(config, Parsed, undefined),
-                     lists:foreach(fun(E) -> show_entry(E, VizMode, VizOut, VizCfg, ConfigOverride) end, Entries);
+                     Artifacts = lists:append([show_entry(E, Parsed) || E <- Entries]),
+                     wfcli_output:emit(#{artifacts => Artifacts},
+                                       fun() -> print_results(Artifacts) end);
                  {error, Reason} ->
                      io:format(standard_error, "error: ~p~n", [Reason]),
                      halt(1)
@@ -37,64 +35,51 @@ run(#{plan := File} = Parsed) ->
              halt(1)
      end.
 
- resolve_mode(none) -> html;
- resolve_mode(M) -> M.
-
-show_entry(#{config := File, plan := Plan, slot_mods := SlotMods, build_arcanes := BuildArcanes},
-           VizMode, VizOut, VizCfg, ConfigOverride) ->
-    do_viz(File, Plan, SlotMods, BuildArcanes, VizMode, VizOut),
-    case VizCfg of
-        false -> ok;
+show_entry(#{config := File} = Entry, Options) ->
+    Artifact = render(Entry, Options),
+    case maps:get(viz_config, Options, false) of
+        false -> [Artifact];
         true ->
-            ConfPath = case ConfigOverride of undefined -> File; Other -> Other end,
+            ConfPath = maps:get(config, Options, File),
             Request = #{source => forma, action => config_layout,
                         configs => [filename:absname(ConfPath)], flags => #{}},
             case wfcli_client:one_shot(Request) of
                 {ok, #{results := [{ok, Config, PlanCfg, _Cost}]}} ->
-                    SlotMods2 = maps:get(computed_current_slot_mods, Config, []),
-                    BuildArcanes2 = maps:get(computed_build_arcanes, Config, []),
-                    do_config_viz(ConfPath, PlanCfg, SlotMods2, BuildArcanes2, VizMode, VizOut);
+                    Layout = #{config => ConfPath, kind => config, plan => PlanCfg,
+                               slot_mods => maps:get(computed_current_slot_mods, Config, []),
+                               build_arcanes => maps:get(computed_build_arcanes, Config, [])},
+                    [Artifact, render(Layout, Options)];
                 {error, Reason} ->
-                    io:format("config visualization skipped (~s): ~p~n", [ConfPath, Reason])
+                    [Artifact, #{config => ConfPath, kind => config, error => Reason}]
             end
-    end;
-show_entry(_, _, _, _, _) -> ok.
+    end.
 
-do_viz(File, Plan, SlotMods, BuildArcanes, html, Out) ->
-    case wfcli_forma_visualizer:render_html(File, Plan, SlotMods, BuildArcanes, Out) of
+render(#{config := File, plan := Plan, slot_mods := SlotMods,
+         build_arcanes := Arcanes} = Layout, Options) ->
+    Kind = maps:get(kind, Layout, plan),
+    Mode = maps:get(viz_mode, Options, html),
+    {Format, Renderer} = case {Kind, Mode} of
+        {config, image} -> {svg, fun wfcli_forma_visualizer:render_config_svg/5};
+        {config, _} -> {html, fun wfcli_forma_visualizer:render_config_html/5};
+        {plan, image} -> {svg, fun wfcli_forma_visualizer:render_svg/5};
+        {plan, _} -> {html, fun wfcli_forma_visualizer:render_html/5}
+    end,
+    Info = #{config => File, kind => Kind, format => Format},
+    case Renderer(File, Plan, SlotMods, Arcanes, maps:get(viz_output, Options, undefined)) of
         {ok, Path} ->
-            io:format("visualization (html): ~s~n", [Path]),
-            wfcli_forma_visualizer:open_file(Path);
-        {error, Reason} ->
-            io:format("visualization html failed: ~p~n", [Reason])
-    end;
-do_viz(File, Plan, SlotMods, BuildArcanes, image, Out) ->
-    case wfcli_forma_visualizer:render_svg(File, Plan, SlotMods, BuildArcanes, Out) of
-        {ok, Path} ->
-            io:format("visualization (svg): ~s~n", [Path]),
-            wfcli_forma_visualizer:open_file(Path);
-        {error, Reason} ->
-            io:format("visualization svg failed: ~p~n", [Reason])
-    end;
-do_viz(_, _, _, _, _, _) -> ok.
+            wfcli_forma_visualizer:open_file(Path),
+            Info#{path => Path};
+        {error, Reason} -> Info#{error => Reason}
+    end.
 
-do_config_viz(File, Plan, SlotMods, BuildArcanes, html, Out) ->
-    case wfcli_forma_visualizer:render_config_html(File, Plan, SlotMods, BuildArcanes, Out) of
-        {ok, Path} ->
-            io:format("config visualization (html): ~s~n", [Path]),
-            wfcli_forma_visualizer:open_file(Path);
-        {error, Reason} ->
-            io:format("config visualization html failed: ~p~n", [Reason])
-    end;
-do_config_viz(File, Plan, SlotMods, BuildArcanes, image, Out) ->
-    case wfcli_forma_visualizer:render_config_svg(File, Plan, SlotMods, BuildArcanes, Out) of
-        {ok, Path} ->
-            io:format("config visualization (svg): ~s~n", [Path]),
-            wfcli_forma_visualizer:open_file(Path);
-        {error, Reason} ->
-            io:format("config visualization svg failed: ~p~n", [Reason])
-    end;
-do_config_viz(_, _, _, _, _, _) -> ok.
+print_results(Artifacts) ->
+    lists:foreach(fun
+        (#{kind := Kind, format := Format, path := Path}) ->
+            io:format("~svisualization (~s): ~ts~n",
+                      [case Kind of config -> "config "; plan -> "" end, Format, Path]);
+        (#{config := File, error := Reason}) ->
+            io:format(standard_error, "visualization failed (~ts): ~p~n", [File, Reason])
+    end, Artifacts).
 
 load_plan(Bin) ->
     try yamerl_constr:string(Bin, [{map_node_format, map}, {str_node_as_binary, true}]) of

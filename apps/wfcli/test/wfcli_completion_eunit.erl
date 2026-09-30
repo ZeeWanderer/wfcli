@@ -52,7 +52,7 @@ option_value_completion_test() ->
     Values = wfcli_completion:candidates(["query", "--format", ""]),
     ?assert(lists:member("table", Values)),
     ?assert(lists:member("block", Values)),
-    ?assertNot(lists:member("json", Values)),
+    ?assert(lists:member("json", Values)),
     ?assert(lists:member(
               "json",
               wfcli_completion:candidates(["codex", "--format", ""]))),
@@ -80,6 +80,9 @@ generated_bash_matches_cli_completion_test() ->
              ["mods", "--name", "daemon", "--format", "j"],
              ["--no-suggest-prompt", "daemon", "sta"],
              ["daemon", "--no-suggest-prompt", "start", "--idle-"],
+             ["--json", "daemon", "sta"], ["daemon", "--utc", "sta"],
+             ["query", "--j"], ["--utc", "query", "--format", "j"],
+             ["companion", "capture", "status", "--u"],
              ["help", "daemon", "autostart", "en"],
              ["--no-suggest-prompt", "help", "daemon", "autostart", "en"],
              ["mods", "--format=j"], ["companion", "preview", "image", "a"],

@@ -28,11 +28,16 @@
 command() ->
     #{help => "manage lazy Bash completion",
       commands => #{
-        "bash" => #{help => "print completion script", handler => fun(_) -> io:put_chars(script()) end},
+        "bash" => #{help => "print completion script", handler => fun(_) ->
+            Script = script(),
+            wfcli_output:emit(#{script => unicode:characters_to_binary(Script)},
+                               fun() -> io:put_chars(Script) end) end},
         "candidates" => #{help => hidden,
             arguments => [#{name => words, long => "-", nargs => all, required => true}],
             handler => fun(#{words := Words}) ->
-                [io:format("~s~n", [Word]) || Word <- candidates(Words)], ok end},
+                Candidates = candidates(Words),
+                wfcli_output:emit(#{candidates => Candidates}, fun() ->
+                    [io:format("~s~n", [Word]) || Word <- Candidates], ok end) end},
         "install" => directory_command(install),
         "uninstall" => directory_command(uninstall),
         "status" => directory_command(status)}}.
@@ -54,13 +59,15 @@ directory_command(Action) ->
 directory_action(status, Dir) ->
     case installed(Dir) of
         {ok, Present} ->
-            io:format("Bash completion~n  directory: ~s~n  current: ~s~n", [Dir, yes_no(Present)]);
+            wfcli_output:emit(#{directory => Dir, current => Present},
+                fun() -> io:format("Bash completion~n  directory: ~s~n  current: ~s~n", [Dir, yes_no(Present)]) end);
         {error, Reason} -> fail(Reason)
     end;
 directory_action(Action, Dir) ->
     Result = case Action of install -> install(Dir); uninstall -> uninstall(Dir) end,
     case Result of
-        ok -> io:format("Bash completion ~s~n  directory: ~s~n", [action_text(Action), Dir]);
+        ok -> wfcli_output:emit(#{action => Action, directory => Dir},
+            fun() -> io:format("Bash completion ~s~n  directory: ~s~n", [action_text(Action), Dir]) end);
         {error, Reason} -> fail(Reason)
     end.
 

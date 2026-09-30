@@ -88,10 +88,16 @@ wfcli companion logs
 wfcli companion paths
 wfcli companion screenshot ./capture.png
 wfcli companion capture arm relic-reward
+wfcli companion capture status
 wfcli companion capture cancel
 wfcli companion relic-ocr ./capture.png
 wfcli companion relic-ocr
 ```
+
+`status` shows collector health, receipt times, capture errors and cached game metadata.
+`capture status` shows the armed request and last saved result. Reports from disconnected
+companions are historical. `logs` supports `--lines N` and `--json`;
+[shared incident viewing](cli.md#commands) also includes daemon logs.
 
 The screenshot command captures Warframe rather than the active desktop window. Run the full
 saved-image reward pipeline with:

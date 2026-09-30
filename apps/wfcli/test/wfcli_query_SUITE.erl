@@ -10,7 +10,11 @@
          query_selects_drops/1,
          query_format_alias/1,
          query_archimedea_semantic_fields/1,
-         query_raw_worldstate_paths/1]).
+         query_raw_worldstate_paths/1,
+         global_json_outputs/1,
+         json_multiple_datasets/1,
+         incident_queries_and_capture_status/1,
+         json_worldstate_watch/1]).
 -include_lib("common_test/include/ct.hrl").
 -include_lib("eunit/include/eunit.hrl").
 
@@ -19,7 +23,11 @@ all() ->
      query_selects_drops,
      query_format_alias,
      query_archimedea_semantic_fields,
-     query_raw_worldstate_paths].
+     query_raw_worldstate_paths,
+     global_json_outputs,
+     json_multiple_datasets,
+     incident_queries_and_capture_status,
+     json_worldstate_watch].
 
 init_per_suite(Config) ->
     {ok, _} = application:ensure_all_started(wfcli),
@@ -109,6 +117,60 @@ query_raw_worldstate_paths(_Config) ->
     ?assert(string:find(Output, "MT_ENDLESS_CAPTURE") =/= nomatch),
     ?assert(string:find(Output, "Exhaustion") =/= nomatch).
 
+global_json_outputs(_Config) ->
+    lists:foreach(fun(Args) -> ?assert(is_map(json_command(["--json" | Args]))) end,
+        [["daemon", "status"], ["companion", "status"], ["companion", "capture", "status"],
+         ["player"], ["notifications"], ["paths", "wfcli"], ["completion", "status"],
+         ["diagnostics", "unresolved"]]).
+
+json_multiple_datasets(_Config) ->
+    Data = json_command(["query", "--json", "--limit", "1", "--knowledge-dir", fixture_knowledge_dir(),
+                         "dataset=codex|drops test"]),
+    Datasets = maps:get(<<"datasets">>, Data),
+    ?assertEqual([<<"codex">>, <<"drops">>], [maps:get(<<"dataset">>, D) || D <- Datasets]),
+    [?assertEqual(1, maps:get(<<"shown">>, maps:get(<<"results">>, D))) || D <- Datasets].
+
+incident_queries_and_capture_status(_Config) ->
+    Path = wfcli_incident_log:path(),
+    {ok, Millis} = wfcli_time:parse("2026-09-30T12:00:00Z"),
+    Event = #{<<"timestamp_ms">> => Millis, <<"level">> => <<"warn">>,
+              <<"event">> => <<"test.incident">>, <<"message">> => <<"adapter unavailable">>},
+    ok = file:write_file(Path, [json:encode(Event), $\n]),
+    #{<<"datasets">> := [#{<<"results">> := Results}]} =
+        json_command(["query", "--json", "dataset=incidents application=daemon "
+                      "timestamp>=2026-09-30T11:00:00Z event=test.incident"]),
+    ?assertEqual(1, maps:get(<<"total">>, Results)),
+    [Row] = maps:get(<<"slice">>, Results),
+    ?assertEqual(<<"2026-09-30T12:00:00.000Z">>, maps:get(<<"timestamp">>, Row)),
+    ?assertEqual(Millis, maps:get(<<"timestamp_ms">>, maps:get(<<"data">>, Row))),
+    ?assert(maps:is_key(<<"logs">>, Results)),
+    Text = capture_output(fun() -> wfcli_cli:main([
+        "--utc", "query", "dataset=incidents event=test.incident"]) end),
+    ?assertNotEqual(nomatch, string:find(Text, "2026-09-30T12:00:00.000Z")),
+    #{<<"datasets">> := [#{<<"results">> := Captures}]} =
+        json_command(["query", "dataset=captures", "--json"]),
+    ?assert(maps:get(<<"total">>, Captures) >= 1).
+
+json_worldstate_watch(_Config) ->
+    {Cache, Bin} = sample_cache(),
+    ok = file:write_file(Cache, Bin),
+    Common = ["--cache", Cache, "--ttl", "999999999", "--raw"],
+    #{<<"entries">> := [Entry | _]} = json_command(["--json", "fissures" | Common]),
+    ?assertNotEqual(nomatch, binary:match(maps:get(<<"expiry">>, maps:get(<<"row_map">>, Entry)), <<"Z">>)),
+    Watch = json_command(["watch", "--json", "--once", "--spec", "fissures" | Common]),
+    ?assertMatch(#{<<"timestamp">> := _, <<"specs">> := [_]}, Watch),
+    #{<<"specs">> := [#{<<"entries">> := [WatchExtract | _]}]} = json_command([
+        "watch", "--json", "--once", "--spec",
+        "fissures:extract=Node" | Common]),
+    ?assertMatch(#{<<"extracts">> := #{<<"Node">> := [_]}}, WatchExtract),
+    #{<<"datasets">> := [#{<<"entries">> := [Extract]}]} = json_command([
+        "query", "--json", "dataset=worldstate type=raw_worldstate extract=Conquests.0.Type" | Common]),
+    ?assertMatch(#{<<"extracts">> := #{<<"Conquests.0.Type">> := [<<"CT_LAB">>]}}, Extract).
+
+json_command(Args) ->
+    {ok, Data} = wfcli_json:decode(capture_output(fun() -> wfcli_cli:main(Args) end)),
+    Data.
+
 fixture_dir() ->
     filename:join([code:lib_dir(wfcli), "test", "fixtures", "exports"]).
 
@@ -145,8 +207,7 @@ io_capture_loop(Acc) ->
             From ! {io_reply, ReplyAs, Reply},
             io_capture_loop(NewAcc);
         {get, Requestor} ->
-            Requestor ! {captured, lists:flatten(lists:reverse(Acc))},
-            io_capture_loop(Acc)
+            Requestor ! {captured, unicode:characters_to_list(lists:reverse(Acc))}
     end.
 
 handle_io_request({put_chars, Chars}, Acc) ->

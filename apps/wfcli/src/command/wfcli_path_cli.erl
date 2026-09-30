@@ -20,9 +20,20 @@ command() ->
                       type => {atom, [wfcli, wfdaemon, wfcompanion, wfgui]},
                       help => "report one application"}]}.
 
-run(#{owner := Owner}) -> print_reports([owner_report(Owner)]);
-run(#{apps := true}) -> print_reports(owner_reports());
-run(_) -> print_merged(owner_reports()).
+run(#{owner := Owner}) -> render([owner_report(Owner)], true);
+run(Args) -> render(owner_reports(), maps:get(apps, Args, false)).
+
+render(Reports, ByApp) ->
+    wfcli_output:emit(fun() -> #{applications => [json_report(Report) || Report <- Reports]} end, fun() ->
+        case ByApp of true -> print_reports(Reports); false -> print_merged(Reports) end
+    end).
+
+json_report({App, {ok, Paths}}) ->
+    #{app => App, paths => [Description#{links := [#{path => Path, target => Target}
+                            || {Path, Target} <- maps:get(links, Description)]}
+                           || Description <- describe_paths(Paths)]};
+json_report({App, {error, Reason}}) ->
+    #{app => App, error => wfcli_client:format_error(Reason)}.
 
 owner_reports() ->
     [owner_report(wfcli), owner_report(wfdaemon),

@@ -27,7 +27,7 @@ pagination_bounds_result_payload_test() ->
     ?assertEqual(1, maps:get(shown, Result)),
     ?assertEqual([lists:nth(11, Entries)], maps:get(slice, Result)),
     ?assertNot(maps:is_key(all, Result)),
-    ?assert(byte_size(wfcli_mcp_json:encode(Result)) < 4096),
+    ?assert(byte_size(wfcli_json:encode(Result)) < 4096),
     Empty = wfcli_entity_query:execute(Entries, match_all, [], wfcli_entity_exports, item, 1000, 1),
     ?assertEqual(1000, maps:get(total, Empty)),
     ?assertEqual([], maps:get(slice, Empty)).

@@ -485,7 +485,7 @@ alerts_time_raw(_Config) ->
     {Cache, Bin} = sample_cache(),
     ok = file:write_file(Cache, Bin),
     Output = capture_output(fun() ->
-        wfcli_cli:main(["fissures", "--raw", "--cache", Cache, "--ttl", "999999999", "--output-format", "block"])
+        wfcli_cli:main(["fissures", "--utc", "--raw", "--cache", Cache, "--ttl", "999999999", "--output-format", "block"])
     end),
     ?assert(re:run(Output, "T[0-9]{2}:[0-9]{2}:[0-9]{2}Z", []) =/= nomatch).
 
@@ -661,7 +661,9 @@ local_time_formatting(_Config) ->
 
 raw_time_formatting(_Config) ->
     Text = wfcli_worldstate_projector:expiry(1701430200000, #{raw => true}),
-    ?assertEqual($Z, lists:last(Text)).
+    ?assertNotEqual($Z, lists:last(Text)),
+    Utc = wfcli_worldstate_projector:expiry(1701430200000, #{raw => true, utc => true}),
+    ?assertEqual($Z, lists:last(Utc)).
 
 calendar_raw_keeps_identifiers(_Config) ->
     {Cache, Bin} = sample_cache(),

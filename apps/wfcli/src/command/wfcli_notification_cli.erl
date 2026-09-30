@@ -29,7 +29,8 @@ print(Settings) ->
     Fissures = maps:get(<<"fissures">>, Settings, #{}),
     Mode = maps:get(<<"mode">>, Fissures, <<"off">>),
     Display = case Mode of <<"session">> -> <<"on">>; _ -> Mode end,
-    io:format("Fissure notifications: ~ts~n", [Display]).
+    wfcli_output:emit({json, Settings},
+        fun() -> io:format("Fissure notifications: ~ts~n", [Display]) end).
 
 fail(Message) ->
     io:format(standard_error, "error: ~ts~n", [Message]),

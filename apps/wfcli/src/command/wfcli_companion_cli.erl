@@ -14,7 +14,7 @@
 command() ->
     #{help => "manage native game companion",
       commands => #{
-        "status" => #{help => "show service and connection state", handler => fun(_) -> status() end},
+        "status" => #{help => "show connections, collectors and metadata cache", handler => fun(_) -> status() end},
         "start" => #{help => "start companion service", handler => fun(_) -> start() end},
         "stop" => #{help => "stop companion service", handler => fun(_) -> stop() end},
         "restart" => #{help => "restart companion service", handler => fun(_) -> restart() end},
@@ -35,6 +35,8 @@ command() ->
                                          help => "native relic-ocr arguments"}]},
         "capture" => #{help => "capture event-triggered memory evidence",
                        commands => #{
+                         "status" => #{help => "show armed capture and last result",
+                                       handler => fun(_) -> capture_status() end},
                          "arm" => #{help => "arm a capture", commands => #{
                             "relic-reward" => #{help => "capture the next relic reward screen",
                                 handler => fun arm_capture/1,
@@ -56,7 +58,7 @@ command() ->
                                           diagnostic(["preview", "list" | Extra]) end},
                          "image" => preview_command("image"),
                          "video" => preview_command("video")}},
-        "logs" => #{help => "show incident log", handler => fun(_) -> diagnostic(["logs"]) end},
+        "logs" => wfcli_diagnostics_cli:logs_command(companion),
         "install" => #{help => "configure Steam launch options", handler => fun install/1,
                        arguments => [flag(dry_run, "dry-run", "show planned changes")]},
         "uninstall" => #{help => "restore Steam launch options", handler => fun uninstall/1,
@@ -74,28 +76,54 @@ preview_command(Mode) ->
 
 status() ->
     Managed = wfcli_companion_process:unit_active(),
-    io:format("wfcompanion~n  wfcli-managed service: ~s~n",
-              [case Managed of true -> "active"; false -> "inactive" end]),
     case daemon_status() of
-        {running, Local, Player} ->
+        {running, Info} ->
+            Local = maps:get(local_api, Info, unavailable),
+            Player = maps:get(player, Info, unavailable),
+            wfcli_output:emit(#{managed_service => Managed, daemon => running,
+                                connection => Local, player => Player,
+                                game_metadata => maps:get(game_metadata, Info, unavailable)}, fun() ->
+            io:format("wfcompanion~n  wfcli-managed service: ~s~n",
+                      [case Managed of true -> "active"; false -> "inactive" end]),
             print_local(Local),
-            print_player(Player);
-        stopped -> io:format("wfdaemon stopped; no companion connection state~n");
+            print_player(Player),
+            io:put_chars(wfcli_companion_format:collectors(Player, Local)),
+            io:put_chars(wfcli_companion_format:metadata(maps:get(game_metadata, Info, unavailable))),
+            io:put_chars(wfcli_companion_format:captures(Player, Local))
+            end);
+        stopped -> wfcli_output:emit(#{managed_service => Managed, daemon => stopped},
+                       fun() -> io:format("wfdaemon stopped; no companion connection state~n") end);
+        {error, Reason} -> fail(wfcli_client:format_error(Reason))
+    end.
+
+capture_status() ->
+    case daemon_status() of
+        {running, Info} ->
+            wfcli_output:emit(#{player => maps:with([capture, capture_result], maps:get(player, Info, #{})),
+                                connection => maps:get(local_api, Info, unavailable)}, fun() ->
+            io:put_chars(wfcli_companion_format:captures(
+                maps:get(player, Info, unavailable), maps:get(local_api, Info, unavailable)))
+            end);
+        stopped -> wfcli_output:emit(#{daemon => stopped},
+                       fun() -> io:format("wfdaemon stopped; capture state unavailable~n") end);
         {error, Reason} -> fail(wfcli_client:format_error(Reason))
     end.
 
 start() ->
     case connected_companions() of
         {ok, [_ | _] = Details} ->
+            wfcli_output:emit(#{state => already_connected, companions => Details}, fun() ->
             io:format("wfcompanion already connected~n"),
-            print_companions(Details);
+            print_companions(Details) end);
         {ok, []} ->
             case wfcli_companion_process:start() of
                 {ok, already_running, _Output} ->
-                    io:format("wfcompanion managed service already active~n");
+                    wfcli_output:emit(#{state => already_running},
+                        fun() -> io:format("wfcompanion managed service already active~n") end);
                 {ok, started, Output} ->
-                    io:format("wfcompanion started as user service~n"),
-                    print_command_output(Output);
+                    wfcli_output:emit(#{state => started, output => Output}, fun() ->
+                        io:format("wfcompanion started as user service~n"),
+                        print_command_output(Output) end);
                 {error, Reason} -> fail(format_process_error(Reason))
             end;
         {error, Reason} -> fail(wfcli_client:format_error(Reason))
@@ -104,9 +132,11 @@ start() ->
 stop() ->
     case stop_result() of
         {ok, stopped, Output} ->
+            wfcli_output:emit(#{state => stopped, output => Output}, fun() ->
             io:format("wfcompanion stopped~n"),
-            print_command_output(Output);
-        {ok, not_running, _Output} -> io:format("wfcompanion not running~n");
+            print_command_output(Output) end);
+        {ok, not_running, _Output} -> wfcli_output:emit(#{state => not_running},
+            fun() -> io:format("wfcompanion not running~n") end);
         {error, Reason} -> fail(format_process_error(Reason))
     end.
 
@@ -144,7 +174,8 @@ set_visibility(CommandName, Label, Visible) ->
         {ok, {ok, 0}} -> fail("no wfcompanion is connected");
         {ok, {ok, Count}} ->
             State = case Visible of true -> "shown"; false -> "hidden" end,
-            io:format("~s ~s on ~p companion(s)~n", [Label, State, Count]);
+            wfcli_output:emit(#{command => CommandName, visible => Visible, companions => Count},
+                fun() -> io:format("~s ~s on ~p companion(s)~n", [Label, State, Count]) end);
         {error, Reason} -> fail(wfcli_client:format_error(Reason))
     end.
 
@@ -191,17 +222,16 @@ print_player(Player) ->
 daemon_status() ->
     case wfcli_client:status() of
         {running, _Node, Info} ->
-            {running, maps:get(local_api, Info, unavailable),
-             maps:get(player, Info, unavailable)};
+            {running, Info};
         {stopped, _Node} -> stopped;
         {error, _Reason} = Error -> Error
     end.
 
 connected_companions() ->
     case daemon_status() of
-        {running, Local, _Player} when is_map(Local) ->
+        {running, #{local_api := Local}} when is_map(Local) ->
             {ok, maps:get(companion_details, Local, [])};
-        {running, unavailable, _Player} -> {ok, []};
+        {running, _Info} -> {ok, []};
         stopped -> {ok, []};
         {error, _Reason} = Error -> Error
     end.
@@ -228,7 +258,8 @@ capture_directory(Timestamp) ->
 send_capture_command(Command, Message) ->
     case companion_command(Command) of
         {ok, {ok, 0}} -> fail("no wfcompanion is connected");
-        {ok, {ok, Count}} -> io:format("~ts on ~p companion(s)~n", [Message, Count]);
+        {ok, {ok, Count}} -> wfcli_output:emit(#{command => Command, companions => Count},
+            fun() -> io:format("~ts on ~p companion(s)~n", [Message, Count]) end);
         {error, Reason} -> fail(wfcli_client:format_error(Reason))
     end.
 
@@ -271,7 +302,12 @@ preview_directory(Companion) ->
 
 diagnostic(Args) ->
     case wfcli_companion_process:run(Args) of
-        {ok, Output} -> print_command_output(Output);
+        {ok, Output} ->
+            Data = case wfcli_json:decode(Output) of
+                {ok, Value} -> {json, Value};
+                _ -> #{output => Output}
+            end,
+            wfcli_output:emit(Data, fun() -> print_command_output(Output) end);
         {error, Reason} -> fail(format_process_error(Reason))
     end.
 
@@ -286,18 +322,21 @@ install(Args) ->
 uninstall(Args) ->
     print_steam_result(wfcli_companion_steam:uninstall(maps:get(dry_run, Args, false)), uninstall).
 
-print_steam_result({ok, Result}, install) ->
+print_steam_result({ok, Result}, Action) ->
+    wfcli_output:emit(Result#{action => Action}, fun() -> print_steam_details(Result, Action) end);
+print_steam_result({error, Reason}, _Action) -> fail(format_steam_error(Reason)).
+
+print_steam_details(Result, install) ->
     Action = case maps:get(dry_run, Result) of true -> "would install"; false -> "installed" end,
     io:format("wfcompanion ~s for Warframe~n", [Action]),
     io:format("  config: ~ts~n", [maps:get(config, Result)]),
     io:format("  previous: ~ts~n", [maps:get(current, Result)]),
     io:format("  launch options: ~ts~n", [maps:get(proposed, Result)]);
-print_steam_result({ok, Result}, uninstall) ->
+print_steam_details(Result, uninstall) ->
     Action = case maps:get(dry_run, Result) of true -> "would uninstall"; false -> "uninstalled" end,
     io:format("wfcompanion ~s from Warframe~n", [Action]),
     io:format("  config: ~ts~n", [maps:get(config, Result)]),
-    io:format("  restored: ~ts~n", [maps:get(original, Result)]);
-print_steam_result({error, Reason}, _Action) -> fail(format_steam_error(Reason)).
+    io:format("  restored: ~ts~n", [maps:get(original, Result)]).
 
 format_steam_error(steam_running) ->
     "Steam is running; close Steam before changing launch options";

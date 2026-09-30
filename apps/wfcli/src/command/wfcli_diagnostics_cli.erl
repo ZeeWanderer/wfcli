@@ -1,14 +1,45 @@
 -module(wfcli_diagnostics_cli).
 
--export([command/0]).
+-export([command/0, logs_command/1, logs/1]).
+
+-ifdef(TEST).
+-export([read_log/3]).
+-endif.
 
 command() ->
-    #{help => "inspect daemon resolution failures",
-      commands => #{"unresolved" => #{
+    #{help => "inspect incidents and resolution failures",
+      commands => #{"logs" => logs_command(all), "unresolved" => #{
           help => "show current identity, metadata and asset failures",
-          handler => fun(Args) -> show(maps:get(output_format, Args, table)) end,
-          arguments => [(wfcli_cli_args:flag(output_format, "json", "print JSON"))#{
-              action => {store, json}}]}}}.
+          handler => fun(Args) -> show(maps:get(output_format, Args, table)) end}}}.
+
+logs_command(Source) ->
+    Selection = case Source of
+        all -> [#{name => source, required => false,
+                  type => {atom, [all, daemon, companion]}, help => "log source"}];
+        _ -> []
+    end,
+    #{help => "show recent incident logs", handler => fun logs/1,
+      defaults => #{source => Source},
+      arguments => Selection ++ [
+        (wfcli_cli_args:option(lines, "lines", {integer, [{min, 1}, {max, 1000}]},
+                              "maximum entries per log"))#{default => 50},
+        wfcli_cli_args:option(file, "file", string, "custom log path (select one source)")]}.
+
+logs(Args) ->
+    Sources = case maps:get(source, Args, all) of all -> [daemon, companion]; Source -> [Source] end,
+    case length(Sources) > 1 andalso maps:is_key(file, Args) of
+        true -> fail("select daemon or companion with --file");
+        false -> ok
+    end,
+    Reports = [read_log(Source, maps:get(file, Args, wfcli_incidents:path(Source)), maps:get(lines, Args, 50))
+               || Source <- Sources],
+    wfcli_diagnostics_format:print_logs(Reports, maps:get(output_format, Args, table)),
+    case lists:any(fun(Report) -> maps:is_key(error, Report) end, Reports) of
+        true -> halt(1);
+        false -> ok
+    end.
+
+read_log(Source, Path, Limit) -> wfcli_incidents:read(Source, Path, Limit).
 
 show(Format) ->
     case wfcli_client:call(resolution_issues) of

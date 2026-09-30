@@ -9,7 +9,8 @@ command() ->
 
 run(Topic) ->
     case valid_topic(Topic) of
-        true -> io:put_chars(text(Topic));
+        true -> wfcli_output:emit(#{help => unicode:characters_to_binary(text(Topic))},
+                                  fun() -> io:put_chars(text(Topic)) end);
         false -> wfcli_cli:fail(["unknown help topic: ", lists:join(" ", Topic)])
     end.
 
@@ -34,6 +35,7 @@ text([]) ->
      [[Group, ":\n", [["  ", string:pad(Name, Width), "  ", Summary, "\n"]
                       || {Name, Summary} <- Rows], "\n"]
       || {Group, Rows} <- Groups],
+     "Global options: --json (structured output), --utc (UTC timestamps).\n",
      "Use 'wfcli COMMAND --help' for options, 'wfcli help query-syntax' for queries.\n"];
 text(Path) ->
     Node = wfcli_cli_args:node(Path, wfcli_cli:command()),

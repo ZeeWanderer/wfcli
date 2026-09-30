@@ -45,7 +45,7 @@ query_field(_Kind, Key0) ->
         "ducats" -> field(ducats, {row, ducats}, number, eq);
         "lowest_sell" -> field(lowest_sell, {row, lowest_sell}, number, eq);
         "highest_buy" -> field(highest_buy, {row, highest_buy}, number, eq);
-        "quoted_at" -> field(quoted_at, {row, quoted_at}, number, eq);
+        "quoted_at" -> field(quoted_at, {row, quoted_at}, time_point, eq);
         "tag" -> field(tag, {data_path, "tags.*"}, string, contains);
         "tags" -> field(tag, {data_path, "tags.*"}, string, contains);
         _ ->

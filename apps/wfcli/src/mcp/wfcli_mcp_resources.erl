@@ -21,17 +21,17 @@ read(<<"wfcli://datasets">>) ->
     Data = #{default => wfcli_protocol:default_datasets(),
              all => wfcli_protocol:all_datasets(),
              descriptions => dataset_descriptions()},
-    {ok, <<"application/json">>, wfcli_mcp_json:encode(Data)};
+    {ok, <<"application/json">>, wfcli_json:encode(Data)};
 read(<<"wfcli://query-language">>) ->
     {ok, <<"text/markdown">>, query_language()};
 read(<<"wfcli://schema/worldstate">>) ->
     Data = #{columns => wfcli_worldstate_schema:columns_spec(),
              default_columns => wfcli_worldstate_schema:default_table_columns(),
              types => type_columns()},
-    {ok, <<"application/json">>, wfcli_mcp_json:encode(Data)};
+    {ok, <<"application/json">>, wfcli_json:encode(Data)};
 read(<<"wfcli://daemon/status">>) ->
     case wfcli_client:call(status) of
-        {ok, Status} -> {ok, <<"application/json">>, wfcli_mcp_json:encode(Status)};
+        {ok, Status} -> {ok, <<"application/json">>, wfcli_json:encode(Status)};
         {error, Reason} -> {error, Reason}
     end;
 read(Uri) ->
@@ -50,7 +50,9 @@ dataset_descriptions() ->
       drops => <<"WFCD drop knowledge.">>,
       player => <<"Local companion-published player observations.">>,
       market => <<"Warframe Market item catalog plus already-cached quotes.">>,
-      diagnostics => <<"Current identity, metadata, and asset-resolution failures.">>}.
+      diagnostics => <<"Current identity, metadata, and asset-resolution failures.">>,
+      incidents => <<"Retained local daemon and companion incident logs.">>,
+      captures => <<"Current and last reported collector, metadata and evidence capture state.">>}.
 
 type_columns() ->
     Types = [alert, fissure, sortie, invasion, void_storm, event, calendar,
@@ -65,7 +67,8 @@ query_language() ->
       "Filters use `key=value`, `key!=value`, `key~value`, `key>=value`, `key<=value`, "
       "`key>value`, `key<value`, or `key:value`. `a|b` means either value inside one "
       "filter. `sort=field` and `sort=-field` control ordering.\n\n"
-      "Datasets: `dataset=default|worldstate|mods|items|codex|enemies|drops|player|market|diagnostics|all`. "
+      "Datasets: `dataset=default|worldstate|mods|items|codex|enemies|drops|player|market|diagnostics|incidents|captures|all`. "
       "Default includes public datasets; all also includes local player, market, and diagnostic data.\n\n"
-      "Examples: `type=Fissure void`, `(fissure OR alert) NOT expired`, "
+      "Time fields accept RFC 3339, epoch milliseconds, `now`, and `now-1h` offsets. "
+      "Examples: `dataset=incidents timestamp>=now-1h`, `type=Fissure void`, `(fissure OR alert) NOT expired`, "
       "`enemy~corrupted rarity=Rare`.\n">>.

@@ -13,6 +13,10 @@ command() ->
             print_result(uninstall, wfcli_gui_desktop:uninstall()) end}}}.
 
 print_result(Action, {ok, Result}) ->
+    wfcli_output:emit(Result#{action => Action}, fun() -> print_details(Action, Result) end);
+print_result(_Action, {error, Reason}) -> fail(io_lib:format("~p", [Reason])).
+
+print_details(Action, Result) ->
     Installed = maps:get(installed, Result),
     State = case {Action, Installed} of
         {install, true} -> "installed";
@@ -26,8 +30,7 @@ print_result(Action, {ok, Result}) ->
     case maps:find(executable, Result) of
         {ok, Executable} -> io:format("  executable: ~ts~n", [Executable]);
         error -> ok
-    end;
-print_result(_Action, {error, Reason}) -> fail(io_lib:format("~p", [Reason])).
+    end.
 
 fail(Message) ->
     io:format(standard_error, "error: ~ts~n", [Message]),

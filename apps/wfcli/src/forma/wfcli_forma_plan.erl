@@ -56,25 +56,37 @@ render_results(Results, Output0, VizMode, VizOut, VizCfg) ->
                          Config <- [result_config(Result)],
                          Config =/= undefined],
     Output = ensure_output_path(Output0, Configs),
-    lists:foreach(fun print_result/1, Results),
     Good = [Result || {ok, _, _, _} = Result <- Results],
     case Good of
-        [] -> halt(1);
+        [] ->
+            print_results(Results, undefined, []),
+            halt(1);
         _ -> ok
     end,
     case write_output(Output, Good) of
         {ok, Path} ->
-            io:format("plan output: ~s~n", [to_list(Path)]),
-            maybe_visualize_config(VizCfg, VizMode, VizOut, Configs),
-            maybe_visualize(VizMode, VizOut, Results),
+            Artifacts = visualize(Results, VizMode, VizOut, VizCfg),
+            print_results(Results, Path, Artifacts),
             case length(Good) =/= length(Results) of
                 true -> halt(1);
                 false -> ok
             end;
         {error, Reason} ->
-            io:format("failed to write output: ~p~n", [Reason]),
+            io:format(standard_error, "failed to write output: ~p~n", [Reason]),
             halt(1)
     end.
+
+print_results(Results, Path, Artifacts) ->
+    Rows = [case Result of
+        {ok, Config, Plan, Cost} ->
+            #{config => Config, plan => Plan, forma_cost => Cost};
+        {error, Config, Reason} -> #{config => Config, error => Reason}
+    end || Result <- Results],
+    wfcli_output:emit(#{results => Rows, output => Path, artifacts => Artifacts}, fun() ->
+        lists:foreach(fun print_result/1, Results),
+        case Path of undefined -> ok; _ -> io:format("plan output: ~ts~n", [Path]) end,
+        wfcli_visualize:print_results(Artifacts)
+    end).
 
 result_config({ok, Config, _Plan, _Cost}) -> Config;
 result_config({error, Config, _Reason}) -> Config;
@@ -273,61 +285,16 @@ arcane_yaml(Arcane) ->
 
 yaml_string(Value) -> binary_to_list(jsone:encode(unicode:characters_to_binary(to_list(Value)))).
 
-maybe_visualize(none, _Out, _Results) -> ok;
-maybe_visualize(VizMode, VizOut, Results) ->
-    lists:foreach(
-      fun
-          ({ok, Config = #{file := File}, Plan, _Cost}) ->
-              SlotMods = slot_mod_labels(Config, Plan),
-              BuildArcanes = build_arcane_entries(Config),
-              case VizMode of
-                  html ->
-                      case wfcli_forma_visualizer:render_html(File, Plan, SlotMods, BuildArcanes, VizOut) of
-                          {ok, Path} ->
-                              io:format("visualization (html): ~s~n", [Path]),
-                              wfcli_forma_visualizer:open_file(Path);
-                          {error, Reason} ->
-                              io:format("visualization html failed: ~p~n", [Reason])
-                      end;
-                  image ->
-                      case wfcli_forma_visualizer:render_svg(File, Plan, SlotMods, BuildArcanes, VizOut) of
-                          {ok, Path} ->
-                              io:format("visualization (svg): ~s~n", [Path]),
-                              wfcli_forma_visualizer:open_file(Path);
-                          {error, Reason} ->
-                              io:format("visualization svg failed: ~p~n", [Reason])
-                      end;
-                  _ -> ok
-              end;
-          (_) -> ok
-      end,
-      Results).
-
-maybe_visualize_config(false, _Mode, _Out, _Configs) -> ok;
-maybe_visualize_config(true, VizMode, VizOut, Configs) ->
-    lists:foreach(
-      fun(#{file := File} = Config) ->
-          Plan = maps:get(computed_current_plan, Config, #{}),
-          SlotMods = maps:get(computed_current_slot_mods, Config, []),
-          BuildArcanes = build_arcane_entries(Config),
-          case VizMode of
-              html ->
-                  case wfcli_forma_visualizer:render_config_html(File, Plan, SlotMods, BuildArcanes, VizOut) of
-                      {ok, Path} ->
-                          io:format("config visualization (html): ~s~n", [Path]),
-                          wfcli_forma_visualizer:open_file(Path);
-                      {error, Reason} ->
-                          io:format("config visualization html failed: ~p~n", [Reason])
-                  end;
-              image ->
-                  case wfcli_forma_visualizer:render_config_svg(File, Plan, SlotMods, BuildArcanes, VizOut) of
-                      {ok, Path} ->
-                          io:format("config visualization (svg): ~s~n", [Path]),
-                          wfcli_forma_visualizer:open_file(Path);
-                      {error, Reason} ->
-                          io:format("config visualization svg failed: ~p~n", [Reason])
-                  end;
-              _ -> ok
-          end
-      end,
-      Configs).
+visualize(_Results, none, _Out, _Config) -> [];
+visualize(Results, Mode, Out, IncludeConfig) ->
+    Kinds = case IncludeConfig of true -> [config, plan]; false -> [plan] end,
+    [wfcli_visualize:render(
+        #{config => maps:get(file, Config), kind => Kind,
+          plan => case Kind of config -> maps:get(computed_current_plan, Config, #{}); plan -> Plan end,
+          slot_mods => case Kind of
+              config -> maps:get(computed_current_slot_mods, Config, []);
+              plan -> slot_mod_labels(Config, Plan)
+          end,
+          build_arcanes => build_arcane_entries(Config)},
+        #{viz_mode => Mode, viz_output => Out})
+     || {ok, Config, Plan, _Cost} <- Results, Kind <- Kinds].

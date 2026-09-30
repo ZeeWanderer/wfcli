@@ -3,36 +3,38 @@
 %%%-------------------------------------------------------------------
 -module(wfcli_diagnostics_query).
 
--export([execute/3, query_field/2, query_sort_field/2, default_sort/1]).
+-export([execute/3, execute/4, query_field/2, query_sort_field/2, default_sort/1]).
 
 -doc "Compile and execute the query AST against current resolution issues.".
 -spec execute(term(), map(), [map()]) -> {ok, map()} | {error, term()}.
-execute(Ast0, Request, Issues) ->
+execute(Ast, Request, Issues) -> execute(diagnostics, Ast, Request, Issues).
+
+execute(Kind, Ast0, Request, Issues) ->
     case wfcli_query_parse:extract_control(Ast0, sort) of
-        {ok, Ast, SortControls} -> execute_sorted(Ast, SortControls, Request, Issues);
+        {ok, Ast, SortControls} -> execute_sorted(Kind, Ast, SortControls, Request, Issues);
         {error, Error} -> {error, {query_errors, [Error]}}
     end.
 
-execute_sorted(Ast, SortControls, Request, Issues) ->
+execute_sorted(Kind, Ast, SortControls, Request, Issues) ->
     case compile_sorts(SortControls) of
-        {ok, []} -> run(Ast, default_sort(diagnostics), Request, Issues);
-        {ok, Sorts} -> run(Ast, Sorts, Request, Issues);
+        {ok, []} -> run(Kind, Ast, default_sort(Kind), Request, Issues);
+        {ok, Sorts} -> run(Kind, Ast, Sorts, Request, Issues);
         {error, Error} -> {error, {query_errors, [Error]}}
     end.
 
-run(Ast, Sorts, Request, Issues) ->
-    case {wfcli_entity_query:compile(Ast, ?MODULE, diagnostics),
-          wfcli_entity_query:compile_sorts(Sorts, ?MODULE, diagnostics)} of
+run(Kind, Ast, Sorts, Request, Issues) ->
+    case {wfcli_entity_query:compile(Ast, ?MODULE, Kind),
+          wfcli_entity_query:compile_sorts(Sorts, ?MODULE, Kind)} of
         {{ok, Compiled}, {ok, CompiledSorts}} ->
-            Entries = [entry(Issue) || Issue <- Issues],
+            Entries = [entry(Kind, Issue) || Issue <- Issues],
             Results = wfcli_entity_query:execute(
-                        Entries, Compiled, CompiledSorts, ?MODULE, diagnostics,
+                        Entries, Compiled, CompiledSorts, ?MODULE, Kind,
                         maps:get(offset, Request, 0),
                         maps:get(limit, Request, infinity)),
             {ok, #{query => #{query => Compiled, compiled_sort => CompiledSorts,
                               output_format => maps:get(output_format, Request, table),
                               raw => maps:get(raw, Request, false)},
-                   results => Results}};
+                   results => Results#{kind => Kind}}};
         {{error, Errors}, _} -> {error, {query_errors, Errors}};
         {_, {error, Errors}} -> {error, {query_errors, Errors}}
     end.
@@ -47,7 +49,10 @@ compile_sorts([#{op := Op, vals := Values} | Rest], Acc)
 compile_sorts([_ | _], _Acc) ->
     {error, "sort supports only '=' or ':'"}.
 
-entry(Issue) ->
+entry(Kind, Row) when Kind =:= incidents; Kind =:= captures ->
+    wfcli_entity:build(Kind, maps:get(<<"id">>, Row), maps:get(<<"name">>, Row),
+                       Row, #{search_raw => true}, #{});
+entry(diagnostics, Issue) ->
     Identity = maps:get(<<"identity">>, Issue),
     Name = maps:get(<<"fallback">>, Issue, Identity),
     Kind = maps:get(<<"kind">>, Issue),
@@ -74,7 +79,25 @@ entry(Issue) ->
 
 -doc "Resolve diagnostics filter fields.".
 -spec query_field(term(), string() | atom()) -> {ok, map()} | error.
-query_field(_Kind, Key0) ->
+query_field(Kind, Key0) when Kind =:= incidents; Kind =:= captures ->
+    Key = string:lowercase(wfcli_text:to_list(Key0)),
+    Fields = case Kind of
+        incidents -> [{"timestamp", time_point}, {"timestamp_ms", time_point},
+                      {"application", string}, {"level", string}, {"event", string},
+                      {"message", string}, {"path", string}];
+        captures -> [{"timestamp", time_point}, {"source", string}, {"state", string},
+                     {"current", string}, {"error", string}, {"directory", string},
+                     {"expires_at", time_point}]
+    end,
+    case lists:keyfind(Key, 1, [{"id", string}, {"name", string} | Fields]) of
+        {Key, Type} -> field(list_to_binary(Key), {data, list_to_binary(Key)}, Type, eq);
+        false ->
+            case wfcli_text:to_list(Key0) of
+                "data." ++ Path -> field(Key, {data_path, Path}, dynamic, contains);
+                _ -> error
+            end
+    end;
+query_field(diagnostics, Key0) ->
     case string:lowercase(wfcli_text:to_list(Key0)) of
         "name" -> field(name, {entry, name}, string, contains);
         "kind" -> field(kind, {entry, kind}, string, eq);
@@ -87,8 +110,8 @@ query_field(_Kind, Key0) ->
         "attempts" -> field(attempts, {entry_values, attempts}, string, eq);
         "catalog_revision" -> field(catalog_revision, {entry, catalog_revision}, string, eq);
         "count" -> field(count, {entry, count}, number, eq);
-        "first_seen" -> field(first_seen, {entry, first_seen}, number, eq);
-        "last_seen" -> field(last_seen, {entry, last_seen}, number, eq);
+        "first_seen" -> field(first_seen, {entry, first_seen}, time_point, eq);
+        "last_seen" -> field(last_seen, {entry, last_seen}, time_point, eq);
         _ -> error
     end.
 
@@ -98,7 +121,9 @@ query_sort_field(Kind, Key) -> query_field(Kind, Key).
 
 -doc "Keep diagnostics stable by issue kind and identity.".
 -spec default_sort(term()) -> [map()].
-default_sort(_Kind) -> [#{key => kind, dir => asc}, #{key => identity, dir => asc}].
+default_sort(incidents) -> [#{key => timestamp, dir => desc}];
+default_sort(captures) -> [#{key => name, dir => asc}];
+default_sort(diagnostics) -> [#{key => kind, dir => asc}, #{key => identity, dir => asc}].
 
 field(Key, Source, Kind, DefaultOp) ->
     {ok, #{key => Key, source => Source, kind => Kind, default_op => DefaultOp}}.

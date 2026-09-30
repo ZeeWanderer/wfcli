@@ -20,12 +20,19 @@ command() ->
                     option(trader_cache, "trader-cache", string, "trader cache file")]}.
 
 run(Parsed) ->
-    Results = [refresh_metadata(metadata_selections(Parsed)),
-               maybe_refresh_worldstate(Parsed), maybe_refresh_trader(Parsed)],
-    case lists:all(fun(Result) -> Result =:= ok end, Results) of
+    Results = refresh_metadata(metadata_selections(Parsed)) ++
+              maybe_refresh_worldstate(Parsed) ++ maybe_refresh_trader(Parsed),
+    Success = lists:all(fun(#{result := Result}) -> Result =:= ok end, Results),
+    wfcli_output:emit(#{success => Success, results => [json_result(R) || R <- Results]},
+                      fun() -> lists:foreach(fun print_source_result/1, Results) end),
+    case Success of
         true -> ok;
         false -> halt(1)
     end.
+
+json_result(#{source := Source, result := ok}) -> #{source => Source, success => true};
+json_result(#{source := Source, result := {error, Reason}}) ->
+    #{source => Source, success => false, error => Reason}.
 
 metadata_selections(#{selections := []} = Args) ->
     case maps:get(worldstate, Args, false) orelse maps:get(trader, Args, false) of
@@ -36,17 +43,13 @@ metadata_selections(#{selections := Sources}) ->
     case lists:member(all, Sources) of true -> [all]; false -> lists:usort(Sources) end.
 
 -doc "Ask the daemon to refresh selected managed metadata sources.".
--spec refresh_metadata([atom()]) -> ok | {error, term()}.
-refresh_metadata([]) -> ok;
+-spec refresh_metadata([atom()]) -> [map()].
+refresh_metadata([]) -> [];
 refresh_metadata(Selections) ->
     Request = #{source => metadata, action => refresh, selections => Selections},
     case wfcli_client:one_shot(Request) of
-        {ok, #{results := Results, success := Success}} ->
-            lists:foreach(fun print_source_result/1, Results),
-            case Success of true -> ok; false -> {error, metadata_update_failed} end;
-        {error, Reason} ->
-            io:format(standard_error, "metadata update failed: ~ts~n", [wfcli_client:format_error(Reason)]),
-            {error, Reason}
+        {ok, #{results := Results}} -> Results;
+        {error, Reason} -> [#{source => metadata, result => {error, Reason}}]
     end.
 
 print_source_result(#{source := Source, result := ok}) ->
@@ -131,6 +134,8 @@ source_label(warframes) -> "ExportWarframes_en.json";
 source_label(resources) -> "ExportResources_en.json";
 source_label(wfcd) -> "WFCD item and enemy catalogs";
 source_label(star_chart) -> "Star Chart mastery metadata";
+source_label(worldstate) -> "worldstate cache";
+source_label(trader) -> "trader inventory cache";
 source_label(Source) -> atom_to_list(Source).
 
 maybe_refresh_worldstate(Parsed) ->
@@ -141,14 +146,8 @@ maybe_refresh_worldstate(Parsed) ->
                                                     query => undefined, type_filter => undefined,
                                                     day_filter => undefined, mode => list,
                                                     inventory => false}),
-            case Result of
-                {ok, _} -> io:format("refreshed worldstate cache~n", []);
-                {ok, _Ws, _Source} -> io:format("refreshed worldstate cache~n", []);
-                {error, Reason} ->
-                    io:format(standard_error, "failed: refresh worldstate cache -> ~p~n", [Reason]),
-                    {error, Reason}
-            end;
-        false -> ok
+            [refresh_result(worldstate, Result)];
+        false -> []
     end.
 
 maybe_refresh_trader(Parsed) ->
@@ -156,15 +155,12 @@ maybe_refresh_trader(Parsed) ->
         true ->
             Opts = refresh_opts(maps:get(trader_cache, Parsed, undefined)),
             Result = wfcli_client:one_shot(#{source => trader, opts => Opts}),
-            case Result of
-                {ok, _} -> io:format("refreshed trader inventory cache~n", []);
-                {ok, _Entries, _Source} -> io:format("refreshed trader inventory cache~n", []);
-                {error, Reason} ->
-                    io:format(standard_error, "failed: refresh trader inventory cache -> ~p~n", [Reason]),
-                    {error, Reason}
-            end;
-        false -> ok
+            [refresh_result(trader, Result)];
+        false -> []
     end.
+
+refresh_result(Source, {error, _} = Error) -> #{source => Source, result => Error};
+refresh_result(Source, {ok, _}) -> #{source => Source, result => ok}.
 
 refresh_opts(undefined) -> #{refresh => true};
 refresh_opts(Cache) -> #{refresh => true, cache => filename:absname(Cache)}.

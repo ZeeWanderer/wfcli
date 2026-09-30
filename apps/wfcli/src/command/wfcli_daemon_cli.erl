@@ -42,6 +42,7 @@ update(_) -> hot_update(auto).
 status() ->
     case wfcli_client:status() of
         {running, _Node, Info} ->
+            wfcli_output:emit(Info#{state => running}, fun() ->
             io:format("wfdaemon running~n"),
             io:format("  node: ~s~n", [atom_to_list(maps:get(node, Info))]),
             io:format("  pid: ~p~n", [maps:get(pid, Info)]),
@@ -58,9 +59,9 @@ status() ->
             print_protocols(Info),
             print_runtime_status(maps:get(service, Info, unavailable),
                                  maps:get(exports, Info, unavailable),
-                                 maps:get(market, Info, unavailable));
+                                 maps:get(market, Info, unavailable)) end);
         {stopped, Node} ->
-            io:format("wfdaemon stopped~n  node: ~s~n", [atom_to_list(Node)]);
+            print_state(stopped, Node, "stopped", undefined);
         {error, Reason} ->
             fail(io_lib:format("daemon status failed: ~p", [Reason]))
     end.
@@ -68,9 +69,9 @@ status() ->
 ensure() ->
     case wfcli_client:ensure_running() of
         {ok, already_running, Node} ->
-            io:format("wfdaemon already running~n  node: ~s~n", [atom_to_list(Node)]);
+            print_state(already_running, Node, "already running", undefined);
         {ok, started, Node} ->
-            io:format("wfdaemon started~n  node: ~s~n", [atom_to_list(Node)]);
+            print_state(started, Node, "started", undefined);
         {error, Reason} ->
             fail(io_lib:format("daemon ensure failed: ~p", [Reason]))
     end.
@@ -79,11 +80,9 @@ start(Args) ->
     Policy = idle_policy(Args),
     case wfcli_client:start(Policy) of
         {ok, already_running, Node} ->
-            io:format("wfdaemon already running~n  node: ~s~n", [atom_to_list(Node)]),
-            print_idle_policy(Policy);
+            print_state(already_running, Node, "already running", Policy);
         {ok, started, Node} ->
-            io:format("wfdaemon started~n  node: ~s~n", [atom_to_list(Node)]),
-            print_idle_policy(Policy);
+            print_state(started, Node, "started", Policy);
         {error, Reason} ->
             fail(io_lib:format("daemon start failed: ~p", [Reason]))
     end.
@@ -91,7 +90,7 @@ start(Args) ->
 stop() ->
     case wfcli_client:stop() of
         {ok, stopped, Node} ->
-            io:format("wfdaemon stopped~n  node: ~s~n", [atom_to_list(Node)]);
+            print_state(stopped, Node, "stopped", undefined);
         {error, Reason} ->
             fail(io_lib:format("daemon stop failed: ~p", [Reason]))
     end.
@@ -100,31 +99,38 @@ restart(Args) ->
     Policy = idle_policy(Args),
     case wfcli_client:restart(Policy) of
         {ok, restarted, Node} ->
-            io:format("wfdaemon restarted~n  node: ~s~n", [atom_to_list(Node)]),
-            print_idle_policy(Policy);
+            print_state(restarted, Node, "restarted", Policy);
         {error, Reason} ->
             fail(io_lib:format("daemon restart failed: ~p", [Reason]))
     end.
 
+print_state(State, Node, Label, Policy) ->
+    wfcli_output:emit(#{state => State, node => Node, idle_policy => Policy}, fun() ->
+        io:format("wfdaemon ~s~n  node: ~s~n", [Label, atom_to_list(Node)]),
+        case Policy of undefined -> ok; _ -> print_idle_policy(Policy) end
+    end).
+
 autostart_status() ->
     case wfcli_autostart:status() of
-        {ok, Status} -> print_autostart(Status);
+        {ok, Status} -> wfcli_output:emit(Status, fun() -> print_autostart(Status) end);
         {error, Reason} -> fail(io_lib:format("daemon autostart status failed: ~p", [Reason]))
     end.
 
 autostart_enable() ->
     case wfcli_autostart:enable() of
         {ok, Status} ->
+            wfcli_output:emit(Status, fun() ->
             io:format("wfdaemon autostart enabled~n"),
-            print_autostart_details(Status);
+            print_autostart_details(Status) end);
         {error, Reason} -> fail(io_lib:format("daemon autostart enable failed: ~p", [Reason]))
     end.
 
 autostart_disable() ->
     case wfcli_autostart:disable() of
         {ok, Status} ->
+            wfcli_output:emit(Status, fun() ->
             io:format("wfdaemon autostart disabled~n"),
-            print_autostart_details(Status);
+            print_autostart_details(Status) end);
         {error, Reason} -> fail(io_lib:format("daemon autostart disable failed: ~p", [Reason]))
     end.
 
@@ -145,6 +151,7 @@ yes_no(false) -> "no".
 hot_update(BeamDir) ->
     case wfcli_client:hot_update(BeamDir) of
         {ok, Result} ->
+            wfcli_output:emit(Result, fun() ->
             Loaded = maps:get(loaded, Result, []),
             Migrated = maps:get(migrated, Result, []),
             Unchanged = maps:get(unchanged, Result, []),
@@ -152,7 +159,7 @@ hot_update(BeamDir) ->
             io:format("  loaded: ~p~n", [length(Loaded)]),
             io:format("  state migrations: ~p~n", [length(Migrated)]),
             io:format("  unchanged: ~p~n", [length(Unchanged)]),
-            print_loaded_modules(Loaded);
+            print_loaded_modules(Loaded) end);
         {error, Reason} ->
             fail(io_lib:format("daemon hot update failed: ~p", [Reason]))
     end.
@@ -160,9 +167,9 @@ hot_update(BeamDir) ->
 release_update(ReleaseName) ->
     case wfcli_client:update(ReleaseName) of
         {ok, ok} ->
-            io:format("wfdaemon updated~n");
+            wfcli_output:emit(#{state => updated}, fun() -> io:format("wfdaemon updated~n") end);
         {ok, Reply} ->
-            io:format("wfdaemon update reply: ~p~n", [Reply]);
+            wfcli_output:emit(#{result => Reply}, fun() -> io:format("wfdaemon update reply: ~p~n", [Reply]) end);
         {error, Reason} ->
             fail(io_lib:format("daemon update failed: ~p", [Reason]))
     end.

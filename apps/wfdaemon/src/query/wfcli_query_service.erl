@@ -213,6 +213,21 @@ execute_dataset(diagnostics, _Query, Ast, Request) ->
         {error, _Reason} = Error -> Error
     end,
     #{dataset => diagnostics, reply => Reply};
+execute_dataset(Dataset, _Query, Ast, Request) when Dataset =:= incidents; Dataset =:= captures ->
+    Rows = case Dataset of
+        incidents -> wfcli_runtime_observations:incidents();
+        captures -> wfcli_runtime_observations:captures()
+    end,
+    Reply = case Rows of
+        {ok, #{entries := Values} = Report} ->
+            case wfcli_diagnostics_query:execute(Dataset, Ast, Request, Values) of
+                {ok, #{results := Results} = Result} ->
+                    {ok, Result#{results := maps:merge(maps:remove(entries, Report), Results)}};
+                Error -> Error
+            end;
+        {error, _} = Error -> Error
+    end,
+    #{dataset => Dataset, reply => Reply};
 execute_dataset(Dataset, _Query, Ast, Request) ->
     Command = atom_to_list(Dataset),
     QueryMap = catalog_query(Dataset, Ast, Request),
@@ -235,6 +250,7 @@ worldstate_opts(Request) ->
     Opts0 = #{refresh => maps:get(refresh, Request, false),
               ttl => maps:get(ttl, Request, 60), resolve_items => not Raw,
               raw => Raw, search_raw => Raw,
+              utc => maps:get(utc, Request, false) orelse maps:get(output_format, Request, table) =:= json,
               event_lang => maps:get(event_lang, Request, undefined)},
     maybe_path(cache, Request, Opts0).
 
@@ -319,7 +335,7 @@ parse_datasets(Value) ->
             end;
         [Unknown | _] ->
             {error, lists:flatten(io_lib:format(
-              "unknown dataset: ~s (use default, worldstate, mods, items, codex, enemies, drops, player, market, diagnostics, or all)",
+              "unknown dataset: ~s (use default, worldstate, mods, items, codex, enemies, drops, player, market, diagnostics, incidents, captures, or all)",
               [Unknown]))}
     end.
 
@@ -332,6 +348,8 @@ dataset_name("drops") -> drops;
 dataset_name("player") -> player;
 dataset_name("market") -> market;
 dataset_name("diagnostics") -> diagnostics;
+dataset_name("incidents") -> incidents;
+dataset_name("captures") -> captures;
 dataset_name("default") -> default;
 dataset_name("all") -> all;
 dataset_name(_) -> undefined.
