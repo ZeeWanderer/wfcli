@@ -220,16 +220,76 @@ impl PendingCapture {
     }
 }
 
-fn finish_armed_capture(pending: PendingCapture, image: Option<DynamicImage>, terms: Vec<String>) {
+fn publish_capture(daemon: &OutboundSender, state: &str, armed: Option<&ArmedCapture>) {
+    let _ = daemon.send(crate::daemon::Outbound::Publish {
+        dataset: "player",
+        source: "capture",
+        data: serde_json::json!({
+            "companion_pid": std::process::id(),
+            "state": state,
+            "directory": armed.map(|capture| &capture.directory),
+            "expires_at": armed.map(|capture| capture.armed_at_unix_ms
+                + capture.expires_at.saturating_duration_since(capture.armed_at).as_millis()),
+            "updated_at": unix_time_millis(),
+        }),
+    });
+}
+
+fn publish_capture_result(
+    daemon: &OutboundSender,
+    directory: &Path,
+    state: &str,
+    error: Option<&str>,
+) {
+    let _ = daemon.send(crate::daemon::Outbound::Publish {
+        dataset: "player",
+        source: "capture_result",
+        data: serde_json::json!({
+            "companion_pid": std::process::id(),
+            "state": state,
+            "directory": directory,
+            "error": error,
+            "updated_at": unix_time_millis(),
+        }),
+    });
+}
+
+fn finish_armed_capture(
+    pending: PendingCapture,
+    image: Option<DynamicImage>,
+    terms: Vec<String>,
+    daemon: OutboundSender,
+) {
     thread::spawn(move || {
+        let directory = pending.armed.directory.clone();
         let ui =
             game_observer::ui::capture_evidence(pending.game_pid, &pending.armed.directory, &terms);
+        let capture_error = ui.as_ref().err().cloned().or_else(|| {
+            image
+                .is_none()
+                .then(|| "screenshot unavailable; see companion log".to_owned())
+        });
         match save_armed_capture(pending, image.as_ref(), ui) {
-            Ok(directory) => incident::info(
-                "relic.capture_saved",
-                format!("target=relic_reward output={}", directory.display()),
-            ),
-            Err(error) => incident::error("relic.capture_save_failed", error),
+            Ok(directory) => {
+                incident::info(
+                    "relic.capture_saved",
+                    format!("target=relic_reward output={}", directory.display()),
+                );
+                publish_capture_result(
+                    &daemon,
+                    &directory,
+                    if capture_error.is_some() {
+                        "partial"
+                    } else {
+                        "saved"
+                    },
+                    capture_error.as_deref(),
+                );
+            }
+            Err(error) => {
+                incident::error("relic.capture_save_failed", &error);
+                publish_capture_result(&daemon, &directory, "failed", Some(&error));
+            }
         }
     });
 }
@@ -356,7 +416,7 @@ fn read_rewards(
                 match resolve_memory_rewards(daemon, extracted.names) {
                     Ok(candidates) => {
                         if let Some(pending) = pending_capture.take() {
-                            finish_memory_armed_capture(pending, capture_terms);
+                            finish_memory_armed_capture(pending, capture_terms, daemon.clone());
                         }
                         log_reward_names("memory", started, &candidates);
                         present_rewards(daemon, ui, context, candidates, scene_deadline, started);
@@ -364,7 +424,7 @@ fn read_rewards(
                     }
                     Err(error) => {
                         if let Some(pending) = pending_capture.take() {
-                            finish_memory_armed_capture(pending, Vec::new());
+                            finish_memory_armed_capture(pending, Vec::new(), daemon.clone());
                         }
                         incident::error("relic.context_failed", &error);
                         send_scene(ui, context, Scene::Error(error), scene_deadline);
@@ -398,7 +458,7 @@ fn read_rewards(
                 Ok(image) => image,
                 Err(error) => {
                     if let Some(pending) = pending_capture.take() {
-                        finish_armed_capture(pending, None, Vec::new());
+                        finish_armed_capture(pending, None, Vec::new(), daemon.clone());
                     }
                     incident::error("relic.capture_failed", &error);
                     eprintln!("wfcompanion: relic capture failed: {error}");
@@ -409,7 +469,7 @@ fn read_rewards(
         }
         Err(error) => {
             if let Some(pending) = pending_capture.take() {
-                finish_armed_capture(pending, None, Vec::new());
+                finish_armed_capture(pending, None, Vec::new(), daemon.clone());
             }
             incident::error("relic.capture_failed", &error);
             eprintln!("wfcompanion: relic capture failed: {error}");
@@ -461,7 +521,7 @@ fn read_rewards(
                     .iter()
                     .map(|reward| reward.name.clone())
                     .collect();
-                finish_armed_capture(pending, Some(image.clone()), terms);
+                finish_armed_capture(pending, Some(image.clone()), terms, daemon.clone());
             }
             log_reward_names("ocr", started, &candidates);
             present_rewards(daemon, ui, context, candidates, scene_deadline, started);
@@ -469,7 +529,7 @@ fn read_rewards(
         }
         Err(error) => {
             if let Some(pending) = pending_capture.take() {
-                finish_armed_capture(pending, Some(image.clone()), Vec::new());
+                finish_armed_capture(pending, Some(image.clone()), Vec::new(), daemon.clone());
             }
             incident::error("relic.ocr_failed", &error);
             eprintln!("wfcompanion: relic OCR failed: {error}");
@@ -686,7 +746,11 @@ fn memory_candidate(names: Vec<String>) -> Candidate {
     }
 }
 
-fn finish_memory_armed_capture(mut pending: PendingCapture, terms: Vec<String>) {
+fn finish_memory_armed_capture(
+    mut pending: PendingCapture,
+    terms: Vec<String>,
+    daemon: OutboundSender,
+) {
     thread::spawn(move || {
         wait_for_stabilization(pending.observed_at, REWARD_CAPTURE_DELAY);
         let image = match capture::relic_window() {
@@ -699,7 +763,7 @@ fn finish_memory_armed_capture(mut pending: PendingCapture, terms: Vec<String>) 
                 None
             }
         };
-        finish_armed_capture(pending, image, terms);
+        finish_armed_capture(pending, image, terms, daemon);
     });
 }
 
@@ -942,6 +1006,46 @@ fn scan_rewards(image: &DynamicImage, daemon: &OutboundSender) -> Result<Vec<Rew
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn capture_results_do_not_replace_new_armed_requests() {
+        let (daemon, mut receiver) = tokio::sync::mpsc::unbounded_channel();
+        let now = Instant::now();
+        let armed = ArmedCapture {
+            directory: PathBuf::from("/capture/next"),
+            armed_at: now,
+            armed_at_unix_ms: 100,
+            expires_at: now + Duration::from_secs(1),
+            game: None,
+        };
+        for state in ["armed", "cancelled", "expired", "triggered"] {
+            publish_capture(&daemon, state, Some(&armed));
+            let crate::daemon::Outbound::Publish { source, data, .. } =
+                receiver.try_recv().unwrap()
+            else {
+                panic!("expected capture report")
+            };
+            assert_eq!(source, "capture");
+            assert_eq!(data["companion_pid"], std::process::id());
+            assert_eq!(data["state"], state);
+            assert_eq!(data["directory"], "/capture/next");
+            assert_eq!(data["expires_at"], 1100);
+        }
+        publish_capture_result(
+            &daemon,
+            Path::new("/capture/previous"),
+            "partial",
+            Some("UI unavailable"),
+        );
+        let crate::daemon::Outbound::Publish { source, data, .. } = receiver.try_recv().unwrap()
+        else {
+            panic!("expected capture result")
+        };
+        assert_eq!(source, "capture_result");
+        assert_eq!(data["directory"], "/capture/previous");
+        assert_eq!(data["state"], "partial");
+        assert_eq!(data["error"], "UI unavailable");
+    }
 
     #[test]
     fn memory_candidate_preserves_reward_order() {

@@ -22,6 +22,7 @@ const UI_CONSOLE_OPEN_GUARD: Duration = Duration::from_secs(1);
 
 #[derive(Default)]
 struct CollectorStatus {
+    game_pid: Option<u32>,
     debug_lines: u64,
     inventory_updates: u64,
     account_updates: u64,
@@ -29,6 +30,12 @@ struct CollectorStatus {
     debug_output_active: bool,
     inventory_active: bool,
     metadata_active: bool,
+    debug_output_error: Option<String>,
+    inventory_error: Option<String>,
+    metadata_error: Option<String>,
+    inventory_received_at: Option<u128>,
+    metadata_received_at: Option<u128>,
+    metadata_source: Option<&'static str>,
 }
 
 pub(crate) fn spawn(
@@ -44,13 +51,12 @@ pub(crate) fn spawn(
         let mut bridge: Option<DebugBridge> = None;
         let mut inventory_bridge: Option<InventoryBridge> = None;
         let mut metadata_bridge: Option<MetadataBridge> = None;
-        let mut bridge_error: Option<String> = None;
-        let mut inventory_error: Option<String> = None;
         let mut status = CollectorStatus::default();
         let mut next_scan = Instant::now();
         let mut next_bridge_attempt = Instant::now();
         let mut next_inventory_attempt = Instant::now();
         let mut last_ui_console_open: Option<Instant> = None;
+        publish_collector(&outbound, &status);
 
         while !stopping.load(Ordering::Relaxed) {
             if Instant::now() >= next_scan {
@@ -80,6 +86,14 @@ pub(crate) fn spawn(
                             attach.compat_data(),
                         )
                     });
+                let game_pid = runtime.as_ref().map(DebugRuntime::game_pid);
+                if game_pid.is_some() && status.game_pid != game_pid {
+                    status = CollectorStatus {
+                        game_pid,
+                        ..CollectorStatus::default()
+                    };
+                    publish_collector(&outbound, &status);
+                }
                 let bridge_is_current = match (&mut bridge, runtime.as_ref()) {
                     (Some(open), Some(runtime)) => {
                         open.game_pid() == runtime.game_pid() && open.is_running()
@@ -102,16 +116,17 @@ pub(crate) fn spawn(
                                 format!("game_pid={}", runtime.game_pid()),
                             );
                             bridge = Some(open);
-                            bridge_error = None;
+                            status.debug_output_error = None;
                             status.debug_output_active = true;
                             publish_collector(&outbound, &status);
                         }
                         Err(error) => {
-                            if bridge_error.as_deref() != Some(&error) {
+                            if status.debug_output_error.as_deref() != Some(&error) {
                                 incident::warn("observer.debug_output_failed", &error);
                                 eprintln!("wfcompanion: {error}");
+                                status.debug_output_error = Some(error);
+                                publish_collector(&outbound, &status);
                             }
-                            bridge_error = Some(error);
                             next_bridge_attempt = Instant::now() + DEBUG_RESTART_DELAY;
                         }
                     }
@@ -139,16 +154,17 @@ pub(crate) fn spawn(
                                 format!("game_pid={}", runtime.game_pid()),
                             );
                             inventory_bridge = Some(open);
-                            inventory_error = None;
+                            status.inventory_error = None;
                             status.inventory_active = true;
                             publish_collector(&outbound, &status);
                         }
                         Err(error) => {
-                            if inventory_error.as_deref() != Some(&error) {
+                            if status.inventory_error.as_deref() != Some(&error) {
                                 incident::warn("observer.inventory_failed", &error);
                                 eprintln!("wfcompanion: {error}");
+                                status.inventory_error = Some(error);
+                                publish_collector(&outbound, &status);
                             }
-                            inventory_error = Some(error);
                             next_inventory_attempt = Instant::now() + DEBUG_RESTART_DELAY;
                         }
                     }
@@ -185,6 +201,8 @@ pub(crate) fn spawn(
                         Err(error) => {
                             incident::warn("observer.game_metadata_failed", &error);
                             eprintln!("wfcompanion: {error}");
+                            status.metadata_error = Some(error);
+                            publish_collector(&outbound, &status);
                         }
                     }
                 }
@@ -232,6 +250,9 @@ fn handle_metadata_event(
             .is_some_and(|open| open.game_pid() == game_pid) =>
         {
             status.metadata_updates += 1;
+            status.metadata_received_at = Some(unix_time_millis());
+            status.metadata_source = Some(if cached { "cache" } else { "memory" });
+            status.metadata_error = None;
             incident::info(
                 "observer.game_metadata_received",
                 format!(
@@ -252,6 +273,7 @@ fn handle_metadata_event(
                 .is_some_and(|open| open.game_pid() == game_pid) =>
         {
             incident::warn("observer.game_metadata_unavailable", &reason);
+            status.metadata_error = Some(reason.clone());
             if let Some(data) = unsupported_game_metadata(&reason) {
                 status.metadata_updates += 1;
                 let _ = outbound.send(Outbound::Publish {
@@ -259,8 +281,8 @@ fn handle_metadata_event(
                     source: "warframe",
                     data,
                 });
-                publish_collector(outbound, status);
             }
+            publish_collector(outbound, status);
         }
         _ => {}
     }
@@ -324,6 +346,7 @@ fn handle_debug_event(
                 .is_some_and(|open| open.game_pid() == game_pid) =>
         {
             incident::warn("observer.debug_output_stopped", &reason);
+            status.debug_output_error = Some(reason.clone());
             bridge.take();
             *next_bridge_attempt = Instant::now() + DEBUG_RESTART_DELAY;
             status.debug_output_active = false;
@@ -350,6 +373,8 @@ fn handle_inventory_event(
             .is_some_and(|open| open.game_pid() == game_pid) =>
         {
             status.inventory_updates += 1;
+            status.inventory_received_at = Some(unix_time_millis());
+            status.inventory_error = None;
             incident::info(
                 "observer.inventory_received",
                 format!("game_pid={game_pid} collector={collector} process_pid={process_pid}"),
@@ -391,6 +416,9 @@ fn publish_collector(outbound: &OutboundSender, status: &CollectorStatus) {
         dataset: "player",
         source: "collector",
         data: json!({
+            "companion_pid": std::process::id(),
+            "game_pid": status.game_pid,
+            "incident_log": incident::log_path(),
             "debug_output_lines_observed": status.debug_lines,
             "inventory_updates_observed": status.inventory_updates,
             "account_updates_observed": status.account_updates,
@@ -398,6 +426,12 @@ fn publish_collector(outbound: &OutboundSender, status: &CollectorStatus) {
             "debug_output_active": status.debug_output_active,
             "inventory_active": status.inventory_active,
             "game_metadata_active": status.metadata_active,
+            "debug_output_error": status.debug_output_error,
+            "inventory_error": status.inventory_error,
+            "game_metadata_error": status.metadata_error,
+            "inventory_received_at": status.inventory_received_at,
+            "game_metadata_received_at": status.metadata_received_at,
+            "game_metadata_source": status.metadata_source,
             "last_observed_at": unix_time_millis(),
         }),
     });
@@ -493,13 +527,46 @@ mod tests {
     }
 
     #[test]
-    fn unsupported_executable_invalidates_cached_metadata() {
+    fn collector_report_includes_receipts_errors_and_owner() {
+        let (outbound, mut receiver) = tokio::sync::mpsc::unbounded_channel();
+        let status = CollectorStatus {
+            game_pid: Some(42),
+            inventory_received_at: Some(1000),
+            metadata_error: Some("missing StoreManifest".to_owned()),
+            ..CollectorStatus::default()
+        };
+        publish_collector(&outbound, &status);
+        let Outbound::Publish {
+            dataset,
+            source,
+            data,
+        } = receiver.try_recv().unwrap()
+        else {
+            panic!("expected collector report")
+        };
+        assert_eq!((dataset, source), ("player", "collector"));
+        assert_eq!(data["companion_pid"], std::process::id());
+        assert_eq!(data["game_pid"], 42);
+        assert_eq!(data["inventory_received_at"], 1000);
+        assert_eq!(data["game_metadata_error"], "missing StoreManifest");
+        assert!(data["game_metadata_received_at"].is_null());
+    }
+
+    #[test]
+    fn unsupported_executable_reports_identity_with_discovery_details() {
         let hash = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
         let data =
             unsupported_game_metadata(&format!("unsupported Warframe executable {hash}")).unwrap();
         assert_eq!(data["schema"], 2);
         assert_eq!(data["executable"]["sha256"], hash);
         assert_eq!(data["unavailable"]["reason"], "unsupported_executable");
+        assert_eq!(
+            unsupported_game_metadata(&format!(
+                "unsupported Warframe executable {hash} (game registry signature not found)"
+            )),
+            Some(data)
+        );
+        assert!(unsupported_game_metadata("unsupported Warframe executable unknown").is_none());
         assert!(unsupported_game_metadata("VariantManifest is not loaded").is_none());
     }
 }

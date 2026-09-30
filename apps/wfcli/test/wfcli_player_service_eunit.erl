@@ -17,6 +17,7 @@ player_service_test_() ->
          fun unchanged_publish_keeps_revision_and_views/0,
          fun unchanged_game_publish_refreshes_transient_state/0,
          fun game_stop_does_not_erase_cached_inventory/0,
+         fun status_includes_diagnostics_without_inventory/0,
          fun clear_advances_revision/0
      ] end}.
 
@@ -115,6 +116,19 @@ clear_advances_revision() ->
         error(clear_notification_missing)
     end,
     ok = wfcli_player_service:unsubscribe(Ref).
+
+status_includes_diagnostics_without_inventory() ->
+    Collector = #{<<"inventory_received_at">> => 123},
+    Capture = #{<<"state">> => <<"armed">>, <<"directory">> => <<"next">>},
+    Result = #{<<"state">> => <<"saved">>, <<"directory">> => <<"previous">>},
+    {ok, _} = wfcli_player_service:publish(<<"collector">>, Collector),
+    {ok, _} = wfcli_player_service:publish(<<"capture">>, Capture),
+    {ok, _} = wfcli_player_service:publish(<<"capture_result">>, Result),
+    Status = wfcli_player_service:status(),
+    ?assertEqual(Collector, maps:get(collector, Status)),
+    ?assertEqual(Capture, maps:get(capture, Status)),
+    ?assertEqual(Result, maps:get(capture_result, Status)),
+    ?assertNot(maps:is_key(inventory, Status)).
 
 await_subscribers(Expected, 0) ->
     ?assertEqual(Expected, maps:get(subscribers, wfcli_player_service:status()));

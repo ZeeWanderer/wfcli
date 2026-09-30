@@ -242,6 +242,8 @@ status(State = #{started_at := StartedAt}) ->
         forma => FormaStatus,
         query => safe_status(wfcli_query_service),
         player => safe_status(wfcli_player_service),
+        game_metadata => safe_status(wfcli_game_metadata_service),
+        incident_log => wfcli_incident_log:path(),
         resolution_issues => safe_status(wfcli_resolution_issues),
         market => safe_status(wfcli_market_service),
         assets => AssetStatus,

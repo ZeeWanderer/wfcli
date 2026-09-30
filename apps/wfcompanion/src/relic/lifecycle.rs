@@ -144,11 +144,12 @@ fn spawn_with_worker(
         let mut armed: Option<ArmedCapture> = None;
         let mut workers: BTreeMap<u64, thread::JoinHandle<()>> = BTreeMap::new();
         let mut pending: Option<Job> = None;
+        publish_capture(&daemon, "idle", None);
         while !stopping.load(Ordering::Relaxed) {
             let trigger = triggers.recv_timeout(Duration::from_millis(200));
-            if armed.as_ref().is_some_and(ArmedCapture::expired) {
+            if let Some(expired) = armed.take_if(|capture| capture.expired()) {
                 incident::info("relic.capture_arm_expired", "relic_reward");
-                armed = None;
+                publish_capture(&daemon, "expired", Some(&expired));
             }
             match trigger {
                 Err(mpsc::RecvTimeoutError::Disconnected) => break,
@@ -163,10 +164,12 @@ fn spawn_with_worker(
                         ),
                     );
                     armed = Some(ArmedCapture::new(&request));
+                    publish_capture(&daemon, "armed", armed.as_ref());
                 }
                 Ok(Trigger::CancelCapture) => {
-                    if armed.take().is_some() {
+                    if let Some(cancelled) = armed.take() {
                         incident::info("relic.capture_arm_cancelled", "relic_reward");
+                        publish_capture(&daemon, "cancelled", Some(&cancelled));
                     }
                 }
                 Ok(Trigger::GameStopped) => {
@@ -176,7 +179,9 @@ fn spawn_with_worker(
                         ..Lifecycle::default()
                     };
                     pending = None;
-                    armed = None;
+                    if let Some(cancelled) = armed.take() {
+                        publish_capture(&daemon, "cancelled", Some(&cancelled));
+                    }
                     let _ = ui.send(UiEvent::RelicDismiss);
                 }
                 Ok(Trigger::CloseSuggestions) => {
@@ -251,6 +256,7 @@ fn spawn_with_worker(
                             lifecycle.opened = None;
                             lifecycle.suggesting = false;
                             capture = armed.take().map(|armed| {
+                                publish_capture(&daemon, "triggered", Some(&armed));
                                 begin_armed_capture(
                                     armed,
                                     *game_pid,
