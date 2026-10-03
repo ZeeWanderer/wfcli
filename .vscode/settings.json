@@ -12,5 +12,6 @@
   "makefile.configureOnOpen": false,
   "cmake.ignoreCMakeListsMissing": false,
   "cmake.configureOnOpen": false,
+  "cmake.configureArgs": ["--fresh"],
   "cmake.useCMakePresets": "always"
 }

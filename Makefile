@@ -32,8 +32,8 @@ ICON_OPTICS_SCALE ?= 1.25
 ICON_OPTICS_OUTPUT ?= $(CURDIR)/previews/optics
 ICON_OPTICS_CONFIG ?= $(CURDIR)/tools/icon-optics/foundry.json
 
-export REBAR_CACHE_DIR
-export CARGO_TARGET_DIR
+export REBAR3 REBAR_CACHE_DIR
+export CARGO CARGO_TARGET_DIR
 export SCCACHE_BASEDIRS
 export SCCACHE_DIR
 export SCCACHE_SERVER_UDS
@@ -47,13 +47,17 @@ export RUSTC_WRAPPER CMAKE_C_COMPILER_LAUNCHER CMAKE_CXX_COMPILER_LAUNCHER
 endif
 
 .PHONY: all build dev prod erlang cli daemon mcp companion gui gui-dev gui-prod sccache-setup \
-	gui-configure-dev gui-configure-prod gui-reconfigure gui-reconfigure-dev gui-reconfigure-prod \
+	gui-configure-dev gui-configure-prod \
 	dev-erlang prod-erlang dev-companion prod-companion links \
 	debug-bridge native-bridges previews icon-optics aleca-layout-setup fix-executables \
-	native-compile-commands test test-erlang test-companion test-gui test-release test-staging check fmt-check xref package clean
+	native-compile-commands test test-erlang test-companion test-gui test-release test-staging test-build check fmt-check xref package clean
+
+# These phases share build trees; their internal compiler jobs remain parallel.
+.NOTPARALLEL: check
 
 all: dev
-build: dev prod native-compile-commands
+build: dev prod
+	+$(MAKE) native-compile-commands
 
 sccache-setup:
 ifneq ($(strip $(SCCACHE)),)
@@ -72,7 +76,7 @@ gui: gui-dev
 
 gui-configure-dev: sccache-setup
 	test -n "$(NINJA)"
-	+cmake --preset gui-dev --log-level=WARNING -DCMAKE_MAKE_PROGRAM="$(NINJA)"
+	+cmake --fresh --preset gui-dev --log-level=WARNING -DCMAKE_MAKE_PROGRAM="$(NINJA)"
 
 gui-dev: gui-configure-dev
 	+cmake --build --preset gui-dev
@@ -80,21 +84,11 @@ gui-dev: gui-configure-dev
 
 gui-configure-prod: sccache-setup
 	test -n "$(NINJA)"
-	+cmake --preset gui-prod --log-level=WARNING -DCMAKE_MAKE_PROGRAM="$(NINJA)"
+	+cmake --fresh --preset gui-prod --log-level=WARNING -DCMAKE_MAKE_PROGRAM="$(NINJA)"
 
 gui-prod: gui-configure-prod
 	+cmake --build --preset gui-prod
 	./scripts/stage-gui prod
-
-gui-reconfigure: gui-reconfigure-dev gui-reconfigure-prod
-
-gui-reconfigure-dev: sccache-setup
-	test -n "$(NINJA)"
-	+cmake --fresh --preset gui-dev --log-level=WARNING -DCMAKE_MAKE_PROGRAM="$(NINJA)"
-
-gui-reconfigure-prod: sccache-setup
-	test -n "$(NINJA)"
-	+cmake --fresh --preset gui-prod --log-level=WARNING -DCMAKE_MAKE_PROGRAM="$(NINJA)"
 
 dev-erlang:
 	$(REBAR3) escriptize
@@ -144,7 +138,7 @@ previews: $(PREVIEW_DEPS)
 	./scripts/generate-previews
 
 icon-optics: gui-configure-dev
-	cmake --build --preset gui-dev --target wfgui_icon_optics
+	+cmake --build --preset gui-dev --target wfgui_icon_optics
 	QT_QPA_PLATFORM=offscreen _build/cmake/gui-dev/apps/wfgui/wfgui-icon-optics \
 		--config "$(ICON_OPTICS_CONFIG)" --ui-scale "$(ICON_OPTICS_SCALE)" \
 		--output-dir "$(ICON_OPTICS_OUTPUT)"
@@ -155,20 +149,23 @@ aleca-layout-setup:
 fix-executables:
 	bash ./scripts/fix-executables
 
-test: test-erlang test-companion test-gui test-staging
+test: test-erlang test-companion test-gui test-staging test-build
 
 test-erlang:
 	./scripts/test-quiet eunit
 	./scripts/test-quiet ct
 
 test-companion: native-bridges
-	$(CARGO) test --locked --quiet --manifest-path $(COMPANION_MANIFEST)
+	+$(CARGO) test --locked --quiet --manifest-path $(COMPANION_MANIFEST)
 
 test-gui:
-	./scripts/test-quiet gui
+	+./scripts/test-quiet gui
 
 test-staging:
 	./scripts/test-quiet staging
+
+test-build:
+	+./scripts/test-quiet build
 
 test-release: prod
 	./scripts/test-quiet release

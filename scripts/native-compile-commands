@@ -23,6 +23,7 @@ if ! command -v jq >/dev/null; then
 fi
 
 cmake \
+    --fresh \
     -S "$source_dir" \
     -B "$build_dir" \
     -DCMAKE_BUILD_TYPE=Release \

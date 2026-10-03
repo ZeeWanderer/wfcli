@@ -45,11 +45,11 @@ WFCOMPANION_BUILD_DEBUG_BRIDGE="$root/$mode/libexec/wfcompanion-debug-output.exe
     WFCLI_CPU_BASELINE="$cpu_baseline" \
     RUSTFLAGS="$rustflags" \
     CARGO_TARGET_DIR="$target_dir" \
-    cargo build "${cargo_args[@]}" "${cargo_targets[@]}" --locked --manifest-path "$manifest"
+    "${CARGO:-cargo}" build "${cargo_args[@]}" "${cargo_targets[@]}" --locked --manifest-path "$manifest"
 RUSTC_BOOTSTRAP=1 \
     RUSTFLAGS="$rustflags" \
     CARGO_TARGET_DIR="$decompiler_target_dir" \
-    cargo build "${cargo_args[@]}" --locked \
+    "${CARGO:-cargo}" build "${cargo_args[@]}" --locked \
         --manifest-path "$root/tools/wf-luau-decompiler/Cargo.toml" \
         -p luau-lifter --bin wf-luau-decompiler
 

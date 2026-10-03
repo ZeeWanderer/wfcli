@@ -35,7 +35,7 @@ fi
 flock -u 9
 
 CARGO_TARGET_DIR="$target_dir" CARGO_PROFILE_RELEASE_STRIP=true \
-    cargo build "${cargo_args[@]}" --locked --manifest-path "$source_dir/Cargo.toml" \
+    "${CARGO:-cargo}" build "${cargo_args[@]}" --locked --manifest-path "$source_dir/Cargo.toml" \
         --features cli --bin unoodle
 
 licenses="$target_dir/$profile/licenses/oozextract"

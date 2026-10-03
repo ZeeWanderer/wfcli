@@ -11,6 +11,26 @@ fn main() {
     println!("cargo:rerun-if-changed={BLEND2D_SOURCE}");
     println!("cargo:rerun-if-changed={ASMJIT_SOURCE}");
     println!("cargo:rerun-if-env-changed=WFCLI_CPU_BASELINE");
+    for variable in [
+        "PATH",
+        "CC",
+        "CXX",
+        "CFLAGS",
+        "CXXFLAGS",
+        "LDFLAGS",
+        "CMAKE_C_COMPILER_LAUNCHER",
+        "CMAKE_CXX_COMPILER_LAUNCHER",
+    ] {
+        println!("cargo:rerun-if-env-changed={variable}");
+    }
+    for tool in [
+        env::var("CC").unwrap_or_else(|_| "cc".into()),
+        env::var("CXX").unwrap_or_else(|_| "c++".into()),
+        "cmake".into(),
+        "make".into(),
+    ] {
+        watch_tool(&tool);
+    }
 
     let manifest_dir = PathBuf::from(env::var_os("CARGO_MANIFEST_DIR").unwrap());
     let version_file = manifest_dir.join("../../VERSION");
@@ -54,6 +74,9 @@ fn main() {
     let build_dir = out_dir.join("native");
     let mut configure = Command::new("cmake");
     configure
+        .arg("--fresh")
+        .arg("-G")
+        .arg("Unix Makefiles")
         .arg("-S")
         .arg(manifest_dir.join("native"))
         .arg("-B")
@@ -68,17 +91,18 @@ fn main() {
         cpu.to_string_lossy()
     ));
     run(&mut configure, "configure native renderer");
-    run(
-        Command::new("cmake")
-            .arg("--build")
-            .arg(&build_dir)
-            .arg("--config")
-            .arg("Release")
-            .arg("--target")
-            .arg("wfcompanion_blend2d_bridge")
-            .arg("--parallel"),
-        "build native renderer",
-    );
+    let mut build = Command::new("cmake");
+    build
+        .arg("--build")
+        .arg(&build_dir)
+        .arg("--config")
+        .arg("Release")
+        .arg("--target")
+        .arg("wfcompanion_blend2d_bridge");
+    if let Some(flags) = env::var_os("CARGO_MAKEFLAGS") {
+        build.env("MAKEFLAGS", flags);
+    }
+    run(&mut build, "build native renderer");
 
     println!(
         "cargo:rustc-link-search=native={}",
@@ -90,6 +114,17 @@ fn main() {
     println!("cargo:rustc-link-lib=dylib=pthread");
     println!("cargo:rustc-link-lib=dylib=dl");
     println!("cargo:rustc-link-lib=dylib=m");
+}
+
+fn watch_tool(tool: &str) {
+    let path = env::split_paths(&env::var_os("PATH").unwrap_or_default())
+        .map(|directory| directory.join(tool))
+        .find(|path| path.is_file())
+        .unwrap_or_else(|| PathBuf::from(tool));
+    println!("cargo:rerun-if-changed={}", path.display());
+    if let Ok(resolved) = path.canonicalize() {
+        println!("cargo:rerun-if-changed={}", resolved.display());
+    }
 }
 
 fn protocol_define(source: &str, name: &str) -> u32 {

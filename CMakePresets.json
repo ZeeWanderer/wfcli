@@ -43,6 +43,7 @@
       "displayName": "GUI production",
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Release",
+        "BUILD_TESTING": "OFF",
         "CMAKE_INSTALL_PREFIX": "${sourceDir}/prod",
         "WFCLI_CPU_BASELINE": "x86-64-v2"
       },
@@ -54,11 +55,13 @@
   "buildPresets": [
     {
       "name": "gui-dev",
-      "configurePreset": "gui-dev"
+      "configurePreset": "gui-dev",
+      "targets": ["wfgui"]
     },
     {
       "name": "gui-prod",
-      "configurePreset": "gui-prod"
+      "configurePreset": "gui-prod",
+      "targets": ["wfgui"]
     }
   ]
 }

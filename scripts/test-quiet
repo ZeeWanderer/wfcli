@@ -7,9 +7,9 @@ if [[ $# -gt 0 ]]; then
 fi
 
 case "$command_name" in
-    ct|eunit|gui|release|staging) ;;
+    ct|eunit|gui|release|staging|build) ;;
     *)
-        printf 'usage: %s [ct|eunit|gui|release|staging] [options...]\n' "$0" >&2
+        printf 'usage: %s [ct|eunit|gui|release|staging|build] [options...]\n' "$0" >&2
         exit 2
         ;;
 esac
@@ -18,6 +18,7 @@ log_file="$(mktemp "${TMPDIR:-/tmp}/wfcli-${command_name}.XXXXXX.log")"
 if [[ "$command_name" == "gui" ]]; then
     label="gui"
     make gui-dev >"$log_file" 2>&1 &&
+        cmake --build --preset gui-dev --target all >>"$log_file" 2>&1 &&
         ctest --test-dir _build/cmake/gui-dev --output-on-failure >>"$log_file" 2>&1
 elif [[ "$command_name" == "release" ]]; then
     label="release portability"
@@ -25,9 +26,12 @@ elif [[ "$command_name" == "release" ]]; then
 elif [[ "$command_name" == "staging" ]]; then
     label="staging"
     bash ./scripts/tests/staging.sh >"$log_file" 2>&1
+elif [[ "$command_name" == "build" ]]; then
+    label="build system"
+    bash ./scripts/tests/build.sh >"$log_file" 2>&1
 else
     label="rebar3 $command_name"
-    rebar3 "$command_name" "$@" >"$log_file" 2>&1
+    "${REBAR3:-rebar3}" "$command_name" "$@" >"$log_file" 2>&1
 fi
 status=$?
 if [[ $status -eq 0 ]]; then

@@ -5,6 +5,9 @@ members = [
 ]
 exclude = [".cache"]
 
+[profile.dev.package."*"]
+opt-level = 3
+
 [profile.release]
 lto = "thin"
 strip = true

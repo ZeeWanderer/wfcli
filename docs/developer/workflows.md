@@ -13,13 +13,15 @@ make prod-erlang
 make dev-companion
 make prod-companion
 make gui            # native Qt Widgets development client
-make gui-reconfigure
 make package
 ```
 
 Run `make dev-erlang` before direct `wfclid` tests and after daemon application metadata changes.
 Run `make prod-erlang` before direct `wfcli` tests. Run the matching companion target after Rust,
 asset, or native bridge changes.
+
+Companion dev builds keep application code unoptimized with debug checks and symbols.
+Third-party Rust dependencies are optimized; the native renderer always uses Release.
 
 Each staging step prepares a private prefix under `.staging/`, then atomically exchanges it with
 `dev/` or `prod/`. Writers are serialized; failures before activation leave the installed tree
@@ -40,8 +42,9 @@ scripts. Homebrew's executable works directly. Override the executable with
 
 `make gui` selects Clang from `PATH`; set `LLVM_ROOT` to select another complete LLVM prefix.
 System packages must include the matching LLVM tools, libc++, libc++abi, and libunwind development
-files. After changing LLVM, run `make gui-reconfigure` to refresh both CMake trees; this preserves
-vcpkg installations and build caches.
+files. GUI builds refresh CMake configuration automatically, preserving unchanged objects,
+vcpkg installations and compiler caches. No clean is needed after an LLVM update. Keep custom
+CMake options in presets, not only in the generated cache.
 Host tools and target libraries share one fixed `x86-64-v2` triplet in dev and prod. The build environment supplies LLVM's runtime
 path while generated tools execute. vcpkg archives and sccache data remain under `.cache/`;
 compiler output remains under `_build/`.
@@ -55,11 +58,14 @@ VS Code CMake Tools uses the tracked presets and existing `_build/cmake/` trees.
 - `./scripts/test-quiet ct`: Common Test with passing output suppressed.
 - `./scripts/test-quiet gui`: native desktop model tests with build output suppressed.
 - `make test-staging`: failed/interrupted installs, concurrent writers, and prefix activation.
+- `make test-build`: compiler changes, incremental builds, tool overrides and build ordering.
 - `cargo test --locked --quiet --manifest-path apps/wfcompanion/Cargo.toml`: Rust tests.
 - `make test-gui`: native desktop model tests.
 - `make test-release`: production startup under the x86-64-v2 baseline using QEMU user emulation.
 - `make test`: Erlang, Rust, native desktop, and staging suites.
 - `make check`: Rust formatting, xref, tests, and both staged builds.
+
+Normal GUI builds compile the app only; `make test-gui` also builds its test executables.
 
 The quiet wrapper prints one line on success. On failure it prints a bounded tail and retains the
 full log under `/tmp`. Use direct `rebar3` only while debugging a failure.
