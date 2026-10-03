@@ -332,7 +332,16 @@ fn read_bounded(path: &Path) -> Result<Vec<u8>, String> {
     Ok(bytes)
 }
 
-fn lock(workspace: &Path) -> Result<File, String> {
+struct WorkspaceLock(File);
+
+impl Drop for WorkspaceLock {
+    fn drop(&mut self) {
+        // A concurrent fork can retain the file description until exec.
+        let _ = self.0.unlock();
+    }
+}
+
+fn lock(workspace: &Path) -> Result<WorkspaceLock, String> {
     fs::create_dir_all(workspace).map_err(|e| e.to_string())?;
     let file = OpenOptions::new()
         .create(true)
@@ -343,7 +352,7 @@ fn lock(workspace: &Path) -> Result<File, String> {
         .map_err(|e| e.to_string())?;
     file.try_lock()
         .map_err(|e| format!("script workspace is busy: {e}"))?;
-    Ok(file)
+    Ok(WorkspaceLock(file))
 }
 
 fn snapshot_path(workspace: &Path, name: &str) -> Result<PathBuf, String> {
@@ -496,6 +505,18 @@ mod tests {
             raw
         );
         let _guard = lock(&dir.0).unwrap();
+        assert!(lock(&dir.0).is_err());
+    }
+
+    #[test]
+    fn lock_release_does_not_wait_for_inherited_descriptor() {
+        let dir = Workspace::new();
+        let guard = lock(&dir.0).unwrap();
+        let inherited = guard.0.try_clone().unwrap();
+        assert!(lock(&dir.0).is_err());
+        drop(guard);
+        let _next = lock(&dir.0).unwrap();
+        drop(inherited);
         assert!(lock(&dir.0).is_err());
     }
 
