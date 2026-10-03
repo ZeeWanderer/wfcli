@@ -17,6 +17,8 @@ player_service_test_() ->
          fun unchanged_publish_keeps_revision_and_views/0,
          fun unchanged_game_publish_refreshes_transient_state/0,
          fun game_stop_does_not_erase_cached_inventory/0,
+         fun native_scopes_publish_one_canonical_revision/0,
+         fun projects_subscriptions_before_delivery/0,
          fun status_includes_diagnostics_without_inventory/0,
          fun clear_advances_revision/0
      ] end}.
@@ -101,6 +103,54 @@ game_stop_does_not_erase_cached_inventory() ->
     {ok, _} = wfcli_player_service:publish(<<"game">>, #{<<"running">> => false}),
     Data = maps:get(data, wfcli_player_service:snapshot()),
     ?assertEqual(Inventory, maps:get(<<"inventory">>, Data)).
+
+native_scopes_publish_one_canonical_revision() ->
+    ok = wfcli_player_service:clear(),
+    Full = wfcli_player_inventory_eunit:full(1, 12),
+    Native = wfcli_player_inventory_eunit:native(2, 1, 17),
+    {ok, Base} = wfcli_player_service:publish(<<"inventory_http">>, Full),
+    {ok, Ref, _} = wfcli_player_service:subscribe(self()),
+    {ok, Changed} = wfcli_player_service:publish(<<"inventory_native">>, Native),
+    ?assertEqual(maps:get(revision, Base) + 1, maps:get(revision, Changed)),
+    receive {wfcli_player, Ref, <<"inventory">>, Changed} -> ok
+    after 1000 -> error(no_inventory_notification) end,
+    true = ets:insert(wfcli_player_view_cache, {scope_view, cached}),
+    {ok, Changed} = wfcli_player_service:publish(<<"inventory_http">>, Full),
+    {ok, Changed} = wfcli_player_service:publish(<<"inventory_native">>, Native),
+    ?assertEqual([{scope_view, cached}], ets:lookup(wfcli_player_view_cache, scope_view)),
+    receive {wfcli_player, Ref, _, _} -> error(replay_notified) after 25 -> ok end,
+    ok = gen_server:stop(wfcli_player_service),
+    {ok, _} = wfcli_player_service:start_link(),
+    {ok, Changed} = wfcli_player_service:publish(<<"inventory_http">>, Full),
+    {ok, Changed} = wfcli_player_service:publish(<<"inventory_native">>, Native),
+    ?assertEqual(Changed, wfcli_player_service:snapshot()).
+
+projects_subscriptions_before_delivery() ->
+    Game = #{<<"phase">> => <<"orbiter">>, <<"pid">> => 123, <<"private">> => true},
+    {ok, Full} = wfcli_player_service:publish(<<"game">>, Game),
+    {ok, HudRef, Hud} = wfcli_player_service:subscribe(self(), hud),
+    ?assertEqual(#{<<"phase">> => <<"orbiter">>, <<"pid">> => 123},
+                 maps:get(<<"game">>, maps:get(data, Hud))),
+    ?assertNot(maps:is_key(<<"inventory">>, maps:get(data, Hud))),
+    {ok, MetaRef, Meta} = wfcli_player_service:subscribe(self(), metadata),
+    ?assertEqual(maps:remove(data, Full), Meta),
+    {ok, Receipt} = wfcli_player_service:publish(<<"profile">>, #{<<"rank">> => 15}, metadata),
+    Updated = wfcli_player_service:snapshot(),
+    ?assertEqual(maps:remove(data, Updated), Receipt),
+    receive {wfcli_player, MetaRef, <<"profile">>, Projected} ->
+        ?assertEqual(maps:remove(data, Updated), Projected)
+    after 1000 -> error(no_metadata) end,
+    receive {wfcli_player, HudRef, _, _} -> error(unrelated_hud_update) after 25 -> ok end,
+    ok = wfcli_player_service:unsubscribe(MetaRef),
+    {ok, _} = wfcli_player_service:publish(<<"game">>, #{<<"phase">> => <<"stopped">>}),
+    receive {wfcli_player, HudRef, <<"game">>, Stopped} ->
+        ?assertEqual(#{<<"phase">> => <<"stopped">>}, maps:get(<<"game">>, maps:get(data, Stopped)))
+    after 1000 -> error(no_hud_stop) end,
+    ok = wfcli_player_service:clear(),
+    receive {wfcli_player, HudRef, clear, Cleared} ->
+        ?assertEqual(#{<<"game">> => #{}, <<"collector">> => #{}}, maps:get(data, Cleared))
+    after 1000 -> error(no_hud_clear) end,
+    ok = wfcli_player_service:unsubscribe(HudRef).
 
 clear_advances_revision() ->
     Before = wfcli_player_service:snapshot(),

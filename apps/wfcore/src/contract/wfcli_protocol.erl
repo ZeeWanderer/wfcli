@@ -23,7 +23,7 @@ interfaces() ->
       market => 1,
       notifications => 1,
       diagnostics => 1,
-      companion => 1}.
+      companion => 2}.
 
 -doc "Optional Erlang RPC features offered by this build.".
 -spec features() -> [atom()].
@@ -83,6 +83,7 @@ owner(#{source := query}) -> wfcli_query_service;
 owner(#{source := metadata}) -> wfcli_source_manager;
 owner(#{source := forma}) -> wfcli_forma_service;
 owner(#{source := market}) -> wfcli_market_service;
+owner(#{source := companion_diagnostics}) -> wfcli_local_api;
 owner(_) -> undefined.
 
 contract_mismatches(Required, Available) ->

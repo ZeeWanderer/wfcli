@@ -42,7 +42,7 @@ command() ->
                                 handler => fun arm_capture/1,
                                 arguments => [#{name => directory, required => false,
                                                 help => "evidence directory"}]}}},
-                         "cancel" => #{help => "cancel pending capture", handler => fun(_) ->
+                         "cancel" => #{help => "cancel armed or running captures", handler => fun(_) ->
                              send_capture_command(
                                #{<<"command">> => <<"capture">>, <<"action">> => <<"cancel">>,
                                  <<"target">> => <<"relic_reward">>},
@@ -59,6 +59,7 @@ command() ->
                          "image" => preview_command("image"),
                          "video" => preview_command("video")}},
         "logs" => wfcli_diagnostics_cli:logs_command(companion),
+        "diagnostics" => wfcli_companion_diagnostics_cli:command(),
         "install" => #{help => "configure Steam launch options", handler => fun install/1,
                        arguments => [flag(dry_run, "dry-run", "show planned changes")]},
         "uninstall" => #{help => "restore Steam launch options", handler => fun uninstall/1,

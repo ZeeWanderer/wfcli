@@ -2,8 +2,6 @@ use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, mpsc};
 use std::time::Duration;
 
 use crate::{PreviewRequest, PreviewSource};
@@ -136,10 +134,11 @@ pub(crate) fn render(
 }
 
 fn render_live(source: PreviewSource, dimensions: (u32, u32), path: &Path) -> Result<(), String> {
-    let stopping = Arc::new(AtomicBool::new(false));
-    let (ui, _events) = mpsc::channel();
-    let (relic, _triggers) = mpsc::channel();
-    let outbound = crate::daemon::spawn(ui, relic, Arc::clone(&stopping), "preview");
+    let (ui, _events) = crate::runtime::presentation::channel();
+    let (relic, _triggers) = crate::relic::channel();
+    let (diagnostics, _) = crate::runtime::diagnostics::channel();
+    let connection = crate::daemon::spawn(ui, relic, diagnostics, "preview", Default::default())?;
+    let outbound = connection.outbound();
     let result = (|| {
         let scene = match source {
             PreviewSource::RewardScreenshot(path) => {
@@ -151,7 +150,6 @@ fn render_live(source: PreviewSource, dimensions: (u32, u32), path: &Path) -> Re
         };
         crate::overlay::save_relic_scene_preview(dimensions, &scene, path)
     })();
-    stopping.store(true, Ordering::Relaxed);
     result
 }
 

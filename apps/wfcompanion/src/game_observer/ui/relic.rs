@@ -142,23 +142,16 @@ pub(super) fn rewards_from_snapshot(
             REWARD_INSTANCE_NAME,
             MAX_REWARD_NAME_BYTES,
         ) {
-            Ok((values, metrics)) => {
-                let names = values
-                    .into_iter()
-                    .filter(|name| plausible_reward_name(name))
-                    .collect::<Vec<_>>();
-                if (1..=4).contains(&names.len()) {
+            Ok((values, metrics)) => match reward_names(values) {
+                Ok(names) => {
                     return Ok(RelicRewardText {
                         names,
                         movie_record: movie.record_address,
                         scan: metrics,
                     });
                 }
-                failures.push(format!(
-                    "expected 1..4 ItemName values, found {}",
-                    names.len()
-                ));
-            }
+                Err(error) => failures.push(error),
+            },
             Err(error) => failures.push(error),
         }
     }
@@ -192,9 +185,28 @@ fn classify_labels(normal: &[RelicEra], requiem: bool) -> Result<RelicEra, Strin
 
 fn plausible_reward_name(name: &str) -> bool {
     (3..=96).contains(&name.len())
+        && !name.trim_end_matches('.').eq_ignore_ascii_case("loading")
+        && name.bytes().any(|byte| byte.is_ascii_alphabetic())
         && name
             .bytes()
             .all(|byte| matches!(byte, b' '..=b'~') && byte != b'<' && byte != b'>')
+}
+
+fn reward_names(values: Vec<String>) -> Result<Vec<String>, String> {
+    if !(1..=4).contains(&values.len()) {
+        return Err(format!(
+            "expected 1..4 ItemName values, found {}",
+            values.len()
+        ));
+    }
+    let names = values
+        .into_iter()
+        .map(|name| name.trim().to_owned())
+        .collect::<Vec<_>>();
+    if names.iter().any(|name| !plausible_reward_name(name)) {
+        return Err("ItemName labels are not ready".into());
+    }
+    Ok(names)
 }
 
 #[cfg(test)]
@@ -212,6 +224,48 @@ mod tests {
     fn rejects_markup_as_reward_name() {
         assert!(plausible_reward_name("2 X Forma Blueprint"));
         assert!(!plausible_reward_name("<font>Forma Blueprint</font>"));
+    }
+
+    #[test]
+    fn rejects_loading_and_partial_reward_sets_without_dropping_slots() {
+        assert!(reward_names(vec!["Loading...".into(); 4]).is_err());
+        for incomplete in [
+            "Loading...",
+            "LOADING",
+            " Loading... ",
+            "",
+            "...",
+            "<b>Forma Blueprint</b>",
+        ] {
+            assert!(
+                reward_names(vec![
+                    "Forma Blueprint".into(),
+                    incomplete.into(),
+                    "Burston Prime Stock".into(),
+                ])
+                .is_err(),
+                "{incomplete}"
+            );
+        }
+        assert!(reward_names(Vec::new()).is_err());
+        assert!(reward_names(vec!["Forma Blueprint".into(); 5]).is_err());
+    }
+
+    #[test]
+    fn ready_rewards_preserve_count_order_duplicates_and_unknown_items() {
+        let names = [
+            "Forma Blueprint",
+            "2 X Forma Blueprint",
+            "Forma Blueprint",
+            "New Item Blueprint",
+        ];
+        for count in 1..=4 {
+            let values = names[..count]
+                .iter()
+                .map(|name| format!(" {name} "))
+                .collect();
+            assert_eq!(reward_names(values).unwrap(), names[..count]);
+        }
     }
 
     #[test]

@@ -9,16 +9,43 @@ use std::sync::{Arc, mpsc};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
+use crate::runtime::{inbox, session::Session};
 use serde::Serialize;
 use serde_json::{Map, Value};
-use wfcompanion::game_observer::{debug_output::Runtime, gep};
+use wfcompanion::game_observer::gep;
+use wfcompanion::observation::debug_output::Runtime;
+use wfcompanion::observation::{gep as sampling, mailbox::Mailbox};
 
-const POINTER_POLL_INTERVAL: Duration = Duration::from_millis(7);
-const ACCOUNT_POLL_INTERVAL: Duration = Duration::from_secs(1);
 const INVENTORY_MARKER: &[u8] = b"LastInventorySync";
 const SCHEMA_VERSION: u32 = 2;
 
+mod handoff;
+mod observation;
 mod refresh;
+pub(crate) use handoff::Checkpoint;
+
+#[derive(Serialize)]
+pub(crate) struct PipelineReport {
+    #[serde(flatten)]
+    sampling: sampling::Report,
+    decoded: inbox::Stats,
+}
+
+pub(crate) type Sender = inbox::Sender<Event>;
+
+pub(crate) fn channel() -> (Sender, inbox::Receiver<Event>) {
+    inbox::channel(
+        "inventory",
+        inbox::Limit {
+            items: 2,
+            bytes: 32 * 1024 * 1024,
+        },
+        inbox::Limit {
+            items: 1,
+            bytes: size_of::<Event>(),
+        },
+    )
+}
 
 #[derive(Debug)]
 pub(crate) enum Event {
@@ -28,26 +55,108 @@ pub(crate) enum Event {
         process_pid: u32,
         data: Value,
     },
+    Native {
+        game_pid: u32,
+        data: Value,
+    },
     Account {
         game_pid: u32,
         seed: u32,
     },
 }
 
+impl inbox::Message for Event {
+    fn bytes(&self) -> usize {
+        size_of::<Self>()
+            + match self {
+                Self::Inventory { data, .. } | Self::Native { data, .. } => {
+                    inbox::value_bytes(data)
+                }
+                Self::Account { .. } => 0,
+            }
+    }
+
+    fn control(&self) -> bool {
+        matches!(self, Self::Account { .. })
+    }
+
+    fn replaces(&self, queued: &Self) -> bool {
+        match (self, queued) {
+            (Self::Inventory { game_pid: new, .. }, Self::Inventory { game_pid: old, .. })
+            | (Self::Native { game_pid: new, .. }, Self::Native { game_pid: old, .. })
+            | (Self::Account { game_pid: new, .. }, Self::Account { game_pid: old, .. }) => {
+                new == old
+            }
+            _ => false,
+        }
+    }
+}
+
 pub(crate) struct Bridge {
     game_pid: u32,
-    stopping: Arc<AtomicBool>,
-    worker: Option<JoinHandle<()>>,
+    sampler: sampling::Sampler,
+    worker: Option<JoinHandle<Option<Checkpoint>>>,
+    checkpoint: Option<Checkpoint>,
+    events: Sender,
 }
 
 impl Bridge {
-    pub(crate) fn start(runtime: &Runtime, events: mpsc::Sender<Event>) -> Result<Self, String> {
+    pub(crate) fn start(
+        runtime: &Runtime,
+        session: Session,
+        events: Sender,
+        checkpoint: Option<&Checkpoint>,
+    ) -> Result<Self, String> {
         let game_pid = runtime.game_pid();
-        let (stopping, worker) = start_native(game_pid, runtime.prefix().to_owned(), events)?;
+        if session.pid() != game_pid {
+            return Err("inventory game session PID mismatch".to_owned());
+        }
+        session.check()?;
+        let stream = observation::Stream::new(&session)?;
+        let mem = File::open(format!("/proc/{game_pid}/mem"))
+            .map_err(|error| format!("could not open Warframe memory: {error}"))?;
+        let sources = session.read(gep::Sources::discover)?;
+        let (queue, item_base, body) = sources.response_offsets();
+        crate::incident::info(
+            "inventory.native_gep_ready",
+            format!(
+                "game_pid={game_pid} global=0x{:x} queue=0x{queue:x} item=0x{item_base:x} body=0x{body:x}",
+                sources.manager_global(),
+            ),
+        );
+        let sampler_session = session.clone();
+        let sampler = sampling::Sampler::start(
+            mem,
+            sources,
+            sampling::Options {
+                inventory_only: true,
+                account_seed: true,
+                ..Default::default()
+            },
+            move || sampler_session.is_current(),
+        )?;
+        let samples = sampler.queue.clone();
+        let metrics = sampler.metrics.clone();
+        let stopping = sampler.stopping.clone();
+        let prefix = runtime.prefix().to_owned();
+        let decoded = events.clone();
+        let mut decoder = Decoder::new(session, stream, prefix, events);
+        if let Some(checkpoint) = checkpoint {
+            decoder.restore(checkpoint.clone())?;
+        }
+        let worker = thread::Builder::new()
+            .name("wfcompanion-inventory".into())
+            .spawn(move || {
+                decode(&mut decoder, samples, metrics, stopping);
+                decoder.checkpoint().ok()
+            })
+            .map_err(|error| format!("could not start inventory decoder: {error}"))?;
         Ok(Self {
             game_pid,
-            stopping,
+            sampler,
             worker: Some(worker),
+            checkpoint: None,
+            events: decoded,
         })
     }
 
@@ -56,30 +165,42 @@ impl Bridge {
     }
 
     pub(crate) fn is_running(&mut self) -> bool {
-        self.worker
-            .as_ref()
-            .is_some_and(|worker| !worker.is_finished())
+        self.sampler.is_running()
+            && self
+                .worker
+                .as_ref()
+                .is_some_and(|worker| !worker.is_finished())
+    }
+
+    pub(crate) fn pipeline_report(&self) -> PipelineReport {
+        PipelineReport {
+            sampling: self.sampler.report(),
+            decoded: self.events.stats(),
+        }
+    }
+
+    pub(crate) fn stop(&mut self) {
+        if let Err(error) = self.sampler.stop() {
+            crate::incident::error("runtime.worker_panicked", error);
+        }
+        if let Some(worker) = self.worker.take() {
+            match worker.join() {
+                Ok(checkpoint) => self.checkpoint = checkpoint,
+                Err(_) => crate::incident::error("runtime.worker_panicked", "worker=inventory"),
+            }
+        }
+    }
+
+    pub(crate) fn take_checkpoint(&mut self) -> Option<Checkpoint> {
+        self.stop();
+        self.checkpoint.take()
     }
 }
 
 impl Drop for Bridge {
     fn drop(&mut self) {
-        self.stopping.store(true, Ordering::Relaxed);
-        if let Some(worker) = self.worker.take() {
-            let _ = worker.join();
-        }
+        self.stop();
     }
-}
-
-#[derive(Debug, Serialize)]
-struct Observation {
-    schema: u32,
-    collector: &'static str,
-    collected_at: u128,
-    process_pid: u32,
-    sync: Value,
-    profile: Profile,
-    raw: Value,
 }
 
 #[derive(Debug, Default, Serialize)]
@@ -96,115 +217,59 @@ struct Profile {
     last_region_played: Option<String>,
 }
 
-fn start_native(
-    game_pid: u32,
-    prefix: PathBuf,
-    events: mpsc::Sender<Event>,
-) -> Result<(Arc<AtomicBool>, JoinHandle<()>), String> {
-    let mem = File::open(format!("/proc/{game_pid}/mem"))
-        .map_err(|error| format!("could not open Warframe memory: {error}"))?;
-    let sources = gep::Sources::discover(&mem, game_pid)?;
-    let stopping = Arc::new(AtomicBool::new(false));
-    let worker_stopping = Arc::clone(&stopping);
-    let worker =
-        thread::spawn(move || scan_native(game_pid, mem, sources, prefix, worker_stopping, events));
-    Ok((stopping, worker))
-}
-
-fn scan_native(
-    game_pid: u32,
-    mem: File,
-    sources: gep::Sources,
-    prefix: PathBuf,
+fn decode(
+    decoder: &mut Decoder,
+    samples: Arc<Mailbox<sampling::Sample>>,
+    metrics: Arc<sampling::Metrics>,
     stopping: Arc<AtomicBool>,
-    events: mpsc::Sender<Event>,
 ) {
-    let mut player_name = player_name_from_log(&prefix);
-    let mut seen_payloads = HashSet::new();
-    let mut poll_state = gep::PollState::default();
-    let mut account_seed = None;
-    let mut next_account_poll = Instant::now();
-    let refresh = refresh::Refresh::start(game_pid, Arc::clone(&stopping));
-    let mut inventory = refresh::InventoryState::default();
+    let game_pid = decoder.session.pid();
+    let refresh = refresh::Refresh::start(decoder.session.clone(), stopping);
     let mut next_refresh_warning = Instant::now() + Duration::from_secs(30);
-    let (queue, item_base, body, alternate) = sources.response_offsets();
-    crate::incident::info(
-        "inventory.native_gep_ready",
-        format!(
-            "game_pid={game_pid} global=0x{:x} profile_global={} queue=0x{queue:x} item=0x{item_base:x} body=0x{body:x} alternate=0x{alternate:x}",
-            sources.manager_global(),
-            sources
-                .profile_manager_global()
-                .map(|address| format!("0x{address:x}"))
-                .unwrap_or_else(|| "unavailable".to_owned())
-        ),
-    );
-    while !stopping.load(Ordering::Relaxed) {
-        if Instant::now() >= next_account_poll {
-            if let Ok(seed) = sources.account_seed(&mem)
-                && account_seed != Some(seed)
-            {
-                if events.send(Event::Account { game_pid, seed }).is_err() {
-                    return;
-                }
-                account_seed = Some(seed);
-            }
-            next_account_poll = Instant::now() + ACCOUNT_POLL_INTERVAL;
-        }
-        for (source, payload) in sources.persistent_payloads(&mem, &mut poll_state) {
-            match decode_new_payload(
-                &payload,
-                game_pid,
-                &prefix,
-                &mut player_name,
-                &mut seen_payloads,
-            ) {
-                Ok(Some((data, snapshot))) => {
-                    crate::incident::info(
-                        "inventory.native_payload_accepted",
-                        format!(
-                            "source={source} bytes={} snapshot={snapshot:016x}",
-                            payload.len()
-                        ),
-                    );
-                    inventory.replace(data, Instant::now());
-                    if publish_inventory(
-                        inventory.data.as_ref().unwrap(),
-                        game_pid,
-                        "native_http_buffer",
-                        &events,
-                    )
-                    .is_err()
-                    {
-                        return;
-                    }
-                }
-                Ok(None) => {}
-                Err(error) => crate::incident::warn(
-                    "inventory.native_payload_rejected",
-                    format!("source={source} bytes={} error={error}", payload.len()),
+    let mut reported_drops = 0;
+    while decoder.session.is_current() {
+        let received = samples.recv_timeout(Duration::from_millis(50));
+        let dropped = samples.stats().dropped_items;
+        if dropped != reported_drops {
+            crate::incident::warn(
+                "inventory.sampling_gap",
+                format!(
+                    "game_pid={game_pid} dropped={} total={dropped}; retrying retained buffers",
+                    dropped - reported_drops
                 ),
-            }
+            );
+            reported_drops = dropped;
         }
-        for (started, result) in refresh.receiver.try_iter() {
+        let sample = match received {
+            Ok(sample) => Some(sample),
+            Err(mpsc::RecvTimeoutError::Timeout) => None,
+            Err(mpsc::RecvTimeoutError::Disconnected) => break,
+        };
+        if !decoder.session.is_current() {
+            break;
+        }
+        if let Some(sample) = sample {
+            metrics.queue_delay.record(sample.captured.elapsed());
+            let started = Instant::now();
+            let sequence = sample.sequence;
+            if decoder.accept(sample).is_err() {
+                return;
+            }
+            metrics.decode.record(started.elapsed());
+            metrics.decoded_sequence.store(sequence, Ordering::Relaxed);
+        }
+        // Drain older HTTP observations before applying a later native read.
+        if samples.stats().items != 0 {
+            continue;
+        }
+        for (started, finished, collected_at, result) in refresh.receiver.try_iter() {
             match result {
                 Ok(snapshot) => {
-                    let changed = inventory.refresh(snapshot, started);
-                    if !changed.is_empty() {
-                        crate::incident::info(
-                            "inventory.native_state_refreshed",
-                            format!("game_pid={game_pid} fields={}", changed.join(",")),
-                        );
-                        if publish_inventory(
-                            inventory.data.as_ref().unwrap(),
-                            game_pid,
-                            "native_inventory",
-                            &events,
-                        )
+                    if decoder
+                        .native(snapshot, started, finished, collected_at)
                         .is_err()
-                        {
-                            return;
-                        }
+                    {
+                        return;
                     }
                 }
                 Err(error) if Instant::now() >= next_refresh_warning => {
@@ -214,22 +279,161 @@ fn scan_native(
                 Err(_) => {}
             }
         }
-        thread::sleep(POINTER_POLL_INTERVAL);
+    }
+}
+
+struct Decoder {
+    session: Session,
+    prefix: PathBuf,
+    player_name: Option<String>,
+    seen_payloads: HashSet<u64>,
+    stream: observation::Stream,
+    baseline: Option<Baseline>,
+    last_native: Option<wfcompanion::game_observer::inventory::Snapshot>,
+    events: Sender,
+}
+
+struct Baseline {
+    sequence: u64,
+    captured: Instant,
+    sync: String,
+}
+
+impl Decoder {
+    fn new(session: Session, stream: observation::Stream, prefix: PathBuf, events: Sender) -> Self {
+        Self {
+            session,
+            player_name: player_name_from_log(&prefix),
+            prefix,
+            seen_payloads: HashSet::new(),
+            stream,
+            baseline: None,
+            last_native: None,
+            events,
+        }
+    }
+
+    fn accept(&mut self, sample: sampling::Sample) -> Result<(), ()> {
+        if !self.session.is_current() {
+            return Err(());
+        }
+        let game_pid = self.session.pid();
+        match sample.content {
+            sampling::Content::AccountState(state) => {
+                match state {
+                    sampling::AccountState::Unavailable { reason } => {
+                        crate::incident::warn("inventory.account_seed_unavailable", reason)
+                    }
+                    sampling::AccountState::Available => crate::incident::info(
+                        "inventory.account_seed_ready",
+                        format!("game_pid={game_pid}"),
+                    ),
+                    sampling::AccountState::NotObserved => {}
+                }
+                Ok(())
+            }
+            sampling::Content::Account(seed) => self
+                .events
+                .send(Event::Account { game_pid, seed })
+                .map_err(|_| ()),
+            sampling::Content::Payload { source, bytes } => {
+                match decode_new_payload(
+                    &bytes,
+                    game_pid,
+                    &self.prefix,
+                    &mut self.player_name,
+                    &mut self.seen_payloads,
+                ) {
+                    Ok(Some((mut data, snapshot))) => {
+                        crate::incident::info(
+                            "inventory.native_payload_accepted",
+                            format!(
+                                "source={source} bytes={} snapshot={snapshot:016x}",
+                                bytes.len()
+                            ),
+                        );
+                        data["collected_at"] = serde_json::json!(sample.collected_at);
+                        data["observation"] =
+                            self.stream.stamp(None, sample.captured, sample.captured);
+                        self.baseline = Some(Baseline {
+                            sequence: data["observation"]["sequence"].as_u64().unwrap(),
+                            captured: sample.captured,
+                            sync: value_key(&data["sync"]),
+                        });
+                        self.last_native = None;
+                        publish_inventory(data, &self.session, "native_http_buffer", &self.events)
+                    }
+                    Ok(None) => Ok(()),
+                    Err(error) => {
+                        crate::incident::warn(
+                            "inventory.native_payload_rejected",
+                            format!("source={source} bytes={} error={error}", bytes.len()),
+                        );
+                        Ok(())
+                    }
+                }
+            }
+        }
+    }
+    fn native(
+        &mut self,
+        snapshot: wfcompanion::game_observer::inventory::Snapshot,
+        started: Instant,
+        finished: Instant,
+        collected_at: u128,
+    ) -> Result<(), ()> {
+        if !self.session.is_current() {
+            return Err(());
+        }
+        let Some(baseline) = &self.baseline else {
+            return Ok(());
+        };
+        if started < baseline.captured {
+            return Ok(());
+        }
+        if snapshot.sync != baseline.sync {
+            return Ok(());
+        }
+        if self.last_native.as_ref() == Some(&snapshot) {
+            return Ok(());
+        }
+        let data = serde_json::json!({
+            "schema": 1, "collector": "native_inventory",
+            "process_pid": self.session.pid(), "collected_at": collected_at,
+            "sync": snapshot.sync, "fields": snapshot.fields,
+            "observation": self.stream.stamp(Some(baseline.sequence), started, finished),
+        });
+        if self
+            .events
+            .send(Event::Native {
+                game_pid: self.session.pid(),
+                data,
+            })
+            .is_err()
+        {
+            return Err(());
+        }
+        self.last_native = Some(snapshot);
+        Ok(())
     }
 }
 
 fn publish_inventory(
-    data: &Value,
-    game_pid: u32,
+    data: Value,
+    session: &Session,
     collector: &'static str,
-    events: &mpsc::Sender<Event>,
+    events: &Sender,
 ) -> Result<(), ()> {
+    if !session.is_current() {
+        return Err(());
+    }
+    let game_pid = session.pid();
     events
         .send(Event::Inventory {
             game_pid,
             collector,
             process_pid: game_pid,
-            data: data.clone(),
+            data,
         })
         .map_err(|_| ())
 }
@@ -241,10 +445,7 @@ fn decode_new_payload(
     player_name: &mut Option<String>,
     seen_payloads: &mut HashSet<u64>,
 ) -> Result<Option<(Value, u64)>, String> {
-    if !payload
-        .windows(INVENTORY_MARKER.len())
-        .any(|window| window == INVENTORY_MARKER)
-    {
+    if memchr::memmem::find(payload, INVENTORY_MARKER).is_none() {
         return Ok(None);
     }
     let fingerprint = hash_bytes(payload);
@@ -260,18 +461,16 @@ fn decode_new_payload(
         game_pid,
         player_name.as_deref(),
     )?;
-    let snapshot = hash_bytes(
-        &serde_json::to_vec(data.get("raw").unwrap_or(&data))
-            .map_err(|error| format!("could not fingerprint inventory: {error}"))?,
-    );
+    let mut hasher = DefaultHasher::new();
+    data["raw"].hash(&mut hasher);
+    let snapshot = hasher.finish();
     seen_payloads.insert(fingerprint);
     Ok(Some((data, snapshot)))
 }
 
 fn hash_bytes(bytes: &[u8]) -> u64 {
-    let mut hasher = DefaultHasher::new();
-    bytes.hash(&mut hasher);
-    hasher.finish()
+    use sha2::{Digest, Sha256};
+    u64::from_le_bytes(Sha256::digest(bytes)[..8].try_into().unwrap())
 }
 
 fn player_name_from_log(prefix: &Path) -> Option<String> {
@@ -319,17 +518,15 @@ fn parse_observation(
     if sync_key.is_empty() {
         return Err("inventory LastInventorySync is empty".to_owned());
     }
-    let observation = Observation {
-        schema: SCHEMA_VERSION,
-        collector,
-        collected_at: unix_time_millis(),
-        process_pid,
-        sync,
-        profile: profile(object, player_name),
-        raw,
-    };
-    let data = serde_json::to_value(observation)
-        .map_err(|error| format!("could not encode inventory observation: {error}"))?;
+    let mut data = serde_json::json!({
+        "schema": SCHEMA_VERSION,
+        "collector": collector,
+        "collected_at": unix_time_millis(),
+        "process_pid": process_pid,
+        "sync": sync,
+        "profile": profile(object, player_name),
+    });
+    data["raw"] = raw;
     Ok(data)
 }
 
@@ -511,7 +708,7 @@ mod tests {
         let mut seen = HashSet::new();
         let mut player_name = None;
         let prefix = Path::new("/nonexistent");
-        let (sender, receiver) = mpsc::channel();
+        let (sender, receiver) = channel();
         let (first, _) =
             decode_new_payload(SAMPLE.as_bytes(), 42, prefix, &mut player_name, &mut seen)
                 .unwrap()
@@ -525,12 +722,12 @@ mod tests {
             decode_new_payload(changed.as_bytes(), 42, prefix, &mut player_name, &mut seen)
                 .unwrap()
                 .unwrap();
-        publish_inventory(&first, 42, "test", &sender).unwrap();
-        publish_inventory(&second, 42, "test", &sender).unwrap();
-
+        let session = Session::for_test(42);
+        publish_inventory(first, &session, "test", &sender).unwrap();
         let Event::Inventory { data: first, .. } = receiver.recv().unwrap() else {
             panic!("expected first inventory event");
         };
+        publish_inventory(second, &session, "test", &sender).unwrap();
         let Event::Inventory { data: second, .. } = receiver.recv().unwrap() else {
             panic!("expected second inventory event");
         };
@@ -565,6 +762,268 @@ mod tests {
         .unwrap()
         .unwrap();
         assert_eq!(direct_fingerprint, nested_fingerprint);
+    }
+
+    #[test]
+    fn retired_session_cannot_publish_decoded_inventory() {
+        let session = Session::for_test(u32::MAX);
+        let (sender, receiver) = channel();
+        let data = parse_observation(SAMPLE.as_bytes(), "test", session.pid(), None).unwrap();
+        assert!(session.check().is_err());
+        assert!(publish_inventory(data, &session, "test", &sender).is_err());
+        assert!(receiver.try_recv().is_err());
+    }
+
+    fn sample(sequence: u64, count: u32) -> sampling::Sample {
+        sampling::Sample {
+            sequence,
+            captured: Instant::now() - Duration::from_secs(1),
+            collected_at: 1000,
+            content: sampling::Content::Payload {
+                source: "direct",
+                bytes: SAMPLE
+                    .replace("\"ItemCount\":3", &format!("\"ItemCount\":{count}"))
+                    .into_bytes(),
+            },
+        }
+    }
+
+    #[test]
+    fn delayed_decode_preserves_capture_time_and_accepts_newer_native_state() {
+        let (sender, receiver) = channel();
+        let mut decoder = decoder(sender);
+        let sample = sample(1, 3);
+        let native_started = sample.captured + Duration::from_millis(1);
+        decoder.accept(sample).unwrap();
+        let Event::Inventory { data, .. } = receiver.recv().unwrap() else {
+            panic!("expected inventory");
+        };
+        assert_eq!(data["collected_at"], 1000);
+        let mut fields = data["raw"].as_object().unwrap().clone();
+        fields.get_mut("MiscItems").unwrap()[0]["ItemCount"] = 4.into();
+        decoder
+            .native(
+                wfcompanion::game_observer::inventory::Snapshot {
+                    sync: "abcdef".into(),
+                    fields,
+                },
+                native_started,
+                native_started + Duration::from_millis(1),
+                1001,
+            )
+            .unwrap();
+        let Event::Native { data: native, .. } = receiver.recv().unwrap() else {
+            panic!()
+        };
+        assert_eq!(native["fields"]["MiscItems"][0]["ItemCount"], 4);
+        assert!(native.get("raw").is_none());
+        assert_eq!(
+            native["observation"]["baseline"],
+            data["observation"]["sequence"]
+        );
+        assert_eq!(native["collected_at"], 1001);
+    }
+
+    fn decoder(sender: Sender) -> Decoder {
+        let session = Session::for_test(42);
+        let stream = observation::Stream::new(&session).unwrap();
+        Decoder::new(session, stream, "/nonexistent".into(), sender)
+    }
+
+    fn native_snapshot(count: u32) -> wfcompanion::game_observer::inventory::Snapshot {
+        wfcompanion::game_observer::inventory::Snapshot {
+            sync: "abcdef".into(),
+            fields: serde_json::json!({"MiscItems": [{"ItemType":"resource", "ItemCount":count}],
+                                      "Recipes":[], "PendingRecipes":[]})
+            .as_object()
+            .unwrap()
+            .clone(),
+        }
+    }
+
+    #[test]
+    fn reload_preserves_baseline_order_and_payload_deduplication() {
+        let mut sessions = crate::runtime::session::Sessions::default();
+        sessions.update(Some(std::process::id())).unwrap();
+        let session = sessions.current().unwrap().clone();
+        let (events, received) = channel();
+        let mut before = Decoder::new(
+            session.clone(),
+            observation::Stream::new(&session).unwrap(),
+            "/nonexistent".into(),
+            events.clone(),
+        );
+        let mut http = sample(1, 3);
+        http.captured = Instant::now();
+        before.accept(http).unwrap();
+        let Event::Inventory { data: http, .. } = received.recv().unwrap() else {
+            panic!()
+        };
+        let now = Instant::now();
+        before.native(native_snapshot(4), now, now, 1002).unwrap();
+        received.recv().unwrap();
+        let saved = serde_json::to_vec(&before.checkpoint().unwrap()).unwrap();
+        let mut after = Decoder::new(
+            session.clone(),
+            observation::Stream::new(&session).unwrap(),
+            "/nonexistent".into(),
+            events,
+        );
+        after
+            .restore(serde_json::from_slice(&saved).unwrap())
+            .unwrap();
+        after.accept(sample(2, 3)).unwrap();
+        assert!(
+            received.try_recv().is_err(),
+            "old HTTP payload must not overwrite native changes"
+        );
+        let now = Instant::now();
+        after.native(native_snapshot(5), now, now, 1003).unwrap();
+        let Event::Native { data, .. } = received.recv().unwrap() else {
+            panic!()
+        };
+        for key in [
+            "boot_id",
+            "stream",
+            "game_started",
+            "generation",
+            "baseline",
+        ] {
+            assert_eq!(data["observation"][key], http["observation"][key], "{key}");
+        }
+        assert_eq!(data["observation"]["sequence"], 3);
+        assert!(
+            data["observation"]["started_ns"].as_u64().unwrap()
+                >= http["observation"]["finished_ns"].as_u64().unwrap()
+        );
+        assert_eq!(data["fields"]["MiscItems"][0]["ItemCount"], 5);
+        let mut wrong: Value = serde_json::from_slice(&saved).unwrap();
+        wrong["process"]["started"] = 0.into();
+        assert!(
+            after
+                .restore(serde_json::from_value(wrong).unwrap())
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn stale_native_read_does_not_suppress_valid_retry_or_new_baseline() {
+        let (sender, receiver) = channel();
+        let mut decoder = decoder(sender);
+        let first = sample(1, 3);
+        let captured = first.captured;
+        decoder.accept(first).unwrap();
+        receiver.recv().unwrap();
+        let before = captured - Duration::from_millis(1);
+        decoder
+            .native(native_snapshot(4), before, captured, 1001)
+            .unwrap();
+        assert!(receiver.try_recv().is_err());
+        decoder
+            .native(native_snapshot(4), captured, captured, 1002)
+            .unwrap();
+        let Event::Native { data, .. } = receiver.recv().unwrap() else {
+            panic!()
+        };
+        assert_eq!(data["observation"]["baseline"], 1);
+        decoder
+            .native(native_snapshot(4), captured, captured, 1003)
+            .unwrap();
+        assert!(receiver.try_recv().is_err());
+        let second = sample(2, 5);
+        let captured = second.captured;
+        decoder.accept(second).unwrap();
+        let Event::Inventory { data: full, .. } = receiver.recv().unwrap() else {
+            panic!()
+        };
+        decoder
+            .native(native_snapshot(4), captured, captured, 1004)
+            .unwrap();
+        let Event::Native { data, .. } = receiver.recv().unwrap() else {
+            panic!()
+        };
+        assert_eq!(
+            data["observation"]["baseline"],
+            full["observation"]["sequence"]
+        );
+        assert_eq!(data["observation"]["sequence"], 4);
+    }
+
+    #[test]
+    fn slow_observer_keeps_both_scopes_without_full_native_copy() {
+        let (sender, receiver) = channel();
+        let mut decoder = decoder(sender.clone());
+        decoder.accept(sample(1, 3)).unwrap();
+        for count in 0..100 {
+            let captured = Instant::now();
+            decoder
+                .native(native_snapshot(count), captured, captured, 1001)
+                .unwrap();
+        }
+        assert_eq!(sender.stats().items, 2);
+        assert_eq!(sender.stats().coalesced, 99);
+        assert!(matches!(receiver.recv().unwrap(), Event::Inventory { .. }));
+        let Event::Native { data, .. } = receiver.recv().unwrap() else {
+            panic!()
+        };
+        assert_eq!(data["fields"]["MiscItems"][0]["ItemCount"], 99);
+        assert!(data.get("raw").is_none());
+    }
+
+    #[test]
+    fn retained_replay_recovers_unseen_payload_but_never_reapplies_accepted_old_state() {
+        let (sender, receiver) = channel();
+        let mut decoder = decoder(sender);
+        decoder.accept(sample(1, 3)).unwrap();
+        decoder.accept(sample(2, 4)).unwrap();
+        let queue = Mailbox::new(1, 8192);
+        assert!(matches!(queue.send(sample(3, 5), 1024), Ok(0)));
+        assert!(matches!(queue.send(sample(4, 3), 1024), Ok(1)));
+        decoder
+            .accept(queue.recv_timeout(Duration::ZERO).unwrap())
+            .unwrap();
+        assert_eq!(decoder.baseline.as_ref().unwrap().sequence, 2);
+        decoder.accept(sample(5, 5)).unwrap();
+        let counts: Vec<_> = receiver
+            .drain(2)
+            .into_iter()
+            .map(|event| match event {
+                Event::Inventory { data, .. } => {
+                    data["raw"]["MiscItems"][0]["ItemCount"].as_u64().unwrap()
+                }
+                _ => panic!("expected inventory"),
+            })
+            .collect();
+        assert_eq!(counts, [5]);
+    }
+
+    #[test]
+    fn slow_observer_keeps_latest_full_inventory_and_separate_account_seed() {
+        let (sender, receiver) = channel();
+        let session = Session::for_test(42);
+        sender
+            .send(Event::Account {
+                game_pid: 42,
+                seed: 123,
+            })
+            .unwrap();
+        for count in 0..1000 {
+            let data = serde_json::json!({ "raw": {"MiscItems": [{"ItemCount": count}], "NewField": count} });
+            publish_inventory(data, &session, "test", &sender).unwrap();
+        }
+        assert_eq!(sender.stats().items, 2);
+        assert_eq!(sender.stats().coalesced, 999);
+        drop(sender);
+        assert!(matches!(
+            receiver.recv().unwrap(),
+            Event::Account { seed: 123, .. }
+        ));
+        let Event::Inventory { data, .. } = receiver.recv().unwrap() else {
+            panic!()
+        };
+        assert_eq!(data["raw"]["MiscItems"][0]["ItemCount"], 999);
+        assert_eq!(data["raw"]["NewField"], 999);
+        assert!(receiver.recv().is_err());
     }
 
     #[test]

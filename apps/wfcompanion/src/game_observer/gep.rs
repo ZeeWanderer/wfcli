@@ -1,66 +1,28 @@
-use std::fs::{self, File};
+use std::fs::File;
 use std::io;
 use std::os::unix::fs::FileExt;
 
-use iced_x86::{Decoder, DecoderOptions, Instruction, Mnemonic, OpKind, Register};
 use memchr::memchr;
 
+use super::{ProcessIdentity, account, executable, memory::ProcessMemory};
+pub(crate) mod layout;
+use layout::ResponsePath;
+
+#[cfg(test)]
 const MAX_PAYLOAD_SIZE: usize = 0x4e2000;
 const RESPONSE_READ_SIZE: usize = 0x9e2000 - 1;
 const RESPONSE_READ_CHUNK_SIZE: usize = 256 * 1024;
-const SCAN_CHUNK_SIZE: usize = 1024 * 1024;
-const HTTP_MANAGER_PATTERN: &[u8] = &[
-    0x48, 0x00, 0x00, 0x48, 0x8b, 0x0d, 0x00, 0x00, 0x00, 0x00, 0x48, 0x85, 0x00, 0x74, 0x00, 0x48,
-    0x8b, 0xd3, 0xe8,
-];
-const HTTP_MANAGER_MASK: &[u8] = &[
-    0xff, 0x00, 0x00, 0xff, 0xff, 0xff, 0x00, 0x00, 0x00, 0x00, 0xff, 0xff, 0x00, 0xff, 0x00, 0xff,
-    0xff, 0xff, 0xff,
-];
-const ALTERNATE_RESPONSE_PATTERN: &[u8] = &[
-    0x4c, 0x8d, 0x87, 0x00, 0x00, 0x00, 0x00, 0xb2, 0x01, 0x48, 0x8b, 0xcf, 0xe8,
-];
-const ALTERNATE_RESPONSE_MASK: &[u8] = &[
-    0xff, 0xff, 0xff, 0x00, 0x00, 0x00, 0x00, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
-];
-const PROFILE_MANAGER_PATTERN: &[u8] = &[
-    0x41, 0xb8, 0x6d, 0x29, 0x2a, 0xd8, 0x48, 0x8d, 0x15, 0x00, 0x00, 0x00, 0x00,
-];
-const PROFILE_MANAGER_MASK: &[u8] = &[
-    0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x00, 0x00, 0x00, 0x00,
-];
-const PROFILE_VECTOR_OFFSET: u64 = 0x230;
-const PROFILE_VECTOR_SIZE_OFFSET: u64 = 0x238;
-const PROFILE_PRIMARY_ID_OFFSET: u64 = 0x118;
-const PROFILE_PLATFORM_ID_OFFSET: u64 = 0x138;
-const MAX_PROFILES: usize = 32;
-const MAX_PROFILE_ID_SIZE: usize = 256;
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-struct ExecutableRegion {
-    start: u64,
-    end: u64,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-struct ResponsePath {
-    queue_table: u64,
-    item_base: u64,
-    body: u64,
-    alternate: i64,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug)]
 pub struct Sources {
     manager_global: u64,
-    profile_manager_global: Option<u64>,
+    account: Result<account::Reader, String>,
     response: ResponsePath,
 }
 
 pub struct PollState {
     direct: ChangeState,
     indirect: ChangeState,
-    alternate: ChangeState,
     scratch: Vec<u8>,
 }
 
@@ -69,9 +31,15 @@ impl Default for PollState {
         Self {
             direct: ChangeState::default(),
             indirect: ChangeState::default(),
-            alternate: ChangeState::default(),
             scratch: vec![0; RESPONSE_READ_SIZE],
         }
+    }
+}
+
+impl PollState {
+    pub fn invalidate(&mut self) {
+        self.direct.address = None;
+        self.indirect.address = None;
     }
 }
 
@@ -82,57 +50,22 @@ struct ChangeState {
 }
 
 impl Sources {
-    pub fn discover(mem: &File, game_pid: u32) -> Result<Self, String> {
-        let executable = executable_region(game_pid)?;
-        let anchor = scan_masked(mem, executable, HTTP_MANAGER_PATTERN, HTTP_MANAGER_MASK)?;
-        let manager_displacement = read_i32(mem, anchor + 6)
-            .map_err(|error| format!("could not read Warframe HTTP manager anchor: {error}"))?;
-        let manager_global = (anchor + 10).wrapping_add_signed(i64::from(manager_displacement));
-
-        let call_displacement = read_i32(mem, anchor + 19)
-            .map_err(|error| format!("could not read Warframe HTTP handler call: {error}"))?;
-        let handler = (anchor + 23).wrapping_add_signed(i64::from(call_displacement));
-        if handler < executable.start || handler >= executable.end {
-            return Err("Warframe HTTP handler is outside the executable mapping".to_owned());
+    pub fn discover(identity: &ProcessIdentity) -> Result<Self, String> {
+        let (hash, bytes) = executable::read(&identity.executable.path)?;
+        if hash != identity.executable.sha256 {
+            return Err("Warframe executable changed during HTTP discovery".into());
         }
-        let handler_size = usize::try_from((executable.end - handler).min(0x500)).unwrap();
-        let mut handler_code = vec![0_u8; handler_size];
-        read_exact_at(mem, handler, &mut handler_code)
-            .map_err(|error| format!("could not read Warframe HTTP handler: {error}"))?;
-        let (queue_table, item_base, body) = derive_response_layout(&handler_code, handler)?;
-
-        let alternate_anchor = scan_masked(
-            mem,
-            executable,
-            ALTERNATE_RESPONSE_PATTERN,
-            ALTERNATE_RESPONSE_MASK,
-        )?;
-        let alternate = i64::from(
-            read_i32(mem, alternate_anchor + 3)
-                .map_err(|error| format!("could not read alternate response offset: {error}"))?,
-        );
-        let profile_manager_global = scan_masked(
-            mem,
-            executable,
-            PROFILE_MANAGER_PATTERN,
-            PROFILE_MANAGER_MASK,
-        )
-        .ok()
-        .and_then(|anchor| {
-            read_i32(mem, anchor + 9)
-                .ok()
-                .map(|displacement| (anchor + 13).wrapping_add_signed(i64::from(displacement)))
-        });
-
+        let layout = layout::discover(&bytes)?;
+        let base = ProcessMemory::open(identity.pid)?
+            .image_base()
+            .ok_or("Warframe image mapping is unavailable")?;
+        let manager_global = base
+            .checked_add(layout.manager_rva)
+            .ok_or("invalid Warframe HTTP manager address")?;
         Ok(Self {
             manager_global,
-            profile_manager_global,
-            response: ResponsePath {
-                queue_table,
-                item_base,
-                body,
-                alternate,
-            },
+            account: account::Reader::discover(identity),
+            response: layout.response,
         })
     }
 
@@ -140,50 +73,25 @@ impl Sources {
         self.manager_global
     }
 
-    pub fn profile_manager_global(&self) -> Option<u64> {
-        self.profile_manager_global
+    pub fn account_bindings(&self) -> Result<serde_json::Value, String> {
+        self.account
+            .as_ref()
+            .map(|reader| serde_json::json!(reader.bindings()))
+            .map_err(Clone::clone)
     }
 
     pub fn account_seed(&self, mem: &File) -> io::Result<u32> {
-        let global = self
-            .profile_manager_global
-            .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "profile manager signature"))?;
-        let holder = non_null(read_u64(mem, global)?)?;
-        let manager = non_null(read_u64(mem, holder)?)?;
-        let vector = non_null(read_u64(mem, manager + PROFILE_VECTOR_OFFSET)?)?;
-        let vector_bytes = read_u32(mem, manager + PROFILE_VECTOR_SIZE_OFFSET)? as usize;
-        let count = (vector_bytes / 8).min(MAX_PROFILES);
-        for index in 0..count {
-            let holder = read_u64(mem, vector + (index * 8) as u64)?;
-            if holder == 0 {
-                continue;
-            }
-            let profile = read_u64(mem, holder)?;
-            if profile == 0 {
-                continue;
-            }
-            let primary = read_engine_string(mem, profile + PROFILE_PRIMARY_ID_OFFSET)?;
-            let platform = read_engine_string(mem, profile + PROFILE_PLATFORM_ID_OFFSET)?;
-            if let Some(seed) = profile_seed(if platform.is_empty() {
-                &primary
-            } else {
-                &platform
-            }) {
-                return Ok(seed);
-            }
-        }
-        Err(io::Error::new(
-            io::ErrorKind::NotFound,
-            "no initialized player profile",
-        ))
+        self.account
+            .as_ref()
+            .map_err(|reason| io::Error::other(reason.clone()))?
+            .read(mem)
     }
 
-    pub fn response_offsets(&self) -> (u64, u64, u64, i64) {
+    pub fn response_offsets(&self) -> (u64, u64, u64) {
         (
             self.response.queue_table,
             self.response.item_base,
             self.response.body,
-            self.response.alternate,
         )
     }
 
@@ -195,7 +103,7 @@ impl Sources {
         let Ok(manager) = read_u64(mem, self.manager_global).and_then(non_null) else {
             return Vec::new();
         };
-        let mut payloads = Vec::with_capacity(3);
+        let mut payloads = Vec::with_capacity(2);
         if let Ok(body) = self.primary_body(mem, manager) {
             if let Some(payload) =
                 changed_c_string(mem, body, &mut state.direct, &mut state.scratch)
@@ -208,11 +116,6 @@ impl Sources {
             {
                 payloads.push(("indirect", payload));
             }
-        }
-        if let Ok((data, length)) = self.alternate_response(mem, manager)
-            && let Some(payload) = changed_buffer(mem, data, length, &mut state.alternate)
-        {
-            payloads.push(("alternate", payload));
         }
         payloads
     }
@@ -230,30 +133,6 @@ impl Sources {
             .ok_or_else(|| invalid_pointer("Warframe response"))?;
         non_null(read_u64(mem, body_slot)?)
     }
-
-    fn alternate_response(&self, mem: &File, manager: u64) -> io::Result<(u64, usize)> {
-        let level_one_slot = manager
-            .checked_add(0x38)
-            .ok_or_else(|| invalid_pointer("Warframe alternate response"))?;
-        let level_one = non_null(read_u64(mem, level_one_slot)?)?;
-        let base_slot = level_one
-            .checked_add(0x10)
-            .ok_or_else(|| invalid_pointer("Warframe alternate response"))?;
-        let base = non_null(read_u64(mem, base_slot)?)?;
-        let slot = base.wrapping_add_signed(self.response.alternate);
-        let data = non_null(read_u64(mem, slot)?)?;
-        let length_slot = slot
-            .checked_add(8)
-            .ok_or_else(|| invalid_pointer("Warframe alternate response length"))?;
-        let length = usize::from(read_u16(mem, length_slot)?);
-        if length == 0 || length > MAX_PAYLOAD_SIZE {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "invalid alternate Warframe response length",
-            ));
-        }
-        Ok((data, length))
-    }
 }
 
 fn changed_c_string(
@@ -269,21 +148,6 @@ fn changed_c_string(
         return None;
     }
     let payload = read_c_string(mem, address, scratch).ok()?;
-    if state.address == Some(address) && state.payload == payload {
-        return None;
-    }
-    remember_payload(state, address, &payload);
-    Some(payload)
-}
-
-fn changed_buffer(
-    mem: &File,
-    address: u64,
-    length: usize,
-    state: &mut ChangeState,
-) -> Option<Vec<u8>> {
-    let mut payload = vec![0_u8; length];
-    read_exact_at(mem, address, &mut payload).ok()?;
     if state.address == Some(address) && state.payload == payload {
         return None;
     }
@@ -308,223 +172,6 @@ fn c_string_changed(mem: &File, address: u64, state: &ChangeState, scratch: &mut
         return true;
     }
     current.last() != Some(&0) || current[..state.payload.len()] != state.payload
-}
-
-#[derive(Clone, Copy)]
-struct MemoryLoad {
-    position: usize,
-    base: Register,
-    destination: Register,
-    displacement: u64,
-}
-
-fn derive_response_layout(code: &[u8], ip: u64) -> Result<(u64, u64, u64), String> {
-    let instructions: Vec<_> = Decoder::with_ip(64, code, ip, DecoderOptions::NONE)
-        .into_iter()
-        .collect();
-    let loads: Vec<_> = instructions
-        .iter()
-        .enumerate()
-        .filter_map(|(position, instruction)| memory_load(position, instruction))
-        .collect();
-
-    for low in &loads {
-        if low.displacement < 0x20 || low.displacement > 0x1000 {
-            continue;
-        }
-        let fields = [
-            low.displacement,
-            low.displacement + 8,
-            low.displacement + 16,
-            low.displacement + 24,
-        ];
-        let matching: Vec<_> = loads
-            .iter()
-            .filter(|load| {
-                load.base == low.base
-                    && load.position.abs_diff(low.position) <= 16
-                    && fields.contains(&load.displacement)
-            })
-            .collect();
-        if matching.len() != fields.len() {
-            continue;
-        }
-        let first = matching.iter().map(|load| load.position).min().unwrap();
-        let last = matching.iter().map(|load| load.position).max().unwrap();
-        if last - first > 16 {
-            continue;
-        }
-
-        let mut dereferences = 0;
-        let mut item_ready = None;
-        for (position, instruction) in instructions
-            .iter()
-            .enumerate()
-            .skip(low.position + 1)
-            .take(32)
-        {
-            if instruction.mnemonic() == Mnemonic::Mov
-                && instruction.op0_kind() == OpKind::Register
-                && instruction.op0_register() == low.destination
-                && instruction.op1_kind() == OpKind::Memory
-                && instruction.memory_base() == low.destination
-                && instruction.memory_index() != Register::None
-                && instruction.memory_index_scale() == 8
-            {
-                dereferences += 1;
-                if dereferences == 2 {
-                    item_ready = Some(position);
-                    break;
-                }
-            }
-        }
-        let Some(item_ready) = item_ready else {
-            continue;
-        };
-        let Some((item_view_position, item_view, item_base)) = instructions
-            .iter()
-            .enumerate()
-            .skip(item_ready + 1)
-            .take(96)
-            .find_map(|(position, instruction)| {
-                lea_from(instruction, low.destination)
-                    .map(|(destination, displacement)| (position, destination, displacement))
-            })
-        else {
-            continue;
-        };
-        let Some(body) = body_offset_before_movzx(
-            &instructions[item_view_position + 1..instructions.len().min(item_view_position + 161)],
-            item_view,
-        ) else {
-            continue;
-        };
-        if item_base > 0x1000 || body > 0x1000 || item_base + body > 0x1000 {
-            continue;
-        }
-        return Ok((low.displacement, item_base, body));
-    }
-    Err("could not derive Warframe persistent response layout".to_owned())
-}
-
-fn body_offset_before_movzx(instructions: &[Instruction], item_view: Register) -> Option<u64> {
-    let mut latest_lea = None;
-    for instruction in instructions {
-        if let Some((_, displacement)) = lea_from(instruction, item_view) {
-            latest_lea = Some(displacement);
-        }
-        if instruction.mnemonic() == Mnemonic::Movzx
-            && instruction.op1_kind() == OpKind::Memory
-            && instruction.memory_base() == item_view
-        {
-            return latest_lea;
-        }
-    }
-    None
-}
-
-fn memory_load(position: usize, instruction: &Instruction) -> Option<MemoryLoad> {
-    (instruction.mnemonic() == Mnemonic::Mov
-        && instruction.op0_kind() == OpKind::Register
-        && instruction.op1_kind() == OpKind::Memory
-        && instruction.memory_base() != Register::None
-        && instruction.memory_base() != Register::RIP
-        && instruction.memory_index() == Register::None)
-        .then(|| MemoryLoad {
-            position,
-            base: instruction.memory_base(),
-            destination: instruction.op0_register(),
-            displacement: instruction.memory_displacement64(),
-        })
-}
-
-fn lea_from(instruction: &Instruction, base: Register) -> Option<(Register, u64)> {
-    let displacement = instruction.memory_displacement64();
-    (instruction.mnemonic() == Mnemonic::Lea
-        && instruction.op0_kind() == OpKind::Register
-        && instruction.op1_kind() == OpKind::Memory
-        && instruction.memory_base() == base
-        && instruction.memory_index() == Register::None
-        && displacement > 0
-        && displacement <= 0x1000)
-        .then(|| (instruction.op0_register(), displacement))
-}
-
-fn executable_region(game_pid: u32) -> Result<ExecutableRegion, String> {
-    let maps = fs::read_to_string(format!("/proc/{game_pid}/maps"))
-        .map_err(|error| format!("could not read Warframe memory map: {error}"))?;
-    find_executable_region(&maps).ok_or_else(|| "Warframe executable mapping not found".to_owned())
-}
-
-fn find_executable_region(maps: &str) -> Option<ExecutableRegion> {
-    let mut image_start = None;
-    for line in maps.lines() {
-        let mut fields = line.split_whitespace();
-        let range = fields.next().unwrap_or_default();
-        let permissions = fields.next().unwrap_or_default();
-        let path = fields.nth(3).unwrap_or_default();
-        let Some((start, end)) = parse_range(range) else {
-            continue;
-        };
-        if path.ends_with("/Warframe.x64.exe") {
-            image_start = Some(start);
-        }
-        if permissions.contains('x')
-            && image_start.is_some_and(|image| start >= image && start - image < 0x4000_0000)
-        {
-            return Some(ExecutableRegion { start, end });
-        }
-    }
-    None
-}
-
-fn parse_range(range: &str) -> Option<(u64, u64)> {
-    let (start, end) = range.split_once('-')?;
-    Some((
-        u64::from_str_radix(start, 16).ok()?,
-        u64::from_str_radix(end, 16).ok()?,
-    ))
-}
-
-fn scan_masked(
-    mem: &File,
-    region: ExecutableRegion,
-    pattern: &[u8],
-    mask: &[u8],
-) -> Result<u64, String> {
-    let mut offset = region.start;
-    let mut tail = Vec::new();
-    let mut chunk = vec![0_u8; SCAN_CHUNK_SIZE];
-    while offset < region.end {
-        let wanted = usize::try_from((region.end - offset).min(SCAN_CHUNK_SIZE as u64)).unwrap();
-        let read = mem
-            .read_at(&mut chunk[..wanted], offset)
-            .map_err(|error| format!("could not scan Warframe executable: {error}"))?;
-        if read == 0 {
-            break;
-        }
-        let mut searchable = Vec::with_capacity(tail.len() + read);
-        searchable.extend_from_slice(&tail);
-        searchable.extend_from_slice(&chunk[..read]);
-        if let Some(index) = find_masked(&searchable, pattern, mask) {
-            return Ok(offset.saturating_sub(tail.len() as u64) + index as u64);
-        }
-        let overlap = pattern.len() - 1;
-        tail.clear();
-        tail.extend_from_slice(&chunk[read.saturating_sub(overlap)..read]);
-        offset += read as u64;
-    }
-    Err("Warframe GEP signature not found".to_owned())
-}
-
-fn find_masked(haystack: &[u8], pattern: &[u8], mask: &[u8]) -> Option<usize> {
-    haystack.windows(pattern.len()).position(|window| {
-        window
-            .iter()
-            .zip(pattern)
-            .zip(mask)
-            .all(|((&byte, &expected), &significant)| byte & significant == expected & significant)
-    })
 }
 
 fn read_c_string(mem: &File, address: u64, scratch: &mut [u8]) -> io::Result<Vec<u8>> {
@@ -598,93 +245,18 @@ fn read_exact_at(mem: &File, address: u64, buffer: &mut [u8]) -> io::Result<()> 
     Ok(())
 }
 
-fn read_u16(mem: &File, address: u64) -> io::Result<u16> {
-    let mut bytes = [0_u8; 2];
-    read_exact_at(mem, address, &mut bytes)?;
-    Ok(u16::from_le_bytes(bytes))
-}
-
-fn read_u32(mem: &File, address: u64) -> io::Result<u32> {
-    let mut bytes = [0_u8; 4];
-    read_exact_at(mem, address, &mut bytes)?;
-    Ok(u32::from_le_bytes(bytes))
-}
-
-fn read_i32(mem: &File, address: u64) -> io::Result<i32> {
-    let mut bytes = [0_u8; 4];
-    read_exact_at(mem, address, &mut bytes)?;
-    Ok(i32::from_le_bytes(bytes))
-}
-
 fn read_u64(mem: &File, address: u64) -> io::Result<u64> {
     let mut bytes = [0_u8; 8];
     read_exact_at(mem, address, &mut bytes)?;
     Ok(u64::from_le_bytes(bytes))
 }
 
-fn read_engine_string(mem: &File, address: u64) -> io::Result<Vec<u8>> {
-    let mut storage = [0_u8; 16];
-    read_exact_at(mem, address, &mut storage)?;
-    let tag = storage[15];
-    if tag == 0xff {
-        let data = u64::from_le_bytes(storage[..8].try_into().unwrap());
-        let length =
-            (u32::from_le_bytes(storage[8..12].try_into().unwrap()) & 0x0fff_ffff) as usize;
-        if length > MAX_PROFILE_ID_SIZE {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "invalid player profile identifier length",
-            ));
-        }
-        let mut value = vec![0_u8; length];
-        read_exact_at(mem, non_null(data)?, &mut value)?;
-        Ok(value)
-    } else if tag <= 15 {
-        Ok(storage[..usize::from(15 - tag)].to_vec())
-    } else {
-        Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "invalid player profile identifier tag",
-        ))
-    }
-}
-
-fn profile_seed(identifier: &[u8]) -> Option<u32> {
-    let token = identifier.get(2..8)?;
-    let token = std::str::from_utf8(token).ok()?;
-    token
-        .chars()
-        .all(|character| character.is_ascii_hexdigit())
-        .then(|| u32::from_str_radix(token, 16).ok())
-        .flatten()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::fs::OpenOptions;
+    use std::fs::{self, OpenOptions};
     use std::path::PathBuf;
     use std::time::{SystemTime, UNIX_EPOCH};
-
-    #[test]
-    fn derives_persistent_response_layout() {
-        let code = [
-            0x4d, 0x8b, 0x8d, 0xb0, 0x00, 0x00, 0x00, // mov r9,[r13+b0]
-            0x4d, 0x8b, 0x85, 0xa8, 0x00, 0x00, 0x00, // mov r8,[r13+a8]
-            0x49, 0x8b, 0x85, 0xa0, 0x00, 0x00, 0x00, // mov rax,[r13+a0]
-            0x49, 0x8b, 0xbd, 0x98, 0x00, 0x00, 0x00, // mov rdi,[r13+98]
-            0x48, 0x8b, 0x3c, 0xcf, // mov rdi,[rdi+rcx*8]
-            0x48, 0x8b, 0x3c, 0xc7, // mov rdi,[rdi+rax*8]
-            0x4c, 0x8d, 0x67, 0x18, // lea r12,[rdi+18]
-            0x49, 0x8d, 0x4c, 0x24, 0x50, // lea rcx,[r12+50]
-            0x4d, 0x8d, 0x44, 0x24, 0x38, // lea r8,[r12+38]
-            0x41, 0x0f, 0xb6, 0x54, 0x24, 0x18, // movzx edx,byte [r12+18]
-        ];
-        assert_eq!(
-            derive_response_layout(&code, 0x140000000).unwrap(),
-            (0x98, 0x18, 0x38)
-        );
-    }
 
     #[test]
     fn reads_primary_persistent_response() {
@@ -700,12 +272,11 @@ mod tests {
         let mem = File::open(&path).unwrap();
         let sources = Sources {
             manager_global: 0x20,
-            profile_manager_global: None,
+            account: Err("not requested".into()),
             response: ResponsePath {
                 queue_table: 0x98,
                 item_base: 0x18,
                 body: 0x38,
-                alternate: 0,
             },
         };
         let mut state = PollState {
@@ -716,76 +287,159 @@ mod tests {
         assert_eq!(payloads[0].0, "direct");
         assert_eq!(payloads[0].1, b"{\"LastInventorySync\":\"live\"}");
         assert!(sources.persistent_payloads(&mem, &mut state).is_empty());
+        state.invalidate();
+        assert_eq!(sources.persistent_payloads(&mem, &mut state), payloads);
         fs::remove_file(path).unwrap();
     }
 
     #[test]
-    fn response_paths_change_independently() {
-        for primary in [false, true] {
-            let mut bytes = vec![0_u8; 0x1000];
-            put_u64(&mut bytes, 0x20, 0x100);
-            if primary {
-                put_u64(&mut bytes, 0x198, 0x300);
-                put_u64(&mut bytes, 0x300, 0x400);
-                put_u64(&mut bytes, 0x400, 0x500);
-                put_u64(&mut bytes, 0x550, 0x700);
-                put_u64(&mut bytes, 0x700, 0x801);
-            }
-            put_u64(&mut bytes, 0x138, 0x200);
-            put_u64(&mut bytes, 0x210, 0x600);
-            put_u64(&mut bytes, 0x600, 0x900);
-            let payload = b"{\"LastInventorySync\":\"live\",\"XP\":1}\0";
-            bytes[0x608..0x60a].copy_from_slice(&((payload.len() - 1) as u16).to_le_bytes());
-            bytes[0x801..0x801 + payload.len()].copy_from_slice(payload);
-            bytes[0x900..0x900 + payload.len()].copy_from_slice(payload);
-            let path = temp_file(&bytes);
-            let mem = OpenOptions::new()
-                .read(true)
-                .write(true)
-                .open(&path)
-                .unwrap();
-            fs::remove_file(path).unwrap();
-            let sources = Sources {
-                manager_global: 0x20,
-                profile_manager_global: None,
-                response: ResponsePath {
-                    queue_table: 0x98,
-                    item_base: 0x18,
-                    body: 0x38,
-                    alternate: 0,
-                },
-            };
-            let mut state = PollState {
-                scratch: vec![0; 128],
-                ..PollState::default()
-            };
-            let initial = sources.persistent_payloads(&mem, &mut state);
-            assert!(initial.iter().any(|(source, _)| *source == "alternate"));
-            if primary {
-                assert!(initial.iter().any(|(source, data)| {
-                    *source == "indirect" && data == &payload[..payload.len() - 1]
-                }));
-                mem.write_all_at(b"2", 0x801 + payload.len() as u64 - 3)
-                    .unwrap();
-                let updates = sources.persistent_payloads(&mem, &mut state);
-                assert!(
-                    updates.iter().any(|(source, data)| {
-                        *source == "indirect" && data.ends_with(b"\"XP\":2}")
-                    }),
-                    "lost indirect update: {updates:?}"
-                );
-            }
-            mem.write_all_at(b"3", 0x900 + payload.len() as u64 - 3)
-                .unwrap();
-            assert_eq!(
-                sources.persistent_payloads(&mem, &mut state),
-                vec![(
-                    "alternate",
-                    b"{\"LastInventorySync\":\"live\",\"XP\":3}".to_vec()
-                )]
-            );
-            assert!(sources.persistent_payloads(&mem, &mut state).is_empty());
+    fn indirect_changes_do_not_depend_on_direct_changes() {
+        let mut bytes = vec![0_u8; 0x1000];
+        for (slot, pointer) in [
+            (0x20, 0x100),
+            (0x198, 0x300),
+            (0x300, 0x400),
+            (0x400, 0x500),
+            (0x550, 0x700),
+            (0x700, 0x801),
+        ] {
+            put_u64(&mut bytes, slot, pointer);
         }
+        let payload = b"{\"LastInventorySync\":\"live\",\"XP\":1}\0";
+        bytes[0x801..0x801 + payload.len()].copy_from_slice(payload);
+        let path = temp_file(&bytes);
+        let mem = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&path)
+            .unwrap();
+        fs::remove_file(path).unwrap();
+        let sources = Sources {
+            manager_global: 0x20,
+            account: Err("not requested".into()),
+            response: ResponsePath {
+                queue_table: 0x98,
+                item_base: 0x18,
+                body: 0x38,
+            },
+        };
+        let mut state = PollState {
+            scratch: vec![0; 128],
+            ..Default::default()
+        };
+        let initial = sources.persistent_payloads(&mem, &mut state);
+        assert!(
+            initial
+                .iter()
+                .any(|(name, data)| *name == "indirect" && data == &payload[..payload.len() - 1])
+        );
+        assert!(sources.persistent_payloads(&mem, &mut state).is_empty());
+        mem.write_all_at(b"2", 0x801 + payload.len() as u64 - 3)
+            .unwrap();
+        assert_eq!(
+            sources.persistent_payloads(&mem, &mut state),
+            vec![(
+                "indirect",
+                b"{\"LastInventorySync\":\"live\",\"XP\":2}".to_vec()
+            )]
+        );
+        state.invalidate();
+        assert!(
+            sources
+                .persistent_payloads(&mem, &mut state)
+                .iter()
+                .any(|(name, _)| *name == "indirect")
+        );
+    }
+
+    #[test]
+    fn rejects_overflowing_response_pointer() {
+        let path = temp_file(&[]);
+        let mem = File::open(&path).unwrap();
+        fs::remove_file(path).unwrap();
+        let sources = Sources {
+            manager_global: 0,
+            account: Err("not requested".into()),
+            response: ResponsePath {
+                queue_table: 0x98,
+                item_base: 0x18,
+                body: 0x38,
+            },
+        };
+        assert_eq!(
+            sources.primary_body(&mem, u64::MAX - 8).unwrap_err().kind(),
+            io::ErrorKind::InvalidData
+        );
+    }
+
+    #[test]
+    fn shared_sampler_keeps_polling_when_consumer_is_stalled() {
+        use crate::observation::gep::{Content, Options, Sampler};
+        use std::time::{Duration, Instant};
+
+        let mut bytes = vec![0_u8; 0x1000];
+        put_u64(&mut bytes, 0x20, 0x100);
+        put_u64(&mut bytes, 0x198, 0x300);
+        put_u64(&mut bytes, 0x300, 0x400);
+        put_u64(&mut bytes, 0x400, 0x500);
+        put_u64(&mut bytes, 0x550, 0x700);
+        let payload = b"{\"LastInventorySync\":1,\"XP\":000}\0";
+        bytes[0x700..0x700 + payload.len()].copy_from_slice(payload);
+        let path = temp_file(&bytes);
+        let mem = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&path)
+            .unwrap();
+        fs::remove_file(path).unwrap();
+        let sources = Sources {
+            manager_global: 0x20,
+            account: Err("not requested".into()),
+            response: ResponsePath {
+                queue_table: 0x98,
+                item_base: 0x18,
+                body: 0x38,
+            },
+        };
+        let started = Instant::now();
+        let mut sampler = Sampler::start(
+            mem.try_clone().unwrap(),
+            sources,
+            Options::default(),
+            || true,
+        )
+        .unwrap();
+        let timeout = Instant::now() + Duration::from_secs(5);
+        for change in 0..24 {
+            let previous = sampler.report().poll.count;
+            mem.write_all_at(
+                format!("{change:03}").as_bytes(),
+                0x700 + payload.len() as u64 - 5,
+            )
+            .unwrap();
+            while sampler.report().poll.count <= previous + 1 {
+                assert!(
+                    Instant::now() < timeout,
+                    "sampler stalled with a full queue"
+                );
+                std::thread::sleep(Duration::from_millis(1));
+            }
+        }
+        sampler.stop().unwrap();
+        let report = sampler.report();
+        assert_eq!(report.queue.items, 16);
+        assert!(report.queue.dropped_items > 0);
+        let mut previous = 0;
+        while let Ok(sample) = sampler.queue.recv_timeout(Duration::ZERO) {
+            assert!(sample.sequence > previous);
+            assert!(sample.captured >= started);
+            let Content::Payload { bytes, .. } = sample.content else {
+                panic!()
+            };
+            assert!(bytes.starts_with(b"{\"LastInventorySync\""));
+            previous = sample.sequence;
+        }
+        assert!(!sampler.is_running());
     }
 
     #[test]
@@ -850,30 +504,21 @@ mod tests {
     }
 
     #[test]
-    fn reads_account_seed_without_exposing_profile_identifier() {
-        let mut bytes = vec![0_u8; 0x900];
-        put_u64(&mut bytes, 0x20, 0x80);
-        put_u64(&mut bytes, 0x80, 0x100);
-        put_u64(&mut bytes, 0x330, 0x400);
-        put_u32(&mut bytes, 0x338, 8);
-        put_u64(&mut bytes, 0x400, 0x500);
-        put_u64(&mut bytes, 0x500, 0x600);
-        put_engine_string(&mut bytes, 0x718, b"AA000001ZZ");
-        put_engine_string(&mut bytes, 0x738, b"AB123456CD");
-        let path = temp_file(&bytes);
-        let mem = File::open(&path).unwrap();
+    fn missing_account_bindings_do_not_disable_http_sources() {
         let sources = Sources {
             manager_global: 0,
-            profile_manager_global: Some(0x20),
+            account: Err("account seed getter signature not found".into()),
             response: ResponsePath {
                 queue_table: 0,
                 item_base: 0,
                 body: 0,
-                alternate: 0,
             },
         };
-        assert_eq!(sources.account_seed(&mem).unwrap(), 0x123456);
-        fs::remove_file(path).unwrap();
+        assert_eq!(
+            sources.account_bindings().unwrap_err(),
+            "account seed getter signature not found"
+        );
+        assert_eq!(sources.response_offsets(), (0, 0, 0));
     }
 
     #[test]
@@ -899,59 +544,6 @@ mod tests {
         fs::remove_file(path).unwrap();
     }
 
-    #[test]
-    fn detects_reused_bounded_buffer_changes() {
-        let mut payload = vec![b'a'; 288];
-        payload.extend_from_slice(b"LastInventorySync:one");
-        let path = temp_file(&payload);
-        let mem = OpenOptions::new()
-            .read(true)
-            .write(true)
-            .open(&path)
-            .unwrap();
-        let mut state = ChangeState::default();
-
-        assert_eq!(
-            changed_buffer(&mem, 0, payload.len(), &mut state),
-            Some(payload.clone())
-        );
-        assert_eq!(changed_buffer(&mem, 0, payload.len(), &mut state), None);
-
-        mem.write_all_at(b"b", 128).unwrap();
-        let changed = changed_buffer(&mem, 0, payload.len(), &mut state).unwrap();
-        assert_eq!(changed[128], b'b');
-        fs::remove_file(path).unwrap();
-    }
-
-    #[test]
-    fn finds_masked_signature() {
-        let mut bytes = vec![0x90; 32];
-        bytes[5..5 + HTTP_MANAGER_PATTERN.len()].copy_from_slice(HTTP_MANAGER_PATTERN);
-        bytes[6] = 0xaa;
-        bytes[7] = 0xbb;
-        bytes[17] = 0x7f;
-        assert_eq!(
-            find_masked(&bytes, HTTP_MANAGER_PATTERN, HTTP_MANAGER_MASK),
-            Some(5)
-        );
-    }
-
-    #[test]
-    fn finds_proton_anonymous_executable_mapping() {
-        let maps = concat!(
-            "140000000-140001000 r--p 00000000 103:0a 1 /games/Warframe.x64.exe\n",
-            "140001000-142029000 r-xp 00000000 00:00 0\n",
-            "142029000-14272f000 r--p 00000000 00:00 0\n",
-        );
-        assert_eq!(
-            find_executable_region(maps),
-            Some(ExecutableRegion {
-                start: 0x140001000,
-                end: 0x142029000,
-            })
-        );
-    }
-
     fn temp_file(bytes: &[u8]) -> PathBuf {
         let path = std::env::temp_dir().join(format!(
             "wfcompanion-gep-{}-{}",
@@ -967,15 +559,5 @@ mod tests {
 
     fn put_u64(bytes: &mut [u8], offset: usize, value: u64) {
         bytes[offset..offset + 8].copy_from_slice(&value.to_le_bytes());
-    }
-
-    fn put_u32(bytes: &mut [u8], offset: usize, value: u32) {
-        bytes[offset..offset + 4].copy_from_slice(&value.to_le_bytes());
-    }
-
-    fn put_engine_string(bytes: &mut [u8], offset: usize, value: &[u8]) {
-        assert!(value.len() <= 15);
-        bytes[offset..offset + value.len()].copy_from_slice(value);
-        bytes[offset + 15] = 15 - value.len() as u8;
     }
 }

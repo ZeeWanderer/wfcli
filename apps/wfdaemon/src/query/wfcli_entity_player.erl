@@ -22,10 +22,14 @@ container_entries(Data, Opts) ->
                            Data, false, Opts),
     Sources = [
         build_container(player_source, Source, Source, Source, SourceData,
-                        Source =/= <<"inventory">>, Opts)
+                        search_source(Source, maps:get(view, Opts, auto)), Opts)
         || {Source, SourceData} <- lists:sort(maps:to_list(Data))
     ],
     [Root | Sources].
+
+search_source(<<"inventory">>, _) -> false;
+search_source(Source, auto) when Source =:= <<"inventory_http">>; Source =:= <<"inventory_native">> -> false;
+search_source(_, _) -> true.
 
 build_container(Type, Id, Name, Source, Data, SearchRaw, Opts) ->
     Spec = #{

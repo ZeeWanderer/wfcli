@@ -13,17 +13,13 @@ mod painter;
 mod paths;
 mod preview;
 mod relic;
+mod runtime;
 mod shortcut;
 mod ui;
 
+use runtime::presentation::Event as UiEvent;
 use std::path::PathBuf;
-use std::process::{Command as ProcessCommand, ExitCode};
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, mpsc};
-use std::thread;
-use std::time::Instant;
-
-use serde_json::Value;
+use std::process::ExitCode;
 
 const HELP: &str = r#"wfcompanion - Linux/Proton Warframe observer and overlay
 
@@ -64,29 +60,8 @@ Environment:
   WFCOMPANION_KSCREEN_DOCTOR   kscreen-doctor executable path
   WFCOMPANION_FFMPEG           ffmpeg executable path
   WFCOMPANION_LOG              Incident log path
+  WFCOMPANION_DEV_RELOAD       Set to 0 to disable automatic development reload
 "#;
-
-#[derive(Debug)]
-pub(crate) enum UiEvent {
-    Connected(Value),
-    Disconnected(String),
-    Snapshot {
-        dataset: String,
-        data: Value,
-    },
-    AssetRefreshed(relic::AssetRefresh),
-    OverlayVisible(bool),
-    HudVisible(bool),
-    RelicScene {
-        context: relic::Context,
-        scene: relic::Scene,
-        deadline: Option<Instant>,
-    },
-    RelicStart(relic::Context),
-    RelicDismiss,
-    InteractionToggle,
-    Shutdown,
-}
 
 #[derive(Debug, Eq, PartialEq)]
 enum Command {
@@ -134,9 +109,33 @@ enum PreviewSource {
 }
 
 fn main() -> ExitCode {
-    let _ = wfcompanion::executable_path();
     let arguments: Vec<String> = std::env::args().skip(1).collect();
-    match parse_command(&arguments).and_then(run_command) {
+    if arguments == ["--reload-check"] {
+        return if runtime::reload::check().is_ok() {
+            print!("{}", runtime::reload::READY);
+            ExitCode::SUCCESS
+        } else {
+            ExitCode::FAILURE
+        };
+    }
+    let resumed = match runtime::reload::resume() {
+        Ok(resumed) => resumed,
+        Err(error) => {
+            eprintln!("wfcompanion: {error}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let mut incident_writer = match incident::Writer::start() {
+        Ok(writer) => Some(writer),
+        Err(error) => {
+            eprintln!("wfcompanion: {error}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let _ = wfcompanion::executable_path();
+    match parse_command(&arguments)
+        .and_then(|command| run_command(command, resumed, &mut incident_writer))
+    {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
             incident::error("command.failed", &error);
@@ -146,7 +145,11 @@ fn main() -> ExitCode {
     }
 }
 
-fn run_command(command: Command) -> Result<(), String> {
+fn run_command(
+    command: Command,
+    resumed: Option<runtime::reload::Handoff>,
+    log: &mut Option<incident::Writer>,
+) -> Result<(), String> {
     match command {
         Command::Help => {
             print!("{HELP}");
@@ -202,53 +205,8 @@ fn run_command(command: Command) -> Result<(), String> {
         Command::Overlay {
             launch,
             relic_screenshot,
-        } => run_overlay(launch, relic_screenshot),
+        } => runtime::run(launch, relic_screenshot, resumed, log),
     }
-}
-
-fn run_overlay(
-    launch_command: Option<Vec<String>>,
-    relic_screenshot: Option<PathBuf>,
-) -> Result<(), String> {
-    let stopping = Arc::new(AtomicBool::new(false));
-    let (ui_tx, ui_rx) = mpsc::channel();
-    let mode = if launch_command.is_some() {
-        "launch"
-    } else {
-        "standalone"
-    };
-    incident::info(
-        "process.start",
-        format!("mode={mode} version={}", env!("WFCLI_VERSION")),
-    );
-    let (relic_tx, relic_rx) = mpsc::channel();
-    let outbound = daemon::spawn(ui_tx.clone(), relic_tx.clone(), Arc::clone(&stopping), mode);
-    let observer = observer::spawn(outbound.clone(), relic_tx.clone(), Arc::clone(&stopping));
-    let relic_worker = relic::spawn(
-        relic_rx,
-        relic_tx.clone(),
-        outbound.clone(),
-        ui_tx.clone(),
-        Arc::clone(&stopping),
-    );
-    if let Some(path) = relic_screenshot {
-        let _ = relic_tx.send(relic::Trigger::Screenshot(path));
-    }
-    if let Some(command) = launch_command {
-        spawn_game(command, ui_tx.clone());
-    }
-
-    let shortcut = shortcut::spawn(ui_tx);
-    let result = overlay::run(ui_rx, relic_tx, outbound, shortcut, Arc::clone(&stopping));
-    stopping.store(true, Ordering::Relaxed);
-    if observer.join().is_err() {
-        incident::warn("observer.shutdown_failed", "observer thread panicked");
-    }
-    if relic_worker.join().is_err() {
-        incident::warn("relic.shutdown_failed", "relic thread panicked");
-    }
-    incident::info("process.stop", format!("mode={mode}"));
-    result.map_err(|error| error.to_string())
 }
 
 fn parse_command(arguments: &[String]) -> Result<Command, String> {
@@ -419,21 +377,6 @@ fn parse_launch_command(arguments: &[String]) -> Result<Command, String> {
             relic_screenshot: None,
         })
     }
-}
-
-fn spawn_game(command: Vec<String>, ui: mpsc::Sender<UiEvent>) {
-    thread::spawn(move || {
-        let mut child = match ProcessCommand::new(&command[0]).args(&command[1..]).spawn() {
-            Ok(child) => child,
-            Err(error) => {
-                eprintln!("wfcompanion: failed to launch game: {error}");
-                let _ = ui.send(UiEvent::Shutdown);
-                return;
-            }
-        };
-        let _ = child.wait();
-        let _ = ui.send(UiEvent::Shutdown);
-    });
 }
 
 #[cfg(test)]

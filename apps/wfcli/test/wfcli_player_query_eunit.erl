@@ -5,6 +5,18 @@
 
 -include_lib("eunit/include/eunit.hrl").
 
+inventory_provenance_does_not_duplicate_auto_search_test() ->
+    Full = wfcli_player_inventory_eunit:full(1, 12),
+    {ok, Data} = wfcli_player_inventory:apply(<<"inventory_http">>, Full, #{}, wfcli_player_inventory:boot_id()),
+    Snapshot = #{revision => 1234, updated_at => 1234, data => Data},
+    {ok, Ast} = wfcli_query_parse:parse("resource"),
+    {ok, #{results := Results}} = wfcli_player_query:execute(Ast, #{}, Snapshot),
+    ?assertNot(lists:any(fun(Entry) -> maps:get(source, Entry) =:= <<"inventory_http">> end,
+                         maps:get(slice, Results))),
+    {ok, RawQuery} = wfcli_query_parse:parse("source=inventory_http data.raw.MiscItems.0.ItemCount=12"),
+    {ok, #{results := RawResults}} = wfcli_player_query:execute(RawQuery, #{}, Snapshot),
+    ?assertEqual(1, maps:get(total, RawResults)).
+
 source_filter_uses_shared_query_engine_test() ->
     {ok, Ast} = wfcli_query_parse:parse("source=game data.phase=launcher"),
     {ok, #{results := Results}} = wfcli_player_query:execute(Ast, #{}, snapshot()),

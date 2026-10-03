@@ -1,6 +1,8 @@
 pub mod game_observer;
 pub mod inspect;
 pub mod local_protocol;
+pub mod observation;
+pub mod work;
 
 pub fn executable_path() -> Option<&'static std::path::Path> {
     static PATH: std::sync::OnceLock<Option<std::path::PathBuf>> = std::sync::OnceLock::new();

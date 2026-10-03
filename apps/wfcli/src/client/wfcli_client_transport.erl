@@ -78,14 +78,14 @@ subscribe(Request) -> subscribe_request(subscribe, Request).
 -spec next(map(), timeout()) -> {ok, term()} | {error, term()}.
 next(#{direct_ref := Ref}, Timeout) ->
     receive
-        {wfcli_daemon, Ref, {ok, Reply}} -> {ok, Reply};
+        {wfcli_daemon, Ref, {ok, Reply}} -> consume(node(), Ref), {ok, Reply};
         {wfcli_daemon, Ref, {error, Reason}} -> {error, Reason}
     after Timeout ->
         {error, timeout}
     end;
-next(#{local_ref := Ref, proxy_monitor := ProxyMonitor}, Timeout) ->
+next(#{local_ref := Ref, proxy := Proxy, proxy_monitor := ProxyMonitor}, Timeout) ->
     receive
-        {wfcli_client, Ref, {ok, Reply}} -> {ok, Reply};
+        {wfcli_client, Ref, {ok, Reply}} -> Proxy ! {consumed, Ref}, {ok, Reply};
         {wfcli_client, Ref, {error, Reason}} -> {error, Reason};
         {'DOWN', ProxyMonitor, process, _Pid, Reason} -> {error, {client_relay_down, Reason}}
     after Timeout ->
@@ -147,6 +147,10 @@ subscription_proxy(Client, LocalRef, Kind, Request) ->
 subscription_loop(Client, ClientMonitor, LocalRef, Node, Kind, Request,
                   RemoteRef, OwnerMonitor) ->
     receive
+        {consumed, LocalRef} ->
+            consume(Node, RemoteRef),
+            subscription_loop(Client, ClientMonitor, LocalRef, Node, Kind, Request,
+                              RemoteRef, OwnerMonitor);
         {wfcli_daemon, RemoteRef, Reply} ->
             Client ! {wfcli_client, LocalRef, Reply},
             subscription_loop(Client, ClientMonitor, LocalRef, Node, Kind, Request,
@@ -167,6 +171,8 @@ subscription_loop(Client, ClientMonitor, LocalRef, Node, Kind, Request,
             Client ! {Tag, Result}
     end.
 
+retry_subscription(_Node, _Kind, #{source := companion_diagnostics}, _Attempts) ->
+    {error, diagnostic_session_closed};
 retry_subscription(Node, Kind, Request, Attempts) when Attempts > 0 ->
     case net_adm:ping(Node) of
         pang -> {error, daemon_stopped};
@@ -182,7 +188,10 @@ retry_subscription(_Node, _Kind, _Request, 0) -> {error, worker_restart_timeout}
 remote_subscribe(Node, Kind, Request) ->
     Function = case Kind of submit -> submit; subscribe -> subscribe end,
     case daemon_call(Node, {Function, self(), Request}) of
-        {ok, {ok, Ref}} when is_reference(Ref) ->
+        {ok, {ok, Ref}} when is_reference(Ref);
+                            is_tuple(Ref), tuple_size(Ref) =:= 2,
+                            element(1, Ref) =:= companion_diagnostics,
+                            is_reference(element(2, Ref)) ->
             case wfcli_protocol:owner(Request) of
                 undefined -> {error, {unsupported_source, maps:get(source, Request, undefined)}};
                 Owner -> {ok, Ref, erlang:monitor(process, {Owner, Node})}
@@ -198,6 +207,10 @@ remote_unsubscribe(Node, RemoteRef) ->
         {error, {daemon_call_failed, noconnection}} -> ok;
         {error, _Reason} = Error -> Error
     end.
+
+consume(Node, {companion_diagnostics, _} = Ref) ->
+    gen_server:cast({wfcli_daemon, Node}, {diagnostics_consume, self(), Ref});
+consume(_Node, _Ref) -> ok.
 
 daemon_call(Node, Request) ->
     try gen_server:call({wfcli_daemon, Node}, Request, ?REQUEST_TIMEOUT_MS) of

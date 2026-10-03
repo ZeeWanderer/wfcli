@@ -1,14 +1,20 @@
 use std::path::Path;
 
-use pelite::pattern;
-use pelite::pe64::{Pe, PeFile};
+use pelite::pe64::PeFile;
 use serde::Serialize;
-use sha2::{Digest, Sha256};
+
+use super::super::executable::{self, descriptor};
+
+mod fields;
+pub(super) use fields::{ManifestFields, StoreFields};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
 pub(super) struct MetadataLayout {
     pub(super) global_registry_rva: u64,
-    pub(super) string_blocks_rva: u64,
+    pub(super) global_registry_offset: u64,
+    pub(super) resources: executable::ResourceLayout,
+    pub(super) store: StoreFields,
+    pub(super) manifests: ManifestFields,
     pub(super) store_manifest_descriptor_rva: u64,
     pub(super) variant_manifest_descriptor_rva: u64,
     pub(super) weapon_descriptor_rva: u64,
@@ -16,151 +22,66 @@ pub(super) struct MetadataLayout {
     pub(super) game_rules_hash: u32,
 }
 
-const GLOBAL_REGISTRY: &str = r#"
-    48 8d 15 ${ "Setting gGameRules" 0a 00 }
-    48 8b c8 e8 ????
-    e8 ${ [0-96] 48 8d 05 ${'} 48 83 c4 28 c3 }
-    [0-12] 41 b8 u4 48 8b c8 e8 ????
-"#;
-const STRING_BLOCKS: &str = "
-    44 8b 01 48 8b da 48 8b 05 ${'}
-    41 0f b7 c8 48 03 c9 49 c1 e8 10 48 8b 0c c8 49 03 c8 48 89 0a
-";
-const ELIGIBILITY: &str = "
-    48 8b 81 e0 00 00 00 f2 0f 10 0d ${'}
-    48 85 c0 74 0e 0f 57 c0 f2 48 0f 2a c0 66 0f 2f c1 77 1a
-    48 8b 81 e8 00 00 00 48 85 c0 74 11
-    0f 57 c0 f2 48 0f 2a c0 66 0f 2f c1 73 03 32 c0 c3
-    0f b6 81 5c 01 00 00 c0 e8 05 24 01 c3
-";
-
 pub(super) fn read(path: &Path) -> Result<(String, MetadataLayout), String> {
-    let bytes = std::fs::read(path)
-        .map_err(|error| format!("could not read Warframe executable: {error}"))?;
-    let hash = format!("{:x}", Sha256::digest(&bytes));
+    let (hash, bytes) = executable::read(path)?;
     let layout = discover(&bytes)
         .map_err(|reason| format!("unsupported Warframe executable {hash} ({reason})"))?;
     Ok((hash, layout))
 }
 
-fn discover(bytes: &[u8]) -> Result<MetadataLayout, String> {
+pub(super) fn discover(bytes: &[u8]) -> Result<MetadataLayout, String> {
     let image = PeFile::from_bytes(bytes).map_err(|error| format!("invalid PE: {error}"))?;
-    let registry = signature::<3>(image, "game registry", GLOBAL_REGISTRY)?;
-    let strings = signature::<2>(image, "string blocks", STRING_BLOCKS)?;
-    let eligibility = signature::<2>(image, "StoreItem eligibility", ELIGIBILITY)?;
+    let (global_registry_rva, global_registry_offset, game_rules_hash) =
+        executable::registry(image)?;
+    let (store, constructor) = descriptor(image, "StoreManifest", "/Lotus/Types/Game/")?;
+    let (variants, variants_constructor) =
+        descriptor(image, "VariantManifest", "/Lotus/Types/Game/Store/")?;
+    let (weapon, weapon_constructor) = descriptor(image, "LotusWeapon", "/Lotus/Types/Game/")?;
+    if constructor != variants_constructor || constructor != weapon_constructor {
+        return Err("resource descriptors use different constructors".into());
+    }
+    let resources = executable::ResourceLayout::discover(image, constructor)?;
+    let (store_fields, manifests, game_time_rva) = fields::discover(image)?;
     let layout = MetadataLayout {
-        global_registry_rva: registry[1].into(),
-        game_rules_hash: registry[2],
-        string_blocks_rva: strings[1].into(),
-        game_time_rva: eligibility[1].into(),
-        store_manifest_descriptor_rva: descriptor(image, "StoreManifest", "/Lotus/Types/Game/")?,
-        variant_manifest_descriptor_rva: descriptor(
-            image,
-            "VariantManifest",
-            "/Lotus/Types/Game/Store/",
-        )?,
-        weapon_descriptor_rva: descriptor(image, "LotusWeapon", "/Lotus/Types/Game/")?,
+        global_registry_rva,
+        global_registry_offset,
+        game_rules_hash,
+        resources,
+        store: store_fields,
+        manifests,
+        game_time_rva,
+        store_manifest_descriptor_rva: store,
+        variant_manifest_descriptor_rva: variants,
+        weapon_descriptor_rva: weapon,
     };
     for (rva, size) in [
-        (layout.global_registry_rva, 0x148),
-        (layout.string_blocks_rva, 8),
+        (layout.global_registry_rva, global_registry_offset + 16),
+        (resources.string_blocks_rva, 8),
         (layout.game_time_rva, 8),
-        (layout.store_manifest_descriptor_rva, 0x30),
-        (layout.variant_manifest_descriptor_rva, 0x30),
-        (layout.weapon_descriptor_rva, 0x30),
+        (
+            layout.store_manifest_descriptor_rva,
+            resources.descriptor_size(),
+        ),
+        (
+            layout.variant_manifest_descriptor_rva,
+            resources.descriptor_size(),
+        ),
+        (layout.weapon_descriptor_rva, resources.descriptor_size()),
     ] {
-        let valid = image.section_headers().iter().any(|section| {
-            section.Characteristics & 0xa000_0000 == 0x8000_0000
-                && rva >= u64::from(section.VirtualAddress)
-                && rva + size <= u64::from(section.VirtualAddress) + u64::from(section.VirtualSize)
-        });
-        if !valid {
-            return Err(format!(
-                "metadata binding 0x{rva:x} is outside writable image data"
-            ));
-        }
+        executable::writable(image, rva, size)?;
     }
     Ok(layout)
-}
-
-fn descriptor(image: PeFile<'_>, name: &str, parent: &str) -> Result<u64, String> {
-    let pattern = format!(
-        r#"
-        48 8d 15 ${{ "{name}" 00 }}
-        48 8d 4c 24 50 e8 ???? 48 8d 15 ${{ "{parent}" 00 }}
-        48 8d 4c 24 58 8b 18 e8 ????
-        [0-40] 44 8b c3 8b 10 48 8d 0d ${{'}} c6 44 24 20 00 e8 ????
-    "#
-    );
-    Ok(signature::<2>(image, name, &pattern)?[1].into())
-}
-
-fn signature<const N: usize>(
-    image: PeFile<'_>,
-    label: &str,
-    source: &str,
-) -> Result<[u32; N], String> {
-    let pattern = pattern::parse(source).map_err(|error| format!("{label} pattern: {error}"))?;
-    let scanner = image.scanner();
-    let mut matches = scanner.matches_code(&pattern);
-    let mut first = [0; N];
-    if !matches.next(&mut first) {
-        return Err(format!("{label} signature not found"));
-    }
-    let mut next = [0; N];
-    while matches.next(&mut next) {
-        if next[1..] != first[1..] {
-            return Err(format!("ambiguous {label} signature"));
-        }
-    }
-    Ok(first)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::game_observer::executable::fixture::{
+        emit, image, put32, registry_setter, relative, resource_code, resources,
+    };
 
-    fn put32(bytes: &mut [u8], offset: usize, value: u32) {
-        bytes[offset..offset + 4].copy_from_slice(&value.to_le_bytes());
-    }
-
-    fn emit(bytes: &mut [u8], offset: usize, hex: &str) {
-        for (index, byte) in hex.split_whitespace().enumerate() {
-            bytes[offset + index] = u8::from_str_radix(byte, 16).unwrap();
-        }
-    }
-
-    fn relative(bytes: &mut [u8], offset: usize, target: usize) {
-        put32(bytes, offset, (target as i32 - offset as i32 - 4) as u32);
-    }
-
-    fn fixture(shift: usize, hash: u32) -> Vec<u8> {
-        // Minimal PE with independent code, read-only strings and writable bindings.
-        let mut bytes = vec![0; 0x4000];
-        emit(&mut bytes, 0, "4d 5a");
-        put32(&mut bytes, 0x3c, 0x80);
-        emit(&mut bytes, 0x80, "50 45 00 00 64 86 03 00");
-        emit(&mut bytes, 0x94, "f0 00 00 00 0b 02");
-        put32(&mut bytes, 0x9c, 0x1000);
-        put32(&mut bytes, 0xac, 0x1000);
-        put32(&mut bytes, 0xd0, 0x4000);
-        put32(&mut bytes, 0xd4, 0x1000);
-        for (index, flags) in [0x6000_0020, 0x4000_0040, 0xc000_0040]
-            .into_iter()
-            .enumerate()
-        {
-            let header = 0x188 + index * 40;
-            let address = (index as u32 + 1) * 0x1000;
-            for (offset, value) in [
-                (8, 0x1000),
-                (12, address),
-                (16, 0x1000),
-                (20, address),
-                (36, flags),
-            ] {
-                put32(&mut bytes, header + offset, value);
-            }
-        }
+    pub(super) fn fixture(shift: usize, hash: u32) -> Vec<u8> {
+        let mut bytes = image();
         for (address, text) in [
             (0x2000, "Setting gGameRules\n"),
             (0x2020, "StoreManifest"),
@@ -168,6 +89,7 @@ mod tests {
             (0x2060, "LotusWeapon"),
             (0x2080, "/Lotus/Types/Game/"),
             (0x20a0, "/Lotus/Types/Game/Store/"),
+            (0x20d0, "StoreItem"),
         ] {
             bytes[address..address + text.len()].copy_from_slice(text.as_bytes());
         }
@@ -180,6 +102,20 @@ mod tests {
         );
         relative(&mut bytes, code + 3, 0x2000);
         relative(&mut bytes, code + 16, code + 0x100);
+        relative(&mut bytes, code + 34, code + 0x800);
+        registry_setter(&mut bytes, code + 0x800, 0x138 + shift as u32);
+        resource_code(
+            &mut bytes,
+            code + 0xd00,
+            resources(0x3200 + shift as u64, shift as u64 / 2),
+        );
+        put32(&mut bytes, 0x104, 16);
+        put32(&mut bytes, 0x120, 0x2e00);
+        put32(&mut bytes, 0x124, 24);
+        put32(&mut bytes, 0x2e00, (code + 0x900) as u32);
+        put32(&mut bytes, 0x2e04, (code + 0xa10) as u32);
+        put32(&mut bytes, 0x2e0c, (code + 0xd00) as u32);
+        put32(&mut bytes, 0x2e10, (code + 0xd80) as u32);
         put32(&mut bytes, code + 26, hash);
         emit(
             &mut bytes,
@@ -208,6 +144,7 @@ mod tests {
             (0, 0x2020, 0x2080),
             (1, 0x2040, 0x20a0),
             (2, 0x2060, 0x2080),
+            (3, 0x20d0, 0x2080),
         ] {
             let start = code + 0x400 + index * 0x100;
             emit(
@@ -220,7 +157,9 @@ mod tests {
             relative(&mut bytes, start + 3, name);
             relative(&mut bytes, start + 20, parent);
             relative(&mut bytes, start + 44, 0x3300 + shift + index * 0x100);
+            relative(&mut bytes, start + 54, code + 0xd00);
         }
+        fields::tests::fixture(&mut bytes, code, shift as u64 / 2);
         bytes
     }
 
@@ -231,7 +170,10 @@ mod tests {
                 discover(&fixture(shift, hash)).unwrap(),
                 MetadataLayout {
                     global_registry_rva: 0x3000 + shift as u64,
-                    string_blocks_rva: 0x3200 + shift as u64,
+                    global_registry_offset: 0x138 + shift as u64,
+                    resources: resources(0x3200 + shift as u64, shift as u64 / 2),
+                    store: fields::tests::expected(shift as u64 / 2).0,
+                    manifests: fields::tests::expected(shift as u64 / 2).1,
                     store_manifest_descriptor_rva: 0x3300 + shift as u64,
                     variant_manifest_descriptor_rva: 0x3400 + shift as u64,
                     weapon_descriptor_rva: 0x3500 + shift as u64,
@@ -245,10 +187,10 @@ mod tests {
     #[test]
     fn accepts_repeated_bindings_but_rejects_conflicting_ones() {
         let mut bytes = fixture(0, 1);
-        bytes.copy_within(0x1200..0x1222, 0x1800);
-        relative(&mut bytes, 0x1809, 0x3200);
+        bytes.copy_within(0x1200..0x1222, 0x1180);
+        relative(&mut bytes, 0x1189, 0x3200);
         assert!(discover(&bytes).is_ok());
-        relative(&mut bytes, 0x1809, 0x3210);
+        relative(&mut bytes, 0x1189, 0x3210);
         assert_eq!(
             discover(&bytes).unwrap_err(),
             "ambiguous string blocks signature"
@@ -268,7 +210,7 @@ mod tests {
         bytes[0x1303] = 0xf0;
         assert_eq!(
             discover(&bytes).unwrap_err(),
-            "StoreItem eligibility signature not found"
+            "StoreItem accessors disagree"
         );
         bytes = original;
         relative(&mut bytes, 0x1209, 0x1000);

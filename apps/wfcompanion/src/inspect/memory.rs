@@ -8,10 +8,11 @@ use serde::{Deserialize, Serialize};
 use crate::game_observer::adapter::{self, AdapterSupport};
 use crate::game_observer::memory::ProcessMemory;
 use crate::game_observer::ui::{
-    self, BoundedScanMetrics, PointerReferences, RelicRewardText, RelicSelection,
-    ReplayMemorySummary, ScanMetrics, Snapshot, TextScan,
+    self, BoundedScanMetrics, PointerReferences, RelicRewardText, RelicSelection, ScanMetrics,
+    Snapshot, TextScan,
 };
 use crate::game_observer::{ProcessIdentity, identify_process};
+use crate::observation::ui_capture::{self, ReplayMemorySummary};
 
 const CHUNK: usize = 4 * 1024 * 1024;
 const MAX_READ_BYTES: usize = 1024 * 1024;
@@ -138,6 +139,8 @@ pub enum Probe<T> {
 struct OpenedSource {
     memory: ProcessMemory,
     metadata: SourceMetadata,
+    scaleform: Option<adapter::ScaleformLayout>,
+    typed_capture: bool,
 }
 
 impl OpenedSource {
@@ -148,6 +151,8 @@ impl OpenedSource {
                 let identity = identify_process(pid)?;
                 Ok(Self {
                     memory,
+                    scaleform: None,
+                    typed_capture: false,
                     metadata: SourceMetadata {
                         kind: "live".into(),
                         pid,
@@ -169,7 +174,7 @@ impl OpenedSource {
                 {
                     return load_capture(&generic);
                 }
-                let evidence: ui::LoadedEvidence = ui::load_evidence(&path)?;
+                let evidence = ui_capture::load_evidence(&path)?;
                 let metadata = SourceMetadata {
                     kind: "capture".into(),
                     pid: evidence.snapshot.pid,
@@ -184,32 +189,30 @@ impl OpenedSource {
                 Ok(Self {
                     memory: evidence.memory,
                     metadata,
+                    scaleform: evidence.scaleform,
+                    typed_capture: evidence.typed_reads,
                 })
             }
         }
     }
 
-    fn adapter(&self) -> AdapterSupport {
-        adapter::support(self.metadata.identity.as_ref())
-    }
-
     fn layout(&self) -> Result<adapter::ScaleformLayout, String> {
-        self.metadata
+        if self.metadata.kind == "capture" {
+            return adapter::replay_scaleform(self.metadata.identity.as_ref(), self.scaleform);
+        }
+        let identity = self
+            .metadata
             .identity
             .as_ref()
-            .and_then(|identity| adapter::resolve(&identity.executable.sha256))
-            .map(|adapter| adapter.scaleform)
-            .ok_or_else(|| {
-                adapter::unsupported_reason(self.metadata.identity.as_ref())
-                    .unwrap_or_else(|| "capture adapter unavailable".to_owned())
-            })
+            .ok_or("capture has no executable identity")?;
+        adapter::require_scaleform(identity)
     }
 
     fn typed_snapshot(
         &self,
         layout: adapter::ScaleformLayout,
     ) -> Result<(Snapshot, Option<BoundedScanMetrics>), String> {
-        if self.metadata.kind == "capture" {
+        if self.metadata.kind == "capture" && !self.typed_capture {
             return ui::scan_memory(&self.memory).map(|scan| (scan.snapshot, None));
         }
         ui::scan_registry_memory(&self.memory, layout)
@@ -241,7 +244,12 @@ fn load_capture(path: &std::path::Path) -> Result<OpenedSource, String> {
             truncated: capture.truncated,
         },
     });
-    Ok(OpenedSource { memory, metadata })
+    Ok(OpenedSource {
+        memory,
+        metadata,
+        scaleform: None,
+        typed_capture: false,
+    })
 }
 
 #[derive(Serialize)]
@@ -473,9 +481,9 @@ fn scan_query(
 
 pub fn ui_state(source: Source) -> Result<UiStateReport, String> {
     let source = OpenedSource::open(source)?;
-    let adapter = source.adapter();
-    let state = source
-        .layout()
+    let layout = source.layout();
+    let adapter = adapter::layout_support(&layout);
+    let state = layout
         .and_then(|layout| source.typed_snapshot(layout))
         .map(|(snapshot, metrics)| UiState { snapshot, metrics });
     Ok(UiStateReport {
@@ -569,8 +577,8 @@ pub fn ui_refs(
 
 pub fn ui_relic(source: Source) -> Result<UiRelicReport, String> {
     let source = OpenedSource::open(source)?;
-    let adapter = source.adapter();
     let layout = source.layout();
+    let adapter = adapter::layout_support(&layout);
     let snapshot = layout.and_then(|layout| {
         source
             .typed_snapshot(layout)

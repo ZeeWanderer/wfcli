@@ -1,16 +1,30 @@
+use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, mpsc};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
 use serde_json::Value;
-use wfcompanion::game_observer::{identify_process, metadata};
+use wfcompanion::game_observer::metadata;
 
 use crate::daemon::{self, OutboundSender};
+use crate::runtime::{inbox, session::Session};
 
 const RETRY_INTERVAL: Duration = Duration::from_secs(30);
 const STOP_CHECK_INTERVAL: Duration = Duration::from_millis(250);
 const METADATA_SCHEMA: u64 = 2;
+
+type Sender = inbox::Sender<Event>;
+
+pub(crate) fn channel() -> (Sender, inbox::Receiver<Event>) {
+    inbox::channel(
+        "game_metadata",
+        inbox::Limit {
+            items: 1,
+            bytes: 8 * 1024 * 1024,
+        },
+        inbox::Limit { items: 0, bytes: 0 },
+    )
+}
 
 #[derive(Debug)]
 pub(crate) enum Event {
@@ -25,6 +39,23 @@ pub(crate) enum Event {
     },
 }
 
+impl inbox::Message for Event {
+    fn bytes(&self) -> usize {
+        size_of::<Self>()
+            + match self {
+                Self::Captured { data, .. } => inbox::value_bytes(data),
+                Self::Unavailable { reason, .. } => reason.capacity(),
+            }
+    }
+
+    fn replaces(&self, queued: &Self) -> bool {
+        let pid = |event: &Self| match event {
+            Self::Captured { game_pid, .. } | Self::Unavailable { game_pid, .. } => *game_pid,
+        };
+        pid(self) == pid(queued)
+    }
+}
+
 pub(crate) struct Bridge {
     game_pid: u32,
     stopping: Arc<AtomicBool>,
@@ -33,15 +64,16 @@ pub(crate) struct Bridge {
 
 impl Bridge {
     pub(crate) fn start(
-        game_pid: u32,
+        session: Session,
         outbound: OutboundSender,
-        events: mpsc::Sender<Event>,
+        events: Sender,
     ) -> Result<Self, String> {
+        let game_pid = session.pid();
         let stopping = Arc::new(AtomicBool::new(false));
         let worker_stopping = Arc::clone(&stopping);
         let worker = thread::Builder::new()
             .name("wfcompanion-game-metadata".to_owned())
-            .spawn(move || scan(game_pid, outbound, worker_stopping, events))
+            .spawn(move || scan(session, outbound, worker_stopping, events))
             .map_err(|error| format!("could not start game metadata collector: {error}"))?;
         Ok(Self {
             game_pid,
@@ -59,24 +91,25 @@ impl Bridge {
             .as_ref()
             .is_some_and(|worker| !worker.is_finished())
     }
-}
 
-impl Drop for Bridge {
-    fn drop(&mut self) {
+    pub(crate) fn stop(&mut self) {
         self.stopping.store(true, Ordering::Relaxed);
         if let Some(worker) = self.worker.take() {
-            let _ = worker.join();
+            worker.thread().unpark();
+            crate::runtime::join_worker("game-metadata", worker);
         }
     }
 }
 
-fn scan(
-    game_pid: u32,
-    outbound: OutboundSender,
-    stopping: Arc<AtomicBool>,
-    events: mpsc::Sender<Event>,
-) {
-    if let Ok(Some(data)) = cached_metadata(game_pid, &outbound) {
+impl Drop for Bridge {
+    fn drop(&mut self) {
+        self.stop();
+    }
+}
+
+fn scan(session: Session, outbound: OutboundSender, stopping: Arc<AtomicBool>, events: Sender) {
+    let game_pid = session.pid();
+    if let Ok(Some(data)) = cached_metadata(&session, &outbound) {
         let _ = events.send(Event::Captured {
             game_pid,
             data,
@@ -86,11 +119,13 @@ fn scan(
         return;
     }
     let mut previous_error = None;
-    while !stopping.load(Ordering::Relaxed) {
-        match metadata::capture(game_pid).and_then(|captured| {
-            serde_json::to_value(captured)
-                .map_err(|error| format!("could not serialize game metadata: {error}"))
-        }) {
+    while !stopping.load(Ordering::Relaxed) && session.is_current() {
+        match session
+            .read(|identity| metadata::capture_for_identity(game_pid, identity.clone()))
+            .and_then(|captured| {
+                serde_json::to_value(captured)
+                    .map_err(|error| format!("could not serialize game metadata: {error}"))
+            }) {
             Ok(data) => {
                 let _ = events.send(Event::Captured {
                     game_pid,
@@ -123,9 +158,10 @@ fn scan(
     }
 }
 
-fn cached_metadata(game_pid: u32, outbound: &OutboundSender) -> Result<Option<Value>, String> {
-    let identity = identify_process(game_pid)?;
+fn cached_metadata(session: &Session, outbound: &OutboundSender) -> Result<Option<Value>, String> {
+    let identity = session.identity()?;
     let response = daemon::dataset_get(outbound, "game_metadata")?;
+    session.check()?;
     Ok(cached_payload(&response, &identity.executable.sha256))
 }
 
@@ -145,13 +181,40 @@ fn wait(stopping: &AtomicBool, duration: Duration) {
     while !stopping.load(Ordering::Relaxed)
         && deadline.is_none_or(|deadline| Instant::now() < deadline)
     {
-        thread::sleep(STOP_CHECK_INTERVAL);
+        thread::park_timeout(STOP_CHECK_INTERVAL);
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn slow_observer_receives_latest_metadata_state() {
+        let (sender, receiver) = channel();
+        for attempt in 0..1000 {
+            sender
+                .send(Event::Unavailable {
+                    game_pid: 42,
+                    reason: attempt.to_string(),
+                })
+                .unwrap();
+        }
+        sender
+            .send(Event::Captured {
+                game_pid: 42,
+                data: serde_json::json!({"archimedea": {}}),
+                cached: false,
+            })
+            .unwrap();
+        assert_eq!(sender.stats().items, 1);
+        assert_eq!(sender.stats().coalesced, 1000);
+        assert!(matches!(
+            receiver.recv().unwrap(),
+            Event::Captured { game_pid: 42, .. }
+        ));
+        assert!(receiver.try_recv().is_err());
+    }
 
     #[test]
     fn wait_returns_immediately_when_stopped() {

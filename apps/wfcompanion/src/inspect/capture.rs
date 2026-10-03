@@ -1,7 +1,5 @@
 use std::collections::BTreeMap;
 use std::fs;
-use std::io::Write;
-use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
 use std::path::Path;
 
 use serde::{Deserialize, Serialize};
@@ -126,15 +124,7 @@ pub(crate) fn write(
         blocks,
         walks,
     };
-    let parent = directory
-        .parent()
-        .filter(|path| !path.as_os_str().is_empty())
-        .unwrap_or(Path::new("."));
-    fs::create_dir_all(parent).map_err(|e| e.to_string())?;
-    fs::DirBuilder::new()
-        .mode(0o700)
-        .create(directory)
-        .map_err(|e| format!("could not create new capture {}: {e}", directory.display()))?;
+    let directory = crate::observation::recording::Directory::create(directory)?;
     for (name, data) in [
         ("memory.bin", bytes),
         ("maps.txt", memory.maps().as_bytes().to_vec()),
@@ -143,13 +133,7 @@ pub(crate) fn write(
             serde_json::to_vec_pretty(&report).map_err(|e| e.to_string())?,
         ),
     ] {
-        let mut file = fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .mode(0o600)
-            .open(directory.join(name))
-            .map_err(|e| e.to_string())?;
-        file.write_all(&data).map_err(|e| e.to_string())?;
+        directory.write(name, &data)?;
     }
     Ok(report)
 }

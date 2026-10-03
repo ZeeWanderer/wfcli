@@ -22,9 +22,9 @@ Use `--` before literal arguments beginning with a dash or named `help`.
 `game inventory` reads current resource stacks, blueprints and foundry jobs,
 including their inventory sync ID, directly from the running game.
 
-`game adapter --exe PATH` checks metadata bindings without launching Warframe.
-Metadata uses validated code signatures; fixed UI and inventory layouts remain
-listed separately by `--list`.
+`game adapter --exe PATH` discovers HTTP, inventory, account, metadata and Scaleform bindings
+without launching Warframe. The live probe checks each domain separately.
+`--list` lists historical layouts retained for old capture replay.
 
 ## Memory and UI
 
@@ -51,13 +51,17 @@ capture directory.
 ```bash
 wfinspect game ui movies
 wfinspect game ui objects ProjectionReward
-wfinspect game ui capture research/reward 'Forma Blueprint'
+wfinspect game ui capture research/reward
 wfinspect game ui objects ProjectionReward --capture research/reward
 wfinspect game ui relic --capture research/reward
 ```
 
 `ui objects` exposes known text-object addresses, instance names and values for
-a movie-path substring. Typed queries require a matching executable adapter.
+a movie-path substring. Typed queries require validated executable bindings.
+UI captures retain those bindings and the typed reader's first-seen bytes for replay
+after game updates. Each movie reports text completeness. Reads are bounded, not atomic.
+Supplying search terms selects a broader heap/text graph capture; this is also the
+fallback when typed discovery fails. Graph captures can omit deeper objects.
 `ui movies` recomputes discovery from available bytes; `ui replay` also includes
 the recorded acquisition snapshot for comparison.
 
@@ -154,6 +158,12 @@ wfinspect daemon subscribe player --seconds 30
 DBWIN has one reader per Proton prefix; additional consumers subscribe to its
 feed. Slow subscribers disconnect without stalling companion. Payload files
 contain private account data; inspect them before sharing.
+
+GEP watches sample independently of hashing, file output and stdout. Their summary
+includes queue gaps and timing; a stalled consumer can lose samples. UI and memory
+captures require a new directory and save owner-only files after acquisition.
+`game gep state` includes account-seed availability and discovered bindings;
+`game adapter --exe FILE` checks those bindings without a running game.
 
 Snapshots emit JSON, watches emit timestamped NDJSON, and raw read/normalize
 commands emit bytes only. Diagnostics go to stderr. Watches are bounded by

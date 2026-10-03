@@ -14,17 +14,22 @@ pub(crate) struct Context {
     pub(crate) deadline: Option<Instant>,
     cancelled: Arc<AtomicBool>,
     stopping: Arc<AtomicBool>,
+    session: Option<crate::runtime::session::Session>,
 }
 
 impl Context {
     #[cfg(test)]
     pub(crate) fn for_test(deadline: Option<Instant>) -> Self {
-        Lifecycle::default().start(deadline, &Arc::new(AtomicBool::new(false)))
+        Lifecycle::default().start(deadline, &Arc::new(AtomicBool::new(false)), None)
     }
 
     pub(crate) fn is_current(&self) -> bool {
         !self.cancelled.load(Ordering::Acquire)
             && !self.stopping.load(Ordering::Relaxed)
+            && self
+                .session
+                .as_ref()
+                .is_none_or(|session| session.is_current())
             && self
                 .deadline
                 .is_none_or(|deadline| Instant::now() < deadline)
@@ -55,7 +60,12 @@ struct Lifecycle {
 }
 
 impl Lifecycle {
-    fn start(&mut self, deadline: Option<Instant>, stopping: &Arc<AtomicBool>) -> Context {
+    fn start(
+        &mut self,
+        deadline: Option<Instant>,
+        stopping: &Arc<AtomicBool>,
+        session: Option<crate::runtime::session::Session>,
+    ) -> Context {
         self.cancel();
         self.generation += 1;
         let context = Context {
@@ -63,6 +73,7 @@ impl Lifecycle {
             deadline,
             cancelled: Arc::new(AtomicBool::new(false)),
             stopping: stopping.clone(),
+            session,
         };
         self.current = Some(context.clone());
         context
@@ -113,36 +124,38 @@ struct Job {
     trigger: Trigger,
     context: Context,
     fallback_era: Option<String>,
-    capture: Option<PendingCapture>,
-    updates: mpsc::Sender<Trigger>,
+    updates: super::Sender,
 }
 
 pub(crate) fn spawn(
-    triggers: mpsc::Receiver<Trigger>,
-    sender: mpsc::Sender<Trigger>,
+    triggers: super::Receiver,
+    sender: super::Sender,
     daemon: OutboundSender,
-    ui: mpsc::Sender<UiEvent>,
+    ui: crate::runtime::presentation::Sender,
     stopping: Arc<AtomicBool>,
+    reload: crate::runtime::reload::Gate,
 ) -> thread::JoinHandle<()> {
-    spawn_with_worker(triggers, sender, daemon, ui, stopping, run_job)
+    spawn_with_worker(triggers, sender, daemon, ui, stopping, reload, run_job)
 }
 
 fn spawn_with_worker(
-    triggers: mpsc::Receiver<Trigger>,
-    sender: mpsc::Sender<Trigger>,
+    triggers: super::Receiver,
+    sender: super::Sender,
     daemon: OutboundSender,
-    ui: mpsc::Sender<UiEvent>,
+    ui: crate::runtime::presentation::Sender,
     stopping: Arc<AtomicBool>,
-    work: impl Fn(Job, &OutboundSender, &mpsc::Sender<UiEvent>) -> (Option<String>, bool)
+    reload: crate::runtime::reload::Gate,
+    work: impl Fn(Job, &OutboundSender, &crate::runtime::presentation::Sender) -> (Option<String>, bool)
     + Send
     + Sync
     + 'static,
 ) -> thread::JoinHandle<()> {
     let work = Arc::new(work);
     thread::spawn(move || {
+        let mut captures = crate::runtime::jobs::Jobs::new("capture", 2);
         let mut lifecycle = Lifecycle::default();
         let mut armed: Option<ArmedCapture> = None;
-        let mut workers: BTreeMap<u64, thread::JoinHandle<()>> = BTreeMap::new();
+        let mut workers: BTreeMap<u64, crate::runtime::Worker> = BTreeMap::new();
         let mut pending: Option<Job> = None;
         publish_capture(&daemon, "idle", None);
         while !stopping.load(Ordering::Relaxed) {
@@ -167,12 +180,16 @@ fn spawn_with_worker(
                     publish_capture(&daemon, "armed", armed.as_ref());
                 }
                 Ok(Trigger::CancelCapture) => {
+                    captures.cancel_all();
                     if let Some(cancelled) = armed.take() {
                         incident::info("relic.capture_arm_cancelled", "relic_reward");
                         publish_capture(&daemon, "cancelled", Some(&cancelled));
                     }
                 }
-                Ok(Trigger::GameStopped) => {
+                Ok(event @ (Trigger::GameStopped | Trigger::IntakeGap)) => {
+                    if matches!(event, Trigger::GameStopped) {
+                        captures.cancel_all();
+                    }
                     lifecycle.cancel();
                     lifecycle = Lifecycle {
                         generation: lifecycle.generation,
@@ -212,18 +229,21 @@ fn spawn_with_worker(
                     era,
                     failed,
                 }) => {
-                    if let Some(worker) = workers.remove(&generation) {
-                        let _ = worker.join();
-                    }
+                    drop(workers.remove(&generation));
                     lifecycle.completed(generation, era, failed);
                 }
                 Ok(Trigger::SuggestionReady { generation, era }) => {
                     lifecycle.completed(generation, Some(era), false);
                 }
                 Ok(trigger) => {
+                    if matches!(&trigger,
+                        Trigger::Rewards { session, .. } | Trigger::Suggestions { session, .. }
+                        if !session.is_current())
+                    {
+                        continue;
+                    }
                     let now = Instant::now();
                     let mut fallback_era = None;
-                    let mut capture = None;
                     let deadline = match &trigger {
                         Trigger::Suggestions { observed_at, .. } => {
                             if lifecycle.dismissed
@@ -245,7 +265,7 @@ fn spawn_with_worker(
                             None
                         }
                         Trigger::Rewards {
-                            game_pid,
+                            session,
                             observed_at,
                             observed_at_unix_ms,
                         } => {
@@ -255,15 +275,18 @@ fn spawn_with_worker(
                             lifecycle.dismissed = false;
                             lifecycle.opened = None;
                             lifecycle.suggesting = false;
-                            capture = armed.take().map(|armed| {
+                            if let Some(armed) = armed.take() {
                                 publish_capture(&daemon, "triggered", Some(&armed));
                                 begin_armed_capture(
                                     armed,
-                                    *game_pid,
+                                    session.clone(),
                                     *observed_at,
                                     *observed_at_unix_ms,
+                                    captures.spawner(),
+                                    daemon.clone(),
                                 )
-                            });
+                                .spawn(record_evidence);
+                            }
                             Some(*observed_at + REWARD_SCENE_LIFETIME)
                         }
                         Trigger::Screenshot(_) => {
@@ -272,13 +295,18 @@ fn spawn_with_worker(
                         }
                         _ => unreachable!(),
                     };
-                    let context = lifecycle.start(deadline, &stopping);
+                    let session = match &trigger {
+                        Trigger::Rewards { session, .. } | Trigger::Suggestions { session, .. } => {
+                            Some(session.clone())
+                        }
+                        _ => None,
+                    };
+                    let context = lifecycle.start(deadline, &stopping, session);
                     let _ = ui.send(UiEvent::RelicStart(context.clone()));
                     pending = Some(Job {
                         trigger,
                         context,
                         fallback_era,
-                        capture,
                         updates: sender.clone(),
                     });
                 }
@@ -296,37 +324,59 @@ fn spawn_with_worker(
                 let work = work.clone();
                 workers.insert(
                     generation,
-                    thread::spawn(move || {
-                        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                            work(job, &daemon, &ui)
-                        }));
-                        let (era, failed) = result.unwrap_or_else(|_| {
-                            incident::error("relic.worker_failed", "worker panicked");
-                            (None, true)
-                        });
-                        let _ = sender.send(Trigger::WorkFinished {
-                            generation,
-                            era,
-                            failed,
-                        });
-                    }),
+                    crate::runtime::Worker::new(
+                        "relic",
+                        thread::spawn(move || {
+                            let result =
+                                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                                    work(job, &daemon, &ui)
+                                }));
+                            let (era, failed) = result.unwrap_or_else(|_| {
+                                incident::error("relic.worker_failed", "worker panicked");
+                                (None, true)
+                            });
+                            let _ = sender.send(Trigger::WorkFinished {
+                                generation,
+                                era,
+                                failed,
+                            });
+                        }),
+                    ),
                 );
+            }
+            if reload.pending() {
+                let idle = armed.is_none()
+                    && pending.is_none()
+                    && workers.is_empty()
+                    && captures.is_idle()
+                    && !lifecycle.suggesting
+                    && lifecycle
+                        .current
+                        .as_ref()
+                        .is_none_or(|context| !context.is_current())
+                    && sender.stats().items == 0;
+                if reload.quiesce_if_idle(idle, &stopping) {
+                    break;
+                }
             }
         }
         lifecycle.cancel();
-        for worker in workers.into_values() {
-            let _ = worker.join();
+        drop(pending);
+        if let Some(cancelled) = armed.take() {
+            publish_capture(&daemon, "cancelled", Some(&cancelled));
         }
+        drop(workers);
+        captures.shutdown();
     })
 }
 
 fn run_job(
     job: Job,
     daemon: &OutboundSender,
-    ui: &mpsc::Sender<UiEvent>,
+    ui: &crate::runtime::presentation::Sender,
 ) -> (Option<String>, bool) {
     if let Trigger::Suggestions {
-        game_pid,
+        session,
         observed_at,
     } = job.trigger
     {
@@ -334,7 +384,7 @@ fn run_job(
             daemon,
             ui,
             &job.context,
-            game_pid,
+            session,
             observed_at,
             job.fallback_era.as_deref(),
         ) {
@@ -356,22 +406,217 @@ fn run_job(
             }
         }
     } else {
-        (
-            None,
-            !read_rewards(job.trigger, daemon, ui, &job.context, job.capture),
-        )
+        (None, !read_rewards(job.trigger, daemon, ui, &job.context))
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::PathBuf;
+
+    #[test]
+    fn retiring_game_session_invalidates_its_scene() {
+        let mut sessions = crate::runtime::session::Sessions::default();
+        sessions.update(Some(std::process::id())).unwrap();
+        let stopping = Arc::new(AtomicBool::new(false));
+        let context = Lifecycle::default().start(None, &stopping, sessions.current().cloned());
+        assert!(context.is_current());
+        sessions.update(None).unwrap();
+        assert!(!context.is_current());
+    }
+
+    #[test]
+    fn stale_session_trigger_cannot_replace_current_scene() {
+        let (triggers, receiver) = super::super::channel();
+        let (ui, events) = crate::runtime::presentation::channel();
+        let (daemon, _) = crate::daemon::outbound_channel();
+        let stopping = Arc::new(AtomicBool::new(false));
+        let worker = spawn_with_worker(
+            receiver,
+            triggers.clone(),
+            daemon,
+            ui,
+            stopping.clone(),
+            Default::default(),
+            |_, _, _| (None, false),
+        );
+        let mut sessions = crate::runtime::session::Sessions::default();
+        sessions.update(Some(std::process::id())).unwrap();
+        let session = sessions.current().unwrap().clone();
+        sessions.update(None).unwrap();
+        triggers
+            .send(Trigger::Suggestions {
+                session,
+                observed_at: Instant::now(),
+            })
+            .unwrap();
+        triggers
+            .send(Trigger::Screenshot(PathBuf::from("test")))
+            .unwrap();
+        let first = events.recv_timeout(Duration::from_secs(5)).unwrap();
+        stopping.store(true, Ordering::Relaxed);
+        worker.join().unwrap();
+        assert!(matches!(
+            first,
+            UiEvent::RelicStart(Context {
+                generation: 1,
+                session: None,
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn reload_waits_for_armed_capture_to_be_cancelled() {
+        let (triggers, receiver) = super::super::channel();
+        let (ui, _) = crate::runtime::presentation::channel();
+        let (daemon, mut publications) = crate::daemon::outbound_channel();
+        let stopping = Arc::new(AtomicBool::new(false));
+        let gate = crate::runtime::reload::Gate::default();
+        let worker = spawn_with_worker(
+            receiver,
+            triggers.clone(),
+            daemon,
+            ui,
+            stopping.clone(),
+            gate.clone(),
+            |_, _, _| (None, false),
+        );
+        publications.blocking_recv().unwrap();
+        triggers
+            .send(Trigger::ArmCapture(CaptureArm {
+                directory: PathBuf::from("unused"),
+                timeout: Duration::from_secs(60),
+            }))
+            .unwrap();
+        publications.blocking_recv().unwrap();
+        gate.request();
+        thread::sleep(Duration::from_millis(450));
+        assert!(!stopping.load(Ordering::Acquire));
+        triggers.send(Trigger::CancelCapture).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !stopping.load(Ordering::Acquire) && Instant::now() < deadline {
+            thread::sleep(Duration::from_millis(10));
+        }
+        let approved = stopping.swap(true, Ordering::AcqRel);
+        worker.join().unwrap();
+        assert!(
+            approved,
+            "idle actor must accept pending reload after capture cancellation"
+        );
+    }
+
+    #[test]
+    fn intake_gap_retires_scene_and_cancels_pending_arm() {
+        let (triggers, receiver) = super::super::channel();
+        let (ui, events) = crate::runtime::presentation::channel();
+        let (daemon, mut publications) = crate::daemon::outbound_channel();
+        let stopping = Arc::new(AtomicBool::new(false));
+        let worker = spawn_with_worker(
+            receiver,
+            triggers.clone(),
+            daemon,
+            ui,
+            stopping.clone(),
+            Default::default(),
+            |_, _, _| (None, false),
+        );
+        triggers
+            .send(Trigger::ArmCapture(CaptureArm {
+                directory: PathBuf::from("unused"),
+                timeout: Duration::from_secs(60),
+            }))
+            .unwrap();
+        triggers
+            .send(Trigger::Screenshot(PathBuf::from("unused")))
+            .unwrap();
+        let UiEvent::RelicStart(context) = events.recv_timeout(Duration::from_secs(5)).unwrap()
+        else {
+            panic!("expected scene start");
+        };
+        triggers.send(Trigger::IntakeGap).unwrap();
+        assert!(matches!(
+            events.recv_timeout(Duration::from_secs(5)).unwrap(),
+            UiEvent::RelicDismiss
+        ));
+        assert!(!context.is_current());
+        stopping.store(true, Ordering::Release);
+        worker.join().unwrap();
+        assert!(
+            std::iter::from_fn(|| publications.try_recv().ok()).any(|message| matches!(
+                message, crate::daemon::Outbound::Publish { source: "capture", data, .. }
+                if data["state"] == "cancelled"
+            ))
+        );
+    }
+
+    #[test]
+    fn game_stop_cancels_triggered_capture_before_more_reads() {
+        let directory = std::env::temp_dir().join(format!(
+            "wfcompanion-retired-scene-{}-{}",
+            std::process::id(),
+            unix_time_millis()
+        ));
+        let (triggers, receiver) = super::super::channel();
+        let (ui, events) = crate::runtime::presentation::channel();
+        let (daemon, mut publications) = crate::daemon::outbound_channel();
+        let stopping = Arc::new(AtomicBool::new(false));
+        let worker = spawn_with_worker(
+            receiver,
+            triggers.clone(),
+            daemon,
+            ui,
+            stopping.clone(),
+            Default::default(),
+            |_, _, _| (None, false),
+        );
+        triggers
+            .send(Trigger::ArmCapture(CaptureArm {
+                directory: directory.clone(),
+                timeout: Duration::from_secs(5),
+            }))
+            .unwrap();
+        triggers
+            .send(Trigger::Rewards {
+                session: crate::runtime::session::Session::for_test(u32::MAX),
+                observed_at: Instant::now() + Duration::from_secs(10),
+                observed_at_unix_ms: unix_time_millis(),
+            })
+            .unwrap();
+        triggers.send(Trigger::GameStopped).unwrap();
+        assert!(matches!(
+            events.recv_timeout(Duration::from_secs(5)).unwrap(),
+            UiEvent::RelicStart(_)
+        ));
+        assert!(matches!(
+            events.recv_timeout(Duration::from_secs(5)).unwrap(),
+            UiEvent::RelicDismiss
+        ));
+        stopping.store(true, Ordering::Relaxed);
+        worker.join().unwrap();
+        let results: Vec<_> = std::iter::from_fn(|| publications.try_recv().ok())
+            .filter_map(|message| match message {
+                crate::daemon::Outbound::Publish {
+                    source: "capture_result",
+                    data,
+                    ..
+                } => Some(data),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0]["state"], "cancelled");
+        assert!(results[0]["job"].is_string());
+        assert_eq!(results[0]["budget"]["read_bytes_reserved"], 0);
+        assert!(!directory.exists());
+    }
 
     #[test]
     fn slow_workers_do_not_block_close_and_only_latest_work_is_queued() {
-        let (triggers, receiver) = mpsc::channel();
-        let (ui, events) = mpsc::channel();
-        let (daemon, _) = tokio::sync::mpsc::unbounded_channel();
+        let (triggers, receiver) = super::super::channel();
+        let (ui, events) = crate::runtime::presentation::channel();
+        let (daemon, _) = crate::daemon::outbound_channel();
         let stopping = Arc::new(AtomicBool::new(false));
         let (started, jobs) = mpsc::channel();
         let worker = spawn_with_worker(
@@ -380,6 +625,7 @@ mod tests {
             daemon,
             ui,
             stopping.clone(),
+            Default::default(),
             move |job, _, _| {
                 let (release, wait) = mpsc::channel();
                 started.send((job.context.generation, release)).unwrap();
@@ -390,7 +636,7 @@ mod tests {
         let open = || {
             triggers
                 .send(Trigger::Suggestions {
-                    game_pid: 1,
+                    session: crate::runtime::session::Session::for_test(1),
                     observed_at: Instant::now() - Duration::from_secs(5),
                 })
                 .unwrap();
@@ -439,11 +685,11 @@ mod tests {
     fn close_reopen_rejects_delayed_scenes_and_price_results() {
         let stopping = Arc::new(AtomicBool::new(false));
         let mut lifecycle = Lifecycle::default();
-        let old = lifecycle.start(None, &stopping);
+        let old = lifecycle.start(None, &stopping, None);
         lifecycle.opened = Some(Instant::now() - Duration::from_secs(4));
         lifecycle.suggesting = true;
         assert!(lifecycle.close(Instant::now()));
-        let new = lifecycle.start(None, &stopping);
+        let new = lifecycle.start(None, &stopping, None);
         lifecycle.completed(old.generation, Some("Axi".to_owned()), false);
         assert_eq!(lifecycle.last_era, None);
         assert!(!old.is_current());
@@ -456,15 +702,15 @@ mod tests {
     fn cancellation_also_invalidates_already_queued_ui_results() {
         let stopping = Arc::new(AtomicBool::new(false));
         let mut lifecycle = Lifecycle::default();
-        let context = lifecycle.start(None, &stopping);
-        let (sender, receiver) = mpsc::channel();
+        let context = lifecycle.start(None, &stopping, None);
+        let (sender, receiver) = crate::runtime::presentation::channel();
         send_scene(&sender, &context, Scene::Reading, None);
         lifecycle.cancel();
         let UiEvent::RelicScene { context, .. } = receiver.recv().unwrap() else {
             panic!()
         };
         assert!(!context.is_current());
-        let context = lifecycle.start(None, &stopping);
+        let context = lifecycle.start(None, &stopping, None);
         stopping.store(true, Ordering::Relaxed);
         assert!(!context.is_current());
     }
@@ -472,8 +718,8 @@ mod tests {
     #[test]
     fn expired_rewards_cannot_publish() {
         let stopping = Arc::new(AtomicBool::new(false));
-        let context = Lifecycle::default().start(Some(Instant::now()), &stopping);
-        let (sender, receiver) = mpsc::channel();
+        let context = Lifecycle::default().start(Some(Instant::now()), &stopping, None);
+        let (sender, receiver) = crate::runtime::presentation::channel();
         send_scene(&sender, &context, Scene::Reading, context.deadline);
         assert!(receiver.try_recv().is_err());
     }
@@ -482,7 +728,11 @@ mod tests {
     fn suggestion_close_does_not_cancel_rewards() {
         let stopping = Arc::new(AtomicBool::new(false));
         let mut lifecycle = Lifecycle::default();
-        let context = lifecycle.start(Some(Instant::now() + REWARD_SCENE_LIFETIME), &stopping);
+        let context = lifecycle.start(
+            Some(Instant::now() + REWARD_SCENE_LIFETIME),
+            &stopping,
+            None,
+        );
         assert!(!lifecycle.close(Instant::now()));
         assert!(context.is_current());
     }

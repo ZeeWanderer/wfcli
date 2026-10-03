@@ -8,12 +8,12 @@ use crate::assets;
 #[derive(Debug)]
 pub(crate) enum Trigger {
     Rewards {
-        game_pid: u32,
+        session: crate::runtime::session::Session,
         observed_at: Instant,
         observed_at_unix_ms: u128,
     },
     Suggestions {
-        game_pid: u32,
+        session: crate::runtime::session::Session,
         observed_at: Instant,
     },
     CloseSuggestions,
@@ -24,6 +24,7 @@ pub(crate) enum Trigger {
     ArmCapture(CaptureArm),
     CancelCapture,
     GameStopped,
+    IntakeGap,
     SuggestionReady {
         generation: u64,
         era: String,
@@ -50,6 +51,44 @@ pub(crate) enum Scene {
 }
 
 impl Scene {
+    pub(crate) fn bytes(&self) -> usize {
+        size_of::<Self>()
+            + match self {
+                Self::Reading => 0,
+                Self::Error(error) => error.capacity(),
+                Self::Suggestions(suggestions) => {
+                    suggestions.items.capacity() * size_of::<Suggestion>()
+                        + suggestions
+                            .items
+                            .iter()
+                            .map(|item| item.name.capacity())
+                            .sum::<usize>()
+                }
+                Self::Rewards(rewards) => {
+                    rewards.items.capacity() * size_of::<Reward>()
+                        + rewards
+                            .items
+                            .iter()
+                            .map(|item| {
+                                item.name.capacity()
+                                    + item.slug.as_ref().map_or(0, String::capacity)
+                                    + item.game_ref.as_ref().map_or(0, String::capacity)
+                                    + item.asset.as_ref().map_or(0, Asset::bytes)
+                                    + item.parts.capacity() * size_of::<SetPart>()
+                                    + item
+                                        .parts
+                                        .iter()
+                                        .map(|part| {
+                                            part.name.capacity()
+                                                + part.asset.as_ref().map_or(0, Asset::bytes)
+                                        })
+                                        .sum::<usize>()
+                            })
+                            .sum::<usize>()
+                }
+            }
+    }
+
     pub(crate) fn apply_asset_refresh(&mut self, refresh: &AssetRefresh) -> Option<bool> {
         let Self::Rewards(rewards) = self else {
             return None;
@@ -172,12 +211,33 @@ pub(crate) struct Asset {
     pub(crate) digest: String,
 }
 
+impl Asset {
+    fn bytes(&self) -> usize {
+        size_of::<Self>()
+            + self.id.capacity()
+            + self.source.capacity()
+            + self.image_name.capacity()
+            + self.path.capacity()
+            + self.digest.capacity()
+    }
+}
+
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
 pub(crate) struct AssetRefresh {
     pub(crate) source: String,
     pub(crate) image_name: String,
     pub(crate) path: String,
     pub(crate) digest: String,
+}
+
+impl AssetRefresh {
+    pub(crate) fn bytes(&self) -> usize {
+        size_of::<Self>()
+            + self.source.capacity()
+            + self.image_name.capacity()
+            + self.path.capacity()
+            + self.digest.capacity()
+    }
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq)]

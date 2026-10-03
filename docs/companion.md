@@ -35,8 +35,10 @@ wfcli companion install
 wfcli companion uninstall
 ```
 
-Use `dev/bin/wfcompanion` to test a development build. `wfcompaniond` enables the compact
-diagnostic HUD; production starts with the HUD hidden.
+Use `dev/bin/wfcompanion` or `wfcompaniond` to test a development build. Its diagnostic
+HUD hides automatically when Warframe starts; production starts with it hidden.
+Development builds reload when rebuilt and idle; set `WFCOMPANION_DEV_RELOAD=0`
+to disable this.
 
 ## Standalone Mode
 
@@ -45,6 +47,8 @@ Run the companion as a detached user process:
 ```bash
 wfcli companion start
 wfcli companion status
+wfcli companion diagnostics status
+wfcli companion diagnostics watch inventory --seconds 60
 wfcli companion restart
 wfcli companion stop
 ```
@@ -95,9 +99,18 @@ wfcli companion relic-ocr
 ```
 
 `status` shows collector health, receipt times, capture errors and cached game metadata.
-`capture status` shows the armed request and last saved result. Reports from disconnected
-companions are historical. `logs` supports `--lines N` and `--json`;
+`capture status` shows the armed request, latest job ID, phase and result.
+`capture cancel` cancels both the arm and running evidence jobs. Captures have a
+30-second cooperative deadline, 64 GiB read budget and 256 MiB output budget;
+cancelled or failed writes retain a small terminal report. Overlay dismissal
+does not cancel evidence collection. Reports from disconnected companions are
+historical. `logs` supports `--lines N` and `--json`;
 [shared incident viewing](cli.md#commands) also includes daemon logs.
+
+`diagnostics status` requests live counters and recent watch jobs. Watches reuse the running
+collectors, sample once per second, and end after the requested duration or client disconnect.
+Use `diagnostics stop JOB` to stop one from another terminal. Add `--pid PID` when multiple
+companions are connected; `--json` emits one object per update.
 
 The screenshot command captures Warframe rather than the active desktop window. Run the full
 saved-image reward pipeline with:
@@ -106,9 +119,9 @@ saved-image reward pipeline with:
 dev/bin/wfcompanion --relic-screenshot ./capture.png
 ```
 
-An armed relic-reward capture saves a synchronized screenshot, loaded Scaleform movies,
-resolved reward-name matches and direct references, a bounded memory graph, process maps, and
-trigger/build metadata under the user cache. Supply a directory after `relic-reward` to override it.
+An armed relic-reward capture saves a screenshot, loaded Scaleform movies, typed text-object
+memory, process maps, and trigger/build metadata under the user cache. The report identifies
+incomplete movies and any heap-scan fallback. Supply a directory after `relic-reward` to override it.
 
 The installation also provides explicit process diagnostics:
 

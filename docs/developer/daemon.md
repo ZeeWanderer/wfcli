@@ -61,6 +61,10 @@ MCP cancellation produces `DOWN`; queued or active query, market, catalog, and p
 released without polling. Shared worldstate fetches may continue when other clients or cache
 refresh still need them.
 
+Companion diagnostic streams use consumption credit and expire. The local socket owner
+correlates requests to one companion and monitors the CLI relay; disconnects cancel the
+watch instead of resubscribing it. See [companion transport](companion.md#local-contract).
+
 ## Worldstate And Catalogs
 
 `wfcli_worldstate_service` caches decoded snapshots by cache path and indexes by normalization
@@ -88,6 +92,20 @@ and coalescing. `wfcli_market_account_service` serializes authenticated order mu
 `wfcli_player_service` owns canonical local observations by source namespace. `wfcli_local_api`
 accepts owner-only Unix socket clients, including `wfcompanion`, and removes subscriptions on
 disconnect. Persisted observations do not keep the daemon alive.
+
+`inventory_http` retains the last full response; `inventory_native` retains absolute
+resource, blueprint and foundry collections. `wfcli_player_inventory` validates and
+combines them into `inventory` in one revision. Native reads must match the full
+baseline's boot, process/session, stream, sequence and sync, and start after its
+capture. Older or replayed observations cannot replace newer state. Reconciliation
+preserves unknown row fields; unavailable reads never mean empty collections.
+Native clients cannot publish `inventory` directly. Query's default player search
+uses the canonical inventory; raw source namespaces remain explicitly queryable.
+
+Player subscriptions support full snapshots, revision-only metadata, or a small
+companion HUD view. The store projects before sending, and publish acknowledgements
+request metadata only. HUD subscribers receive game/collector changes and clears,
+not unrelated inventory updates.
 
 Native clients use request IDs over newline-delimited JSON on the Unix socket. Each connection
 can run independent reads concurrently; market mutation and rate-limited fetches remain serialized

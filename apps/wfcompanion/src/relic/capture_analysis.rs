@@ -1,12 +1,13 @@
 use std::fs;
 use std::path::PathBuf;
-use std::process::{Command, Stdio};
+use std::process::Command;
 use std::thread;
+use std::time::Duration;
 
 use image::imageops::{FilterType, crop_imm, resize};
 use image::{DynamicImage, GenericImageView, GrayImage, Luma};
 
-use super::{Candidate, Geometry, TESSERACT_ARGUMENTS, Trigger, capture};
+use super::{Candidate, Context, Geometry, TESSERACT_ARGUMENTS, Trigger, capture};
 
 pub(super) fn capture_trigger(trigger: &Trigger) -> Result<DynamicImage, String> {
     match trigger {
@@ -20,6 +21,7 @@ pub(super) fn capture_trigger(trigger: &Trigger) -> Result<DynamicImage, String>
         | Trigger::ArmCapture(_)
         | Trigger::CancelCapture
         | Trigger::GameStopped
+        | Trigger::IntakeGap
         | Trigger::SuggestionReady { .. }
         | Trigger::WorkFinished { .. } => {
             Err("trigger does not contain a reward capture".to_owned())
@@ -27,7 +29,10 @@ pub(super) fn capture_trigger(trigger: &Trigger) -> Result<DynamicImage, String>
     }
 }
 
-pub(super) fn suggestion_era(image: &DynamicImage) -> Result<String, String> {
+pub(super) fn suggestion_era(
+    image: &DynamicImage,
+    context: Option<&Context>,
+) -> Result<String, String> {
     let x = image.width() * 25 / 1000;
     let y = image.height() * 65 / 1000;
     let width = (image.width() * 150 / 1000).min(image.width().saturating_sub(x));
@@ -36,7 +41,7 @@ pub(super) fn suggestion_era(image: &DynamicImage) -> Result<String, String> {
         return Err("relic suggestion crop is empty".to_owned());
     }
     let crop = crop_imm(image, x, y, width, height).to_image();
-    parse_suggestion_era(&run_tesseract(preprocess(&crop))?)
+    parse_suggestion_era(&run_tesseract(preprocess(&crop), context)?)
         .ok_or_else(|| "could not identify relic era".to_owned())
 }
 
@@ -56,6 +61,7 @@ pub(super) fn read_candidate(
     image: &DynamicImage,
     geometry: Geometry,
     count: usize,
+    context: Option<&Context>,
 ) -> Result<Candidate, String> {
     let regions = reward_regions(image.width(), image.height(), geometry, count);
     let crops = regions
@@ -65,7 +71,7 @@ pub(super) fn read_candidate(
     let labels = thread::scope(|scope| {
         let workers = crops
             .into_iter()
-            .map(|crop| scope.spawn(move || run_tesseract(preprocess(&crop))))
+            .map(|crop| scope.spawn(move || run_tesseract(preprocess(&crop), context)))
             .collect::<Vec<_>>();
         workers
             .into_iter()
@@ -290,7 +296,10 @@ fn preprocess(source: &image::RgbaImage) -> GrayImage {
     output
 }
 
-fn run_tesseract(image: GrayImage) -> Result<String, String> {
+fn run_tesseract(image: GrayImage, context: Option<&Context>) -> Result<String, String> {
+    if let Some(context) = context {
+        context.check()?;
+    }
     let path = capture::temporary_png("ocr")?;
     image
         .save(&path)
@@ -305,12 +314,12 @@ fn run_tesseract(image: GrayImage) -> Result<String, String> {
             PathBuf::from("/usr/bin/tesseract"),
         ],
     );
-    let output = Command::new(tesseract)
-        .arg(&path)
-        .args(TESSERACT_ARGUMENTS)
-        .stdin(Stdio::null())
-        .output()
-        .map_err(|error| format!("could not run tesseract: {error}"));
+    let mut command = Command::new(tesseract);
+    command.arg(&path).args(TESSERACT_ARGUMENTS);
+    let output = crate::runtime::process::output(command, Duration::from_secs(10), || {
+        context.is_none_or(Context::is_current)
+    })
+    .map_err(|error| format!("could not run tesseract: {error}"));
     let _ = fs::remove_file(path);
     let output = output?;
     if !output.status.success() {

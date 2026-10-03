@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, VecDeque};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, mpsc};
 use std::thread;
@@ -6,10 +6,53 @@ use std::thread;
 use serde_json::{Value, json};
 
 use crate::painter::{RasterImage, load_scene_icon};
-use crate::relic::Scene;
+use crate::relic::{AssetRefresh, Scene};
 
 const DECODED_BUDGET: usize = 64 * 1024 * 1024;
 const IMAGE_BUDGET: usize = 16 * 1024 * 1024;
+
+#[derive(Default)]
+pub(super) struct PendingRefreshes {
+    entries: VecDeque<AssetRefresh>,
+    bytes: usize,
+}
+
+impl PendingRefreshes {
+    pub(super) fn insert(&mut self, refresh: AssetRefresh) {
+        const BUDGET: usize = 128 * 1024;
+        let bytes = refresh.bytes();
+        if bytes > BUDGET {
+            crate::incident::warn(
+                "overlay.asset_refresh_rejected",
+                "asset refresh exceeds budget",
+            );
+            return;
+        }
+        if let Some(index) = self
+            .entries
+            .iter()
+            .position(|old| old.source == refresh.source && old.image_name == refresh.image_name)
+        {
+            self.bytes -= self.entries.remove(index).unwrap().bytes();
+        }
+        while self.entries.len() >= 128 || self.bytes > BUDGET - bytes {
+            self.bytes -= self.entries.pop_front().unwrap().bytes();
+        }
+        self.entries.push_back(refresh);
+        self.bytes += bytes;
+    }
+
+    pub(super) fn apply(&mut self, scene: &mut Scene) {
+        self.entries.retain(|refresh| {
+            if scene.apply_asset_refresh(refresh).is_some() {
+                self.bytes -= refresh.bytes();
+                false
+            } else {
+                true
+            }
+        });
+    }
+}
 
 #[derive(Clone, Default)]
 pub(super) struct SceneAssets {
@@ -156,6 +199,92 @@ impl Drop for Loader {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pending_asset_refreshes_are_bounded_and_replace_by_identity() {
+        let mut pending = PendingRefreshes::default();
+        for index in 0..1000 {
+            pending.insert(AssetRefresh {
+                source: "market".into(),
+                image_name: index.to_string(),
+                path: String::new(),
+                digest: "old".into(),
+            });
+        }
+        assert_eq!(pending.entries.len(), 128);
+        assert_eq!(pending.entries.front().unwrap().image_name, "872");
+        pending.insert(AssetRefresh {
+            source: "market".into(),
+            image_name: "999".into(),
+            path: String::new(),
+            digest: "new".into(),
+        });
+        assert_eq!(pending.entries.len(), 128);
+        assert_eq!(pending.entries.back().unwrap().digest, "new");
+        pending.insert(AssetRefresh {
+            source: "market".into(),
+            image_name: "999".into(),
+            path: "x".repeat(128 * 1024),
+            digest: "too large".into(),
+        });
+        assert_eq!(pending.entries.back().unwrap().digest, "new");
+        assert_eq!(
+            pending.bytes,
+            pending
+                .entries
+                .iter()
+                .map(AssetRefresh::bytes)
+                .sum::<usize>()
+        );
+        for index in 1000..1100 {
+            pending.insert(AssetRefresh {
+                source: "market".into(),
+                image_name: index.to_string(),
+                path: "x".repeat(8192),
+                digest: "new".into(),
+            });
+        }
+        assert!(pending.bytes <= 128 * 1024);
+        assert!(pending.entries.len() < 128);
+    }
+
+    #[test]
+    fn pending_refresh_is_applied_when_its_scene_arrives() {
+        let mut scene = super::super::screens::mock_relic_scene();
+        let Scene::Rewards(rewards) = &scene else {
+            panic!()
+        };
+        let asset = rewards
+            .items
+            .iter()
+            .flat_map(|item| &item.parts)
+            .find_map(|part| part.asset.as_ref())
+            .unwrap()
+            .clone();
+        let mut pending = PendingRefreshes::default();
+        pending.insert(AssetRefresh {
+            source: asset.source.clone(),
+            image_name: asset.image_name.clone(),
+            path: "/updated.png".into(),
+            digest: "updated".into(),
+        });
+        pending.apply(&mut Scene::Reading);
+        assert_eq!(pending.entries.len(), 1);
+        pending.apply(&mut scene);
+        assert!(pending.entries.is_empty());
+        assert_eq!(pending.bytes, 0);
+        let Scene::Rewards(rewards) = scene else {
+            panic!()
+        };
+        assert!(
+            rewards
+                .items
+                .iter()
+                .flat_map(|item| &item.parts)
+                .filter_map(|part| part.asset.as_ref())
+                .any(|item| item.id == asset.id && item.digest == "updated")
+        );
+    }
 
     #[test]
     fn scene_cache_has_a_byte_budget_and_reuses_images() {

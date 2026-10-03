@@ -35,7 +35,9 @@ pub(super) fn scan_labels(
     let mut matches = BTreeSet::new();
     let max_label = labels.iter().map(|label| label.len()).max().unwrap_or(0);
     let metrics = scan_text_objects(memory, layout, image, flash_object, |_, _, pointer| {
-        let Some(value) = read_prefix(memory, pointer, max_label.saturating_add(1)) else {
+        let Some(value) =
+            pointer.and_then(|pointer| read_prefix(memory, pointer, max_label.saturating_add(1)))
+        else {
             return 0;
         };
         for (index, label) in labels.iter().enumerate() {
@@ -62,23 +64,32 @@ pub(super) fn scan_named_text(
     }
 
     let mut values = Vec::new();
+    let mut incomplete = false;
     let metrics = scan_text_objects(memory, layout, image, flash_object, |_, object, pointer| {
         if !has_instance_name(object, instance_name) {
             return 0;
         }
-        let Some(value) = read_prefix(memory, pointer, max_text_bytes) else {
+        let Some(value) = pointer.and_then(|pointer| read_prefix(memory, pointer, max_text_bytes))
+        else {
+            incomplete = true;
             return 0;
         };
         let read = value.len();
         let Some(end) = value.iter().position(|byte| *byte == 0) else {
+            incomplete = true;
             return read;
         };
         if let Ok(value) = std::str::from_utf8(&value[..end]) {
             values.push(value.to_owned());
+        } else {
+            incomplete = true;
         }
         read
     })?;
 
+    if incomplete {
+        return Err("named text is incomplete".into());
+    }
     Ok((values, metrics))
 }
 
@@ -129,7 +140,7 @@ pub(crate) fn enumerate(
                 .iter()
                 .position(|byte| *byte == 0)
                 .unwrap_or(name.len())];
-            let bytes = read_prefix(memory, pointer, max_text_bytes);
+            let bytes = pointer.and_then(|pointer| read_prefix(memory, pointer, max_text_bytes));
             let end = bytes
                 .as_ref()
                 .and_then(|bytes| bytes.iter().position(|byte| *byte == 0));
@@ -140,7 +151,7 @@ pub(crate) fn enumerate(
             objects.push(TextObject {
                 address,
                 name: String::from_utf8_lossy(name).into_owned(),
-                text_address: pointer,
+                text_address: pointer.unwrap_or_default(),
                 text,
                 terminated: end.is_some(),
             });
@@ -159,7 +170,7 @@ fn scan_text_objects(
     layout: ScaleformLayout,
     image: u64,
     flash_object: u64,
-    mut visit: impl FnMut(u64, &[u8], u64) -> usize,
+    mut visit: impl FnMut(u64, &[u8], Option<u64>) -> usize,
 ) -> Result<DisplayScanMetrics, String> {
     let started = Instant::now();
     let root_address = flash_object
@@ -239,16 +250,12 @@ fn scan_text_objects(
                 &header,
                 image + layout.text_vtable_rva,
                 image + layout.text_secondary_vtable_rva,
-            ) || !memory.supports_ui_range(child, TEXT_OBJECT_BYTES)
-            {
+            ) {
                 continue;
             }
             let object = read(memory, child, TEXT_OBJECT_BYTES, "text display object")?;
             bytes_read += object.len();
-            let Some(pointer) = text::display_text_pointer(&object[TEXT_OBJECT_INNER_OFFSET..])
-            else {
-                continue;
-            };
+            let pointer = text::display_text_pointer(&object[TEXT_OBJECT_INNER_OFFSET..]);
             text_objects += 1;
             bytes_read += visit(child, &object, pointer);
         }
@@ -470,23 +477,26 @@ mod tests {
             b"Not A Reward\0",
         );
 
-        let memory = ProcessMemory::from_test_bytes(
-            &bytes,
-            vec![
-                Region {
-                    start: flash as u64,
-                    end: bytes.len() as u64,
-                    permissions: "rw-p".to_owned(),
-                    path: String::new(),
-                },
-                Region {
-                    start: image,
-                    end: image + 0x1000,
-                    permissions: "r--p".to_owned(),
-                    path: "/game/Warframe.x64.exe".to_owned(),
-                },
-            ],
-        );
+        let source = |bytes: &[u8]| {
+            ProcessMemory::from_test_bytes(
+                bytes,
+                vec![
+                    Region {
+                        start: flash as u64,
+                        end: bytes.len() as u64,
+                        permissions: "rw-p".to_owned(),
+                        path: String::new(),
+                    },
+                    Region {
+                        start: image,
+                        end: image + 0x1000,
+                        permissions: "r--p".to_owned(),
+                        path: "/game/Warframe.x64.exe".to_owned(),
+                    },
+                ],
+            )
+        };
+        let memory = source(&bytes);
         let (values, metrics) =
             scan_named_text(&memory, layout, image, flash as u64, b"ItemName", 160).unwrap();
         assert_eq!(values, ["First Reward", "Second Reward"]);
@@ -500,6 +510,40 @@ mod tests {
         assert_eq!(report.objects[1].address, text_objects[0] as u64);
         assert!(report.objects[1].terminated);
         assert!(report.truncated);
+
+        for value in [vec![b'A'; 160], vec![0xff, 0]] {
+            let mut changed = bytes.clone();
+            changed[strings[1]..strings[1] + value.len()].copy_from_slice(&value);
+            assert!(
+                scan_named_text(
+                    &source(&changed),
+                    layout,
+                    image,
+                    flash as u64,
+                    b"ItemName",
+                    160
+                )
+                .is_err()
+            );
+        }
+        for pointer in [0x100_000, 0] {
+            write_u64(
+                &mut bytes,
+                text_objects[1] + TEXT_OBJECT_INNER_OFFSET + 0xb0,
+                pointer,
+            );
+            assert!(
+                scan_named_text(
+                    &source(&bytes),
+                    layout,
+                    image,
+                    flash as u64,
+                    b"ItemName",
+                    160
+                )
+                .is_err()
+            );
+        }
     }
 
     fn write_text_object(

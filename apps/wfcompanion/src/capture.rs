@@ -10,11 +10,13 @@ use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
 
 use image::{DynamicImage, ImageFormat, RgbaImage};
+use wfcompanion::work::Budget;
 use zbus::blocking::{Connection, Proxy};
 use zbus::zvariant::{Fd, OwnedValue};
 
 static CAPTURE_SEQUENCE: AtomicU64 = AtomicU64::new(1);
 const CAPTURE_WAIT: Duration = Duration::from_secs(3);
+const MAX_IMAGE_BYTES: usize = 128 * 1024 * 1024;
 const KWIN_SERVICE: &str = "org.kde.KWin";
 const KWIN_SCREENSHOT_PATH: &str = "/org/kde/KWin/ScreenShot2";
 const KWIN_SCREENSHOT_INTERFACE: &str = "org.kde.KWin.ScreenShot2";
@@ -38,15 +40,22 @@ type RunnerMatch = (
 );
 
 pub(crate) fn relic_window() -> Result<DynamicImage, String> {
+    relic_window_with_budget(&Budget::new(wfcompanion::observation::ui_capture::limits()))
+}
+
+pub(crate) fn relic_window_with_budget(budget: &Budget) -> Result<DynamicImage, String> {
+    budget.check().map_err(|error| error.to_string())?;
     if let Some(path) = std::env::var_os("WFCOMPANION_RELIC_SCREENSHOT") {
-        return load(Path::new(&path));
+        let image = load(Path::new(&path))?;
+        budget.check().map_err(|error| error.to_string())?;
+        return Ok(image);
     }
 
-    capture()
+    capture_warframe(budget)
 }
 
 pub(crate) fn capture() -> Result<DynamicImage, String> {
-    capture_warframe()
+    capture_warframe(&Budget::new(wfcompanion::observation::ui_capture::limits()))
 }
 
 pub(crate) fn save(path: &Path) -> Result<(u32, u32), String> {
@@ -58,26 +67,34 @@ pub(crate) fn save(path: &Path) -> Result<(u32, u32), String> {
     Ok(dimensions)
 }
 
-fn capture_warframe() -> Result<DynamicImage, String> {
+fn capture_warframe(budget: &Budget) -> Result<DynamicImage, String> {
+    budget.check().map_err(|error| error.to_string())?;
     crate::desktop::ensure_identity()
         .map_err(|error| format!("desktop screenshot identity: {error}"))?;
-    let connection = Connection::session()
+    let connection = zbus::blocking::connection::Builder::session()
+        .and_then(|builder| builder.method_timeout(CAPTURE_WAIT).build())
         .map_err(|error| format!("could not connect to session D-Bus: {error}"))?;
     let cached = warframe_window_id().lock().unwrap().clone();
     if let Some(window_id) = cached {
-        if let Ok(image) = capture_window(&connection, &window_id) {
+        if let Ok(image) = capture_window(&connection, &window_id, budget) {
             return Ok(image);
         }
         *warframe_window_id().lock().unwrap() = None;
     }
 
-    let window_id = find_warframe_window(&connection)?;
-    let image = capture_window(&connection, &window_id)?;
+    budget.check().map_err(|error| error.to_string())?;
+    let window_id = find_warframe_window(&connection, budget)?;
+    let image = capture_window(&connection, &window_id, budget)?;
     *warframe_window_id().lock().unwrap() = Some(window_id);
     Ok(image)
 }
 
-fn capture_window(connection: &Connection, window_id: &str) -> Result<DynamicImage, String> {
+fn capture_window(
+    connection: &Connection,
+    window_id: &str,
+    budget: &Budget,
+) -> Result<DynamicImage, String> {
+    budget.check().map_err(|error| error.to_string())?;
     let proxy = screenshot_proxy(connection)?;
     let (mut reader, writer) = capture_pipe()?;
     let options = HashMap::<String, OwnedValue>::new();
@@ -88,10 +105,10 @@ fn capture_window(connection: &Connection, window_id: &str) -> Result<DynamicIma
         )
         .map_err(|error| format!("KWin Warframe screenshot failed: {error}"))?;
     drop(writer);
-    read_raw_image(&mut reader, metadata)
+    read_raw_image(&mut reader, metadata, budget)
 }
 
-fn find_warframe_window(connection: &Connection) -> Result<String, String> {
+fn find_warframe_window(connection: &Connection, budget: &Budget) -> Result<String, String> {
     let runner = Proxy::new(
         connection,
         KWIN_SERVICE,
@@ -105,7 +122,8 @@ fn find_warframe_window(connection: &Connection) -> Result<String, String> {
     let kwin = Proxy::new(connection, KWIN_SERVICE, KWIN_PATH, KWIN_INTERFACE)
         .map_err(|error| format!("KWin window interface unavailable: {error}"))?;
 
-    for (id, _, _, _, _, _) in matches {
+    for (id, _, _, _, _, _) in matches.into_iter().take(64) {
+        budget.check().map_err(|error| error.to_string())?;
         let Some(window_id) = runner_window_id(&id) else {
             continue;
         };
@@ -150,7 +168,9 @@ fn capture_pipe() -> Result<(UnixStream, UnixStream), String> {
 fn read_raw_image(
     reader: &mut UnixStream,
     metadata: HashMap<String, OwnedValue>,
+    budget: &Budget,
 ) -> Result<DynamicImage, String> {
+    budget.check().map_err(|error| error.to_string())?;
     let width = metadata_u32(&metadata, "width")?;
     let height = metadata_u32(&metadata, "height")?;
     let stride = metadata_u32(&metadata, "stride")?;
@@ -169,10 +189,29 @@ fn read_raw_image(
             .ok_or_else(|| "KWin screenshot size overflow".to_owned())?,
     )
     .map_err(|_| "KWin screenshot is too large".to_owned())?;
+    if width == 0 || height == 0 || byte_count > MAX_IMAGE_BYTES {
+        return Err("KWin screenshot exceeds image limits".into());
+    }
     let mut raw = vec![0; byte_count];
-    reader
-        .read_exact(&mut raw)
-        .map_err(|error| format!("could not read KWin screenshot pixels: {error}"))?;
+    let mut offset = 0;
+    while offset < raw.len() {
+        let timeout = budget
+            .remaining()
+            .map_err(|error| error.to_string())?
+            .min(CAPTURE_WAIT);
+        reader
+            .set_read_timeout(Some(timeout.max(Duration::from_millis(1))))
+            .map_err(|error| error.to_string())?;
+        let end = (offset + 64 * 1024).min(raw.len());
+        let read = reader
+            .read(&mut raw[offset..end])
+            .map_err(|error| format!("could not read KWin screenshot pixels: {error}"))?;
+        if read == 0 {
+            return Err("KWin screenshot pixel stream ended early".into());
+        }
+        offset += read;
+    }
+    budget.check().map_err(|error| error.to_string())?;
     qimage_to_rgba(raw, width, height, stride, format).map(DynamicImage::ImageRgba8)
 }
 
@@ -281,12 +320,44 @@ fn capture_dir_from(
 }
 
 fn load(path: &Path) -> Result<DynamicImage, String> {
-    image::open(path).map_err(|error| format!("could not read {}: {error}", path.display()))
+    let mut reader = image::ImageReader::open(path)
+        .map_err(|error| format!("could not read {}: {error}", path.display()))?;
+    let mut limits = image::Limits::default();
+    limits.max_alloc = Some(MAX_IMAGE_BYTES as u64);
+    limits.max_image_width = Some(16_384);
+    limits.max_image_height = Some(16_384);
+    reader.limits(limits);
+    reader
+        .decode()
+        .map_err(|error| format!("could not decode {}: {error}", path.display()))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn screenshot_rejects_oversized_pixels_before_reading_the_pipe() {
+        let (mut reader, _writer) = UnixStream::pair().unwrap();
+        let metadata = HashMap::from([
+            ("width".into(), OwnedValue::from(16384_u32)),
+            ("height".into(), OwnedValue::from(16384_u32)),
+            ("stride".into(), OwnedValue::from(65536_u32)),
+            ("format".into(), OwnedValue::from(QIMAGE_FORMAT_RGB32)),
+        ]);
+        let budget = Budget::new(wfcompanion::observation::ui_capture::limits());
+        assert!(
+            read_raw_image(&mut reader, metadata, &budget)
+                .unwrap_err()
+                .contains("image limits")
+        );
+        budget.cancel();
+        assert!(
+            read_raw_image(&mut reader, HashMap::new(), &budget)
+                .unwrap_err()
+                .contains("cancelled")
+        );
+    }
 
     #[test]
     fn capture_directory_prefers_shared_user_cache() {

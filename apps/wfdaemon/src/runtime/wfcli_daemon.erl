@@ -106,9 +106,14 @@ handle_call({hello, ClientContract}, _From, State) ->
 handle_call({submit, Client, Request}, _From, State) ->
     Reply = safe_submit(Client, Request),
     {reply, Reply, State};
+handle_call({subscribe, Client, #{source := companion_diagnostics} = Request}, _From, State) ->
+    {reply, safe_submit(Client, Request), State};
 handle_call({subscribe, Client, Request}, _From, State) ->
     {reply, safe_worker_call(wfcli_worldstate_service,
                              fun() -> wfcli_worldstate_service:subscribe(Client, Request) end), State};
+handle_call({unsubscribe, {companion_diagnostics, _} = Ref}, _From, State) ->
+    {reply, safe_worker_call(wfcli_local_api,
+                              fun() -> wfcli_local_api:diagnostics_cancel(Ref) end), State};
 handle_call({unsubscribe, Ref}, _From, State) ->
     {reply, wfcli_worldstate_service:unsubscribe(Ref), State};
 handle_call({set_idle_policy, Policy}, _From, State) ->
@@ -154,6 +159,9 @@ handle_call(Request, _From, State) ->
     {reply, {error, {unknown_request, Request}}, State}.
 
 -spec handle_cast(term(), state()) -> {noreply, state()}.
+handle_cast({diagnostics_consume, Client, Ref}, State) ->
+    wfcli_local_api:diagnostics_consume(Client, Ref),
+    {noreply, State};
 handle_cast(_Msg, State) ->
     {noreply, State}.
 
@@ -292,6 +300,8 @@ safe_submit(Client, Request) ->
                                   fun() -> wfcli_forma_service:submit(Client, Request) end);
         market -> safe_worker_call(wfcli_market_service,
                                    fun() -> wfcli_market_service:submit(Client, Request) end);
+        companion_diagnostics -> safe_worker_call(wfcli_local_api,
+                                   fun() -> wfcli_local_api:diagnostics_submit(Client, Request) end);
         Source -> {error, {unsupported_source, Source}}
     end.
 

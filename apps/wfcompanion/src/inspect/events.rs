@@ -3,14 +3,16 @@ use std::time::{Duration, Instant};
 
 use serde::Serialize;
 
-use crate::game_observer::debug_output::{Bridge, Event, Runtime};
 use crate::game_observer::{self, DebugOutputEvent};
+use crate::observation::debug_output::{self, Bridge, Event, Runtime};
+use crate::observation::mailbox;
 
 #[derive(Debug, Serialize)]
 pub struct DebugWatch {
     pub game_pid: u32,
     pub duration_ms: u128,
     pub events: Vec<DebugRecord>,
+    pub queue: mailbox::Stats,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub stopped: Option<String>,
 }
@@ -31,6 +33,7 @@ pub struct DebugWatchSummary {
     pub game_pid: u32,
     pub duration_ms: u128,
     pub records: usize,
+    pub queue: mailbox::Stats,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub stopped: Option<String>,
 }
@@ -45,6 +48,7 @@ pub fn watch(duration: Duration, limit: usize) -> Result<DebugWatch, String> {
         game_pid: summary.game_pid,
         duration_ms: summary.duration_ms,
         events,
+        queue: summary.queue,
         stopped: summary.stopped,
     })
 }
@@ -66,9 +70,9 @@ pub fn watch_stream(
         attach.compat_data(),
     )
     .ok_or_else(|| "could not discover Warframe Proton runtime".to_owned())?;
-    let (sender, receiver) = mpsc::channel();
-    let _bridge = Bridge::start(&runtime, sender)?;
+    let receiver = debug_output::inbox();
     let started = Instant::now();
+    let bridge = Bridge::start(&runtime, receiver.clone())?;
     let deadline = started + duration;
     let mut records = 0;
     let mut stopped = None;
@@ -78,12 +82,14 @@ pub fn watch_stream(
             Ok(Event::Record {
                 sender_pid,
                 message,
+                observed_at,
+                observed_at_unix_ms,
                 ..
             }) => {
                 let record = DebugRecord {
                     game_pid: runtime.game_pid(),
-                    observed_at_unix_ms: super::unix_time_ms(),
-                    observed_after_ms: started.elapsed().as_millis(),
+                    observed_at_unix_ms,
+                    observed_after_ms: observed_at.saturating_duration_since(started).as_millis(),
                     windows_pid: sender_pid,
                     event: game_observer::classify_debug_output(&message),
                     message,
@@ -102,10 +108,12 @@ pub fn watch_stream(
             }
         }
     }
+    drop(bridge);
     Ok(DebugWatchSummary {
         game_pid: runtime.game_pid(),
         duration_ms: started.elapsed().as_millis(),
         records,
+        queue: receiver.stats(),
         stopped,
     })
 }

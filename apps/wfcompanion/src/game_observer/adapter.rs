@@ -1,4 +1,5 @@
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
+use std::path::Path;
 
 use super::ProcessIdentity;
 
@@ -6,22 +7,10 @@ use super::ProcessIdentity;
 pub(crate) struct GameAdapter {
     pub(crate) id: &'static str,
     pub(crate) sha256: &'static str,
-    pub(crate) global_registry_rva: u64,
-    pub(crate) string_blocks_rva: u64,
-    pub(crate) inventory: InventoryLayout,
-    pub(crate) scaleform: ScaleformLayout,
+    pub(crate) scaleform: Option<ScaleformLayout>,
 }
 
-#[derive(Clone, Copy, Debug)]
-pub(crate) struct InventoryLayout {
-    pub(crate) profile_hash: u32,
-    pub(crate) sync_offset: u64,
-    pub(crate) misc_offset: u64,
-    pub(crate) recipes_offset: u64,
-    pub(crate) pending_offset: u64,
-}
-
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Serialize)]
 pub(crate) struct ScaleformLayout {
     pub(crate) registry_vector_rva: u64,
     pub(crate) flash_instance_type_rva: u64,
@@ -34,19 +23,10 @@ pub(crate) struct ScaleformLayout {
     pub(crate) text_secondary_vtable_rva: u64,
 }
 
-const CURRENT: GameAdapter = GameAdapter {
+const D01B: GameAdapter = GameAdapter {
     id: "d01b5cb5cff5",
     sha256: "d01b5cb5cff51afc5ffb7d3af051674aafa84000bee764780ff71d9d073cad93",
-    global_registry_rva: 0x2734d20,
-    string_blocks_rva: 0x28a39a0,
-    inventory: InventoryLayout {
-        profile_hash: 0xf05f9824,
-        sync_offset: 0xfdc0,
-        misc_offset: 0xd6a0,
-        recipes_offset: 0xd6b0,
-        pending_offset: 0x11ac8,
-    },
-    scaleform: ScaleformLayout {
+    scaleform: Some(ScaleformLayout {
         registry_vector_rva: 0x028a_5410,
         flash_instance_type_rva: 0x0294_e130,
         flash_instance_vtable_rva: 0x0222_00f8,
@@ -56,14 +36,35 @@ const CURRENT: GameAdapter = GameAdapter {
         container_secondary_vtable_rva: 0x0222_5878,
         text_vtable_rva: 0x0222_77d8,
         text_secondary_vtable_rva: 0x0222_7ac0,
-    },
+    }),
 };
 
+const ADAPTERS: &[GameAdapter] = &[D01B];
+
 pub fn list() -> serde_json::Value {
-    serde_json::json!([{
-        "id": CURRENT.id, "executable_sha256": CURRENT.sha256,
-        "domains": ["scaleform", "inventory"],
-    }])
+    ADAPTERS.iter().map(|adapter| {
+        serde_json::json!({"id": adapter.id, "executable_sha256": adapter.sha256, "domains": ["scaleform"]})
+    }).collect()
+}
+
+pub fn inspect_executable(path: &Path) -> Result<serde_json::Value, String> {
+    let (hash, bytes) = super::executable::read(path)?;
+    Ok(serde_json::json!({
+        "executable_sha256": hash,
+        "account": discovery(super::account::layout::discover(&bytes)),
+        "http": discovery(super::gep::layout::discover(&bytes)),
+        "inventory": discovery(super::inventory::layout::discover(&bytes)),
+        "metadata": discovery(super::metadata::inspect_image(&bytes)),
+        "scaleform": discovery(super::ui::layout::discover(&bytes)),
+        "scaleform_adapter": resolve(&hash).map(|adapter| adapter.id),
+    }))
+}
+
+fn discovery<T: Serialize>(result: Result<T, String>) -> serde_json::Value {
+    match result {
+        Ok(bindings) => serde_json::json!({"status": "available", "bindings": bindings}),
+        Err(reason) => serde_json::json!({"status": "unavailable", "reason": reason}),
+    }
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -76,23 +77,76 @@ pub enum AdapterSupport {
     Unsupported {
         reason: String,
     },
+    NotProbed,
 }
 
 pub(crate) fn resolve(sha256: &str) -> Option<&'static GameAdapter> {
-    (sha256 == CURRENT.sha256).then_some(&CURRENT)
+    ADAPTERS.iter().find(|adapter| sha256 == adapter.sha256)
 }
 
 pub(crate) fn resolve_key(key: &str) -> Option<&'static GameAdapter> {
-    (key == CURRENT.id || key == CURRENT.sha256).then_some(&CURRENT)
+    ADAPTERS
+        .iter()
+        .find(|adapter| key == adapter.id || key == adapter.sha256)
 }
 
-pub(crate) fn require(identity: &ProcessIdentity) -> Result<&'static GameAdapter, String> {
-    resolve(&identity.executable.sha256).ok_or_else(|| {
-        format!(
-            "unsupported Warframe executable {}",
-            identity.executable.sha256
-        )
-    })
+pub(crate) fn require_scaleform(identity: &ProcessIdentity) -> Result<ScaleformLayout, String> {
+    let (hash, bytes) = super::executable::read(&identity.executable.path)?;
+    if hash != identity.executable.sha256 {
+        return Err("Warframe executable changed since process identification".into());
+    }
+    super::ui::layout::discover(&bytes)
+}
+
+pub(crate) fn replay_scaleform(
+    identity: Option<&ProcessIdentity>,
+    recorded: Option<ScaleformLayout>,
+) -> Result<ScaleformLayout, String> {
+    if let Some(layout) = recorded {
+        layout.validate()?;
+        return Ok(layout);
+    }
+    let identity = identity.ok_or("capture has no executable identity")?;
+    if let Some(layout) = resolve(&identity.executable.sha256).and_then(|adapter| adapter.scaleform)
+    {
+        return Ok(layout);
+    }
+    require_scaleform(identity)
+}
+
+pub(crate) fn layout_support(result: &Result<ScaleformLayout, String>) -> AdapterSupport {
+    match result {
+        Ok(_) => AdapterSupport::Supported {
+            id: "validated_bindings",
+            capabilities: &["scaleform_ui_v1"],
+        },
+        Err(reason) => AdapterSupport::Unsupported {
+            reason: reason.clone(),
+        },
+    }
+}
+
+impl ScaleformLayout {
+    fn validate(self) -> Result<(), String> {
+        let values = [
+            self.registry_vector_rva,
+            self.flash_instance_type_rva,
+            self.flash_instance_vtable_rva,
+            self.root_vtable_rva,
+            self.root_secondary_vtable_rva,
+            self.container_vtable_rva,
+            self.container_secondary_vtable_rva,
+            self.text_vtable_rva,
+            self.text_secondary_vtable_rva,
+        ];
+        if values
+            .iter()
+            .any(|&rva| !(0x1000..0xffff_ff00).contains(&rva) || !rva.is_multiple_of(8))
+        {
+            return Err("invalid recorded Scaleform bindings".into());
+        }
+        Ok(())
+    }
 }
 
 pub fn support(identity: Option<&ProcessIdentity>) -> AdapterSupport {
@@ -100,14 +154,9 @@ pub fn support(identity: Option<&ProcessIdentity>) -> AdapterSupport {
         Some(identity) => match resolve(&identity.executable.sha256) {
             Some(adapter) => AdapterSupport::Supported {
                 id: adapter.id,
-                capabilities: &["native_inventory_v1", "scaleform_ui_v1"],
+                capabilities: &["scaleform_ui_v1"],
             },
-            None => AdapterSupport::Unsupported {
-                reason: format!(
-                    "unsupported Warframe executable {}",
-                    identity.executable.sha256
-                ),
-            },
+            None => AdapterSupport::NotProbed,
         },
         None => AdapterSupport::Unsupported {
             reason: "capture has no executable identity".to_owned(),
@@ -115,16 +164,9 @@ pub fn support(identity: Option<&ProcessIdentity>) -> AdapterSupport {
     }
 }
 
-pub(crate) fn unsupported_reason(identity: Option<&ProcessIdentity>) -> Option<String> {
-    match support(identity) {
-        AdapterSupport::Supported { .. } => None,
-        AdapterSupport::Unsupported { reason } => Some(reason),
-    }
-}
-
 #[cfg(test)]
 pub(crate) fn test_scaleform() -> ScaleformLayout {
-    CURRENT.scaleform
+    D01B.scaleform.unwrap()
 }
 
 #[cfg(test)]
@@ -141,13 +183,45 @@ mod tests {
                 path: PathBuf::from("Warframe.x64.exe"),
                 size: 1,
                 modified_unix_ms: None,
-                sha256: CURRENT.sha256.to_owned(),
+                sha256: D01B.sha256.to_owned(),
             },
         };
-        assert_eq!(require(&identity).unwrap().id, CURRENT.id);
+        assert_eq!(resolve(&identity.executable.sha256).unwrap().id, D01B.id);
 
         let mut unknown = identity;
         unknown.executable.sha256 = "unknown".to_owned();
-        assert!(require(&unknown).is_err());
+        assert!(resolve(&unknown.executable.sha256).is_none());
+    }
+
+    #[test]
+    fn unknown_build_does_not_enable_unverified_scaleform() {
+        let identity = ProcessIdentity {
+            pid: 1,
+            executable: ExecutableIdentity {
+                path: PathBuf::from("Warframe.x64.exe"),
+                size: 1,
+                modified_unix_ms: None,
+                sha256: "unknown".to_owned(),
+            },
+        };
+        assert!(require_scaleform(&identity).is_err());
+        assert!(matches!(
+            support(Some(&identity)),
+            AdapterSupport::NotProbed
+        ));
+        assert_eq!(list()[0]["domains"], serde_json::json!(["scaleform"]));
+    }
+
+    #[test]
+    fn recorded_bindings_do_not_require_an_installed_executable() {
+        let expected = test_scaleform();
+        assert_eq!(replay_scaleform(None, Some(expected)).unwrap(), expected);
+        let mut invalid = expected;
+        invalid.text_vtable_rva = u64::MAX;
+        assert!(
+            replay_scaleform(None, Some(invalid))
+                .unwrap_err()
+                .contains("invalid recorded")
+        );
     }
 }

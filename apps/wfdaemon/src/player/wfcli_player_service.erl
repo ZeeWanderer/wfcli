@@ -5,7 +5,7 @@
 
 -behaviour(gen_server).
 
--export([start_link/0, snapshot/0, publish/2, subscribe/1, unsubscribe/1,
+-export([start_link/0, snapshot/0, publish/2, publish/3, subscribe/1, subscribe/2, unsubscribe/1,
          clear/0, status/0]).
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2,
          terminate/2, code_change/3]).
@@ -22,6 +22,7 @@
     data := map()
 }.
 -type source() :: binary() | clear.
+-type view() :: full | metadata | hud.
 -type state() :: #{
     cache_path := file:filename_all(),
     snapshot := snapshot(),
@@ -46,12 +47,20 @@ snapshot() ->
 -doc "Replace one source-owned player namespace and notify subscribers.".
 -spec publish(binary(), map()) -> {ok, snapshot()} | {error, term()}.
 publish(Source, Data) ->
-    gen_server:call(?SERVER, {publish, Source, Data}).
+    publish(Source, Data, full).
+
+-spec publish(binary(), map(), full | metadata) -> {ok, map()} | {error, term()}.
+publish(Source, Data, ReplyView) ->
+    gen_server:call(?SERVER, {publish, Source, Data, ReplyView}).
 
 -doc "Subscribe a local process. Changes arrive as `{wfcli_player, Ref, Source, Snapshot}`.".
 -spec subscribe(pid()) -> {ok, reference(), snapshot()} | {error, term()}.
 subscribe(Client) ->
-    gen_server:call(?SERVER, {subscribe, Client}).
+    subscribe(Client, full).
+
+-spec subscribe(pid(), view()) -> {ok, reference(), map()} | {error, term()}.
+subscribe(Client, View) ->
+    gen_server:call(?SERVER, {subscribe, Client, View}).
 
 -doc "Remove one player dataset subscription.".
 -spec unsubscribe(reference()) -> ok.
@@ -75,6 +84,7 @@ init([]) ->
     ensure_view_cache(),
     {ok, #{cache_path => CachePath,
            snapshot => reset_session_state(Snapshot),
+           boot_id => wfcli_player_inventory:boot_id(),
            subscribers => #{},
            monitors => #{},
            game_active => false,
@@ -85,19 +95,25 @@ init([]) ->
 -spec handle_call(term(), gen_server:from(), state()) -> {reply, term(), state()}.
 handle_call(snapshot, _From, State) ->
     {reply, maps:get(snapshot, State), State};
-handle_call({publish, Source, Data}, _From, State)
-  when is_binary(Source), is_map(Data) ->
+handle_call({publish, Source, Data, ReplyView}, _From, State)
+  when is_binary(Source), is_map(Data), (ReplyView =:= full orelse ReplyView =:= metadata) ->
     case valid_source(Source) of
-        true -> publish_source(Source, Data, State);
+        true ->
+            case publish_source(Source, Data, State) of
+                {reply, {ok, Snapshot}, Next} ->
+                    {reply, {ok, subscription_snapshot(Snapshot, ReplyView)}, Next};
+                Error -> Error
+            end;
         false -> {reply, {error, {invalid_player_source, Source}}, State}
     end;
-handle_call({subscribe, Client}, _From, State) when is_pid(Client) ->
+handle_call({subscribe, Client, View}, _From, State)
+  when is_pid(Client), (View =:= full orelse View =:= metadata orelse View =:= hud) ->
     Ref = make_ref(),
     Monitor = erlang:monitor(process, Client),
-    Subscriber = #{client => Client, monitor => Monitor},
+    Subscriber = #{client => Client, monitor => Monitor, view => View},
     Subscribers = maps:get(subscribers, State),
     Monitors = maps:get(monitors, State),
-    {reply, {ok, Ref, maps:get(snapshot, State)},
+    {reply, {ok, Ref, subscription_snapshot(maps:get(snapshot, State), View)},
      State#{subscribers => Subscribers#{Ref => Subscriber},
             monitors => Monitors#{Monitor => Ref}}};
 handle_call({unsubscribe, Ref}, _From, State) ->
@@ -171,16 +187,36 @@ code_change(_OldVsn, State, _Extra) ->
     {ok, ensure_persistence_state(State#{game_active => maps:get(game_active, State, false)})}.
 
 publish_source(Source, Data, State) ->
+    OldData = maps:get(data, maps:get(snapshot, State)),
+    case Source of
+        Inventory when Inventory =:= <<"inventory_http">>; Inventory =:= <<"inventory_native">> ->
+            case wfcli_player_inventory:apply(Source, Data, OldData, maps:get(boot_id, State)) of
+                {ok, NewData} ->
+                    ChangedSource = case maps:get(<<"inventory">>, OldData, undefined) =:=
+                                         maps:get(<<"inventory">>, NewData, undefined) of
+                        true -> Source;
+                        false -> <<"inventory">>
+                    end,
+                    publish_sources(ChangedSource, NewData, State);
+                {error, Reason} = Error ->
+                    logger:warning("inventory observation rejected: ~ts: ~p", [Source, Reason]),
+                    {reply, Error, State}
+            end;
+        _ -> publish_sources(Source, OldData#{Source => Data}, State)
+    end.
+
+publish_sources(Source, NewData, State) ->
     OldSnapshot = maps:get(snapshot, State),
     OldData = maps:get(data, OldSnapshot),
-    case maps:get(Source, OldData, '$missing') =:= Data of
+    Data = maps:get(Source, NewData, #{}),
+    case OldData =:= NewData of
         true ->
             {reply, {ok, OldSnapshot}, maybe_update_game_status(Source, Data, State)};
         false ->
             Now = erlang:system_time(millisecond),
             Snapshot = #{revision => maps:get(revision, OldSnapshot) + 1,
                          updated_at => Now,
-                         data => OldData#{Source => Data}},
+                         data => NewData},
             invalidate_view_cache(),
             State1 = maybe_update_game_status(Source, Data,
                                               mark_dirty(State#{snapshot => Snapshot})),
@@ -212,10 +248,26 @@ release_legacy_game_hold(State) ->
 -spec notify_subscribers(source(), snapshot(), state()) -> ok.
 notify_subscribers(Source, Snapshot, State) ->
     maps:foreach(
-      fun(Ref, #{client := Client}) ->
-          Client ! {wfcli_player, Ref, Source, Snapshot}
+      fun(Ref, #{client := Client} = Subscriber) ->
+          View = maps:get(view, Subscriber, full),
+          case subscription_event(Source, View) of
+              true -> Client ! {wfcli_player, Ref, Source, subscription_snapshot(Snapshot, View)};
+              false -> ok
+          end
       end,
       maps:get(subscribers, State)).
+
+subscription_event(Source, hud) ->
+    Source =:= clear orelse Source =:= <<"game">> orelse Source =:= <<"collector">>;
+subscription_event(_Source, _View) -> true.
+
+subscription_snapshot(Snapshot, full) -> Snapshot;
+subscription_snapshot(Snapshot, metadata) -> maps:remove(data, Snapshot);
+subscription_snapshot(#{data := Data} = Snapshot, hud) ->
+    Snapshot#{data => #{
+        <<"game">> => maps:with([<<"phase">>, <<"pid">>], maps:get(<<"game">>, Data, #{})),
+        <<"collector">> => maps:with([<<"debug_output_active">>, <<"debug_output_lines_observed">>],
+                                     maps:get(<<"collector">>, Data, #{}))}}.
 
 remove_subscriber(Ref, State) ->
     case maps:take(Ref, maps:get(subscribers, State)) of
@@ -227,7 +279,8 @@ remove_subscriber(Ref, State) ->
     end.
 
 ensure_persistence_state(State) ->
-    State#{cache_dirty => maps:get(cache_dirty, State, false),
+    State#{boot_id => maps:get(boot_id, State, wfcli_player_inventory:boot_id()),
+           cache_dirty => maps:get(cache_dirty, State, false),
            cache_error => maps:get(cache_error, State, undefined),
            persist_timer => maps:get(persist_timer, State, undefined)}.
 

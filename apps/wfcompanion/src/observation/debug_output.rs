@@ -5,12 +5,14 @@ use std::io::{self, Read};
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
-use std::sync::mpsc;
 use std::sync::{
     Arc,
     atomic::{AtomicBool, Ordering},
 };
 use std::thread;
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
+
+use super::mailbox::Mailbox;
 
 mod subscribers;
 use subscribers::{Acquisition, Hub};
@@ -91,11 +93,27 @@ pub enum Event {
         game_pid: u32,
         sender_pid: u32,
         message: String,
+        observed_at: Instant,
+        observed_at_unix_ms: u128,
     },
     Stopped {
         game_pid: u32,
         reason: String,
     },
+}
+
+pub fn inbox() -> Arc<Mailbox<Event>> {
+    Arc::new(Mailbox::new(256, 1024 * 1024))
+}
+
+impl Event {
+    fn bytes(&self) -> usize {
+        size_of::<Self>()
+            + match self {
+                Self::Record { message, .. } => message.capacity(),
+                Self::Stopped { reason, .. } => reason.capacity(),
+            }
+    }
 }
 
 pub struct Bridge {
@@ -107,7 +125,7 @@ pub struct Bridge {
 }
 
 impl Bridge {
-    pub fn start(runtime: &Runtime, events: mpsc::Sender<Event>) -> Result<Self, String> {
+    pub fn start(runtime: &Runtime, events: Arc<Mailbox<Event>>) -> Result<Self, String> {
         let acquisition = Hub::acquire(runtime.prefix())?;
         if let Acquisition::Subscriber(stream) = acquisition {
             let input = stream.try_clone().map_err(|e| e.to_string())?;
@@ -162,7 +180,7 @@ impl Bridge {
 fn forward(
     input: impl Read + Send + 'static,
     game_pid: u32,
-    events: mpsc::Sender<Event>,
+    events: Arc<Mailbox<Event>>,
     mut hub: Option<Hub>,
     running: Arc<AtomicBool>,
 ) -> thread::JoinHandle<()> {
@@ -171,32 +189,42 @@ fn forward(
         loop {
             match read_record(&mut input) {
                 Ok(Some((sender_pid, message))) => {
+                    let observed_at = Instant::now();
+                    let observed_at_unix_ms = SystemTime::now()
+                        .duration_since(UNIX_EPOCH)
+                        .unwrap_or_default()
+                        .as_millis();
                     if let Some(hub) = &mut hub {
                         hub.publish(sender_pid, &message);
                     }
-                    if events
-                        .send(Event::Record {
-                            game_pid,
-                            sender_pid,
-                            message: String::from_utf8_lossy(&message).into_owned(),
-                        })
-                        .is_err()
-                    {
+                    let event = Event::Record {
+                        game_pid,
+                        sender_pid,
+                        observed_at,
+                        observed_at_unix_ms,
+                        message: String::from_utf8_lossy(&message).into_owned(),
+                    };
+                    let bytes = event.bytes();
+                    if events.send(event, bytes).is_err() {
                         break;
                     }
                 }
                 Ok(None) => {
-                    let _ = events.send(Event::Stopped {
+                    let event = Event::Stopped {
                         game_pid,
                         reason: "DBWIN helper closed its output".to_owned(),
-                    });
+                    };
+                    let bytes = event.bytes();
+                    let _ = events.send(event, bytes);
                     break;
                 }
                 Err(error) => {
-                    let _ = events.send(Event::Stopped {
+                    let event = Event::Stopped {
                         game_pid,
                         reason: format!("DBWIN helper protocol failed: {error}"),
-                    });
+                    };
+                    let bytes = event.bytes();
+                    let _ = events.send(event, bytes);
                     break;
                 }
             }
@@ -315,6 +343,49 @@ mod tests {
     use std::io::Cursor;
 
     #[test]
+    fn slow_consumer_is_bounded_and_keeps_acquisition_time() {
+        let mut bytes = Vec::new();
+        for pid in 0_u32..1000 {
+            bytes.extend_from_slice(&pid.to_le_bytes());
+            bytes.extend_from_slice(&4_u32.to_le_bytes());
+            bytes.extend_from_slice(b"test");
+        }
+        let events = inbox();
+        let running = Arc::new(AtomicBool::new(true));
+        forward(
+            Cursor::new(bytes),
+            42,
+            events.clone(),
+            None,
+            running.clone(),
+        )
+        .join()
+        .unwrap();
+        let finished_reading = Instant::now();
+        assert!(!running.load(Ordering::Acquire));
+        assert_eq!(events.stats().items, 256);
+        assert_eq!(events.stats().dropped_items, 745);
+        for expected_pid in 745..1000 {
+            let Event::Record {
+                sender_pid,
+                observed_at,
+                observed_at_unix_ms,
+                ..
+            } = events.recv_timeout(std::time::Duration::ZERO).unwrap()
+            else {
+                panic!("record");
+            };
+            assert_eq!(sender_pid, expected_pid);
+            assert!(observed_at <= finished_reading);
+            assert!(observed_at_unix_ms > 0);
+        }
+        assert!(matches!(
+            events.recv_timeout(std::time::Duration::ZERO).unwrap(),
+            Event::Stopped { .. }
+        ));
+    }
+
+    #[test]
     fn drop_reaps_idle_helper_and_joins_reader() {
         let mut child = Command::new("sleep")
             .arg("60")
@@ -322,7 +393,7 @@ mod tests {
             .spawn()
             .unwrap();
         let pid = child.id();
-        let (events, _) = mpsc::channel();
+        let events = inbox();
         let running = Arc::new(AtomicBool::new(true));
         let reader = forward(
             child.stdout.take().unwrap(),
@@ -345,7 +416,7 @@ mod tests {
     #[test]
     fn drop_disconnects_idle_subscriber_and_joins_reader() {
         let (input, _writer) = UnixStream::pair().unwrap();
-        let (events, _) = mpsc::channel();
+        let events = inbox();
         let running = Arc::new(AtomicBool::new(true));
         let reader = forward(input.try_clone().unwrap(), 0, events, None, running.clone());
         drop(Bridge {

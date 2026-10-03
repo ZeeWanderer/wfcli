@@ -1,6 +1,5 @@
 use std::collections::{BTreeMap, HashMap};
 use std::io;
-use std::path::Path;
 use std::time::Instant;
 
 use memchr::memmem;
@@ -11,16 +10,14 @@ use super::memory::ProcessMemory;
 use super::{ProcessIdentity, identify_process};
 
 mod display;
+pub(crate) mod layout;
 pub(crate) use display::enumerate as enumerate_text_objects;
 pub use display::{ObjectReport, TextObject};
-mod evidence;
 mod refs;
 mod registry;
 mod relic;
 mod text;
 
-pub use evidence::{EvidenceReplay, EvidenceSummary, ReplayMemorySummary, replay_evidence};
-pub(crate) use evidence::{LoadedEvidence, load_evidence};
 pub use refs::{PointerReference, PointerReferences};
 pub use registry::{BoundedProbe, BoundedScanMetrics, BoundedScanResult};
 pub use relic::{RelicEra, RelicRewardText, RelicSelection};
@@ -147,8 +144,8 @@ pub fn bounded_probe_for_identity(pid: u32, identity: &ProcessIdentity) -> Bound
             reason: "Warframe process identity PID mismatch".to_owned(),
         };
     }
-    let layout = match adapter::require(identity) {
-        Ok(adapter) => adapter.scaleform,
+    let layout = match adapter::require_scaleform(identity) {
+        Ok(layout) => layout,
         Err(reason) => {
             return BoundedProbe::Unavailable {
                 stage: "adapter",
@@ -157,6 +154,29 @@ pub fn bounded_probe_for_identity(pid: u32, identity: &ProcessIdentity) -> Bound
         }
     };
     registry::probe(pid, layout)
+}
+
+#[derive(Debug)]
+pub struct Reader {
+    pid: u32,
+    layout: adapter::ScaleformLayout,
+}
+
+impl Reader {
+    pub fn open_for_identity(identity: &ProcessIdentity) -> Result<Self, String> {
+        Ok(Self {
+            pid: identity.pid,
+            layout: adapter::require_scaleform(identity)?,
+        })
+    }
+
+    pub fn relic_selection(&self) -> Result<RelicSelection, String> {
+        relic::selection(self.pid, self.layout)
+    }
+
+    pub fn relic_rewards(&self) -> Result<RelicRewardText, String> {
+        relic::rewards(self.pid, self.layout)
+    }
 }
 
 pub fn probe_relic_selection(pid: u32) -> Result<RelicSelection, String> {
@@ -171,7 +191,7 @@ pub fn probe_relic_selection_for_identity(
     if identity.pid != pid {
         return Err("Warframe process identity PID mismatch".to_owned());
     }
-    relic::selection(pid, adapter::require(identity)?.scaleform)
+    Reader::open_for_identity(identity)?.relic_selection()
 }
 
 pub fn probe_relic_rewards(pid: u32) -> Result<RelicRewardText, String> {
@@ -186,7 +206,7 @@ pub fn probe_relic_rewards_for_identity(
     if identity.pid != pid {
         return Err("Warframe process identity PID mismatch".to_owned());
     }
-    relic::rewards(pid, adapter::require(identity)?.scaleform)
+    Reader::open_for_identity(identity)?.relic_rewards()
 }
 
 pub fn explicit_scan(pid: u32) -> Result<ScanResult, String> {
@@ -248,14 +268,6 @@ pub(crate) fn relic_rewards_memory(
     snapshot: &Snapshot,
 ) -> Result<RelicRewardText, String> {
     relic::rewards_from_snapshot(memory, layout, snapshot)
-}
-
-pub fn capture_evidence(
-    pid: u32,
-    directory: &Path,
-    terms: &[String],
-) -> Result<EvidenceSummary, String> {
-    evidence::capture(pid, directory, terms)
 }
 
 pub(crate) fn scan_snapshot(memory: &ProcessMemory) -> Result<ScanResult, String> {
@@ -329,6 +341,9 @@ fn scan_movie_paths(memory: &ProcessMemory) -> io::Result<HashMap<u64, String>> 
             for index in memmem::find_iter(&searchable, MOVIE_PREFIX) {
                 if let Some(path) = movie_path_at(&searchable, index) {
                     paths.insert(base + index as u64, path.to_owned());
+                    if paths.len() > 65_536 {
+                        return Err(io::Error::other("UI movie path limit exceeded"));
+                    }
                 }
             }
             tail.clear();
@@ -391,6 +406,9 @@ fn scan_movie_records(
                         scale_y,
                     },
                 );
+                if movies.len() > 4096 {
+                    return Err(io::Error::other("UI movie record limit exceeded"));
+                }
             }
             offset += read as u64;
         }

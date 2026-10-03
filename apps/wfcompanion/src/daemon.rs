@@ -14,11 +14,11 @@ use serde_json::Value;
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt};
 use tokio::net::UnixStream;
-use tokio::sync::mpsc;
 use tokio::time::{self, MissedTickBehavior};
 use tokio_util::codec::FramedRead;
 
 use crate::relic::{CaptureArm, Trigger as RelicTrigger};
+use crate::runtime::{diagnostics, inbox::value_bytes, presentation};
 use crate::{UiEvent, incident};
 use wfcompanion::local_protocol::{ENVELOPE_VERSION, INTERFACE_DIAGNOSTICS, companion_interfaces};
 #[cfg(test)]
@@ -36,25 +36,65 @@ const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 const RELIC_SUGGESTION_LIMIT: u64 = 32;
 const STOP_CHECK_INTERVAL: Duration = Duration::from_secs(1);
 const START_TIMEOUT: Duration = Duration::from_secs(30);
+const MAX_CLIENT_FRAME_BYTES: usize = 8 * 1024 * 1024;
 
 mod framing;
+mod outbox;
+mod replay;
 use framing::ServerFrames;
+pub(crate) use replay::Replay;
 
-pub(crate) type OutboundSender = mpsc::UnboundedSender<Outbound>;
-type OutboundReceiver = mpsc::UnboundedReceiver<Outbound>;
+use outbox::Receiver as OutboundReceiver;
+pub(crate) use outbox::{Sender as OutboundSender, channel as outbound_channel};
 type ReplySender = std_mpsc::Sender<Result<Value, String>>;
 type PublicationKey = (&'static str, &'static str);
 
+pub(crate) struct Connection {
+    outbound: OutboundSender,
+    stopping: Arc<AtomicBool>,
+    worker: Option<thread::JoinHandle<Replay>>,
+}
+
+impl Connection {
+    pub(crate) fn outbound(&self) -> OutboundSender {
+        self.outbound.clone()
+    }
+
+    pub(crate) fn quiesce(&self) {
+        self.outbound.cancel_requests();
+    }
+
+    pub(crate) fn finish(&mut self) -> Replay {
+        self.quiesce();
+        self.stopping.store(true, Ordering::Release);
+        if let Some(worker) = self.worker.take() {
+            match worker.join() {
+                Ok(replay) => return replay,
+                Err(_) => incident::error("runtime.worker_panicked", "worker=daemon"),
+            }
+        }
+        Replay::default()
+    }
+}
+
+impl Drop for Connection {
+    fn drop(&mut self) {
+        self.finish();
+    }
+}
+
 #[derive(Clone)]
 struct ServerEvents {
-    ui: std_mpsc::Sender<UiEvent>,
-    relic: std_mpsc::Sender<RelicTrigger>,
+    ui: presentation::Sender,
+    relic: crate::relic::Sender,
+    diagnostics: diagnostics::Sender,
 }
 
 #[derive(Debug)]
 pub(crate) struct RequestReply {
     sender: ReplySender,
     deadline: Instant,
+    cancelled: Arc<AtomicBool>,
 }
 
 impl RequestReply {
@@ -62,11 +102,18 @@ impl RequestReply {
         Self {
             sender,
             deadline: Instant::now() + REQUEST_TIMEOUT,
+            cancelled: Arc::new(AtomicBool::new(false)),
         }
     }
 
-    fn expired(&self) -> bool {
-        Instant::now() >= self.deadline
+    fn failure(&self) -> Option<&'static str> {
+        if self.cancelled.load(Ordering::Acquire) {
+            Some("companion stopping")
+        } else if Instant::now() >= self.deadline {
+            Some("daemon request timed out")
+        } else {
+            None
+        }
     }
 
     fn send(&self, result: Result<Value, String>) {
@@ -94,6 +141,7 @@ enum ClientMessage<'a> {
     Subscribe {
         id: u64,
         dataset: &'a str,
+        view: &'a str,
     },
     Publish {
         id: u64,
@@ -123,6 +171,10 @@ enum ClientMessage<'a> {
     DiagnosticsReport {
         id: u64,
         issues: &'a [Value],
+    },
+    CompanionDiagnostics {
+        request_id: &'a str,
+        data: &'a Value,
     },
 }
 
@@ -235,37 +287,72 @@ fn request_once(
     build: &impl Fn(RequestReply) -> Outbound,
 ) -> Result<Value, String> {
     let (reply_tx, reply_rx) = std_mpsc::channel();
-    outbound
-        .send(build(RequestReply::new(reply_tx)))
-        .map_err(|_| "daemon connection worker stopped".to_owned())?;
-    match reply_rx.recv_timeout(REQUEST_TIMEOUT) {
-        Ok(result) => result,
-        Err(std_mpsc::RecvTimeoutError::Timeout) => Err("daemon request timed out".to_owned()),
-        Err(std_mpsc::RecvTimeoutError::Disconnected) => {
-            Err("daemon connection worker stopped".to_owned())
+    let mut reply = RequestReply::new(reply_tx);
+    let cancelled = outbound.cancellation();
+    reply.cancelled = cancelled.clone();
+    let deadline = reply.deadline;
+    outbound.send(build(reply)).map_err(str::to_owned)?;
+    loop {
+        if cancelled.load(Ordering::Acquire) {
+            return Err("companion stopping".to_owned());
+        }
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            return Err("daemon request timed out".to_owned());
+        }
+        match reply_rx.recv_timeout(remaining.min(Duration::from_millis(50))) {
+            Ok(result) => return result,
+            Err(std_mpsc::RecvTimeoutError::Timeout) => {}
+            Err(std_mpsc::RecvTimeoutError::Disconnected) => {
+                return Err("daemon connection worker stopped".to_owned());
+            }
         }
     }
 }
 
 pub(crate) fn spawn(
-    ui: std_mpsc::Sender<UiEvent>,
-    relic: std_mpsc::Sender<RelicTrigger>,
-    stopping: Arc<AtomicBool>,
+    ui: presentation::Sender,
+    relic: crate::relic::Sender,
+    diagnostics: diagnostics::Sender,
     mode: &'static str,
-) -> OutboundSender {
-    let (outbound_tx, outbound_rx) = mpsc::unbounded_channel();
-    let events = ServerEvents { ui, relic };
-    thread::spawn(move || {
-        let runtime = tokio::runtime::Builder::new_current_thread()
-            .enable_io()
-            .enable_time()
-            .build();
-        match runtime {
-            Ok(runtime) => runtime.block_on(connection_loop(outbound_rx, events, stopping, mode)),
-            Err(error) => incident::error("daemon.runtime_failed", error.to_string()),
-        }
-    });
-    outbound_tx
+    replay: Replay,
+) -> Result<Connection, String> {
+    let latest = replay.latest()?;
+    let (outbound_tx, outbound_rx) = outbound_channel();
+    let events = ServerEvents {
+        ui,
+        relic,
+        diagnostics,
+    };
+    let stopping = Arc::new(AtomicBool::new(false));
+    let worker_stopping = stopping.clone();
+    let worker = thread::Builder::new()
+        .name("wfcompanion-daemon".to_owned())
+        .spawn(move || {
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_io()
+                .enable_time()
+                .build();
+            match runtime {
+                Ok(runtime) => runtime.block_on(connection_loop(
+                    outbound_rx,
+                    events,
+                    worker_stopping,
+                    mode,
+                    latest,
+                )),
+                Err(error) => {
+                    incident::error("daemon.runtime_failed", error.to_string());
+                    replay
+                }
+            }
+        })
+        .map_err(|error| format!("could not start daemon worker: {error}"))?;
+    Ok(Connection {
+        outbound: outbound_tx,
+        stopping,
+        worker: Some(worker),
+    })
 }
 
 async fn connection_loop(
@@ -273,14 +360,14 @@ async fn connection_loop(
     events: ServerEvents,
     stopping: Arc<AtomicBool>,
     mode: &'static str,
-) {
+    mut latest: BTreeMap<PublicationKey, Value>,
+) -> Replay {
     let path = daemon_socket_path();
     let mut start_attempted = false;
-    let mut latest = BTreeMap::new();
     let mut queued = VecDeque::new();
     loop {
         if stopping.load(Ordering::Relaxed) {
-            return;
+            break;
         }
         drain_outbound(&mut outbound, &mut latest, &mut queued);
         let connection = time::timeout(CONNECT_TIMEOUT, UnixStream::connect(&path))
@@ -327,9 +414,12 @@ async fn connection_loop(
         if stopping.load(Ordering::Relaxed)
             || !wait_for_reconnect(&mut outbound, &mut latest, &mut queued, &stopping).await
         {
-            return;
+            break;
         }
     }
+    outbound.close();
+    drain_outbound(&mut outbound, &mut latest, &mut queued);
+    Replay::from_latest(latest)
 }
 
 async fn wait_for_reconnect(
@@ -350,6 +440,7 @@ async fn wait_for_reconnect(
                 None => return false,
             },
             _ = stop_check.tick() => {
+                expire_queued(queued);
                 if stopping.load(Ordering::Relaxed) {
                     return false;
                 }
@@ -370,7 +461,11 @@ async fn connection_session(
     let (reader, mut writer) = stream.split();
     let mut reader = FramedRead::new(reader, ServerFrames::new());
     let interfaces = companion_interfaces();
-    let features = ["companion.command", "diagnostics.report"];
+    let features = [
+        "companion.command",
+        "companion.diagnostics",
+        "diagnostics.report",
+    ];
     let hello = time::timeout(HANDSHAKE_TIMEOUT, async {
         send_message(
             &mut writer,
@@ -395,13 +490,20 @@ async fn connection_session(
         "daemon.connected",
         format!("local_envelope={ENVELOPE_VERSION} mode={mode}"),
     );
-    let _ = events.ui.send(UiEvent::Connected(hello));
+    let _ = events.ui.send(UiEvent::Connected(
+        hello
+            .get("version")
+            .and_then(Value::as_str)
+            .unwrap_or("unknown")
+            .to_owned(),
+    ));
 
     send_message(
         &mut writer,
         &ClientMessage::Subscribe {
             id: 2,
             dataset: "player",
+            view: "hud",
         },
     )
     .await?;
@@ -414,43 +516,43 @@ async fn connection_session(
     )
     .await?;
 
-    let mut next_id = 10;
-    for (&(dataset, source), data) in latest.iter() {
-        send_publish(&mut writer, next_id, dataset, source, data).await?;
-        next_id += 1;
-    }
-
+    let mut replay = latest
+        .iter()
+        .map(|(&(dataset, source), data)| Outbound::Publish {
+            dataset,
+            source,
+            data: data.clone(),
+        })
+        .collect::<VecDeque<_>>();
+    replay.append(queued);
     let mut pending = BTreeMap::new();
-    while let Some(message) = queued.pop_front() {
-        if let Err(error) = send_outbound(
-            &mut writer,
-            next_id,
-            message,
-            latest,
-            &mut pending,
-            negotiated.diagnostics_report,
-        )
-        .await
-        {
-            fail_pending(&mut pending, "daemon connection closed");
-            return Err(error);
-        }
-        next_id += 1;
-    }
 
     let result = active_session(ActiveSession {
         writer: &mut writer,
         reader: &mut reader,
         outbound,
+        queued: &mut replay,
         latest,
         events,
         stopping,
-        next_id,
+        next_id: 10,
         pending: &mut pending,
         diagnostics_report: negotiated.diagnostics_report,
     })
     .await;
     fail_pending(&mut pending, "daemon connection closed");
+    for message in replay {
+        if let Outbound::Publish {
+            dataset,
+            source,
+            data,
+        } = message
+        {
+            retain_publication(latest, dataset, source, data);
+        } else if let Some(reply) = message.reply() {
+            reply.send(Err("daemon connection closed".to_owned()));
+        }
+    }
     result
 }
 
@@ -458,6 +560,7 @@ struct ActiveSession<'a, R, W> {
     writer: &'a mut W,
     reader: &'a mut FramedRead<R, ServerFrames>,
     outbound: &'a mut OutboundReceiver,
+    queued: &'a mut VecDeque<Outbound>,
     latest: &'a mut BTreeMap<PublicationKey, Value>,
     events: &'a ServerEvents,
     stopping: &'a AtomicBool,
@@ -475,6 +578,7 @@ where
         writer,
         reader,
         outbound,
+        queued,
         latest,
         events,
         stopping,
@@ -484,25 +588,99 @@ where
     } = session;
     let mut stop_check = time::interval(STOP_CHECK_INTERVAL);
     stop_check.set_missed_tick_behavior(MissedTickBehavior::Skip);
+    let mut frame: Option<Writing> = None;
+    let mut shutdown_deadline = None;
+    let (diagnostic_tx, mut diagnostic_rx) = tokio::sync::mpsc::channel(32);
     loop {
+        if stopping.load(Ordering::Relaxed) && shutdown_deadline.is_none() {
+            outbound.close();
+            fail_pending(pending, "companion stopping");
+            shutdown_deadline = Some(Instant::now() + WRITE_TIMEOUT);
+        }
+        let mut input_exhausted = false;
+        if frame.is_none()
+            && let Ok(response) = diagnostic_rx.try_recv()
+        {
+            frame = Some(diagnostic_frame(response)?);
+        }
+        if frame.is_none() {
+            for _ in 0..outbox::MAX_MESSAGES {
+                let Some(message) = queued.pop_front().or_else(|| outbound.try_recv().ok()) else {
+                    input_exhausted = true;
+                    break;
+                };
+                if shutdown_deadline.is_some() && message.reply().is_some() {
+                    continue;
+                }
+                let encoded =
+                    match encode_outbound(next_id, message, latest, pending, diagnostics_report) {
+                        Ok(encoded) => encoded,
+                        Err(error) => {
+                            if let Some(reply) = pending.remove(&next_id) {
+                                reply.send(Err(error.to_string()));
+                            }
+                            incident::warn("daemon.outbound_rejected", error.to_string());
+                            None
+                        }
+                    };
+                next_id += 1;
+                if let Some(bytes) = encoded {
+                    frame = Some(Writing {
+                        bytes,
+                        offset: 0,
+                        deadline: Instant::now() + WRITE_TIMEOUT,
+                    });
+                    break;
+                }
+            }
+            if frame.is_none() && input_exhausted && shutdown_deadline.is_some() {
+                return time::timeout_at(shutdown_deadline.unwrap().into(), writer.flush())
+                    .await
+                    .map_err(|_| {
+                        io::Error::new(io::ErrorKind::TimedOut, "daemon shutdown flush timed out")
+                    })?;
+            }
+        }
+        let write_deadline = frame.as_ref().map(|frame| frame.deadline);
+        let deadline = write_deadline.into_iter().chain(shutdown_deadline).min();
         tokio::select! {
-            message = outbound.recv() => match message {
+            response = diagnostic_rx.recv(), if frame.is_none() => {
+                if let Some(response) = response {
+                    frame = Some(diagnostic_frame(response)?);
+                }
+            },
+            _ = stop_check.tick() => expire_pending(pending),
+            _ = tokio::task::yield_now(), if frame.is_none() && !input_exhausted => {},
+            _ = wait_until(deadline) => return Err(io::Error::new(io::ErrorKind::TimedOut, "daemon write timed out")),
+            result = async {
+                let frame = frame.as_ref().unwrap();
+                writer.write(&frame.bytes[frame.offset..]).await
+            }, if frame.is_some() => {
+                let written = result?;
+                if written == 0 {
+                    return Err(io::Error::new(io::ErrorKind::WriteZero, "daemon write returned zero"));
+                }
+                let writing = frame.as_mut().unwrap();
+                writing.offset += written;
+                if writing.offset == writing.bytes.len() {
+                    frame = None;
+                }
+            },
+            message = outbound.recv(), if frame.is_none() && queued.is_empty() => match message {
                 Some(message) => {
-                    send_outbound(
-                        writer,
-                        next_id,
-                        message,
-                        latest,
-                        pending,
-                        diagnostics_report,
-                    )
-                    .await?;
-                    next_id += 1;
+                    queued.push_back(message);
                 }
                 None => return Ok(()),
             },
             message = reader.next() => match message {
-                Some(message) => handle_server_message(message?, events, pending),
+                Some(message) => {
+                    let message = message?;
+                    if message.get("event").and_then(Value::as_str) == Some("companion_diagnostics") {
+                        diagnostics::route(&message, &events.diagnostics, &diagnostic_tx)?;
+                    } else {
+                        handle_server_message(message, events, pending);
+                    }
+                },
                 None => {
                     return Err(io::Error::new(
                         io::ErrorKind::ConnectionReset,
@@ -510,13 +688,31 @@ where
                     ));
                 }
             },
-            _ = stop_check.tick() => {
-                expire_pending(pending);
-                if stopping.load(Ordering::Relaxed) {
-                    return Ok(());
-                }
-            }
         }
+    }
+}
+
+struct Writing {
+    bytes: Vec<u8>,
+    offset: usize,
+    deadline: Instant,
+}
+
+fn diagnostic_frame(response: diagnostics::Response) -> io::Result<Writing> {
+    Ok(Writing {
+        bytes: encode_message(&ClientMessage::CompanionDiagnostics {
+            request_id: &response.request_id,
+            data: &response.data,
+        })?,
+        offset: 0,
+        deadline: Instant::now() + WRITE_TIMEOUT,
+    })
+}
+
+async fn wait_until(deadline: Option<Instant>) {
+    match deadline {
+        Some(deadline) => time::sleep_until(deadline.into()).await,
+        None => std::future::pending().await,
     }
 }
 
@@ -525,7 +721,10 @@ fn drain_outbound(
     latest: &mut BTreeMap<PublicationKey, Value>,
     queued: &mut VecDeque<Outbound>,
 ) {
-    while let Ok(message) = outbound.try_recv() {
+    for _ in 0..outbox::MAX_MESSAGES {
+        let Ok(message) = outbound.try_recv() else {
+            break;
+        };
         retain_outbound(message, latest, queued);
     }
 }
@@ -540,42 +739,93 @@ fn retain_outbound(
             dataset,
             source,
             data,
-        } => {
-            latest.insert((dataset, source), data);
+        } if outbox::snapshot(dataset, source) => {
+            retain_publication(latest, dataset, source, data);
         }
-        report @ Outbound::DiagnosticsReport { .. } => {
-            queued.retain(|item| !matches!(item, Outbound::DiagnosticsReport { .. }));
-            queued.push_back(report);
+        message => {
+            expire_queued(queued);
+            let bytes = outbox::memory_cost(&message);
+            if queued.len() >= outbox::MAX_MESSAGES
+                || bytes
+                    > outbox::MAX_BYTES.saturating_sub(queued.iter().map(outbox::memory_cost).sum())
+            {
+                outbox::reject(message, "daemon reconnect queue is full");
+            } else {
+                queued.push_back(message);
+            }
         }
-        request => queued.push_back(request),
     }
 }
 
-async fn send_outbound<W>(
-    writer: &mut W,
+fn expire_queued(queued: &mut VecDeque<Outbound>) {
+    queued.retain(|message| {
+        if let Some(reply) = message.reply()
+            && let Some(reason) = reply.failure()
+        {
+            reply.send(Err(reason.to_owned()));
+            false
+        } else {
+            true
+        }
+    });
+}
+
+fn retain_publication(
+    latest: &mut BTreeMap<PublicationKey, Value>,
+    dataset: &'static str,
+    source: &'static str,
+    data: Value,
+) -> bool {
+    let key = (dataset, source);
+    let bytes = latest
+        .iter()
+        .filter(|(existing, _)| **existing != key)
+        .map(|(_, data)| value_bytes(data))
+        .sum::<usize>();
+    if (latest.len() >= outbox::MAX_MESSAGES && !latest.contains_key(&key))
+        || value_bytes(&data) > outbox::MAX_BYTES.saturating_sub(bytes)
+    {
+        incident::warn(
+            "daemon.publication_rejected",
+            format!("dataset={dataset} source={source} replay cache full"),
+        );
+        latest.remove(&key);
+        false
+    } else {
+        latest.insert(key, data);
+        true
+    }
+}
+
+fn encode_outbound(
     id: u64,
     message: Outbound,
     latest: &mut BTreeMap<PublicationKey, Value>,
     pending: &mut BTreeMap<u64, RequestReply>,
     diagnostics_report: bool,
-) -> io::Result<()>
-where
-    W: AsyncWrite + Unpin,
-{
+) -> io::Result<Option<Vec<u8>>> {
     match message {
         Outbound::DatasetGet { dataset, reply } => {
             if !register_pending(pending, id, reply) {
-                return Ok(());
+                return Ok(None);
             }
-            send_message(writer, &ClientMessage::Get { id, dataset }).await
+            encode_message(&ClientMessage::Get { id, dataset }).map(Some)
         }
         Outbound::Publish {
             dataset,
             source,
             data,
         } => {
-            latest.insert((dataset, source), data);
-            send_publish(writer, id, dataset, source, &latest[&(dataset, source)]).await
+            let frame = encode_message(&ClientMessage::Publish {
+                id,
+                dataset,
+                source,
+                data: &data,
+            })?;
+            if outbox::snapshot(dataset, source) {
+                retain_publication(latest, dataset, source, data);
+            }
+            Ok(Some(frame))
         }
         Outbound::MarketResolve {
             labels,
@@ -583,36 +833,30 @@ where
             reply,
         } => {
             if !register_pending(pending, id, reply) {
-                return Ok(());
+                return Ok(None);
             }
-            send_message(
-                writer,
-                &ClientMessage::MarketResolve {
-                    id,
-                    labels: &labels,
-                    limit,
-                },
-            )
-            .await
+            encode_message(&ClientMessage::MarketResolve {
+                id,
+                labels: &labels,
+                limit,
+            })
+            .map(Some)
         }
         Outbound::AssetResolve { assets, reply } => {
             if !register_pending(pending, id, reply) {
-                return Ok(());
+                return Ok(None);
             }
-            send_message(
-                writer,
-                &ClientMessage::AssetResolve {
-                    id,
-                    assets: &assets,
-                },
-            )
-            .await
+            encode_message(&ClientMessage::AssetResolve {
+                id,
+                assets: &assets,
+            })
+            .map(Some)
         }
         Outbound::RelicContext { items, reply } => {
             if !register_pending(pending, id, reply) {
-                return Ok(());
+                return Ok(None);
             }
-            send_message(writer, &ClientMessage::RelicContext { id, items: &items }).await
+            encode_message(&ClientMessage::RelicContext { id, items: &items }).map(Some)
         }
         Outbound::RelicRecommendations {
             era,
@@ -621,31 +865,25 @@ where
             reply,
         } => {
             if !register_pending(pending, id, reply) {
-                return Ok(());
+                return Ok(None);
             }
-            send_message(
-                writer,
-                &ClientMessage::RelicRecommendations {
-                    id,
-                    era: &era,
-                    fetch_prices,
-                    limit,
-                },
-            )
-            .await
+            encode_message(&ClientMessage::RelicRecommendations {
+                id,
+                era: &era,
+                fetch_prices,
+                limit,
+            })
+            .map(Some)
         }
         Outbound::DiagnosticsReport { issues } => {
             if !diagnostics_report {
-                return Ok(());
+                return Ok(None);
             }
-            send_message(
-                writer,
-                &ClientMessage::DiagnosticsReport {
-                    id,
-                    issues: &issues,
-                },
-            )
-            .await
+            encode_message(&ClientMessage::DiagnosticsReport {
+                id,
+                issues: &issues,
+            })
+            .map(Some)
         }
     }
 }
@@ -655,8 +893,11 @@ fn register_pending(
     id: u64,
     reply: RequestReply,
 ) -> bool {
-    if reply.expired() {
-        reply.send(Err("daemon request timed out".to_owned()));
+    if let Some(reason) = reply.failure() {
+        reply.send(Err(reason.to_owned()));
+        false
+    } else if pending.len() >= outbox::MAX_MESSAGES {
+        reply.send(Err("too many pending daemon requests".to_owned()));
         false
     } else {
         pending.insert(id, reply);
@@ -666,8 +907,8 @@ fn register_pending(
 
 fn expire_pending(pending: &mut BTreeMap<u64, RequestReply>) {
     pending.retain(|_, reply| {
-        if reply.expired() {
-            reply.send(Err("daemon request timed out".to_owned()));
+        if let Some(reason) = reply.failure() {
+            reply.send(Err(reason.to_owned()));
             false
         } else {
             true
@@ -788,37 +1029,41 @@ where
     }
 }
 
-async fn send_publish<W>(
-    writer: &mut W,
-    id: u64,
-    dataset: &'static str,
-    source: &'static str,
-    data: &Value,
-) -> io::Result<()>
-where
-    W: AsyncWrite + Unpin,
-{
-    send_message(
-        writer,
-        &ClientMessage::Publish {
-            id,
-            dataset,
-            source,
-            data,
-        },
-    )
-    .await
-}
-
 async fn send_message<W>(writer: &mut W, message: &ClientMessage<'_>) -> io::Result<()>
 where
     W: AsyncWrite + Unpin,
 {
-    let mut frame = serde_json::to_vec(message)?;
-    frame.push(b'\n');
+    let frame = encode_message(message)?;
     time::timeout(WRITE_TIMEOUT, writer.write_all(&frame))
         .await
         .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "daemon write timed out"))?
+}
+
+fn encode_message(message: &ClientMessage<'_>) -> io::Result<Vec<u8>> {
+    let mut frame = serde_json::to_vec(message)?;
+    if frame.len() >= MAX_CLIENT_FRAME_BYTES {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "daemon outbound frame exceeds limit",
+        ));
+    }
+    frame.push(b'\n');
+    Ok(frame)
+}
+
+#[cfg(test)]
+async fn send_outbound<W: AsyncWrite + Unpin>(
+    writer: &mut W,
+    id: u64,
+    message: Outbound,
+    latest: &mut BTreeMap<PublicationKey, Value>,
+    pending: &mut BTreeMap<u64, RequestReply>,
+    diagnostics_report: bool,
+) -> io::Result<()> {
+    if let Some(frame) = encode_outbound(id, message, latest, pending, diagnostics_report)? {
+        writer.write_all(&frame).await?;
+    }
+    Ok(())
 }
 
 fn handle_server_message(
@@ -884,7 +1129,7 @@ fn command_bool(data: Option<&Value>, key: &str) -> Option<bool> {
     data.and_then(|data| data.get(key)).and_then(Value::as_bool)
 }
 
-fn route_capture_command(data: Option<&Value>, relic: &std_mpsc::Sender<RelicTrigger>) {
+fn route_capture_command(data: Option<&Value>, relic: &crate::relic::Sender) {
     let action = data
         .and_then(|data| data.get("action"))
         .and_then(Value::as_str);
@@ -918,17 +1163,16 @@ fn route_capture_command(data: Option<&Value>, relic: &std_mpsc::Sender<RelicTri
     }
 }
 
-fn send_snapshot(message: &Value, ui: &std_mpsc::Sender<UiEvent>) {
-    let Some(dataset) = message.get("dataset").and_then(Value::as_str) else {
+fn send_snapshot(message: &Value, ui: &presentation::Sender) {
+    if message.get("dataset").and_then(Value::as_str) != Some("player") {
         return;
-    };
+    }
     let Some(data) = message.get("data") else {
         return;
     };
-    let _ = ui.send(UiEvent::Snapshot {
-        dataset: dataset.to_owned(),
-        data: data.clone(),
-    });
+    let _ = ui.send(UiEvent::Player(presentation::PlayerStatus::from_snapshot(
+        data,
+    )));
 }
 
 async fn ensure_daemon(stopping: &AtomicBool) {
@@ -1037,6 +1281,215 @@ mod tests {
     use super::*;
 
     #[tokio::test]
+    async fn diagnostics_use_connection_scoped_replies_without_player_replay() {
+        let (client, server) = tokio::io::duplex(4096);
+        let (read, mut write) = tokio::io::split(client);
+        let mut reader = FramedRead::new(read, ServerFrames::new());
+        let (_sender, mut outbound) = outbound_channel();
+        let (mut events, _, _) = server_events();
+        let (requests, receiver) = diagnostics::channel();
+        events.diagnostics = requests.clone();
+        let stopping = AtomicBool::new(false);
+        let mut latest = BTreeMap::new();
+        let mut queued = VecDeque::new();
+        let mut pending = BTreeMap::new();
+        let session = active_session(ActiveSession {
+            writer: &mut write,
+            reader: &mut reader,
+            outbound: &mut outbound,
+            queued: &mut queued,
+            latest: &mut latest,
+            events: &events,
+            stopping: &stopping,
+            next_id: 10,
+            pending: &mut pending,
+            diagnostics_report: false,
+        });
+        let id = "0123456789abcdef0123456789abcdef";
+        let serve = async {
+            let (read, mut write) = tokio::io::split(server);
+            write
+                .write_all(
+                    format!(
+                        "{}\n",
+                        serde_json::json!({
+                            "event": "companion_diagnostics", "request_id": id,
+                            "request": {"action": "watch", "topic": "inventory", "seconds": 60}
+                        })
+                    )
+                    .as_bytes(),
+                )
+                .await
+                .unwrap();
+            let response = FramedRead::new(read, ServerFrames::new())
+                .next()
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(response["op"], "companion_diagnostics");
+            assert_eq!(response["request_id"], id);
+            assert_eq!(response["data"]["snapshot"]["receipts"], 7);
+        };
+        let observe = async {
+            while requests.stats().items == 0 {
+                tokio::task::yield_now().await;
+            }
+            let mut watches = diagnostics::Watches::new(receiver);
+            watches.tick(|| serde_json::json!({"receipts": 7}));
+            watches
+        };
+        let (result, (), mut watches) = time::timeout(Duration::from_secs(2), async {
+            tokio::join!(session, serve, observe)
+        })
+        .await
+        .unwrap();
+        assert_eq!(result.unwrap_err().kind(), io::ErrorKind::ConnectionReset);
+        assert!(latest.is_empty() && queued.is_empty() && pending.is_empty());
+        let (replies, mut output) = tokio::sync::mpsc::channel(32);
+        diagnostics::route(
+            &serde_json::json!({"request_id": id,
+            "request": {"action": "status"}}),
+            &requests,
+            &replies,
+        )
+        .unwrap();
+        watches.tick(|| serde_json::json!({}));
+        let status = output.try_recv().unwrap().data;
+        assert_eq!(status["jobs"][0]["state"], "cancelled");
+        assert_eq!(status["jobs"][0]["reason"], "connection closed");
+    }
+
+    #[tokio::test]
+    async fn stalled_write_still_routes_controls_and_resumes_exact_frame() {
+        let (client, server) = tokio::io::duplex(32);
+        let (read, mut write) = tokio::io::split(client);
+        let mut reader = FramedRead::new(read, ServerFrames::new());
+        let (sender, mut outbound) = outbound_channel();
+        let (events, ui, _) = server_events();
+        let payload = "x".repeat(10_000);
+        sender
+            .send(Outbound::Publish {
+                dataset: "player",
+                source: "inventory_http",
+                data: Value::String(payload.clone()),
+            })
+            .unwrap();
+        let stopping = AtomicBool::new(false);
+        let mut latest = BTreeMap::new();
+        let mut queued = VecDeque::new();
+        let mut pending = BTreeMap::new();
+        let session = active_session(ActiveSession {
+            writer: &mut write,
+            reader: &mut reader,
+            outbound: &mut outbound,
+            queued: &mut queued,
+            latest: &mut latest,
+            events: &events,
+            stopping: &stopping,
+            next_id: 10,
+            pending: &mut pending,
+            diagnostics_report: false,
+        });
+        let serve = async {
+            let (read, mut write) = tokio::io::split(server);
+            write.write_all(b"{\"event\":\"command\",\"data\":{\"command\":\"overlay\",\"visible\":false}}\n").await.unwrap();
+            time::timeout(Duration::from_secs(1), async {
+                loop {
+                    match ui.try_recv() {
+                        Ok(UiEvent::OverlayVisible(false)) => break,
+                        Err(std_mpsc::TryRecvError::Empty) => {
+                            time::sleep(Duration::from_millis(1)).await
+                        }
+                        event => panic!("unexpected control: {event:?}"),
+                    }
+                }
+            })
+            .await
+            .expect("control blocked behind outbound write");
+            let mut frames = FramedRead::new(read, ServerFrames::new());
+            let published = frames.next().await.unwrap().unwrap();
+            assert_eq!(published["data"], payload);
+            assert_eq!(published["id"], 10);
+            stopping.store(true, Ordering::Release);
+            drop(sender);
+            // Keep the peer alive until the session notices shutdown.
+            time::sleep(Duration::from_millis(20)).await;
+        };
+        let (result, ()) = time::timeout(Duration::from_secs(2), async {
+            tokio::join!(session, serve)
+        })
+        .await
+        .unwrap();
+        result.unwrap();
+    }
+
+    #[test]
+    fn quiescence_interrupts_waiting_requests_but_accepts_final_publications() {
+        let (sender, mut receiver) = outbound_channel();
+        let caller = sender.clone();
+        let worker = thread::spawn(move || dataset_get(&caller, "player"));
+        let message = receiver.blocking_recv().unwrap();
+        sender.cancel_requests();
+        assert_eq!(worker.join().unwrap(), Err("companion stopping".into()));
+        let mut pending = BTreeMap::new();
+        let Outbound::DatasetGet { reply, .. } = message else {
+            panic!()
+        };
+        assert!(!register_pending(&mut pending, 1, reply));
+        assert_eq!(
+            dataset_get(&sender, "player"),
+            Err("companion stopping".into())
+        );
+        sender
+            .send(Outbound::Publish {
+                dataset: "player",
+                source: "game",
+                data: serde_json::json!({"running": false}),
+            })
+            .unwrap();
+        assert!(matches!(
+            receiver.try_recv().unwrap(),
+            Outbound::Publish { .. }
+        ));
+    }
+
+    #[test]
+    fn reconnect_queue_is_bounded_and_expires_requests() {
+        let mut latest = BTreeMap::new();
+        let mut queued = VecDeque::new();
+        let mut replies = Vec::new();
+        for _ in 0..outbox::MAX_MESSAGES + 1 {
+            let (sender, receiver) = std_mpsc::channel();
+            replies.push(receiver);
+            retain_outbound(
+                Outbound::DatasetGet {
+                    dataset: "player",
+                    reply: RequestReply::new(sender),
+                },
+                &mut latest,
+                &mut queued,
+            );
+        }
+        assert_eq!(queued.len(), outbox::MAX_MESSAGES);
+        assert_eq!(
+            replies.pop().unwrap().try_recv().unwrap(),
+            Err("daemon reconnect queue is full".into())
+        );
+        for message in &queued {
+            message
+                .reply()
+                .unwrap()
+                .cancelled
+                .store(true, Ordering::Release);
+        }
+        expire_queued(&mut queued);
+        assert!(queued.is_empty());
+        for reply in replies {
+            assert_eq!(reply.try_recv().unwrap(), Err("companion stopping".into()));
+        }
+    }
+
+    #[tokio::test]
     async fn broken_frames_fail_pending_requests_and_next_session_recovers() {
         for response in [
             b"{invalid}\n".as_slice(),
@@ -1044,7 +1497,7 @@ mod tests {
             b"{\"id\":10,\"ok\":true}\n",
         ] {
             let (client, mut server) = UnixStream::pair().unwrap();
-            let (sender, mut outbound) = mpsc::unbounded_channel();
+            let (sender, mut outbound) = outbound_channel();
             let (reply, result) = std_mpsc::channel();
             let mut queued = VecDeque::from([Outbound::DatasetGet {
                 dataset: "player",
@@ -1074,7 +1527,11 @@ mod tests {
                 hello.push(b'\n');
                 write.write_all(&hello).await.unwrap();
                 for id in [2, 3, 10] {
-                    assert_eq!(frames.next().await.unwrap().unwrap()["id"], id);
+                    let request = frames.next().await.unwrap().unwrap();
+                    assert_eq!(request["id"], id);
+                    if id == 2 {
+                        assert_eq!(request["view"], "hud");
+                    }
                 }
                 write.write_all(response).await.unwrap();
                 write.shutdown().await.unwrap();
@@ -1102,7 +1559,7 @@ mod tests {
         let (read, mut write) = client.split();
         let mut reader = FramedRead::new(read, ServerFrames::new());
         server.write_all(b"{\"id\":").await.unwrap();
-        let (_sender, mut outbound) = mpsc::unbounded_channel();
+        let (_sender, mut outbound) = outbound_channel();
         let (events, _, _) = server_events();
         let stopping = AtomicBool::new(true);
         let mut latest = BTreeMap::new();
@@ -1113,6 +1570,7 @@ mod tests {
                 reader: &mut reader,
                 writer: &mut write,
                 outbound: &mut outbound,
+                queued: &mut VecDeque::new(),
                 latest: &mut latest,
                 pending: &mut pending,
                 events: &events,
@@ -1124,6 +1582,73 @@ mod tests {
         .await
         .unwrap()
         .unwrap();
+    }
+
+    #[tokio::test]
+    async fn shutdown_drains_publications_but_not_new_requests() {
+        let (mut client, mut server) = UnixStream::pair().unwrap();
+        let (read, mut write) = client.split();
+        let mut reader = FramedRead::new(read, ServerFrames::new());
+        let (sender, mut outbound) = outbound_channel();
+        let (reply, result) = std_mpsc::channel();
+        sender
+            .send(Outbound::DatasetGet {
+                dataset: "player",
+                reply: RequestReply::new(reply),
+            })
+            .unwrap();
+        sender
+            .send(Outbound::Publish {
+                dataset: "player",
+                source: "capture_result",
+                data: serde_json::json!({"state": "saved"}),
+            })
+            .unwrap();
+        let (events, _, _) = server_events();
+        let stopping = AtomicBool::new(true);
+        let mut latest = BTreeMap::new();
+        let mut pending = BTreeMap::new();
+        let mut queued = VecDeque::new();
+        for _ in 0..outbox::MAX_MESSAGES {
+            let (reply, _) = std_mpsc::channel();
+            queued.push_back(Outbound::DatasetGet {
+                dataset: "player",
+                reply: RequestReply::new(reply),
+            });
+        }
+        time::timeout(
+            Duration::from_secs(2),
+            active_session(ActiveSession {
+                reader: &mut reader,
+                writer: &mut write,
+                outbound: &mut outbound,
+                queued: &mut queued,
+                latest: &mut latest,
+                pending: &mut pending,
+                events: &events,
+                stopping: &stopping,
+                next_id: 10,
+                diagnostics_report: false,
+            }),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        assert!(sender.is_closed());
+        assert!(pending.is_empty());
+        assert!(matches!(
+            result.try_recv(),
+            Err(std_mpsc::TryRecvError::Disconnected)
+        ));
+        let mut frames = FramedRead::new(&mut server, ServerFrames::new());
+        let frame = time::timeout(Duration::from_secs(2), frames.next())
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        assert_eq!(frame["op"], "publish");
+        assert_eq!(frame["source"], "capture_result");
+        assert_eq!(frame["data"]["state"], "saved");
     }
 
     #[tokio::test]
@@ -1182,19 +1707,24 @@ mod tests {
         }
     }
 
-    fn server_events() -> (
-        ServerEvents,
-        std_mpsc::Receiver<UiEvent>,
-        std_mpsc::Receiver<RelicTrigger>,
-    ) {
-        let (ui, ui_events) = std_mpsc::channel();
-        let (relic, relic_events) = std_mpsc::channel();
-        (ServerEvents { ui, relic }, ui_events, relic_events)
+    fn server_events() -> (ServerEvents, presentation::Receiver, crate::relic::Receiver) {
+        let (ui, ui_events) = presentation::channel();
+        let (relic, relic_events) = crate::relic::channel();
+        let (diagnostics, _) = diagnostics::channel();
+        (
+            ServerEvents {
+                ui,
+                relic,
+                diagnostics,
+            },
+            ui_events,
+            relic_events,
+        )
     }
 
     #[test]
     fn records_latest_value_for_reconnect_replay() {
-        let (sender, mut receiver) = mpsc::unbounded_channel();
+        let (sender, mut receiver) = outbound_channel();
         sender
             .send(Outbound::Publish {
                 dataset: "player",
@@ -1224,7 +1754,7 @@ mod tests {
         retain_outbound(
             Outbound::Publish {
                 dataset: "player",
-                source: "warframe",
+                source: "inventory_http",
                 data: serde_json::json!({"inventory": true}),
             },
             &mut latest,
@@ -1240,12 +1770,39 @@ mod tests {
             &mut queued,
         );
         assert_eq!(latest.len(), 2);
-        assert_eq!(latest[&("player", "warframe")]["inventory"], true);
+        assert_eq!(latest[&("player", "inventory_http")]["inventory"], true);
         assert_eq!(latest[&("game_metadata", "warframe")]["schema"], 2);
     }
 
     #[test]
-    fn coalesces_disconnected_diagnostics_reports() {
+    fn reconnect_replays_full_inventory_before_native_scope() {
+        let mut latest = BTreeMap::new();
+        let mut queued = VecDeque::new();
+        for (source, sequence) in [
+            ("inventory_http", 1),
+            ("inventory_native", 2),
+            ("inventory_native", 3),
+        ] {
+            retain_outbound(
+                Outbound::Publish {
+                    dataset: "player",
+                    source,
+                    data: serde_json::json!({"sequence": sequence}),
+                },
+                &mut latest,
+                &mut queued,
+            );
+        }
+        assert!(queued.is_empty());
+        let replay: Vec<_> = latest
+            .iter()
+            .map(|((_, source), data)| (*source, data["sequence"].as_u64().unwrap()))
+            .collect();
+        assert_eq!(replay, [("inventory_http", 1), ("inventory_native", 3)]);
+    }
+
+    #[test]
+    fn preserves_disconnected_diagnostics_reports() {
         let mut latest = BTreeMap::new();
         let mut queued = VecDeque::new();
         retain_outbound(
@@ -1263,11 +1820,13 @@ mod tests {
             &mut queued,
         );
 
-        assert_eq!(queued.len(), 1);
-        let Some(Outbound::DiagnosticsReport { issues }) = queued.pop_front() else {
-            panic!("expected diagnostics report");
-        };
-        assert_eq!(issues[0]["identity"], "new");
+        assert_eq!(queued.len(), 2);
+        for expected in ["old", "new"] {
+            let Some(Outbound::DiagnosticsReport { issues }) = queued.pop_front() else {
+                panic!("expected diagnostics report");
+            };
+            assert_eq!(issues[0]["identity"], expected);
+        }
     }
 
     #[test]
@@ -1282,15 +1841,17 @@ mod tests {
             let (reader, mut writer) = client.split();
             let mut reader = FramedRead::new(reader, ServerFrames::new());
             let mut server = BufReader::new(server).lines();
-            let (sender, mut outbound) = mpsc::unbounded_channel();
+            let (sender, mut outbound) = outbound_channel();
             let (events, _ui_events, _relic_events) = server_events();
             let stopping = AtomicBool::new(false);
             let mut latest = BTreeMap::new();
             let mut pending = BTreeMap::new();
+            let mut queued = VecDeque::new();
             let session = active_session(ActiveSession {
                 writer: &mut writer,
                 reader: &mut reader,
                 outbound: &mut outbound,
+                queued: &mut queued,
                 latest: &mut latest,
                 events: &events,
                 stopping: &stopping,
@@ -1385,6 +1946,7 @@ mod tests {
         let reply = RequestReply {
             sender,
             deadline: Instant::now() - Duration::from_millis(1),
+            cancelled: Arc::new(AtomicBool::new(false)),
         };
         let mut pending = BTreeMap::new();
 
@@ -1507,6 +2069,36 @@ mod tests {
     }
 
     #[test]
+    fn player_events_project_hud_state_without_retaining_unrelated_datasets() {
+        let (events, ui, _relic) = server_events();
+        let mut pending = BTreeMap::new();
+        handle_server_message(
+            serde_json::json!({"event":"dataset", "dataset":"worldstate", "data":{"data":{"large":"unused"}}}),
+            &events,
+            &mut pending,
+        );
+        assert!(ui.try_recv().is_err());
+        for debug_lines in [1, 2] {
+            handle_server_message(
+                serde_json::json!({"event":"dataset", "dataset":"player", "data":{"data":{
+                    "game":{"phase":"game", "pid":42},
+                    "collector":{"debug_output_active":true,"debug_output_lines_observed":debug_lines},
+                    "inventory":{"raw":"x".repeat(1024 * 1024)}
+                }}}),
+                &events,
+                &mut pending,
+            );
+        }
+        assert!(events.ui.stats().bytes < 1024);
+        let UiEvent::Player(player) = ui.recv().unwrap() else {
+            panic!()
+        };
+        assert_eq!(player.pid, Some(42));
+        assert_eq!(player.debug_lines, 2);
+        assert!(ui.try_recv().is_err());
+    }
+
+    #[test]
     fn routes_overlay_and_hud_visibility_independently() {
         let (events, ui_events, _relic_events) = server_events();
         let mut pending = BTreeMap::new();
@@ -1571,7 +2163,7 @@ mod tests {
 
     #[test]
     fn retries_request_closed_by_daemon_restart() {
-        let (sender, mut receiver) = mpsc::unbounded_channel();
+        let (sender, mut receiver) = outbound_channel();
         let worker = thread::spawn(move || {
             let Outbound::RelicContext { reply, .. } = receiver.blocking_recv().unwrap() else {
                 panic!("expected first relic context request");
@@ -1591,7 +2183,7 @@ mod tests {
 
     #[test]
     fn relic_recommendations_preserve_price_request() {
-        let (sender, mut receiver) = mpsc::unbounded_channel();
+        let (sender, mut receiver) = outbound_channel();
         let worker = thread::spawn(move || {
             let Outbound::RelicRecommendations {
                 fetch_prices,

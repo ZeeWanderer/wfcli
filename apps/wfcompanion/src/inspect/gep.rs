@@ -2,15 +2,16 @@ use std::fs::File;
 use std::io::Write;
 use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
 use std::path::{Path, PathBuf};
-use std::thread;
+use std::sync::atomic::Ordering;
+use std::sync::mpsc::RecvTimeoutError;
 use std::time::{Duration, Instant};
 
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 
 use crate::game_observer::gep::{PollState, Sources};
+use crate::observation::gep::{self as sampling, Content, POLL_INTERVAL, Sampler};
 
-const POLL_INTERVAL: Duration = Duration::from_millis(7);
 const INVENTORY_MARKER: &[u8] = b"LastInventorySync";
 
 #[derive(Debug, Serialize)]
@@ -27,11 +28,10 @@ pub struct GepState {
 #[derive(Debug, Serialize)]
 pub struct GepLayout {
     pub manager_global: String,
-    pub profile_manager_global: Option<String>,
+    pub account: ProbeValue<serde_json::Value>,
     pub queue_table_offset: String,
     pub item_base_offset: String,
     pub body_offset: String,
-    pub alternate_offset: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -61,6 +61,7 @@ pub struct GepWatch {
     pub polls: u64,
     pub max_poll_us: u128,
     pub events: Vec<Payload>,
+    pub sampling: sampling::Report,
 }
 
 #[derive(Debug, Serialize)]
@@ -71,6 +72,7 @@ pub struct GepWatchSummary {
     pub polls: u64,
     pub max_poll_us: u128,
     pub events: usize,
+    pub sampling: sampling::Report,
 }
 
 pub fn state(pid: u32) -> Result<GepState, String> {
@@ -81,7 +83,7 @@ pub fn state_with_payloads(pid: u32, payload_dir: Option<&Path>) -> Result<GepSt
     let identity = crate::game_observer::identify_process(pid)?;
     let mem = open_memory(pid)?;
     let started = Instant::now();
-    let sources = Sources::discover(&mem, pid)?;
+    let sources = Sources::discover(&identity)?;
     let discovery_ms = started.elapsed().as_millis();
     let layout = layout(&sources);
     let account_seed = match sources.account_seed(&mem) {
@@ -95,7 +97,9 @@ pub fn state_with_payloads(pid: u32, payload_dir: Option<&Path>) -> Result<GepSt
     let payloads = sources
         .persistent_payloads(&mem, &mut poll)
         .into_iter()
-        .map(|(source, payload)| capture_payload(source, &payload, None, payload_dir))
+        .map(|(source, payload)| {
+            capture_payload(source, &payload, None, super::unix_time_ms(), payload_dir)
+        })
         .collect::<Result<Vec<_>, _>>()?;
     Ok(GepState {
         identity,
@@ -120,6 +124,7 @@ pub fn watch(pid: u32, duration: Duration, limit: usize) -> Result<GepWatch, Str
         polls: summary.polls,
         max_poll_us: summary.max_poll_us,
         events,
+        sampling: summary.sampling,
     })
 }
 
@@ -142,44 +147,66 @@ pub fn watch_payloads(
     validate_bounds(duration, limit)?;
     let identity = crate::game_observer::identify_process(pid)?;
     let mem = open_memory(pid)?;
-    let sources = Sources::discover(&mem, pid)?;
-    let mut poll = PollState::default();
-    let _ = sources.persistent_payloads(&mem, &mut poll);
-
+    let sources = Sources::discover(&identity)?;
     let started = Instant::now();
     let deadline = started + duration;
+    let mut sampler = Sampler::start(
+        mem,
+        sources,
+        sampling::Options {
+            skip_initial: true,
+            deadline: Some(deadline),
+            ..Default::default()
+        },
+        || true,
+    )?;
     let mut events = 0;
-    let mut polls = 0;
-    let mut max_poll_us = 0;
     while Instant::now() < deadline && events < limit {
-        let poll_started = Instant::now();
-        let payloads = sources.persistent_payloads(&mem, &mut poll);
-        max_poll_us = max_poll_us.max(poll_started.elapsed().as_micros());
-        polls += 1;
-        for (source, payload) in payloads {
-            let event = capture_payload(
-                source,
-                &payload,
-                Some(started.elapsed().as_millis()),
-                payload_dir,
-            )?;
-            emit(&event)?;
-            events += 1;
-            if events == limit {
-                break;
-            }
-        }
-        if Instant::now() < deadline && events < limit {
-            thread::sleep(POLL_INTERVAL);
-        }
+        let sample = match sampler
+            .queue
+            .recv_timeout(deadline.saturating_duration_since(Instant::now()))
+        {
+            Ok(sample) => sample,
+            Err(RecvTimeoutError::Timeout | RecvTimeoutError::Disconnected) => break,
+        };
+        let Content::Payload { source, bytes } = sample.content else {
+            continue;
+        };
+        sampler
+            .metrics
+            .queue_delay
+            .record(sample.captured.elapsed());
+        let processing = Instant::now();
+        let event = capture_payload(
+            source,
+            &bytes,
+            Some(
+                sample
+                    .captured
+                    .saturating_duration_since(started)
+                    .as_millis(),
+            ),
+            sample.collected_at,
+            payload_dir,
+        )?;
+        emit(&event)?;
+        sampler.metrics.decode.record(processing.elapsed());
+        sampler
+            .metrics
+            .decoded_sequence
+            .store(sample.sequence, Ordering::Relaxed);
+        events += 1;
     }
+    sampler.stop()?;
+    let sampling = sampler.report();
     Ok(GepWatchSummary {
         identity,
         duration_ms: started.elapsed().as_millis(),
         poll_interval_ms: POLL_INTERVAL.as_millis(),
-        polls,
-        max_poll_us,
+        polls: sampling.poll.count,
+        max_poll_us: u128::from(sampling.poll.max_us),
         events,
+        sampling,
     })
 }
 
@@ -189,27 +216,32 @@ fn open_memory(pid: u32) -> Result<File, String> {
 }
 
 fn layout(sources: &Sources) -> GepLayout {
-    let (queue, item, body, alternate) = sources.response_offsets();
+    let (queue, item, body) = sources.response_offsets();
     GepLayout {
         manager_global: hex(sources.manager_global()),
-        profile_manager_global: sources.profile_manager_global().map(hex),
+        account: match sources.account_bindings() {
+            Ok(value) => ProbeValue::Available { value },
+            Err(reason) => ProbeValue::Unavailable { reason },
+        },
         queue_table_offset: hex(queue),
         item_base_offset: hex(item),
         body_offset: hex(body),
-        alternate_offset: format!("{alternate:+#x}"),
     }
 }
 
-fn describe(source: &'static str, payload: &[u8], observed_after_ms: Option<u128>) -> Payload {
+fn describe(
+    source: &'static str,
+    payload: &[u8],
+    observed_after_ms: Option<u128>,
+    observed_at_unix_ms: u128,
+) -> Payload {
     Payload {
         source,
         bytes: payload.len(),
         sha256: format!("{:x}", Sha256::digest(payload)),
-        contains_inventory: payload
-            .windows(INVENTORY_MARKER.len())
-            .any(|window| window == INVENTORY_MARKER),
+        contains_inventory: memchr::memmem::find(payload, INVENTORY_MARKER).is_some(),
         observed_after_ms,
-        observed_at_unix_ms: super::unix_time_ms(),
+        observed_at_unix_ms,
         file: None,
     }
 }
@@ -218,9 +250,10 @@ fn capture_payload(
     source: &'static str,
     payload: &[u8],
     elapsed: Option<u128>,
+    observed_at: u128,
     directory: Option<&Path>,
 ) -> Result<Payload, String> {
-    let mut report = describe(source, payload, elapsed);
+    let mut report = describe(source, payload, elapsed, observed_at);
     if let Some(directory) = directory {
         std::fs::DirBuilder::new()
             .recursive(true)
@@ -276,11 +309,12 @@ mod tests {
 
     #[test]
     fn payload_report_keeps_identity_not_body() {
-        let payload = describe("direct", br#"{"LastInventorySync":1}"#, Some(7));
+        let payload = describe("direct", br#"{"LastInventorySync":1}"#, Some(7), 123);
         assert_eq!(payload.source, "direct");
         assert!(payload.contains_inventory);
         assert_eq!(payload.observed_after_ms, Some(7));
         assert_eq!(payload.sha256.len(), 64);
+        assert_eq!(payload.observed_at_unix_ms, 123);
     }
 
     #[test]

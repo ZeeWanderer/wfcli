@@ -5,8 +5,13 @@ use std::os::unix::fs::FileExt;
 use std::path::PathBuf;
 use std::time::UNIX_EPOCH;
 
+use crate::work::Budget;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+
+mod recording;
+pub(crate) use recording::RecordedReads;
+use recording::RecordingMemory;
 
 #[derive(Clone, Debug)]
 pub(crate) struct Region {
@@ -30,12 +35,14 @@ pub(crate) struct ProcessMemory {
     backing: MemoryBacking,
     maps: String,
     regions: Vec<Region>,
+    budget: Option<Budget>,
 }
 
 #[derive(Debug)]
 enum MemoryBacking {
     Live(File),
     Capture(CaptureMemory),
+    Recording(RecordingMemory),
 }
 
 #[derive(Clone, Debug)]
@@ -62,6 +69,7 @@ impl ProcessMemory {
             backing: MemoryBacking::Live(file),
             maps: maps.clone(),
             regions: parse_regions(&maps),
+            budget: None,
         })
     }
 
@@ -77,11 +85,34 @@ impl ProcessMemory {
             regions: parse_regions(&maps),
             maps,
             backing: MemoryBacking::Capture(backing),
+            budget: None,
         })
     }
 
     pub(crate) fn pid(&self) -> u32 {
         self.pid
+    }
+
+    pub(crate) fn with_budget(mut self, budget: Budget) -> Self {
+        self.budget = Some(budget);
+        self
+    }
+
+    pub(crate) fn record_reads(mut self, max_bytes: usize, max_blocks: usize) -> Self {
+        self.backing =
+            MemoryBacking::Recording(RecordingMemory::new(self.backing, max_bytes, max_blocks));
+        self
+    }
+
+    pub(crate) fn into_recorded_reads(self) -> Result<RecordedReads, String> {
+        match self.backing {
+            MemoryBacking::Recording(recording) => recording.finish(),
+            _ => Err("memory read recording is not enabled".into()),
+        }
+    }
+
+    pub(crate) fn check_budget(&self) -> io::Result<()> {
+        self.budget.as_ref().map_or(Ok(()), Budget::check)
     }
 
     pub(crate) fn regions(&self) -> &[Region] {
@@ -97,8 +128,8 @@ impl ProcessMemory {
     }
 
     pub(crate) fn selected_ranges(&self, accepts: impl Fn(&Region) -> bool) -> Vec<ScanRange> {
-        match &self.backing {
-            MemoryBacking::Live(_) => self
+        match self.backing.capture() {
+            None => self
                 .regions
                 .iter()
                 .filter(|region| accepts(region))
@@ -109,7 +140,7 @@ impl ProcessMemory {
                     path: region.path.clone(),
                 })
                 .collect(),
-            MemoryBacking::Capture(capture) => {
+            Some(capture) => {
                 let mut ranges = Vec::<ScanRange>::new();
                 for block in &capture.blocks {
                     let block_end = block.address + block.length as u64;
@@ -157,17 +188,17 @@ impl ProcessMemory {
     }
 
     pub(crate) fn read_at(&self, buffer: &mut [u8], offset: u64) -> io::Result<usize> {
-        match &self.backing {
-            MemoryBacking::Live(file) => file.read_at(buffer, offset),
-            MemoryBacking::Capture(capture) => capture.read_at(buffer, offset),
+        if let Some(budget) = &self.budget {
+            budget.read(buffer.len())?;
         }
+        self.backing.read_at(buffer, offset)
     }
 
     pub(crate) fn read_exact_at(&self, buffer: &mut [u8], offset: u64) -> io::Result<()> {
-        match &self.backing {
-            MemoryBacking::Live(file) => file.read_exact_at(buffer, offset),
-            MemoryBacking::Capture(capture) => capture.read_exact_at(buffer, offset),
+        if let Some(budget) = &self.budget {
+            budget.read(buffer.len())?;
         }
+        self.backing.read_exact_at(buffer, offset)
     }
 
     pub(crate) fn supports_ui_range(&self, address: u64, length: usize) -> bool {
@@ -179,10 +210,10 @@ impl ProcessMemory {
             .iter()
             .any(|region| region.supports_ui_graph() && region.contains_range(address, end));
         mapped
-            && match &self.backing {
-                MemoryBacking::Live(_) => true,
-                MemoryBacking::Capture(capture) => capture.contains_range(address, length),
-            }
+            && self
+                .backing
+                .capture()
+                .is_none_or(|capture| capture.contains_range(address, length))
     }
 
     pub(crate) fn supports_read_range(&self, address: u64, length: usize) -> bool {
@@ -193,10 +224,10 @@ impl ProcessMemory {
             region.permissions.starts_with('r') && region.contains_range(address, end)
         });
         mapped
-            && match &self.backing {
-                MemoryBacking::Live(_) => true,
-                MemoryBacking::Capture(capture) => capture.contains_range(address, length),
-            }
+            && self
+                .backing
+                .capture()
+                .is_none_or(|capture| capture.contains_range(address, length))
     }
 
     #[cfg(test)]
@@ -223,6 +254,52 @@ impl ProcessMemory {
             backing: MemoryBacking::Live(file),
             maps: String::new(),
             regions,
+            budget: None,
+        }
+    }
+}
+
+impl MemoryBacking {
+    fn capture(&self) -> Option<&CaptureMemory> {
+        match self {
+            Self::Live(_) => None,
+            Self::Capture(capture) => Some(capture),
+            Self::Recording(recording) => recording.source.capture(),
+        }
+    }
+
+    fn read_at(&self, buffer: &mut [u8], offset: u64) -> io::Result<usize> {
+        match self {
+            Self::Live(file) => file.read_at(buffer, offset),
+            Self::Capture(capture) => capture.read_at(buffer, offset),
+            Self::Recording(recording) => recording.read_at(buffer, offset),
+        }
+    }
+
+    fn read_exact_at(&self, buffer: &mut [u8], offset: u64) -> io::Result<()> {
+        match self {
+            Self::Live(file) => file.read_exact_at(buffer, offset),
+            Self::Capture(capture) => capture.read_exact_at(buffer, offset),
+            Self::Recording(recording) => {
+                let mut read = 0;
+                while read < buffer.len() {
+                    let address = offset
+                        .checked_add(read as u64)
+                        .ok_or_else(|| io::Error::other("memory address overflow"))?;
+                    match recording.read_at(&mut buffer[read..], address) {
+                        Ok(0) => {
+                            return Err(io::Error::new(
+                                io::ErrorKind::UnexpectedEof,
+                                "memory read incomplete",
+                            ));
+                        }
+                        Ok(count) => read += count,
+                        Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
+                        Err(error) => return Err(error),
+                    }
+                }
+                Ok(())
+            }
         }
     }
 }
@@ -455,6 +532,24 @@ fn scan_regions(regions: &[Region]) -> impl Iterator<Item = &Region> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn capture_budget_is_checked_before_touching_memory() {
+        let budget = Budget::new(crate::work::Limits {
+            duration: std::time::Duration::from_secs(30),
+            read_bytes: 4,
+            write_bytes: 0,
+        });
+        let memory =
+            ProcessMemory::from_test_bytes(b"abcdefgh", Vec::new()).with_budget(budget.clone());
+        let mut bytes = [0; 4];
+        memory.read_exact_at(&mut bytes, 0).unwrap();
+        assert_eq!(&bytes, b"abcd");
+        assert!(memory.read_at(&mut bytes, 4).is_err());
+        assert_eq!(&bytes, b"abcd");
+        assert_eq!(budget.usage().read_bytes_reserved, 4);
+        assert!(memory.check_budget().is_err());
+    }
 
     #[test]
     fn finds_and_decodes_warframe_image_path() {

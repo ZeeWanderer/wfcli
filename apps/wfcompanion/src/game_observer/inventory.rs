@@ -4,9 +4,12 @@ use std::fmt::Write;
 use serde::Serialize;
 use serde_json::{Map, Value, json};
 
-use super::adapter::{self, GameAdapter};
-use super::memory::{ProcessMemory, identify_process};
+use super::executable;
+use super::memory::{ProcessIdentity, ProcessMemory, identify_process};
 use super::metadata;
+use layout::InventoryLayout;
+
+pub(crate) mod layout;
 
 const MAX_STACKS: usize = 32_768;
 const MAX_JOBS: usize = 512;
@@ -20,22 +23,31 @@ pub struct Snapshot {
 pub struct Reader {
     memory: ProcessMemory,
     base: u64,
-    adapter: GameAdapter,
+    layout: InventoryLayout,
     names: HashMap<u64, String>,
 }
 
 impl Reader {
     pub fn open(pid: u32) -> Result<Self, String> {
         let identity = identify_process(pid)?;
-        let adapter = *adapter::require(&identity)?;
-        let memory = ProcessMemory::open(pid)?;
+        Self::open_for_identity(&identity)
+    }
+
+    pub fn open_for_identity(identity: &ProcessIdentity) -> Result<Self, String> {
+        let (hash, bytes) = executable::read(&identity.executable.path)?;
+        if hash != identity.executable.sha256 {
+            return Err("Warframe executable changed during inventory discovery".into());
+        }
+        let layout = layout::discover(&bytes)
+            .map_err(|reason| format!("native inventory discovery: {reason}"))?;
+        let memory = ProcessMemory::open(identity.pid)?;
         let base = memory
             .image_base()
             .ok_or("Warframe executable mapping not found")?;
         Ok(Self {
             memory,
             base,
-            adapter,
+            layout,
             names: HashMap::new(),
         })
     }
@@ -45,7 +57,7 @@ impl Reader {
             self.names.clear();
         }
         let profile = self.profile()?;
-        let layout = self.adapter.inventory;
+        let layout = self.layout;
         let sync = read::<12>(&self.memory, profile + layout.sync_offset)?;
         if sync == [0; 12] {
             return Err("native inventory is not synchronized".into());
@@ -85,17 +97,44 @@ impl Reader {
     }
 
     fn profile(&self) -> Result<u64, String> {
-        let holder = metadata::global_object(
+        let registry = Vector::read(
             &self.memory,
-            self.base,
-            self.adapter.global_registry_rva,
-            self.adapter.inventory.profile_hash,
+            self.base + self.layout.global_registry_rva + self.layout.global_registry_offset,
+            16,
+            4096,
         )?;
-        let profile = u64::from_le_bytes(read(&self.memory, holder)?);
-        if profile == 0 {
-            return Err("native player profile is unavailable".into());
+        let descriptor = self.base + self.layout.profile_descriptor_rva;
+        let mut profile = None;
+        for row in registry.bytes.chunks_exact(16) {
+            let holder = u64_at(row, 8);
+            let Ok(pointer) = read::<8>(&self.memory, holder) else {
+                continue;
+            };
+            let address = u64::from_le_bytes(pointer);
+            if address == 0 {
+                continue;
+            }
+            let Ok(actual) = read::<8>(
+                &self.memory,
+                address.saturating_add(self.layout.resources.object_type_offset),
+            ) else {
+                continue;
+            };
+            if u64::from_le_bytes(actual) == descriptor {
+                if u64::from_le_bytes(read::<8>(
+                    &self.memory,
+                    address.saturating_add(self.layout.resources.object_holder_offset),
+                )?) != holder
+                {
+                    return Err("invalid native player profile backlink".into());
+                }
+                if profile.replace(address).is_some() {
+                    return Err("ambiguous native player profile".into());
+                }
+            }
         }
-        Ok(profile)
+        registry.verify(&self.memory)?;
+        profile.ok_or_else(|| "native player profile is unavailable".into())
     }
 
     fn name(&mut self, descriptor: u64, used: &mut HashSet<u64>) -> Result<String, String> {
@@ -106,12 +145,8 @@ impl Reader {
         if let Some(name) = self.names.get(&descriptor) {
             return Ok(name.clone());
         }
-        let name = metadata::resource_name(
-            &self.memory,
-            self.base,
-            self.adapter.string_blocks_rva,
-            descriptor,
-        )?;
+        let name =
+            metadata::resource_name(&self.memory, self.base, self.layout.resources, descriptor)?;
         if !name.starts_with("/Lotus/") || name.len() > 2048 {
             return Err("invalid inventory item type".into());
         }
@@ -122,7 +157,7 @@ impl Reader {
     fn stacks(&mut self, vector: &Vector, used: &mut HashSet<u64>) -> Result<Value, String> {
         let mut stacks = BTreeMap::new();
         for (index, row) in vector.bytes.chunks_exact(16).enumerate() {
-            let count = quantity(row, vector.data + index as u64 * 16)?;
+            let count = quantity(row, vector.data + index as u64 * 16, self.layout)?;
             if count == 0 {
                 continue;
             }
@@ -221,12 +256,14 @@ impl Vector {
     }
 }
 
-fn quantity(row: &[u8], address: u64) -> Result<u32, String> {
+fn quantity(row: &[u8], address: u64, layout: InventoryLayout) -> Result<u32, String> {
     let encoded = u32_at(row, 12);
-    if u32_at(row, 8) != encoded ^ 0xad84b2ea {
+    if u32_at(row, 8) != encoded ^ layout.check_mask {
         return Err("native inventory quantity check failed".into());
     }
-    let count = encoded.rotate_left(19) ^ ((address + 12) >> 3) as u32 ^ 0xc55198a3;
+    let count = encoded.rotate_left(layout.count_rotation)
+        ^ ((address + 12) >> layout.address_shift) as u32
+        ^ layout.count_mask;
     if count > i32::MAX as u32 {
         return Err("negative native inventory quantity".into());
     }
@@ -278,12 +315,14 @@ fn read<const N: usize>(memory: &ProcessMemory, address: u64) -> Result<[u8; N],
 
 #[cfg(test)]
 mod tests {
+    use super::super::executable::fixture::resources;
     use super::super::memory::Region;
     use super::*;
 
-    fn encode_count(row: &mut [u8], address: u64, count: u32) {
-        let encoded = (count ^ ((address + 12) >> 3) as u32 ^ 0xc55198a3).rotate_right(19);
-        row[8..12].copy_from_slice(&(encoded ^ 0xad84b2ea).to_le_bytes());
+    fn encode_count(row: &mut [u8], address: u64, count: u32, layout: InventoryLayout) {
+        let encoded = (count ^ ((address + 12) >> layout.address_shift) as u32 ^ layout.count_mask)
+            .rotate_right(layout.count_rotation);
+        row[8..12].copy_from_slice(&(encoded ^ layout.check_mask).to_le_bytes());
         row[12..16].copy_from_slice(&encoded.to_le_bytes());
     }
 
@@ -301,18 +340,32 @@ mod tests {
         put32(bytes, offset + 12, length);
     }
 
-    fn fixture() -> (GameAdapter, Vec<u8>) {
-        let mut adapter = *adapter::resolve_key("d01b5cb5cff5").unwrap();
-        adapter.global_registry_rva = 0x100;
-        adapter.inventory.sync_offset = 0x140;
-        adapter.inventory.misc_offset = 0x100;
-        adapter.inventory.recipes_offset = 0x110;
-        adapter.inventory.pending_offset = 0x120;
+    fn fixture() -> (InventoryLayout, Vec<u8>) {
+        fixture_for(0xc55198a3, 0xad84b2ea)
+    }
+
+    fn fixture_for(count_mask: u32, check_mask: u32) -> (InventoryLayout, Vec<u8>) {
+        let layout = InventoryLayout {
+            global_registry_rva: 0x100,
+            global_registry_offset: 0x138,
+            resources: resources(0x300, 0),
+            profile_descriptor_rva: 0x600,
+            sync_offset: 0x140,
+            misc_offset: 0x100,
+            recipes_offset: 0x110,
+            pending_offset: 0x120,
+            count_mask,
+            check_mask,
+            count_rotation: 19,
+            address_shift: 3,
+        };
         let mut bytes = vec![0; 0x3000];
         vector(&mut bytes, 0x238, 0x400, 16);
-        put32(&mut bytes, 0x400, adapter.inventory.profile_hash);
+        put32(&mut bytes, 0x400, 0x12345678);
         put64(&mut bytes, 0x408, 0x500);
         put64(&mut bytes, 0x500, 0x1000);
+        put64(&mut bytes, 0x1008, layout.profile_descriptor_rva);
+        put64(&mut bytes, 0x1010, 0x500);
         bytes[0x1140..0x114c].copy_from_slice(&[1; 12]);
         vector(&mut bytes, 0x1100, 0x2000, 32);
         vector(&mut bytes, 0x1110, 0x2100, 16);
@@ -323,7 +376,12 @@ mod tests {
             (0x2100, 0x9200, 1),
         ] {
             put64(&mut bytes, address, descriptor);
-            encode_count(&mut bytes[address..address + 16], address as u64, count);
+            encode_count(
+                &mut bytes[address..address + 16],
+                address as u64,
+                count,
+                layout,
+            );
         }
         bytes[0x2200..0x220c].copy_from_slice(&[2; 12]);
         put64(&mut bytes, 0x2210, 0x9200);
@@ -332,10 +390,10 @@ mod tests {
         bytes[0x2237] = 15;
         bytes[0x2247] = 15;
         bytes[0x2257] = 15;
-        (adapter, bytes)
+        (layout, bytes)
     }
 
-    fn reader(adapter: GameAdapter, bytes: &[u8]) -> Reader {
+    fn reader(layout: InventoryLayout, bytes: &[u8]) -> Reader {
         Reader {
             memory: ProcessMemory::from_test_bytes(
                 bytes,
@@ -347,7 +405,7 @@ mod tests {
                 }],
             ),
             base: 0,
-            adapter,
+            layout,
             names: [
                 (0x9000, "/Lotus/ingredient".into()),
                 (0x9200, "/Lotus/blueprint".into()),
@@ -377,17 +435,95 @@ mod tests {
     }
 
     #[test]
+    fn uses_discovered_registry_and_object_fields() {
+        let (mut layout, mut bytes) = fixture();
+        let expected = reader(layout, &bytes).read().unwrap();
+        bytes.copy_within(0x238..0x248, 0x280);
+        bytes[0x238..0x248].fill(0);
+        bytes.copy_within(0x1008..0x1018, 0x1048);
+        bytes[0x1008..0x1018].fill(0);
+        layout.global_registry_offset = 0x180;
+        layout.resources = resources(0x300, 0x40);
+        assert_eq!(reader(layout, &bytes).read().unwrap(), expected);
+    }
+
+    #[test]
+    fn updated_inventory_encoding_preserves_collection_shape() {
+        let (layout, bytes) = fixture_for(0xac7e8740, 0x9c084a47);
+        let actual = reader(layout, &bytes).read().unwrap();
+        let (old, old_bytes) = fixture();
+        assert_eq!(actual, reader(old, &old_bytes).read().unwrap());
+        let wrong_encoding = InventoryLayout {
+            count_mask: old.count_mask,
+            check_mask: old.check_mask,
+            count_rotation: old.count_rotation,
+            ..layout
+        };
+        assert_eq!(
+            reader(wrong_encoding, &bytes).read().unwrap_err(),
+            "native inventory quantity check failed"
+        );
+    }
+
+    #[test]
     fn quantities_are_address_dependent_and_integrity_checked() {
-        let mut row = [0; 16];
-        for address in [0x1000, 0x3de9ae00, 0x10000000e0] {
-            encode_count(&mut row, address, 22);
-            assert_eq!(quantity(&row, address).unwrap(), 22);
-            assert_ne!(quantity(&row, address + 16).unwrap(), 22);
+        for (mask, check) in [(0xc55198a3, 0xad84b2ea), (0xac7e8740, 0x9c084a47)] {
+            let mut row = [0; 16];
+            let layout = fixture_for(mask, check).0;
+            for address in [0x1000, 0x3de9ae00, 0x10000000e0] {
+                encode_count(&mut row, address, 22, layout);
+                assert_eq!(quantity(&row, address, layout).unwrap(), 22);
+                assert_ne!(quantity(&row, address + 16, layout).unwrap(), 22);
+            }
+            row[8] ^= 1;
+            assert!(quantity(&row, 0x10000000e0, layout).is_err());
+            encode_count(&mut row, 0x1000, u32::MAX, layout);
+            assert!(quantity(&row, 0x1000, layout).is_err());
         }
-        row[8] ^= 1;
-        assert!(quantity(&row, 0x10000000e0).is_err());
-        encode_count(&mut row, 0x1000, u32::MAX);
-        assert!(quantity(&row, 0x1000).is_err());
+    }
+
+    #[test]
+    fn profile_uses_type_and_backlink_not_rotating_registry_key() {
+        let (mut layout, mut bytes) = fixture();
+        put32(&mut bytes, 0x400, 0x87654321);
+        layout.profile_descriptor_rva = 0x680;
+        put64(&mut bytes, 0x1008, 0x680);
+        assert!(reader(layout, &bytes).read().is_ok());
+
+        let mut invalid = bytes.clone();
+        put64(&mut invalid, 0x1010, 0x700);
+        assert_eq!(
+            reader(layout, &invalid).read().unwrap_err(),
+            "invalid native player profile backlink"
+        );
+
+        let mut ambiguous = bytes.clone();
+        vector(&mut ambiguous, 0x238, 0x400, 32);
+        put64(&mut ambiguous, 0x418, 0x500);
+        assert_eq!(
+            reader(layout, &ambiguous).read().unwrap_err(),
+            "ambiguous native player profile"
+        );
+
+        let mut absent = bytes.clone();
+        put64(&mut absent, 0x500, 0);
+        let mut waiting = reader(layout, &absent);
+        assert_eq!(
+            waiting.read().unwrap_err(),
+            "native player profile is unavailable"
+        );
+        waiting.memory = reader(layout, &bytes).memory;
+        assert!(waiting.read().is_ok());
+    }
+
+    #[test]
+    fn changed_rotation_and_address_shift_decode_quantities() {
+        let mut layout = fixture().0;
+        layout.address_shift = 4;
+        layout.count_rotation = 11;
+        let mut row = [0; 16];
+        encode_count(&mut row, 0x3de9ae00, 37, layout);
+        assert_eq!(quantity(&row, 0x3de9ae00, layout).unwrap(), 37);
     }
 
     #[test]
@@ -417,7 +553,7 @@ mod tests {
         let before = reader(adapter, &bytes);
         let vector = Vector::read(&before.memory, 0x1100, 16, MAX_STACKS).unwrap();
         let mut changed = bytes.clone();
-        encode_count(&mut changed[0x2000..0x2010], 0x2000, 27);
+        encode_count(&mut changed[0x2000..0x2010], 0x2000, 27, adapter);
         assert!(vector.verify(&reader(adapter, &changed).memory).is_err());
         let mut changed = bytes;
         put64(&mut changed, 0x1100, 0x2500);

@@ -1,6 +1,5 @@
-use std::collections::BTreeMap;
+use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, mpsc};
 use std::time::{Duration, Instant};
 
 use serde_json::Value;
@@ -39,6 +38,7 @@ use crate::UiEvent;
 use crate::focus::FocusDetector;
 use crate::incident;
 use crate::painter::Painter;
+use crate::runtime::presentation;
 use crate::ui::{HitTarget, Rect};
 
 const STATUS_SURFACE_WIDTH: u32 = STATUS_WIDTH + STATUS_INSET;
@@ -49,11 +49,12 @@ const MAX_SURFACE_BUFFERS: usize = 3;
 const DEBUG_HUD: bool = cfg!(debug_assertions);
 
 pub(crate) fn run(
-    events: mpsc::Receiver<UiEvent>,
-    relic: mpsc::Sender<crate::relic::Trigger>,
+    events: &presentation::Receiver,
+    relic: crate::relic::Sender,
     daemon: crate::daemon::OutboundSender,
     shortcut: crate::shortcut::Controller,
     stopping: Arc<AtomicBool>,
+    reload: crate::runtime::reload::Gate,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let connection = Connection::connect_to_env()?;
     let (globals, event_queue) = registry_queue_init(&connection)?;
@@ -105,16 +106,18 @@ pub(crate) fn run(
         height: STATUS_SURFACE_HEIGHT,
         scale: 1,
         configured: false,
+        closed: false,
         configure_pending: true,
         mapped: false,
         redraw: Redraw::Full,
         overlay_enabled: true,
-        hud_visible: DEBUG_HUD,
+        hud: HudVisibility::for_build(DEBUG_HUD),
         contextual_surface: false,
         warframe_active: false,
         warframe_pid: None,
         connected: false,
-        snapshots: BTreeMap::new(),
+        daemon_version: String::from("unknown"),
+        player: presentation::PlayerStatus::default(),
         connection_error: None,
         relic_scene: None,
         relic_context: None,
@@ -122,11 +125,11 @@ pub(crate) fn run(
         last_loading_frame: Instant::now() - LOADING_FRAME_INTERVAL,
         frame_pending: false,
         interaction_active: false,
+        reload,
         shortcut_scope: false,
-        pending_asset_refreshes: BTreeMap::new(),
+        pending_asset_refreshes: super::assets::PendingRefreshes::default(),
         reported_asset_issues: None,
         presentation: Presentation::default(),
-        events,
         relic,
         daemon,
         shortcut,
@@ -136,13 +139,20 @@ pub(crate) fn run(
         loop_signal,
     };
 
-    while !overlay.stopping.load(Ordering::Relaxed) {
-        event_loop.dispatch(overlay.dispatch_interval(), &mut overlay)?;
-        overlay.tick(&queue_handle);
-    }
+    let result = (|| -> Result<(), Box<dyn std::error::Error>> {
+        while !overlay.stopping.load(Ordering::Relaxed) && !overlay.closed {
+            event_loop.dispatch(overlay.dispatch_interval(), &mut overlay)?;
+            overlay.tick(&queue_handle, events);
+        }
+        if overlay.closed {
+            Err("compositor closed overlay surface".into())
+        } else {
+            Ok(())
+        }
+    })();
     overlay.shortcut.set_enabled(false);
     overlay.unmap();
-    Ok(())
+    result
 }
 
 fn copy_frame_rect(source: &[u8], target: &mut [u8], frame_width: u32, bounds: Rect) {
@@ -173,16 +183,18 @@ struct Overlay {
     height: u32,
     scale: i32,
     configured: bool,
+    closed: bool,
     configure_pending: bool,
     mapped: bool,
     redraw: Redraw,
     overlay_enabled: bool,
-    hud_visible: bool,
+    hud: HudVisibility,
     contextual_surface: bool,
     warframe_active: bool,
     warframe_pid: Option<u32>,
     connected: bool,
-    snapshots: BTreeMap<String, Value>,
+    daemon_version: String,
+    player: presentation::PlayerStatus,
     connection_error: Option<String>,
     relic_scene: Option<(crate::relic::Scene, Option<Instant>, Instant)>,
     relic_context: Option<crate::relic::Context>,
@@ -190,12 +202,12 @@ struct Overlay {
     last_loading_frame: Instant,
     frame_pending: bool,
     interaction_active: bool,
+    reload: crate::runtime::reload::Gate,
     shortcut_scope: bool,
-    pending_asset_refreshes: BTreeMap<(String, String), crate::relic::AssetRefresh>,
+    pending_asset_refreshes: super::assets::PendingRefreshes,
     reported_asset_issues: Option<Vec<Value>>,
     presentation: Presentation,
-    events: mpsc::Receiver<UiEvent>,
-    relic: mpsc::Sender<crate::relic::Trigger>,
+    relic: crate::relic::Sender,
     daemon: crate::daemon::OutboundSender,
     shortcut: crate::shortcut::Controller,
     stopping: Arc<AtomicBool>,
@@ -214,6 +226,36 @@ enum Redraw {
     None,
     Loading,
     Full,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum HudVisibility {
+    Startup,
+    Shown,
+    Hidden,
+}
+
+impl HudVisibility {
+    fn for_build(debug: bool) -> Self {
+        if debug { Self::Startup } else { Self::Hidden }
+    }
+
+    fn visible(self) -> bool {
+        self != Self::Hidden
+    }
+
+    fn set_visible(&mut self, visible: bool) {
+        *self = if visible { Self::Shown } else { Self::Hidden };
+    }
+
+    fn observe_phase(&mut self, phase: Option<&str>) -> bool {
+        if *self == Self::Startup && phase == Some("game") {
+            *self = Self::Hidden;
+            true
+        } else {
+            false
+        }
+    }
 }
 
 impl Overlay {
@@ -265,8 +307,8 @@ impl Overlay {
         }
     }
 
-    fn tick(&mut self, queue_handle: &QueueHandle<Self>) {
-        self.apply_events();
+    fn tick(&mut self, queue_handle: &QueueHandle<Self>, events: &presentation::Receiver) {
+        self.apply_events(events);
         self.expire_scene();
         if let Some(assets) = self.asset_loader.poll() {
             self.report_asset_issues(assets.issues.clone());
@@ -282,13 +324,13 @@ impl Overlay {
         self.sync_surface(queue_handle);
     }
 
-    fn apply_events(&mut self) {
-        while let Ok(event) = self.events.try_recv() {
+    fn apply_events(&mut self, events: &presentation::Receiver) {
+        for event in events.drain(32) {
             match event {
-                UiEvent::Connected(daemon) => {
+                UiEvent::Connected(version) => {
                     self.connected = true;
                     self.connection_error = None;
-                    self.snapshots.insert("daemon".to_owned(), daemon);
+                    self.daemon_version = version;
                     self.request_full_redraw();
                 }
                 UiEvent::Disconnected(error) => {
@@ -296,16 +338,12 @@ impl Overlay {
                     self.connection_error = Some(error);
                     self.request_full_redraw();
                 }
-                UiEvent::Snapshot { dataset, data } => {
-                    if dataset == "player" {
-                        self.warframe_pid = data
-                            .get("data")
-                            .and_then(|data| data.get("game"))
-                            .and_then(|game| game.get("pid"))
-                            .and_then(Value::as_u64)
-                            .and_then(|pid| u32::try_from(pid).ok());
+                UiEvent::Player(player) => {
+                    if self.hud.observe_phase(player.phase.as_deref()) {
+                        incident::info("overlay.hud", "visible=false reason=game_started");
                     }
-                    self.snapshots.insert(dataset, data);
+                    self.warframe_pid = player.pid;
+                    self.player = player;
                     self.request_full_redraw();
                 }
                 UiEvent::AssetRefreshed(refresh) => {
@@ -322,10 +360,7 @@ impl Overlay {
                             }
                         }
                         None => {
-                            self.pending_asset_refreshes.insert(
-                                (refresh.source.clone(), refresh.image_name.clone()),
-                                refresh,
-                            );
+                            self.pending_asset_refreshes.insert(refresh);
                         }
                     }
                 }
@@ -335,7 +370,7 @@ impl Overlay {
                     self.request_full_redraw();
                 }
                 UiEvent::HudVisible(visible) => {
-                    self.hud_visible = visible;
+                    self.hud.set_visible(visible);
                     incident::info("overlay.hud", format!("visible={visible}"));
                     self.request_full_redraw();
                 }
@@ -395,8 +430,7 @@ impl Overlay {
                             },
                         ),
                     );
-                    self.pending_asset_refreshes
-                        .retain(|_, refresh| scene.apply_asset_refresh(refresh).is_none());
+                    self.pending_asset_refreshes.apply(&mut scene);
                     self.asset_loader.request(scene.clone());
                     if matches!(scene, crate::relic::Scene::Suggestions(_))
                         && !updates_current_suggestions
@@ -431,12 +465,6 @@ impl Overlay {
                 }
                 UiEvent::InteractionToggle => {
                     self.set_interaction(!self.interaction_active);
-                }
-                UiEvent::Shutdown => {
-                    self.set_interaction(false);
-                    self.shortcut.set_enabled(false);
-                    self.stopping.store(true, Ordering::Relaxed);
-                    self.loop_signal.stop();
                 }
             }
         }
@@ -515,6 +543,7 @@ impl Overlay {
             return;
         }
         self.interaction_active = active;
+        self.reload.interaction(active);
         self.presentation.interaction_changed();
         self.layer.wl_surface().set_input_region(Some(if active {
             self.interactive_input_region.wl_region()
@@ -583,7 +612,7 @@ impl Overlay {
 
     fn sync_surface(&mut self, queue_handle: &QueueHandle<Self>) {
         let scene_visible = self.overlay_enabled && self.relic_scene.is_some();
-        let status_visible = self.overlay_enabled && self.hud_visible;
+        let status_visible = self.overlay_enabled && self.hud.visible();
         let contextual = contextual_surface_required(
             self.overlay_enabled,
             scene_visible,
@@ -682,7 +711,7 @@ impl Overlay {
         let scene_visible =
             self.overlay_enabled && self.relic_scene.is_some() && self.warframe_active;
         let status_visible = self.overlay_enabled
-            && self.hud_visible
+            && self.hud.visible()
             && self.warframe_active
             && (DEBUG_HUD || !scene_visible);
         let status = status_visible.then(|| {
@@ -838,12 +867,7 @@ impl Overlay {
     }
 
     fn daemon_summary(&self) -> String {
-        let version = self
-            .snapshots
-            .get("daemon")
-            .and_then(|data| data.get("version"))
-            .and_then(Value::as_str)
-            .unwrap_or("unknown");
+        let version = &self.daemon_version;
         let state = if self.connected {
             "connected"
         } else {
@@ -853,17 +877,10 @@ impl Overlay {
     }
 
     fn player_summary(&self) -> String {
-        let game = self
-            .snapshots
-            .get("player")
-            .and_then(|snapshot| snapshot.get("data"))
-            .and_then(|data| data.get("game"));
-        let phase = game
-            .and_then(|data| data.get("phase"))
-            .and_then(Value::as_str);
-        let pid = game
-            .and_then(|data| data.get("pid"))
-            .and_then(Value::as_u64)
+        let phase = self.player.phase.as_deref();
+        let pid = self
+            .player
+            .pid
             .map(|pid| format!(" (pid {pid})"))
             .unwrap_or_default();
         match phase {
@@ -875,19 +892,11 @@ impl Overlay {
     }
 
     fn debug_summary(&self) -> String {
-        let collector = self
-            .snapshots
-            .get("player")
-            .and_then(|snapshot| snapshot.get("data"))
-            .and_then(|data| data.get("collector"));
-        let bridge = collector
-            .and_then(|data| data.get("debug_output_active"))
-            .and_then(Value::as_bool)
+        let bridge = self
+            .player
+            .debug_output_active
             .map_or("?", |active| if active { "on" } else { "off" });
-        let debug_lines = collector
-            .and_then(|data| data.get("debug_output_lines_observed"))
-            .and_then(Value::as_u64)
-            .unwrap_or(0);
+        let debug_lines = self.player.debug_lines;
         let scene = self
             .relic_scene
             .as_ref()
@@ -1002,7 +1011,7 @@ impl LayerShellHandler for Overlay {
         _layer: &LayerSurface,
     ) {
         incident::warn("overlay.closed", "compositor closed layer surface");
-        self.stopping.store(true, Ordering::Relaxed);
+        self.closed = true;
         self.loop_signal.stop();
     }
 
@@ -1204,6 +1213,44 @@ delegate_registry!(Overlay);
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn debug_hud_hides_once_when_game_starts() {
+        let mut hud = HudVisibility::for_build(true);
+        for phase in [None, Some("stopped"), Some("launcher")] {
+            assert!(!hud.observe_phase(phase));
+            assert!(hud.visible());
+        }
+        assert!(hud.observe_phase(Some("game")));
+        assert!(!hud.visible());
+        for phase in [Some("game"), None, Some("stopped"), Some("launcher")] {
+            assert!(!hud.observe_phase(phase));
+            assert!(!hud.visible());
+        }
+    }
+
+    #[test]
+    fn explicit_hud_controls_override_startup_policy() {
+        for debug in [false, true] {
+            let mut hud = HudVisibility::for_build(debug);
+            assert_eq!(hud.visible(), debug);
+            hud.set_visible(true);
+            assert!(!hud.observe_phase(Some("game")));
+            assert!(hud.visible());
+            hud.set_visible(false);
+            assert!(!hud.observe_phase(Some("game")));
+            assert!(!hud.visible());
+        }
+    }
+
+    #[test]
+    fn production_hud_stays_hidden_by_default() {
+        let mut hud = HudVisibility::for_build(false);
+        for phase in [None, Some("launcher"), Some("game")] {
+            assert!(!hud.observe_phase(phase));
+            assert!(!hud.visible());
+        }
+    }
 
     #[test]
     fn frame_rect_copy_leaves_other_pixels_untouched() {

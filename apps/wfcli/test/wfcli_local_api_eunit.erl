@@ -9,6 +9,105 @@ unix_socket_lifecycle_test_() ->
     {setup, fun setup/0, fun cleanup/1,
      fun(State) -> fun() -> lifecycle(State) end end}.
 
+inventory_scopes_socket_test_() ->
+    {setup, fun setup/0, fun cleanup/1,
+     fun(#{socket := Path}) -> fun() ->
+         Companion = connect_client(Path, <<"wfcompanion">>, #{<<"pid">> => 123}),
+         Publish = #{<<"op">> => <<"publish">>, <<"dataset">> => <<"player">>},
+         Full = wfcli_player_inventory_eunit:full(1, 12),
+         ok = socket:send(Companion, wfcli_local_protocol:encode(Publish#{<<"id">> => 2,
+                           <<"source">> => <<"inventory_http">>, <<"data">> => Full})),
+         ?assertMatch(#{<<"ok">> := true}, receive_response(Companion, 2, <<>>)),
+         Subscriber = connect_client(Path, <<"test">>, #{}),
+         ok = socket:send(Subscriber, wfcli_local_protocol:encode(#{<<"id">> => 2,
+             <<"op">> => <<"subscribe">>, <<"dataset">> => <<"player">>, <<"include_data">> => false})),
+         ?assertMatch(#{<<"ok">> := true}, receive_response(Subscriber, 2, <<>>)),
+         Native = wfcli_player_inventory_eunit:native(2, 1, 17),
+         ok = socket:send(Companion, wfcli_local_protocol:encode(Publish#{<<"id">> => 3,
+                           <<"source">> => <<"inventory_native">>, <<"data">> => Native})),
+         ?assertMatch(#{<<"ok">> := true}, receive_response(Companion, 3, <<>>)),
+         {ok, Line} = socket:recv(Subscriber, 0, 1000),
+         ?assertMatch({ok, #{<<"event">> := <<"dataset">>, <<"source">> := <<"inventory">>}},
+                      wfcli_local_protocol:decode(string:trim(Line))),
+         Before = wfcli_player_service:snapshot(),
+         ok = socket:send(Companion, wfcli_local_protocol:encode(Publish#{<<"id">> => 4,
+                           <<"source">> => <<"inventory_http">>, <<"data">> => Full})),
+         ?assertMatch(#{<<"ok">> := true}, receive_response(Companion, 4, <<>>)),
+         ?assertEqual(Before, wfcli_player_service:snapshot()),
+         ?assertEqual({error, timeout}, socket:recv(Subscriber, 0, 25)),
+         ok = socket:send(Companion, wfcli_local_protocol:encode(Publish#{<<"id">> => 5,
+                           <<"source">> => <<"inventory">>, <<"data">> => Full})),
+         ?assertMatch(#{<<"ok">> := false}, receive_response(Companion, 5, <<>>)),
+         ok = socket:close(Subscriber),
+         ok = socket:close(Companion)
+     end end}.
+
+player_hud_subscription_test_() ->
+    {setup, fun setup/0, fun cleanup/1,
+     fun(#{socket := Path}) -> fun() ->
+         Game = #{<<"pid">> => 123, <<"phase">> => <<"orbiter">>, <<"running">> => true},
+         Collector = #{<<"debug_output_active">> => true, <<"debug_output_lines_observed">> => 42,
+                       <<"inventory_updates">> => 9},
+         {ok, _} = wfcli_player_service:publish(<<"game">>, Game),
+         {ok, _} = wfcli_player_service:publish(<<"collector">>, Collector),
+         Socket = connect_client(Path, <<"wfcompanion">>, #{<<"pid">> => 123}),
+         Subscribe = #{<<"op">> => <<"subscribe">>, <<"id">> => 2,
+                       <<"dataset">> => <<"player">>, <<"view">> => <<"hud">>},
+         lists:foreach(fun(Invalid) ->
+             ok = socket:send(Socket, wfcli_local_protocol:encode(Invalid)),
+             ?assertMatch(#{<<"ok">> := false}, receive_response(Socket, 2, <<>>))
+         end, [Subscribe#{<<"view">> => <<"unknown">>}, Subscribe#{<<"include_data">> => false}]),
+         ok = socket:send(Socket, wfcli_local_protocol:encode(Subscribe)),
+         Initial = receive_response(Socket, 2, <<>>),
+         ?assertEqual(#{<<"game">> => maps:without([<<"running">>], Game),
+                        <<"collector">> => maps:without([<<"inventory_updates">>], Collector)},
+                      maps:get(<<"data">>, maps:get(<<"data">>, Initial))),
+         Full = wfcli_player_inventory_eunit:full(1, 12),
+         {ok, _} = wfcli_player_service:publish(<<"inventory_http">>, Full),
+         ?assertEqual({error, timeout}, socket:recv(Socket, 0, 25)),
+         ok = socket:send(Socket, wfcli_local_protocol:encode(
+             #{<<"op">> => <<"get">>, <<"id">> => 3, <<"dataset">> => <<"player">>})),
+         Reply = receive_response(Socket, 3, <<>>),
+         ?assertEqual(Full, maps:get(<<"inventory_http">>,
+                            maps:get(<<"data">>, maps:get(<<"data">>, Reply)))),
+         {ok, _} = wfcli_player_service:publish(<<"collector">>, #{<<"debug_output_active">> => false}),
+         Event = diagnostic_command(Socket),
+         ?assertEqual(<<"collector">>, maps:get(<<"source">>, Event)),
+         EventData = maps:get(<<"data">>, maps:get(<<"data">>, Event)),
+         ?assertEqual(#{<<"debug_output_active">> => false}, maps:get(<<"collector">>, EventData)),
+         ?assertNot(maps:is_key(<<"inventory">>, EventData)),
+         ok = socket:close(Socket)
+     end end}.
+
+companion_diagnostic_socket_test_() ->
+    {setup, fun setup/0, fun cleanup/1,
+     fun(#{socket := Path}) -> fun() ->
+         Socket = connect_client(Path, <<"wfcompanion">>, #{<<"pid">> => 123}),
+         await_external_activity(1, 20),
+         Snapshot = wfcli_player_service:snapshot(),
+         {ok, Ref} = wfcli_local_api:diagnostics_submit(self(),
+                         #{action => watch, topic => inventory, seconds => 60}),
+         #{<<"event">> := <<"companion_diagnostics">>, <<"request_id">> := Id,
+           <<"request">> := #{<<"action">> := <<"watch">>}} = diagnostic_command(Socket),
+         Data = #{<<"state">> => <<"running">>, <<"job">> => Id, <<"samples">> => 1},
+         ok = socket:send(Socket, wfcli_local_protocol:encode(
+             #{<<"op">> => <<"companion_diagnostics">>, <<"request_id">> => Id, <<"data">> => Data})),
+         receive {wfcli_daemon, Ref, {ok, Data}} -> ok after 1000 -> error(no_reply) end,
+         wfcli_local_api:diagnostics_consume(self(), Ref),
+         ?assertMatch(#{<<"request">> := #{<<"action">> := <<"credit">>}}, diagnostic_command(Socket)),
+         ?assertEqual(Snapshot, wfcli_player_service:snapshot()),
+         ok = socket:close(Socket),
+         receive {wfcli_daemon, Ref, {error, companion_disconnected}} -> ok
+         after 1000 -> error(no_disconnect) end,
+         ?assertEqual({error, no_companion_connected},
+                      wfcli_local_api:diagnostics_submit(self(), #{action => status}))
+     end end}.
+
+diagnostic_command(Socket) ->
+    {ok, Line} = socket:recv(Socket, 0, 2000),
+    {ok, Message} = wfcli_local_protocol:decode(string:trim(Line)),
+    Message.
+
 backend_restart_disconnects_and_restores_events_test_() ->
     {setup, fun setup/0, fun cleanup/1,
      fun(#{socket := Path}) -> fun() ->
@@ -289,8 +388,8 @@ request_mastery_view_from_raw_publish(Socket) ->
         }
     },
     Publish = #{<<"op">> => <<"publish">>, <<"id">> => 3,
-                <<"dataset">> => <<"player">>, <<"source">> => <<"inventory">>,
-                <<"data">> => Observation},
+                <<"dataset">> => <<"player">>, <<"source">> => <<"inventory_http">>,
+                <<"data">> => inventory_observation(Observation)},
     ok = socket:send(Socket, wfcli_local_protocol:encode(Publish)),
     {ok, PublishLine} = socket:recv(Socket, 0, 5000),
     {ok, PublishReply} = wfcli_local_protocol:decode(string:trim(PublishLine)),
@@ -530,6 +629,11 @@ connect_client(SocketPath, Client, Extra) ->
     ?assertEqual(ExpectedFeatures, maps:get(<<"features">>, Reply)),
     Socket.
 
+inventory_observation(Observation) ->
+    Full = wfcli_player_inventory_eunit:full(1, 0),
+    Raw = (maps:get(<<"raw">>, Observation))#{<<"LastInventorySync">> => maps:get(<<"sync">>, Full)},
+    (maps:merge(Full, Observation))#{<<"raw">> => Raw}.
+
 request_build_equipment_view(Socket) ->
     Observation = #{
         <<"schema">> => 2,
@@ -545,8 +649,8 @@ request_build_equipment_view(Socket) ->
         }
     },
     Publish = #{<<"op">> => <<"publish">>, <<"id">> => 42,
-                <<"dataset">> => <<"player">>, <<"source">> => <<"inventory">>,
-                <<"data">> => Observation},
+                <<"dataset">> => <<"player">>, <<"source">> => <<"inventory_http">>,
+                <<"data">> => inventory_observation(Observation)},
     ok = socket:send(Socket, wfcli_local_protocol:encode(Publish)),
     {ok, PublishLine} = socket:recv(Socket, 0, 5000),
     {ok, PublishReply} = wfcli_local_protocol:decode(string:trim(PublishLine)),

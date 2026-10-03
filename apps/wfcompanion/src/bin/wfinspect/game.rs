@@ -202,7 +202,7 @@ impl Game {
             Self::Adapter { list: true, .. } => print_json(&game_observer::adapter::list()),
             Self::Adapter {
                 exe: Some(path), ..
-            } => print_json(&game_observer::metadata::inspect_executable(&path)?),
+            } => print_json(&game_observer::adapter::inspect_executable(&path)?),
             Self::Adapter { .. } => adapter(),
             Self::Metadata { output } => metadata(output),
             Self::Inventory => {
@@ -345,12 +345,12 @@ impl Ui {
             Self::Relic { source } => print_json(&memory::ui_relic(source.open()?)?),
             Self::Capture { directory, terms } => {
                 let evidence =
-                    game_observer::ui::capture_evidence(game_pid()?, &directory, &terms)?;
+                    wfcompanion::observation::ui_capture::capture(game_pid()?, &directory, &terms)?;
                 print_json(&json!({"evidence": evidence}))
             }
-            Self::Replay { directory } => {
-                print_json(&game_observer::ui::replay_evidence(&directory)?)
-            }
+            Self::Replay { directory } => print_json(
+                &wfcompanion::observation::ui_capture::replay_evidence(&directory)?,
+            ),
         }
     }
 }

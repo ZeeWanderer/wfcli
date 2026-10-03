@@ -172,14 +172,37 @@ pub(super) fn adapter() -> Result<(), String> {
     let pid = game_pid()?;
     let identity = game_observer::identify_process(pid)?;
     let scaleform = game_observer::ui::bounded_probe_for_identity(pid, &identity);
+    let adapter = match &scaleform {
+        game_observer::ui::BoundedProbe::Available { .. } => {
+            game_observer::adapter::AdapterSupport::Supported {
+                id: "validated_bindings",
+                capabilities: &["scaleform_ui_v1"],
+            }
+        }
+        game_observer::ui::BoundedProbe::Unavailable { reason, .. } => {
+            game_observer::adapter::AdapterSupport::Unsupported {
+                reason: reason.clone(),
+            }
+        }
+    };
     let metadata = game_observer::metadata::capture_for_identity(pid, identity.clone())
         .map(|value| json!({"status": "available", "value": value}))
         .unwrap_or_else(|reason| json!({"status": "unavailable", "reason": reason}));
+    let inventory = game_observer::inventory::Reader::open_for_identity(&identity)
+        .and_then(|mut reader| reader.read())
+        .map(|snapshot| {
+            json!({"status": "available", "sync": snapshot.sync,
+            "collections": snapshot.fields.iter().map(|(key, value)|
+                (key.clone(), json!(value.as_array().map(Vec::len))))
+                .collect::<serde_json::Map<_, _>>()})
+        })
+        .unwrap_or_else(|reason| json!({"status": "unavailable", "reason": reason}));
     print_json(&json!({
         "identity": identity,
-        "adapter": game_observer::adapter::support(Some(&identity)),
+        "adapter": adapter,
         "probes": {
             "game_metadata": metadata,
+            "inventory": inventory,
             "scaleform": scaleform,
         },
     }))

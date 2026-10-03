@@ -8,7 +8,7 @@
 
 -define(ENVELOPE_VERSION, 1).
 -define(INTERFACE_DATASETS, 1).
--define(INTERFACE_PLAYER, 1).
+-define(INTERFACE_PLAYER, 2).
 -define(INTERFACE_GAME_METADATA, 2).
 -define(INTERFACE_WORLDSTATE, 1).
 -define(INTERFACE_NOTIFICATIONS, 1).
@@ -40,7 +40,7 @@ interfaces() ->
 
 -doc "Optional Unix-socket features offered by wfdaemon.".
 -spec features() -> [binary()].
-features() -> [<<"companion.command">>, <<"diagnostics.report">>].
+features() -> [<<"companion.command">>, <<"companion.diagnostics">>, <<"diagnostics.report">>].
 
 -doc "Return current Unix-socket handshake contract.".
 -spec contract() -> map().
