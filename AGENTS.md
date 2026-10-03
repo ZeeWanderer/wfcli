@@ -7,6 +7,8 @@ guides under `docs/`.
 - Use `$caveman`. Preserve full technical meaning while removing token waste.
   Keep code, exact errors, commit messages, and user-facing documentation in their
   normal forms.
+- Save large tool outputs to files; return only targeted excerpts or summaries.
+  Select output before running commands instead of relying on truncation.
 - Keep tests in sync with expected outputs; CT suite lives under `apps/wfcli/test`.
 - Run tests after code, fixture, build, or behavior changes (at minimum
   `./scripts/test-quiet ct`). Documentation-only edits do not require tests.
@@ -19,6 +21,9 @@ guides under `docs/`.
 - Run `make dev-companion` or `make prod-companion` after companion code, native
   bridge, asset, or build metadata changes.
 - Follow the lockstep compatibility policy in `docs/developer/daemon.md`.
+- Review game integrations for update resilience. Discover build-dependent bindings;
+  do not hardcode per-build offsets as the production strategy. Validate layout
+  assumptions and test relocation, ambiguity and changed structures.
 - After tests pass, manually exercise updated CLI commands yourself (not just via tests).
 - Add new tests whenever new functionality is added; update fixtures alongside expected outputs.
 - Keep docs lean and standalone: current behavior/contracts, no conversation context or irrelevant
